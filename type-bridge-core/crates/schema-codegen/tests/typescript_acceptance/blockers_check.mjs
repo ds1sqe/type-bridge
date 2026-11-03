@@ -26,12 +26,13 @@ const hydrateComplete = Object.getOwnPropertySymbols(Marker).find(
   (symbol) => symbol.description === "typebridge.hydrate-complete",
 );
 assert(hydrateComplete);
-const hydrated = Marker[hydrateComplete]("marker-iid", values);
+const hydrated = Marker[hydrateComplete]("0xa1", values);
 assert.equal(hydrated.name_, name);
-assert.equal(hydrated.iid, "marker-iid");
-const hydratedArchive = Archive[hydrateComplete]("archive-iid", {
+assert.equal(hydrated.iid, "0xa1");
+const hydratedArchive = Archive[hydrateComplete]("0xb1", {
   name_: [hydrated, hydrated, hydrated], nameValue: [], reference_: [],
 });
+assert.equal(hydratedArchive.iid, "0xb1");
 assert.equal(hydratedArchive.name_.length, 3);
 assert.equal(hydratedArchive.name_[0].name_, name);
 assert(Object.isFrozen(hydratedArchive));

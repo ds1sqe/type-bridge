@@ -186,15 +186,10 @@ export interface WriteResult<T> {
 export declare function writeResult<T>(items: readonly T[]): WriteResult<T>;
 export interface NativeProjectedManager {
     insertProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope[];
-    insertJson(instanceJson: string): string;
-    insertManyJson(batchJson: string): string;
     insertManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): readonly Complete[];
     putProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope[];
-    putJson(instanceJson: string): string;
-    putManyJson(batchJson: string): string;
     putManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): readonly Complete[];
     updateProjected(iid: string, instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope[];
-    updateJson(iid: string, instanceJson: string): string;
     updateManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow): readonly Complete[];
     deleteByIid(iid: string): void;
     deleteByIidReturning(iid: string): NativeProjectedValueEnvelope[];
@@ -202,9 +197,7 @@ export interface NativeProjectedManager {
     deleteManyProjected(rowCount: number, rowAt: (ordinal: number) => string): void;
     managerFilter(): NativeProjectedManagerFilter;
     filterEntriesJson(filtersJson: string): NativeProjectedManager;
-    filterJson(filtersJson: string): NativeProjectedManager;
     getByIidProjected(iid: string): NativeProjectedValueEnvelope | null;
-    getByIidJson(iid: string): string;
     allJson(): string;
     firstJson(): string;
     count(): bigint;

@@ -17,7 +17,7 @@ use super::reserved::{
 };
 use crate::{
     EmbeddedAuthority, GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE,
-    documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
+    documentation_annotation, invalid, model_documentation,
 };
 
 #[path = "plan.rs"]
@@ -87,11 +87,7 @@ fn header() -> &'static str {
 }
 
 fn render_index(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
-    let install = if projection_uses_ordered_collections(projection) {
-        "__installOrderedRuntimeProjectionPackage"
-    } else {
-        "__installRuntimeProjectionPackage"
-    };
+    let install = "__installOrderedRuntimeProjectionPackage";
     let names = projection
         .emission()
         .model_shells()
@@ -122,15 +118,10 @@ fn render_authority(authority: &EmbeddedAuthority) -> Result<String, Diagnostic>
 
 fn render_models(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    let ordered = projection_uses_ordered_collections(projection);
-    let (define_model, model_token) = if ordered {
-        (
-            "defineOrderedModel as defineModel",
-            "type OrderedModelToken as ModelToken",
-        )
-    } else {
-        ("defineModel", "type ModelToken")
-    };
+    let (define_model, model_token) = (
+        "defineOrderedModel as defineModel",
+        "type OrderedModelToken as ModelToken",
+    );
     let _ = write!(
         output,
         "import {{\n  defineFieldToken,\n  {define_model},\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  {model_token},\n  type ReferenceFacet,\n  type RoleToken,\n  Plan, PlanHandle, PlanValue, PlanExpr, PlanInput,\n  planDefinition, planMatch, planModelMatch, planModelInsert, planInsertMany,\n}} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
@@ -1102,10 +1093,8 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
     for name in PUBLIC_RUNTIME_NAMES.iter().chain(PUBLIC_SCHEMA_NAMES) {
         public.insert((*name).to_owned(), "generated runtime".to_owned());
     }
-    if projection_uses_ordered_collections(projection) {
-        for name in ORDERED_PUBLIC_RUNTIME_NAMES {
-            public.insert((*name).to_owned(), "generated ordered runtime".to_owned());
-        }
+    for name in ORDERED_PUBLIC_RUNTIME_NAMES {
+        public.insert((*name).to_owned(), "generated native runtime".to_owned());
     }
     for id in projection.emission().model_shells() {
         let model = projection

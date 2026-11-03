@@ -211,28 +211,23 @@ const unorderedRuntimeDts = readFileSync(resolve(GENERATED, "dist/runtime.d.ts")
 const unorderedModelsDts = readFileSync(resolve(GENERATED, "dist/models.d.ts"), "utf8");
 const orderedRuntimeDts = readFileSync(resolve(ORDERED, "dist/runtime.d.ts"), "utf8");
 const orderedModelsDts = readFileSync(resolve(ORDERED, "dist/models.d.ts"), "utf8");
-for (const successorName of [
-  "ProjectedBatchUpdate",
-  "OrderedProjectedModelManager",
-  "OrderedModelToken",
+for (const [kind, runtimeDts, modelsDts] of [
+  ["unordered", unorderedRuntimeDts, unorderedModelsDts],
+  ["ordered", orderedRuntimeDts, orderedModelsDts],
 ]) {
-  if (unorderedRuntimeDts.includes(successorName) || unorderedModelsDts.includes(successorName)) {
-    throw new Error(`unordered declarations expose ordered successor ${successorName}`);
+  for (const nativeName of ["ProjectedBatchUpdate", "OrderedProjectedModelManager", "OrderedModelToken"]) {
+    if (!runtimeDts.includes(nativeName)) {
+      throw new Error(`${kind} runtime declaration omits ${nativeName}`);
+    }
   }
-  if (!orderedRuntimeDts.includes(successorName)) {
-    throw new Error(`ordered runtime declaration omits ${successorName}`);
+  for (const method of ["updateMany", "deleteMany"]) {
+    if (!runtimeDts.includes(`${method}(`)) {
+      throw new Error(`${kind} runtime declaration omits ${method}`);
+    }
   }
-}
-for (const method of ["updateMany", "deleteMany"]) {
-  if (unorderedRuntimeDts.includes(`${method}(`)) {
-    throw new Error(`unordered declarations expose ordered successor ${method}`);
+  if (!modelsDts.includes("OrderedModelToken as ModelToken")) {
+    throw new Error(`${kind} model declarations lose the native token alias`);
   }
-  if (!orderedRuntimeDts.includes(`${method}(`)) {
-    throw new Error(`ordered runtime declaration omits ${method}`);
-  }
-}
-if (!orderedModelsDts.includes("OrderedModelToken as ModelToken")) {
-  throw new Error("ordered model declarations lose the successor token alias");
 }
 
 for (const fixture of [

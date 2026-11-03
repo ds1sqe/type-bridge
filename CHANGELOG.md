@@ -200,6 +200,14 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Removed Node native manager `insertJson`, `insertManyJson`, `putJson`,
+  `putManyJson`, and `updateJson`; use `insertProjected`,
+  `insertManyProjected`, `putProjected`, `putManyProjected`, and
+  `updateProjected` through regenerated model managers. Removed
+  `getByIidJson` and `filterJson`; use `getByIidProjected` and
+  `filterEntriesJson`. Ordered and unordered packages now share the native
+  manager surface.
+
 - Generated Python managers now use the native projected runtime for ordered
   and unordered schemas. Regenerate packages that carry the removed V1
   manager resource. Manager write-lowering failures now use

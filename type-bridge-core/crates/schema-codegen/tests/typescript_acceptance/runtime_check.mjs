@@ -54,10 +54,7 @@ import {
   qualifyingScore,
   schemaAuthority,
 } from "./generated_v2/dist/index.js";
-import {
-  Identifier as ForeignIdentifier,
-  Person as ForeignPerson,
-} from "./generated_foreign/dist/index.js";
+import * as Foreign from "./generated_foreign/dist/index.js";
 import {
   DirectConnectionPolicy as OrderedDirectConnectionPolicy,
   Identifier as OrderedIdentifier,
@@ -218,17 +215,17 @@ const hydratedIdentifier = Identifier[hydrateComplete](
 assert.equal(hydratedIdentifier.iid, "identifier-iid");
 assert.equal(hydratedIdentifier.value, "provider-value");
 assert(Object.isFrozen(hydratedIdentifier));
-const hydratedPerson = Person[hydrateComplete]("person-iid", {
+const hydratedPerson = Person[hydrateComplete]("0xa1", {
   ...personValues,
   aliases: [],
   nickname: null,
 });
-assert.equal(hydratedPerson.iid, "person-iid");
+assert.equal(hydratedPerson.iid, "0xa1");
 assert.equal(hydratedPerson.nickname, null);
 assert.deepEqual(hydratedPerson.aliases, []);
 Employment.create({ employee: person });
 
-const eventReference = Event.reference("event-iid", {});
+const eventReference = Event.reference("0xe1", {});
 Container.create({ item: [eventReference] });
 assert.throws(
   () =>
@@ -312,7 +309,18 @@ assert.equal(
   fractionalInstant,
 );
 
-const foreignPerson = ForeignPerson.create(personValues);
+const foreignPerson = Foreign.Person.create({
+  identifier: Foreign.Identifier.create(personValues.identifier.value),
+  score: Foreign.Score.create(personValues.score.value),
+  valBool: Foreign.ValBool.create(personValues.valBool.value),
+  valConstrained: Foreign.ValConstrained.create(personValues.valConstrained.value),
+  valDate: Foreign.ValDate.create(personValues.valDate.value),
+  valDatetime: Foreign.ValDatetime.create(personValues.valDatetime.value),
+  valDatetimeTz: Foreign.ValDatetimeTz.create(personValues.valDatetimeTz.value),
+  valDecimal: Foreign.ValDecimal.create(personValues.valDecimal.value),
+  valDouble: Foreign.ValDouble.create(personValues.valDouble.value),
+  valDuration: Foreign.ValDuration.create(personValues.valDuration.value),
+});
 const foreignPackage = captureNativeDiagnostic(() =>
   OrderedMembership.create({ member: [foreignPerson] }),
 );
@@ -329,7 +337,7 @@ assert.deepEqual(
 );
 const nestedForeignHydration = captureNativeDiagnostic(() =>
   OrderedPerson[orderedHydrate]("0xb", {
-    identifier: ForeignIdentifier.create("nested-foreign-key"),
+    identifier: Foreign.Identifier.create("nested-foreign-key"),
     score: OrderedScore.create(3n),
     tag: [],
   }),
@@ -432,7 +440,7 @@ const installed = installRuntimeProjection({
 assert(installed.matchSession().exact("person"));
 assert(installed.matchSession().subtypes("party"));
 assert.throws(() => installed.matchSession().exact("unprojected-model"));
-assert.throws(
+assert.doesNotThrow(
   () => installRuntimeProjection({
     projectionJson: RUNTIME_PROJECTION_JSON,
     semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,
@@ -440,7 +448,6 @@ assert.throws(
     bindings,
     projectedBatchMaterializer: () => [],
   }),
-  /legacy projection cannot install a successor batch materializer/,
 );
 assert.throws(
   () =>

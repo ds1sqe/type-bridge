@@ -48,7 +48,7 @@ use type_bridge_orm::_descriptor::{
 };
 use type_bridge_orm::_dynamic::{
     DynamicAttributeMap, DynamicComparisonOp, DynamicEntityRow, DynamicExpr, DynamicRelationRow,
-    DynamicRolePlayer, DynamicRolePlayerInput,
+    DynamicRolePlayer,
 };
 use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
@@ -948,8 +948,11 @@ fn project_batch_create_json(
             row_path.iter().cloned(),
         ));
     }
-    project_create_wire_with_proofs(package, id, &wire, proofs)
-        .map_err(|diagnostic| rebase_sdk_diagnostic(diagnostic, row_path))
+    project_create_wire_with_proofs(package, id, &wire, proofs).map_err(|diagnostic| {
+        diagnostic
+            .try_with_path_prefix(row_path)
+            .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
+    })
 }
 
 fn capture_projected_batch(
@@ -1234,9 +1237,7 @@ fn prepare_projected_batch_output(
     let materializer = package
         .projected_batch_materializer
         .as_ref()
-        .ok_or_else(|| {
-            invalid_error("ordered successor projection has no installed batch materializer")
-        })?;
+        .ok_or_else(|| invalid_error("native projection has no installed batch materializer"))?;
     let function = materializer.borrow_back(env)?.raw();
     let raw_env = env.raw();
     let mut receiver = ptr::null_mut();
@@ -2076,25 +2077,13 @@ impl NodeRuntimeProjection {
                 (runtime, None, None)
             }
         };
-        let ordered_successor = projection_uses_ordered_collections(&runtime);
-        match (ordered_successor, projected_batch_materializer.as_ref()) {
-            (true, None) if matches!(policy, BatchMaterializerPolicy::RequiredSuccessor) => {
-                return Err(invalid_error(
-                    "ordered successor projection requires exactly one generated batch materializer",
-                ));
-            }
-            (false, Some(_)) if !matches!(policy, BatchMaterializerPolicy::PlanResultsOnly) => {
-                return Err(invalid_error(
-                    "legacy projection cannot install a successor batch materializer",
-                ));
-            }
-            _ => {}
-        }
-        if matches!(policy, BatchMaterializerPolicy::PlanResultsOnly)
-            && (ordered_successor || projected_batch_materializer.is_none())
+        if projected_batch_materializer.is_none()
+            && (matches!(policy, BatchMaterializerPolicy::PlanResultsOnly)
+                || (projection_uses_ordered_collections(&runtime)
+                    && matches!(policy, BatchMaterializerPolicy::RequiredSuccessor)))
         {
             return Err(invalid_error(
-                "ordinary plan results require exactly one scoped batch materializer",
+                "native projection requires exactly one generated batch materializer",
             ));
         }
         let projected_batch_materializer = projected_batch_materializer
@@ -3196,11 +3185,6 @@ impl NodeRuntimeProjection {
         &self,
         thing: &NodeValidatedThingHandle,
     ) -> napi::Result<NodeProjectedValueEnvelope> {
-        if !projection_uses_ordered_collections(self.package.projection.projection()) {
-            return Err(invalid_error(
-                "projected query proof materialization is reserved for the ordered successor runtime",
-            ));
-        }
         let projected = thing.projected_thing().ok_or_else(|| {
             runtime_error("validated query thing has no projected successor companion")
         })?;
@@ -3368,7 +3352,7 @@ impl NodeProjectedManagerFilter {
 
 #[napi]
 impl NodeProjectedModelManager {
-    /// Insert one ordered successor value through the common projected executor.
+    /// Insert one projected value through the common projected executor.
     #[napi(js_name = "insertProjected")]
     pub fn insert_projected<'env>(
         &self,
@@ -3382,7 +3366,7 @@ impl NodeProjectedModelManager {
         self.write_single_projected(instance, ProjectedBatchOperation::Insert, None)
     }
 
-    /// Put one ordered successor value through the common projected executor.
+    /// Put one projected value through the common projected executor.
     #[napi(js_name = "putProjected")]
     pub fn put_projected<'env>(
         &self,
@@ -3396,7 +3380,7 @@ impl NodeProjectedModelManager {
         self.write_single_projected(instance, ProjectedBatchOperation::Put, None)
     }
 
-    /// Replace one ordered successor value through the common projected executor.
+    /// Replace one projected value through the common projected executor.
     #[napi(js_name = "updateProjected")]
     pub fn update_projected<'env>(
         &self,
@@ -3411,7 +3395,7 @@ impl NodeProjectedModelManager {
         self.write_single_projected(instance, ProjectedBatchOperation::Update, Some(iid))
     }
 
-    /// Insert ordered successor values atomically through the common executor.
+    /// Insert projected values atomically through the common executor.
     #[napi(js_name = "insertManyProjected")]
     pub fn insert_many_projected<'env>(
         &self,
@@ -3427,7 +3411,7 @@ impl NodeProjectedModelManager {
         )
     }
 
-    /// Put ordered successor values atomically through the common executor.
+    /// Put projected values atomically through the common executor.
     #[napi(js_name = "putManyProjected")]
     pub fn put_many_projected<'env>(
         &self,
@@ -3438,7 +3422,7 @@ impl NodeProjectedModelManager {
         self.write_many_projected(&env, row_count, row_at.raw(), ProjectedBatchOperation::Put)
     }
 
-    /// Replace ordered successor values atomically through the common executor.
+    /// Replace projected values atomically through the common executor.
     #[napi(js_name = "updateManyProjected")]
     pub fn update_many_projected<'env>(
         &self,
@@ -3454,7 +3438,7 @@ impl NodeProjectedModelManager {
         )
     }
 
-    /// Delete ordered successor values atomically by canonical TypeDB IID.
+    /// Delete projected values atomically by canonical TypeDB IID.
     #[napi(js_name = "deleteManyProjected")]
     pub fn delete_many_projected<'env>(
         &self,
@@ -3462,7 +3446,6 @@ impl NodeProjectedModelManager {
         row_count: u32,
         row_at: Function<'env, u32, Unknown<'env>>,
     ) -> napi::Result<()> {
-        self.require_successor_batch_runtime()?;
         let (batch, control) = capture_projected_batch(
             env.raw(),
             self.package.as_ref(),
@@ -3478,17 +3461,12 @@ impl NodeProjectedModelManager {
         .map_err(napi_sdk_diagnostic)
     }
 
-    /// Read one ordered successor value through the common projected executor.
+    /// Read one projected value through the common projected executor.
     #[napi(js_name = "getByIidProjected")]
     pub fn get_by_iid_projected(
         &self,
         iid: String,
     ) -> napi::Result<Option<NodeProjectedValueEnvelope>> {
-        if !projection_uses_ordered_collections(self.package.projection.projection()) {
-            return Err(invalid_error(
-                "common projected execution is reserved for the ordered successor runtime",
-            ));
-        }
         let target = self
             .target
             .as_ref()
@@ -3507,156 +3485,6 @@ impl NodeProjectedModelManager {
         projected
             .map(|projected| projected_envelope(Arc::clone(&self.package), projected))
             .transpose()
-    }
-
-    /// Insert an exact complete input and return all hydrated private wires.
-    #[napi(js_name = "insertJson")]
-    pub fn insert_json(&self, instance_json: String) -> napi::Result<String> {
-        let instance = parse_wire(&instance_json)?;
-        ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
-        self.validate_ordered_single_write(&instance)?;
-        let items = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let attributes = lower_attributes(
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.insert(&attributes))
-                    .map_err(orm_error)?
-                    .into_items()
-                    .into_iter()
-                    .map(|row| hydrate_entity(self.package.as_ref(), &self.type_id, &row))
-                    .collect::<napi::Result<Vec<_>>>()?
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let attributes = lower_attributes(
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let roles =
-                    lower_roles(self.package.as_ref(), &self.type_id, &descriptor, &instance)?;
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.insert(&attributes, &roles))
-                    .map_err(orm_error)?
-                    .into_items()
-                    .into_iter()
-                    .map(|row| hydrate_relation(self.package.as_ref(), &self.type_id, &row))
-                    .collect::<napi::Result<Vec<_>>>()?
-            }
-        };
-        serde_json::to_string(&items).map_err(json_error)
-    }
-
-    /// Insert exact complete values atomically and return hydrated wires in input order.
-    #[napi(js_name = "insertManyJson")]
-    pub fn insert_many_json(&self, batch_json: String) -> napi::Result<String> {
-        self.write_many_json(&batch_json, false)
-    }
-
-    /// Put an exact complete input and return all hydrated private wires.
-    #[napi(js_name = "putJson")]
-    pub fn put_json(&self, instance_json: String) -> napi::Result<String> {
-        let instance = parse_wire(&instance_json)?;
-        ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
-        self.validate_ordered_single_write(&instance)?;
-        let items = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let attributes = lower_attributes(
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.put_exact(&attributes))
-                    .map_err(orm_error)?
-                    .into_items()
-                    .into_iter()
-                    .map(|row| hydrate_entity(self.package.as_ref(), &self.type_id, &row))
-                    .collect::<napi::Result<Vec<_>>>()?
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let attributes = lower_attributes(
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let roles =
-                    lower_roles(self.package.as_ref(), &self.type_id, &descriptor, &instance)?;
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.put_exact(&attributes, &roles))
-                    .map_err(orm_error)?
-                    .into_items()
-                    .into_iter()
-                    .map(|row| hydrate_relation(self.package.as_ref(), &self.type_id, &row))
-                    .collect::<napi::Result<Vec<_>>>()?
-            }
-        };
-        serde_json::to_string(&items).map_err(json_error)
-    }
-
-    /// Put exact complete values atomically and return hydrated wires in input order.
-    #[napi(js_name = "putManyJson")]
-    pub fn put_many_json(&self, batch_json: String) -> napi::Result<String> {
-        self.write_many_json(&batch_json, true)
-    }
-
-    /// Replace one exact complete value already identified by its TypeDB IID.
-    #[napi(js_name = "updateJson")]
-    pub fn update_json(&self, iid: String, instance_json: String) -> napi::Result<String> {
-        let instance = parse_wire(&instance_json)?;
-        ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
-        self.validate_ordered_single_write(&instance)?;
-        ensure_iid(&iid)?;
-        let items = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let attributes = lower_attributes(
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                let row = self
-                    .runtime
-                    .block_on(manager.update_and_get_exact(&iid, &attributes))
-                    .map_err(orm_error)?;
-                row.into_items()
-                    .into_iter()
-                    .map(|row| hydrate_entity(self.package.as_ref(), &self.type_id, &row))
-                    .collect::<napi::Result<Vec<_>>>()?
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let attributes = lower_attributes(
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let roles =
-                    lower_roles(self.package.as_ref(), &self.type_id, &descriptor, &instance)?;
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                let row = self
-                    .runtime
-                    .block_on(manager.update_and_get_exact(&iid, &attributes, &roles))
-                    .map_err(orm_error)?;
-                row.into_items()
-                    .into_iter()
-                    .map(|row| hydrate_relation(self.package.as_ref(), &self.type_id, &row))
-                    .collect::<napi::Result<Vec<_>>>()?
-            }
-        };
-        serde_json::to_string(&items).map_err(json_error)
     }
 
     /// Delete one exact value and retain its stored pre-delete snapshot.
@@ -3721,28 +3549,26 @@ impl NodeProjectedModelManager {
     /// Delete one exact projected value by its canonical TypeDB IID.
     #[napi(js_name = "deleteByIid")]
     pub fn delete_by_iid(&self, iid: String) -> napi::Result<()> {
-        ensure_iid(&iid)?;
-        match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.delete_by_iid_exact(&iid))
-                    .map_err(orm_error)?;
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.delete_by_iid_exact(&iid))
-                    .map_err(orm_error)?;
-            }
-        }
-        Ok(())
+        let control =
+            ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+        let batch = ProjectedBatch::try_new_for_invocation(
+            self.package.projection.as_ref(),
+            self.type_id.clone(),
+            ProjectedBatchOperation::Delete,
+            vec![ProjectedBatchRow::Delete { iid }],
+            &control,
+        )
+        .map_err(napi_sdk_diagnostic)?;
+        self.execute_projected_batch(&batch, control, false, (), |result| match result {
+            ProjectedBatchResult::Deleted => Ok(()),
+            _ => Err(SdkExecutionDiagnostic::internal_failure()),
+        })
+        .map_err(napi_sdk_diagnostic)
     }
 
-    /// Start one immutable canonical field-token filter for an ordered package.
+    /// Start one immutable canonical field-token filter for a generated package.
     #[napi(js_name = "managerFilter")]
     pub fn manager_filter(&self) -> napi::Result<NodeProjectedManagerFilter> {
-        self.require_successor_batch_runtime()?;
         let filter =
             ProjectedManagerFilter::try_new(self.package.projection.as_ref(), self.type_id.clone())
                 .map_err(napi_sdk_diagnostic)?;
@@ -3785,68 +3611,6 @@ impl NodeProjectedModelManager {
             runtime: Arc::clone(&self.runtime),
             filters: combined,
         })
-    }
-
-    /// Return a new exact projected manager narrowed by generated attribute filters.
-    #[napi(js_name = "filterJson")]
-    pub fn filter_json(&self, filters_json: String) -> napi::Result<Self> {
-        let filters: BTreeMap<String, Value> =
-            serde_json::from_str(&filters_json).map_err(|error| {
-                invalid_error(format!("invalid projected manager filters: {error}"))
-            })?;
-        let descriptor = self.descriptor()?;
-        let attributes = match &descriptor {
-            TypeDescriptor::Entity(descriptor) => &descriptor.owned_attributes,
-            TypeDescriptor::Relation(descriptor) => &descriptor.owned_attributes,
-        };
-        let mut combined = self.filters.clone();
-        combined.extend(lower_filter_values(
-            self.package.as_ref(),
-            attributes,
-            filters,
-        )?);
-        Ok(Self {
-            package: Arc::clone(&self.package),
-            type_id: self.type_id.clone(),
-            target: self.target.clone(),
-            transaction_supports_given_stage: self.transaction_supports_given_stage,
-            successor_batch_marker: self.successor_batch_marker.clone(),
-            runtime: Arc::clone(&self.runtime),
-            filters: combined,
-        })
-    }
-
-    /// Fetch one exact projected value by IID.
-    #[napi(js_name = "getByIidJson")]
-    pub fn get_by_iid_json(&self, iid: String) -> napi::Result<String> {
-        ensure_iid(&iid)?;
-        let value = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.get_by_iid_exact(&iid))
-                    .map_err(orm_error)?
-                    .map(|row| hydrate_entity(self.package.as_ref(), &self.type_id, &row))
-                    .transpose()?
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                let rows = self
-                    .runtime
-                    .block_on(manager.get_by_iid_exact(&iid))
-                    .map_err(orm_error)?;
-                match rows.as_slice() {
-                    [] => None,
-                    [row] => Some(hydrate_relation(self.package.as_ref(), &self.type_id, row)?),
-                    _ => {
-                        return Err(runtime_error(
-                            "exact IID relation query returned multiple rows",
-                        ));
-                    }
-                }
-            }
-        };
-        serde_json::to_string(&value).map_err(json_error)
     }
 
     /// Fetch all values whose concrete type exactly matches this projection.
@@ -3986,15 +3750,6 @@ impl NodeProjectedModelManager {
         self.target.as_ref().and_then(OwnedQueryTarget::transaction)
     }
 
-    fn require_successor_batch_runtime(&self) -> napi::Result<()> {
-        if !projection_uses_ordered_collections(self.package.projection.projection()) {
-            return Err(invalid_error(
-                "common projected batch execution is reserved for the ordered successor runtime",
-            ));
-        }
-        Ok(())
-    }
-
     fn write_many_projected<'env>(
         &self,
         env: &Env,
@@ -4002,7 +3757,6 @@ impl NodeProjectedModelManager {
         row_at: sys::napi_value,
         operation: ProjectedBatchOperation,
     ) -> napi::Result<Array<'env>> {
-        self.require_successor_batch_runtime()?;
         let (batch, control) = capture_projected_batch(
             env.raw(),
             self.package.as_ref(),
@@ -4113,100 +3867,17 @@ impl NodeProjectedModelManager {
         instance_json: &str,
         proofs: &[Option<NodeProjectedInputProof>],
     ) -> napi::Result<ProjectedCreate> {
-        if !projection_uses_ordered_collections(self.package.projection.projection()) {
-            return Err(invalid_error(
-                "common projected execution is reserved for the ordered successor runtime",
-            ));
-        }
         let instance = parse_wire(instance_json)?;
         ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
-        project_create_wire_with_proofs(self.package.as_ref(), &self.type_id, &instance, proofs)
-            .map_err(napi_sdk_diagnostic)
-    }
-
-    fn validate_ordered_single_write(&self, instance: &ProjectedWire) -> napi::Result<()> {
-        if projection_uses_ordered_collections(self.package.projection.projection()) {
-            project_create_wire(self.package.as_ref(), &self.type_id, instance)
-                .and_then(|create| create.validate_native_write())
-                .map_err(napi_sdk_diagnostic)?;
-        }
-        Ok(())
-    }
-
-    fn write_many_json(&self, batch_json: &str, put: bool) -> napi::Result<String> {
-        let mut instances: Vec<ProjectedWire> = serde_json::from_str(batch_json)
-            .map_err(|error| invalid_error(format!("invalid projected batch wire: {error}")))?;
-        for instance in &instances {
-            ensure_root_wire(self.package.as_ref(), instance, &self.type_id)?;
-        }
-        if instances.is_empty() {
-            return Ok("[]".to_owned());
-        }
-        let iids = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let items = instances
-                    .iter()
-                    .map(|instance| {
-                        lower_attributes(
-                            self.package.as_ref(),
-                            &self.type_id,
-                            &descriptor.owned_attributes,
-                            instance,
-                        )
-                    })
-                    .collect::<napi::Result<Vec<_>>>()?;
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                if put {
-                    self.runtime
-                        .block_on(manager.put_many_exact(&items))
-                        .map_err(orm_error)?
-                } else {
-                    self.runtime
-                        .block_on(manager.insert_many(&items))
-                        .map_err(orm_error)?
-                }
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let items = instances
-                    .iter()
-                    .map(|instance| {
-                        Ok((
-                            lower_attributes(
-                                self.package.as_ref(),
-                                &self.type_id,
-                                &descriptor.owned_attributes,
-                                instance,
-                            )?,
-                            lower_roles(
-                                self.package.as_ref(),
-                                &self.type_id,
-                                &descriptor,
-                                instance,
-                            )?,
-                        ))
-                    })
-                    .collect::<napi::Result<Vec<_>>>()?;
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                if put {
-                    self.runtime
-                        .block_on(manager.put_many_exact(&items))
-                        .map_err(orm_error)?
-                } else {
-                    self.runtime
-                        .block_on(manager.insert_many(&items))
-                        .map_err(orm_error)?
-                }
-            }
-        };
-        if iids.len() != instances.len() {
-            return Err(runtime_error(
-                "projected batch write returned an unexpected IID count",
-            ));
-        }
-        for (instance, iid) in instances.iter_mut().zip(iids) {
-            instance.iid = Some(iid);
-        }
-        serde_json::to_string(&instances).map_err(json_error)
+        let input = project_create_wire_with_proofs(
+            self.package.as_ref(),
+            &self.type_id,
+            &instance,
+            proofs,
+        )
+        .map_err(napi_sdk_diagnostic)?;
+        input.validate_native_write().map_err(napi_sdk_diagnostic)?;
+        Ok(input)
     }
 
     fn read_all_values(&self) -> napi::Result<Vec<ProjectedWire>> {
@@ -5433,47 +5104,6 @@ fn ensure_wire_members(
     Ok(())
 }
 
-fn lower_attributes(
-    package: &InstalledPackage,
-    id: &TypeId,
-    descriptors: &[OwnedAttributeDescriptor],
-    wire: &ProjectedWire,
-) -> napi::Result<DynamicAttributeMap> {
-    let mut attributes = Vec::new();
-    for descriptor in descriptors {
-        for value in normalized_values(
-            package,
-            id,
-            &descriptor.field_name,
-            wire.values.get(&descriptor.field_name),
-            descriptor_cardinality(descriptor),
-        )? {
-            let attribute = nested_wire(value)?;
-            let expected = package.type_by_label(&descriptor.attr_name)?;
-            ensure_wire_members(package, expected, &attribute)?;
-            if expected.kind() != TypeKind::Attribute
-                || attribute.form != WireForm::Complete
-                || type_id_from_key(&attribute.type_key)? != *expected
-                || attribute.iid.is_some()
-                || !attribute.values.is_empty()
-            {
-                return Err(invalid_error(
-                    "owned field requires its exact complete attribute wrapper",
-                ));
-            }
-            let scalar = attribute
-                .value
-                .as_ref()
-                .ok_or_else(|| invalid_error("complete attribute wrapper has no scalar value"))?;
-            attributes.push((
-                descriptor.attr_name.clone(),
-                scalar_to_attribute(scalar, descriptor.value_type)?,
-            ));
-        }
-    }
-    Ok(attributes)
-}
-
 fn lower_filter_values(
     package: &InstalledPackage,
     descriptors: &[OwnedAttributeDescriptor],
@@ -5626,136 +5256,6 @@ fn projected_filter_iid(value: &Value) -> napi::Result<String> {
         ));
     }
     Ok(iid.to_owned())
-}
-
-fn lower_roles(
-    package: &InstalledPackage,
-    relation_id: &TypeId,
-    descriptor: &RelationDescriptor,
-    wire: &ProjectedWire,
-) -> napi::Result<Vec<DynamicRolePlayerInput>> {
-    let projection = package.projection.projection();
-    let model = projection
-        .models()
-        .get(relation_id)
-        .ok_or_else(|| runtime_error("relation model is absent from its installed projection"))?;
-    let mut inputs = Vec::new();
-    for create in model.create().roles().values() {
-        let token = model
-            .query_tokens()
-            .roles()
-            .get(create.role())
-            .ok_or_else(|| runtime_error("projected create role has no query token"))?;
-        let role = descriptor
-            .role(create.role().label().as_str())
-            .ok_or_else(|| runtime_error("projected role has no provider descriptor"))?;
-        for value in normalized_values(
-            package,
-            relation_id,
-            token.target_name().as_str(),
-            wire.values.get(token.target_name().as_str()),
-            role_cardinality(role),
-        )? {
-            let player = nested_wire(value)?;
-            let player_id = type_id_from_key(&player.type_key)?;
-            ensure_wire_members(package, &player_id, &player)?;
-            let allowed = create.players().iter().any(|allowed| {
-                allowed.id() == &player_id && wire_form(allowed.form()) == player.form
-            });
-            if !allowed {
-                return Err(invalid_error(
-                    "role received an incompatible projected player",
-                ));
-            }
-            let iid = player.iid.clone();
-            if let Some(iid) = &iid {
-                ensure_iid(iid)?;
-            }
-            let key = if iid.is_none() {
-                projected_key(package, &player_id, &player)?
-            } else {
-                None
-            };
-            if iid.is_none() && key.is_none() {
-                return Err(invalid_error(
-                    "role player requires an IID or complete projected key",
-                ));
-            }
-            inputs.push(DynamicRolePlayerInput {
-                role_name: create.role().label().as_str().to_owned(),
-                player_type_name: player_id.label().as_str().to_owned(),
-                iid,
-                key,
-            });
-        }
-    }
-    Ok(inputs)
-}
-
-fn projected_key(
-    package: &InstalledPackage,
-    id: &TypeId,
-    wire: &ProjectedWire,
-) -> napi::Result<Option<(String, AttributeValue)>> {
-    let descriptor = match package.projection.descriptor(id) {
-        Ok(TypeDescriptor::Entity(descriptor)) => descriptor,
-        Ok(TypeDescriptor::Relation(_)) | Err(_) => return Ok(None),
-    };
-    let Some(key) = descriptor.key_attribute() else {
-        return Ok(None);
-    };
-    let Some(value) = wire
-        .values
-        .get(&key.field_name)
-        .filter(|value| !value.is_null())
-    else {
-        return Ok(None);
-    };
-    let wrapper = nested_wire(value)?;
-    let expected = package.type_by_label(&key.attr_name)?;
-    ensure_wire_members(package, expected, &wrapper)?;
-    if wrapper.form != WireForm::Complete || type_id_from_key(&wrapper.type_key)? != *expected {
-        return Err(invalid_error(
-            "projected key uses the wrong complete attribute wrapper",
-        ));
-    }
-    let scalar = wrapper
-        .value
-        .as_ref()
-        .ok_or_else(|| invalid_error("projected key attribute has no scalar value"))?;
-    Ok(Some((
-        key.attr_name.clone(),
-        scalar_to_attribute(scalar, key.value_type)?,
-    )))
-}
-
-/// Unpack one create member of `id` from a projected wire for lowering into
-/// a provider row. The core checks the member count; the descriptor's
-/// maximum only picks the wire shape.
-fn normalized_values<'a>(
-    package: &InstalledPackage,
-    id: &TypeId,
-    member: &str,
-    value: Option<&'a Value>,
-    cardinality: (u32, Option<u32>),
-) -> napi::Result<Vec<&'a Value>> {
-    let scalar = cardinality.1 == Some(1);
-    let values = match value {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(values)) if !scalar => values.iter().collect(),
-        Some(Value::Array(_)) => {
-            return Err(invalid_error("scalar projected member received a sequence"));
-        }
-        Some(value) if scalar => vec![value],
-        Some(_) => {
-            return Err(invalid_error(
-                "multi-value projected member requires a sequence",
-            ));
-        }
-    };
-    validate_projected_create_member_count(&package.projection, id, member, values.len())
-        .map_err(napi_sdk_diagnostic)?;
-    Ok(values)
 }
 
 fn match_attributes(
@@ -7086,13 +6586,6 @@ const fn value_type_tag(value: ValueType) -> ValueTypeTag {
     }
 }
 
-const fn wire_form(value: ProjectedModelForm) -> WireForm {
-    match value {
-        ProjectedModelForm::Complete => WireForm::Complete,
-        ProjectedModelForm::Reference => WireForm::Reference,
-    }
-}
-
 fn descriptor_cardinality(descriptor: &OwnedAttributeDescriptor) -> (u32, Option<u32>) {
     descriptor
         .cardinality()
@@ -8089,39 +7582,154 @@ entities:
             "      subject:\n        card: { min: 0, max: 4 }\n        ordered: true\n        distinct: true",
             "      subject:\n        card: { min: 0, max: 4 }",
         );
-        for (kind, label) in [
-            (TypeKind::Entity, "group"),
-            (TypeKind::Relation, "activity-link"),
+        for schema in [
+            schema.clone(),
+            schema
+                .replace("        ordered: true\n", "")
+                .replace("        distinct: true\n", ""),
         ] {
-            for operation in [
-                ProjectedBatchOperation::Insert,
-                ProjectedBatchOperation::Put,
-                ProjectedBatchOperation::Update,
+            for (kind, label) in [
+                (TypeKind::Entity, "group"),
+                (TypeKind::Relation, "activity-link"),
             ] {
-                for borrowed in [false, true] {
-                    for count in 0..=2 {
-                        if count == 2 && operation == ProjectedBatchOperation::Update {
-                            continue;
-                        }
-                        let projection = runtime_for_schema(&schema, "node-single-target.yaml");
-                        let documents = (0..count)
-                            .map(|index| {
-                                let mut document = serde_json::json!({
-                                    "_iid": format!("0xa{}", index + 1),
-                                    "_type": label,
-                                    "attributes": {"tag": []},
+                for operation in [
+                    ProjectedBatchOperation::Insert,
+                    ProjectedBatchOperation::Put,
+                    ProjectedBatchOperation::Update,
+                ] {
+                    for borrowed in [false, true] {
+                        for count in 0..=2 {
+                            if count == 2 && operation == ProjectedBatchOperation::Update {
+                                continue;
+                            }
+                            let projection = runtime_for_schema(&schema, "node-single-target.yaml");
+                            let documents = (0..count)
+                                .map(|index| {
+                                    let mut document = serde_json::json!({
+                                        "_iid": format!("0xa{}", index + 1),
+                                        "_type": label,
+                                        "attributes": {"tag": []},
+                                    });
+                                    if kind == TypeKind::Relation {
+                                        document["attributes"] = serde_json::json!({});
+                                        document["_role_0_iid"] = serde_json::json!("0xd1");
+                                        document["_role_0_type"] =
+                                            serde_json::json!("plain-activity");
+                                        document["_role_0_attributes"] = serde_json::json!({});
+                                    }
+                                    document
+                                })
+                                .collect();
+                            let (database, state) = projection_recording_database_for_test(vec![
+                                ProjectionRecordingResponse::Query(QueryResult::Documents(
+                                    documents,
+                                )),
+                            ]);
+                            let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                            let transaction = borrowed.then(|| {
+                                runtime
+                                    .block_on(database.transaction_context(TxType::Write))
+                                    .unwrap()
+                            });
+                            let manager = NodeProjectedModelManager {
+                                transaction_supports_given_stage: false,
+                                package: Arc::clone(&projection.package),
+                                type_id: TypeId::new(kind, label).unwrap(),
+                                target: Some(match &transaction {
+                                    Some(transaction) => {
+                                        OwnedQueryTarget::Transaction(transaction.clone())
+                                    }
+                                    None => OwnedQueryTarget::Database(Arc::clone(&database)),
+                                }),
+                                successor_batch_marker: borrowed
+                                    .then(|| Arc::new(AtomicBool::new(false))),
+                                runtime: Arc::clone(&runtime),
+                                filters: Vec::new(),
+                            };
+                            let roles = if kind == TypeKind::Relation {
+                                vec![(
+                                    RoleId::new(label, "subject").unwrap(),
+                                    vec![
+                                        ProjectedReference::try_new(
+                                            &projection.package.projection,
+                                            TypeId::new(TypeKind::Relation, "plain-activity")
+                                                .unwrap(),
+                                            Some("0xd1".into()),
+                                            Vec::new(),
+                                        )
+                                        .unwrap(),
+                                    ],
+                                )]
+                            } else {
+                                Vec::new()
+                            };
+                            let instance = ProjectedCreate::try_new(
+                                &projection.package.projection,
+                                manager.type_id.clone(),
+                                Vec::new(),
+                                roles,
+                            )
+                            .unwrap();
+                            let values = manager
+                                .write_single_projected(
+                                    instance,
+                                    operation,
+                                    (operation == ProjectedBatchOperation::Update)
+                                        .then(|| "0xa1".into()),
+                                )
+                                .unwrap_or_else(|error| {
+                                    panic!("{kind:?}/{operation:?}/{borrowed}/{count}: {error:?}")
                                 });
-                                if kind == TypeKind::Relation {
-                                    document["attributes"] = serde_json::json!({});
-                                    document["_role_0_iid"] = serde_json::json!("0xd1");
-                                    document["_role_0_type"] = serde_json::json!("plain-activity");
-                                    document["_role_0_attributes"] = serde_json::json!({});
-                                }
-                                document
-                            })
-                            .collect();
+                            assert_eq!(values.len(), count);
+                            for (index, value) in values.iter().enumerate() {
+                                assert_eq!(value.thing.iid(), format!("0xa{}", index + 1));
+                                assert!(value.thing.origin_carrier().is_some());
+                                let wire: ProjectedWire =
+                                    serde_json::from_str(&value.json).unwrap();
+                                assert_eq!(wire.iid.as_deref(), Some(value.thing.iid()));
+                            }
+                            {
+                                let state = state.lock().unwrap();
+                                assert_eq!(state.queries.len(), 1);
+                                assert_eq!(state.commits, usize::from(!borrowed));
+                                assert_eq!(state.rollbacks, 0);
+                            }
+                            if let Some(transaction) = transaction {
+                                runtime.block_on(transaction.commit_sdk()).unwrap();
+                                assert_eq!(state.lock().unwrap().commits, 1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn node_single_delete_uses_one_native_plan_for_absent_and_present_roots() {
+        use type_bridge_orm::TxType;
+        use type_bridge_orm::session::backend::QueryResult;
+
+        for schema in [
+            ORDERED_SCHEMA.to_owned(),
+            ORDERED_SCHEMA
+                .replace("        ordered: true\n", "")
+                .replace("        distinct: true\n", ""),
+        ] {
+            for kind in [TypeKind::Entity, TypeKind::Relation] {
+                for borrowed in [false, true] {
+                    for present in [false, true] {
+                        let projection = runtime_for_schema(&schema, "node-single-delete.yaml");
+                        let rows = if present {
+                            vec![
+                                serde_json::json!({"ordinal0": {"kind": "value", "value": type_bridge_contract::value::CanonicalValue::Long(0)}}),
+                            ]
+                        } else {
+                            vec![]
+                        };
                         let (database, state) = projection_recording_database_for_test(vec![
-                            ProjectionRecordingResponse::Query(QueryResult::Documents(documents)),
+                            ProjectionRecordingResponse::Query(QueryResult::Rows(rows)),
                         ]);
                         let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
                         let transaction = borrowed.then(|| {
@@ -8129,61 +7737,37 @@ entities:
                                 .block_on(database.transaction_context(TxType::Write))
                                 .unwrap()
                         });
+                        let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
                         let manager = NodeProjectedModelManager {
                             transaction_supports_given_stage: false,
                             package: Arc::clone(&projection.package),
-                            type_id: TypeId::new(kind, label).unwrap(),
+                            type_id: TypeId::new(
+                                kind,
+                                if kind == TypeKind::Entity {
+                                    "group"
+                                } else {
+                                    "activity-link"
+                                },
+                            )
+                            .unwrap(),
                             target: Some(match &transaction {
                                 Some(transaction) => {
                                     OwnedQueryTarget::Transaction(transaction.clone())
                                 }
-                                None => OwnedQueryTarget::Database(Arc::clone(&database)),
+                                None => OwnedQueryTarget::Database(database),
                             }),
-                            successor_batch_marker: borrowed
-                                .then(|| Arc::new(AtomicBool::new(false))),
+                            successor_batch_marker: marker.clone(),
                             runtime: Arc::clone(&runtime),
                             filters: Vec::new(),
                         };
-                        let roles = if kind == TypeKind::Relation {
-                            vec![(
-                                RoleId::new(label, "subject").unwrap(),
-                                vec![
-                                    ProjectedReference::try_new(
-                                        &projection.package.projection,
-                                        TypeId::new(TypeKind::Relation, "plain-activity").unwrap(),
-                                        Some("0xd1".into()),
-                                        Vec::new(),
-                                    )
-                                    .unwrap(),
-                                ],
-                            )]
-                        } else {
-                            Vec::new()
-                        };
-                        let instance = ProjectedCreate::try_new(
-                            &projection.package.projection,
-                            manager.type_id.clone(),
-                            Vec::new(),
-                            roles,
-                        )
-                        .unwrap();
-                        let values = manager
-                            .write_single_projected(
-                                instance,
-                                operation,
-                                (operation == ProjectedBatchOperation::Update)
-                                    .then(|| "0xa1".into()),
-                            )
+                        manager
+                            .delete_by_iid("0xa1".into())
                             .unwrap_or_else(|error| {
-                                panic!("{kind:?}/{operation:?}/{borrowed}/{count}: {error:?}")
+                                panic!(
+                                    "{kind:?}/{borrowed}/{present}: {error:?}; {:?}",
+                                    state.lock().unwrap().queries
+                                )
                             });
-                        assert_eq!(values.len(), count);
-                        for (index, value) in values.iter().enumerate() {
-                            assert_eq!(value.thing.iid(), format!("0xa{}", index + 1));
-                            assert!(value.thing.origin_carrier().is_some());
-                            let wire: ProjectedWire = serde_json::from_str(&value.json).unwrap();
-                            assert_eq!(wire.iid.as_deref(), Some(value.thing.iid()));
-                        }
                         {
                             let state = state.lock().unwrap();
                             assert_eq!(state.queries.len(), 1);
@@ -8191,6 +7775,7 @@ entities:
                             assert_eq!(state.rollbacks, 0);
                         }
                         if let Some(transaction) = transaction {
+                            assert!(marker.unwrap().load(Ordering::Acquire));
                             runtime.block_on(transaction.commit_sdk()).unwrap();
                             assert_eq!(state.lock().unwrap().commits, 1);
                         }
@@ -8206,63 +7791,72 @@ entities:
         use type_bridge_orm::TxType;
         use type_bridge_orm::session::backend::QueryResult;
 
-        for borrowed in [false, true] {
-            let projection = ordered_runtime();
-            let (database, state) = projection_recording_database_for_test(vec![
-                ProjectionRecordingResponse::Query(QueryResult::Documents(vec![
-                    serde_json::json!({
-                        "_iid": "0xa1", "_type": "group", "attributes": {}
-                    }),
-                ])),
-                ProjectionRecordingResponse::Query(QueryResult::Rows(vec![serde_json::json!({})])),
-            ]);
-            let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
-            let transaction = borrowed.then(|| {
-                runtime
-                    .block_on(database.transaction_context(TxType::Write))
-                    .unwrap()
-            });
-            let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
-            let manager = NodeProjectedModelManager {
-                transaction_supports_given_stage: false,
-                package: Arc::clone(&projection.package),
-                type_id: TypeId::new(TypeKind::Entity, "group").unwrap(),
-                target: Some(match &transaction {
-                    Some(transaction) => OwnedQueryTarget::Transaction(transaction.clone()),
-                    None => OwnedQueryTarget::Database(Arc::clone(&database)),
-                }),
-                successor_batch_marker: marker.clone(),
-                runtime: Arc::clone(&runtime),
-                filters: Vec::new(),
-            };
-            let mut snapshots = manager
-                .delete_by_iid_returning("0xa1".into())
-                .unwrap_or_else(|error| {
-                    panic!("{error:?}; queries={:?}", state.lock().unwrap().queries)
+        for schema in [
+            ORDERED_SCHEMA.to_owned(),
+            ORDERED_SCHEMA
+                .replace("        ordered: true\n", "")
+                .replace("        distinct: true\n", ""),
+        ] {
+            for borrowed in [false, true] {
+                let projection = runtime_for_schema(&schema, "node-native-returning-delete.yaml");
+                let (database, state) = projection_recording_database_for_test(vec![
+                    ProjectionRecordingResponse::Query(QueryResult::Documents(vec![
+                        serde_json::json!({
+                            "_iid": "0xa1", "_type": "group", "attributes": {}
+                        }),
+                    ])),
+                    ProjectionRecordingResponse::Query(QueryResult::Rows(vec![serde_json::json!(
+                        {}
+                    )])),
+                ]);
+                let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                let transaction = borrowed.then(|| {
+                    runtime
+                        .block_on(database.transaction_context(TxType::Write))
+                        .unwrap()
                 });
-            assert_eq!(snapshots.len(), 1);
-            let snapshot = snapshots.remove(0);
-            assert!(snapshot.deleted());
-            assert_eq!(snapshot.thing.iid(), "0xa1");
-            assert_eq!(
-                snapshot
-                    .thing
-                    .try_to_reference(projection.package.projection.as_ref())
-                    .unwrap_err()
-                    .code()
-                    .as_str(),
-                "thing_deleted"
-            );
-            {
-                let state = state.lock().unwrap();
-                assert_eq!(state.queries.len(), 2);
-                assert_eq!(state.commits, usize::from(!borrowed));
-                assert_eq!(state.rollbacks, 0);
-            }
-            if let Some(transaction) = transaction {
-                assert!(marker.unwrap().load(Ordering::Acquire));
-                runtime.block_on(transaction.commit_sdk()).unwrap();
-                assert_eq!(state.lock().unwrap().commits, 1);
+                let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
+                let manager = NodeProjectedModelManager {
+                    transaction_supports_given_stage: false,
+                    package: Arc::clone(&projection.package),
+                    type_id: TypeId::new(TypeKind::Entity, "group").unwrap(),
+                    target: Some(match &transaction {
+                        Some(transaction) => OwnedQueryTarget::Transaction(transaction.clone()),
+                        None => OwnedQueryTarget::Database(Arc::clone(&database)),
+                    }),
+                    successor_batch_marker: marker.clone(),
+                    runtime: Arc::clone(&runtime),
+                    filters: Vec::new(),
+                };
+                let mut snapshots = manager
+                    .delete_by_iid_returning("0xa1".into())
+                    .unwrap_or_else(|error| {
+                        panic!("{error:?}; queries={:?}", state.lock().unwrap().queries)
+                    });
+                assert_eq!(snapshots.len(), 1);
+                let snapshot = snapshots.remove(0);
+                assert!(snapshot.deleted());
+                assert_eq!(snapshot.thing.iid(), "0xa1");
+                assert_eq!(
+                    snapshot
+                        .thing
+                        .try_to_reference(projection.package.projection.as_ref())
+                        .unwrap_err()
+                        .code()
+                        .as_str(),
+                    "thing_deleted"
+                );
+                {
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.queries.len(), 2);
+                    assert_eq!(state.commits, usize::from(!borrowed));
+                    assert_eq!(state.rollbacks, 0);
+                }
+                if let Some(transaction) = transaction {
+                    assert!(marker.unwrap().load(Ordering::Acquire));
+                    runtime.block_on(transaction.commit_sdk()).unwrap();
+                    assert_eq!(state.lock().unwrap().commits, 1);
+                }
             }
         }
     }
@@ -8277,156 +7871,177 @@ entities:
             "      subject:\n        card: { min: 0, max: 4 }\n        ordered: true\n        distinct: true",
             "      subject:\n        card: { min: 0, max: 4 }",
         );
-        let runtime_projection = runtime_for_schema(&schema, "node-unordered-batch-atomicity.yaml");
-        let cases = [
-            (
-                TypeId::new(TypeKind::Entity, "group").unwrap(),
-                ProjectedWire {
-                    type_key: type_key(TypeKind::Entity, "group"),
-                    form: WireForm::Complete,
-                    iid: None,
-                    value: None,
-                    values: BTreeMap::from([("tag".into(), Value::Array(Vec::new()))]),
-                },
-                "group",
-                serde_json::json!({
-                    "ordinal": 0,
-                    "_iid": "0xa1",
-                    "_type": "person",
-                    "attributes": {"tag": []},
-                }),
-            ),
-            (
-                TypeId::new(TypeKind::Relation, "activity-link").unwrap(),
-                ProjectedWire {
-                    type_key: type_key(TypeKind::Relation, "activity-link"),
-                    form: WireForm::Complete,
-                    iid: None,
-                    value: None,
-                    values: BTreeMap::from([(
-                        "subject".into(),
-                        Value::Array(vec![
-                            serde_json::to_value(ProjectedWire {
-                                type_key: type_key(TypeKind::Relation, "plain-activity"),
-                                form: WireForm::Reference,
-                                iid: Some("0xd1".into()),
-                                value: None,
-                                values: BTreeMap::new(),
-                            })
-                            .unwrap(),
-                        ]),
-                    )]),
-                },
-                "activity-link",
-                serde_json::json!({
-                    "ordinal": 0,
-                    "_iid": "0xe1",
-                    "_type": "plain-activity",
-                    "attributes": {},
-                    "_role_0_players": [{"_iid":"0xd1", "_type":"plain-activity", "attributes":{}}],
-                }),
-            ),
-        ];
+        for schema in [
+            schema.clone(),
+            schema
+                .replace("        ordered: true\n", "")
+                .replace("        distinct: true\n", ""),
+        ] {
+            let runtime_projection =
+                runtime_for_schema(&schema, "node-unordered-batch-atomicity.yaml");
+            let cases = [
+                (
+                    TypeId::new(TypeKind::Entity, "group").unwrap(),
+                    ProjectedWire {
+                        type_key: type_key(TypeKind::Entity, "group"),
+                        form: WireForm::Complete,
+                        iid: None,
+                        value: None,
+                        values: BTreeMap::from([("tag".into(), Value::Array(Vec::new()))]),
+                    },
+                    "group",
+                    serde_json::json!({
+                        "ordinal": 0,
+                        "_iid": "0xa1",
+                        "_type": "person",
+                        "attributes": {"tag": []},
+                    }),
+                ),
+                (
+                    TypeId::new(TypeKind::Relation, "activity-link").unwrap(),
+                    ProjectedWire {
+                        type_key: type_key(TypeKind::Relation, "activity-link"),
+                        form: WireForm::Complete,
+                        iid: None,
+                        value: None,
+                        values: BTreeMap::from([(
+                            "subject".into(),
+                            Value::Array(vec![
+                                serde_json::to_value(ProjectedWire {
+                                    type_key: type_key(TypeKind::Relation, "plain-activity"),
+                                    form: WireForm::Reference,
+                                    iid: Some("0xd1".into()),
+                                    value: None,
+                                    values: BTreeMap::new(),
+                                })
+                                .unwrap(),
+                            ]),
+                        )]),
+                    },
+                    "activity-link",
+                    serde_json::json!({
+                        "ordinal": 0,
+                        "_iid": "0xe1",
+                        "_type": "plain-activity",
+                        "attributes": {},
+                        "_role_0_players": [{"_iid":"0xd1", "_type":"plain-activity", "attributes":{}}],
+                    }),
+                ),
+            ];
 
-        for (type_id, wire, provider_label, malformed_hydration) in cases {
-            for (borrowed, rollback_first) in [(false, false), (true, false), (true, true)] {
-                for hydration_failure in [false, true] {
-                    let relation = type_id.kind() == TypeKind::Relation;
-                    let responses = if hydration_failure {
-                        vec![ProjectionRecordingResponse::Query(QueryResult::Documents(
-                            vec![malformed_hydration.clone()],
-                        ))]
-                    } else {
-                        vec![ProjectionRecordingResponse::Failure {
-                            provider_failure: true,
-                        }]
-                    };
-                    let (database, state) = projection_recording_database_for_test(responses);
-                    let provider_runtime = Arc::new(
-                        ProviderRuntimeOwner::new()
-                            .expect("provider runtime should start for Node route test"),
-                    );
-                    let transaction = borrowed.then(|| {
-                        provider_runtime
-                            .block_on(database.transaction_context(TxType::Write))
-                            .unwrap()
-                    });
-                    if rollback_first {
-                        provider_runtime
-                            .block_on(transaction.as_ref().unwrap().rollback())
-                            .unwrap();
-                    }
-                    let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
-                    let manager = NodeProjectedModelManager {
-                        transaction_supports_given_stage: false,
-                        package: Arc::clone(&runtime_projection.package),
-                        type_id: type_id.clone(),
-                        target: Some(match &transaction {
-                            Some(transaction) => OwnedQueryTarget::Transaction(transaction.clone()),
-                            None => OwnedQueryTarget::Database(Arc::clone(&database)),
-                        }),
-                        successor_batch_marker: marker.clone(),
-                        runtime: Arc::clone(&provider_runtime),
-                        filters: Vec::new(),
-                    };
-                    let (batch, control) =
-                        one_row_insert_batch(&runtime_projection, type_id.clone(), wire.clone());
-                    let diagnostic = manager
-                        .execute_projected_batch(&batch, control, false, (), |_| -> Result<_, _> {
-                            panic!("provider/hydration failure unexpectedly reached the mapper")
-                        })
-                        .unwrap_err();
-                    if hydration_failure {
-                        assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
-                        assert_eq!(
-                            diagnostic.code().as_str(),
-                            if relation {
-                                "query_remote_v3_document_type"
-                            } else {
-                                "query_remote_v3_answer_kind"
-                            },
-                            "relation={relation}; queries={:?}",
-                            state.lock().unwrap().queries
-                        );
-                    } else {
-                        assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Provider);
-                    }
-
-                    let state = state.lock().unwrap();
-                    assert_eq!(state.opens, ["write"]);
-                    assert_eq!(state.queries.len(), 1);
-                    assert!(
-                        state
-                            .queries
-                            .iter()
-                            .any(|query| query.contains(provider_label))
-                    );
-                    assert_eq!(state.given_rows.len(), state.queries.len());
-                    assert_eq!(state.commits, 0);
-                    if borrowed {
-                        assert_eq!(state.rollbacks, usize::from(rollback_first));
-                        assert_eq!(state.closes, 0);
-                    } else {
-                        assert_eq!(state.rollbacks, 1);
-                        assert_eq!(state.closes, 0);
-                    }
-                    drop(state);
-
-                    if let (Some(transaction), Some(marker)) = (transaction, marker) {
-                        assert!(marker.load(Ordering::Acquire));
-                        assert_eq!(
-                            provider_runtime.block_on(transaction.lifecycle_state()),
-                            TransactionContextState::RollbackOnly
-                        );
-                        let transaction = crate::NodeRustTransactionContext {
-                            supports_given_stage: false,
-                            context: transaction,
-                            runtime: Arc::clone(&provider_runtime),
-                            successor_batch_invoked: marker,
+            for (type_id, wire, provider_label, malformed_hydration) in cases {
+                for (borrowed, rollback_first) in [(false, false), (true, false), (true, true)] {
+                    for hydration_failure in [false, true] {
+                        let relation = type_id.kind() == TypeKind::Relation;
+                        let responses = if hydration_failure {
+                            vec![ProjectionRecordingResponse::Query(QueryResult::Documents(
+                                vec![malformed_hydration.clone()],
+                            ))]
+                        } else {
+                            vec![ProjectionRecordingResponse::Failure {
+                                provider_failure: true,
+                            }]
                         };
-                        let commit = transaction.commit().unwrap_err();
-                        let diagnostic: Value = serde_json::from_str(&commit.reason).unwrap();
-                        assert_eq!(diagnostic["code"], "transaction_rollback_only");
+                        let (database, state) = projection_recording_database_for_test(responses);
+                        let provider_runtime = Arc::new(
+                            ProviderRuntimeOwner::new()
+                                .expect("provider runtime should start for Node route test"),
+                        );
+                        let transaction = borrowed.then(|| {
+                            provider_runtime
+                                .block_on(database.transaction_context(TxType::Write))
+                                .unwrap()
+                        });
+                        if rollback_first {
+                            provider_runtime
+                                .block_on(transaction.as_ref().unwrap().rollback())
+                                .unwrap();
+                        }
+                        let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
+                        let manager = NodeProjectedModelManager {
+                            transaction_supports_given_stage: false,
+                            package: Arc::clone(&runtime_projection.package),
+                            type_id: type_id.clone(),
+                            target: Some(match &transaction {
+                                Some(transaction) => {
+                                    OwnedQueryTarget::Transaction(transaction.clone())
+                                }
+                                None => OwnedQueryTarget::Database(Arc::clone(&database)),
+                            }),
+                            successor_batch_marker: marker.clone(),
+                            runtime: Arc::clone(&provider_runtime),
+                            filters: Vec::new(),
+                        };
+                        let (batch, control) = one_row_insert_batch(
+                            &runtime_projection,
+                            type_id.clone(),
+                            wire.clone(),
+                        );
+                        let diagnostic = manager
+                            .execute_projected_batch(
+                                &batch,
+                                control,
+                                false,
+                                (),
+                                |_| -> Result<_, _> {
+                                    panic!(
+                                        "provider/hydration failure unexpectedly reached the mapper"
+                                    )
+                                },
+                            )
+                            .unwrap_err();
+                        if hydration_failure {
+                            assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+                            assert_eq!(
+                                diagnostic.code().as_str(),
+                                if relation {
+                                    "query_remote_v3_document_type"
+                                } else {
+                                    "query_remote_v3_answer_kind"
+                                },
+                                "relation={relation}; queries={:?}",
+                                state.lock().unwrap().queries
+                            );
+                        } else {
+                            assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Provider);
+                        }
+
+                        let state = state.lock().unwrap();
+                        assert_eq!(state.opens, ["write"]);
+                        assert_eq!(state.queries.len(), 1);
+                        assert!(
+                            state
+                                .queries
+                                .iter()
+                                .any(|query| query.contains(provider_label))
+                        );
+                        assert_eq!(state.given_rows.len(), state.queries.len());
+                        assert_eq!(state.commits, 0);
+                        if borrowed {
+                            assert_eq!(state.rollbacks, usize::from(rollback_first));
+                            assert_eq!(state.closes, 0);
+                        } else {
+                            assert_eq!(state.rollbacks, 1);
+                            assert_eq!(state.closes, 0);
+                        }
+                        drop(state);
+
+                        if let (Some(transaction), Some(marker)) = (transaction, marker) {
+                            assert!(marker.load(Ordering::Acquire));
+                            assert_eq!(
+                                provider_runtime.block_on(transaction.lifecycle_state()),
+                                TransactionContextState::RollbackOnly
+                            );
+                            let transaction = crate::NodeRustTransactionContext {
+                                supports_given_stage: false,
+                                context: transaction,
+                                runtime: Arc::clone(&provider_runtime),
+                                successor_batch_invoked: marker,
+                            };
+                            let commit = transaction.commit().unwrap_err();
+                            let diagnostic: Value = serde_json::from_str(&commit.reason).unwrap();
+                            assert_eq!(diagnostic["code"], "transaction_rollback_only");
+                        }
                     }
                 }
             }
@@ -9408,13 +9023,27 @@ entities:
         };
         let duplicate_json = serde_json::to_string(&duplicate).unwrap();
         let manager = manager_without_execution_target(&runtime, person_id);
+        let write = |operation, iid: Option<String>, wire: String| {
+            let input = manager.projected_create_input(&wire, &[])?;
+            manager
+                .write_single_projected(input, operation, iid)
+                .map(|_| ())
+        };
 
         for error in [
-            manager.insert_json(duplicate_json.clone()).unwrap_err(),
-            manager.put_json(duplicate_json.clone()).unwrap_err(),
-            manager
-                .update_json(String::new(), duplicate_json)
-                .unwrap_err(),
+            write(
+                ProjectedBatchOperation::Insert,
+                None,
+                duplicate_json.clone(),
+            )
+            .unwrap_err(),
+            write(ProjectedBatchOperation::Put, None, duplicate_json.clone()).unwrap_err(),
+            write(
+                ProjectedBatchOperation::Update,
+                Some(String::new()),
+                duplicate_json,
+            )
+            .unwrap_err(),
         ] {
             let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
             assert_eq!(diagnostic["sdk_category"], "invalid_input");
@@ -9429,15 +9058,24 @@ entities:
             Value::Array(vec![serde_json::to_value(&tag).unwrap()]),
         );
         for error in [
-            manager
-                .insert_json(serde_json::to_string(&nonempty).unwrap())
-                .unwrap_err(),
-            manager
-                .put_json(serde_json::to_string(&nonempty).unwrap())
-                .unwrap_err(),
-            manager
-                .update_json(String::new(), serde_json::to_string(&nonempty).unwrap())
-                .unwrap_err(),
+            write(
+                ProjectedBatchOperation::Insert,
+                None,
+                serde_json::to_string(&nonempty).unwrap(),
+            )
+            .unwrap_err(),
+            write(
+                ProjectedBatchOperation::Put,
+                None,
+                serde_json::to_string(&nonempty).unwrap(),
+            )
+            .unwrap_err(),
+            write(
+                ProjectedBatchOperation::Update,
+                Some(String::new()),
+                serde_json::to_string(&nonempty).unwrap(),
+            )
+            .unwrap_err(),
         ] {
             let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
             assert_eq!(diagnostic["sdk_category"], "unsupported_capability");
@@ -9461,9 +9099,12 @@ entities:
                 ("tag".into(), Value::Array(Vec::new())),
             ]),
         };
-        let error = manager
-            .insert_json(serde_json::to_string(&valid).unwrap())
-            .unwrap_err();
+        let error = write(
+            ProjectedBatchOperation::Insert,
+            None,
+            serde_json::to_string(&valid).unwrap(),
+        )
+        .unwrap_err();
         assert_eq!(error.reason, "projected manager has no execution target");
     }
 
@@ -9584,19 +9225,33 @@ plays:
                 ),
             ),
         ] {
-            let batch = format!("[{wire}]");
-            // Every legacy write route lowers through the same core check.
-            for error in [
-                manager.insert_json(wire.clone()).unwrap_err(),
-                manager.put_json(wire.clone()).unwrap_err(),
-                manager
-                    .update_json("0xa1".into(), wire.clone())
-                    .unwrap_err(),
-                manager.insert_many_json(batch.clone()).unwrap_err(),
-                manager.put_many_json(batch).unwrap_err(),
+            for operation in [
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchOperation::Put,
+                ProjectedBatchOperation::Update,
             ] {
+                let error = manager
+                    .projected_create_input(&wire, &[])
+                    .and_then(|input| {
+                        manager.write_single_projected(input, operation, Some("0xa1".into()))
+                    })
+                    .map(|_| ())
+                    .unwrap_err();
                 assert_eq!(lowering_refusal(error), expected);
             }
+            let error = project_batch_create_json(
+                manager.package.as_ref(),
+                &manager.type_id,
+                &wire,
+                &[],
+                0,
+            )
+            .unwrap_err();
+            let mut expected = expected.clone();
+            let path = expected["path"].as_array_mut().unwrap();
+            path.insert(0, json!({"kind": "argument", "value": "rows"}));
+            path.insert(1, json!({"kind": "index", "value": 0}));
+            assert_eq!(lowering_refusal(napi_sdk_diagnostic(error)), expected);
         }
 
         let valid = person_wire(vec![
@@ -9604,7 +9259,16 @@ plays:
             ("aliases", Value::Array(vec![alias; 2])),
         ]);
         assert_eq!(
-            manager.insert_json(valid).unwrap_err().reason,
+            manager
+                .projected_create_input(&valid, &[])
+                .and_then(|input| manager.write_single_projected(
+                    input,
+                    ProjectedBatchOperation::Insert,
+                    None
+                ))
+                .map(|_| ())
+                .unwrap_err()
+                .reason,
             "projected manager has no execution target"
         );
 
@@ -9627,7 +9291,17 @@ plays:
         .unwrap();
         let manager = manager_without_execution_target(&runtime, container_id);
         assert_eq!(
-            lowering_refusal(manager.insert_json(container).unwrap_err()),
+            lowering_refusal(
+                manager
+                    .projected_create_input(&container, &[None, None, None])
+                    .and_then(|input| manager.write_single_projected(
+                        input,
+                        ProjectedBatchOperation::Insert,
+                        None
+                    ))
+                    .map(|_| ())
+                    .unwrap_err()
+            ),
             lowering_count_refusal(
                 "role_cardinality_violation",
                 "The projected role violates its exact cardinality",
@@ -9650,7 +9324,17 @@ plays:
         .unwrap();
         let manager = manager_without_execution_target(&runtime, membership_id);
         assert_eq!(
-            lowering_refusal(manager.insert_json(membership).unwrap_err()),
+            lowering_refusal(
+                manager
+                    .projected_create_input(&membership, &[])
+                    .and_then(|input| manager.write_single_projected(
+                        input,
+                        ProjectedBatchOperation::Insert,
+                        None
+                    ))
+                    .map(|_| ())
+                    .unwrap_err()
+            ),
             lowering_count_refusal(
                 "missing_required_role",
                 "A required projected role has no player",
@@ -9664,7 +9348,7 @@ plays:
     }
 
     #[test]
-    fn unordered_projected_read_rejects_before_execution_target_resolution() {
+    fn unordered_projected_read_reaches_native_target_resolution() {
         let runtime = runtime_for_schema(UNORDERED_SCHEMA, "node-legacy-read.yaml");
         let person_id = TypeId::new(TypeKind::Entity, "person").unwrap();
         let manager = manager_without_execution_target(&runtime, person_id);
@@ -9674,10 +9358,7 @@ plays:
             Ok(_) => panic!("unordered projected read must fail"),
         };
 
-        assert_eq!(
-            error.reason,
-            "common projected execution is reserved for the ordered successor runtime"
-        );
+        assert_eq!(error.reason, "projected manager has no execution target");
     }
 
     #[test]
@@ -9884,9 +9565,8 @@ plays:
 
     #[cfg(feature = "contract-test-adapter")]
     #[test]
-    fn schema_less_native_manager_crud_uses_plans_but_typed_queries_require_authority() {
-        use type_bridge_orm::session::backend::QueryResult;
-        let authority = authority(UNORDERED_SCHEMA, "node-schema-less-crud.yaml");
+    fn schema_less_native_typed_queries_require_authority_before_provider_io() {
+        let authority = authority(UNORDERED_SCHEMA, "node-schema-less-query.yaml");
         let projection = typescript_projection(&authority);
         let (json, semantic, fingerprint) = evidence(&projection);
         let installed = NodeRuntimeProjection::new(
@@ -9898,54 +9578,8 @@ plays:
             None,
         )
         .unwrap();
-        let row = |score| {
-            QueryResult::Documents(vec![
-                json!({"_iid":"0x20", "_type":"person", "attributes":{"score":score}}),
-            ])
-        };
-        let (database, state) = projection_recording_database_for_test(vec![
-            ProjectionRecordingResponse::Query(row(3)),
-            ProjectionRecordingResponse::Query(row(3)),
-            ProjectionRecordingResponse::Query(row(4)),
-            ProjectionRecordingResponse::Query(QueryResult::Rows(vec![json!({})])),
-        ]);
-        let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
-        let native_database =
-            NodeRustDatabase::from_handles(Arc::clone(&database), Arc::clone(&runtime), None);
-        let transaction = native_database.transaction(Some("write".into())).unwrap();
-        let manager = installed
-            .manager_for_transaction(type_key(TypeKind::Entity, "person"), &transaction)
-            .unwrap();
-        let input = |score: &str| {
-            wire_json(&ProjectedWire {
-                type_key: type_key(TypeKind::Entity, "person"),
-                form: WireForm::Complete,
-                iid: None,
-                value: None,
-                values: BTreeMap::from([(
-                    "score".into(),
-                    serde_json::to_value(attribute_wire(
-                        "score",
-                        ValueTypeTag::Long,
-                        Value::String(score.into()),
-                    ))
-                    .unwrap(),
-                )]),
-            })
-            .unwrap()
-        };
-        let inserted: Vec<ProjectedWire> =
-            serde_json::from_str(&manager.insert_json(input("3")).unwrap()).unwrap();
-        assert_eq!(inserted.len(), 1);
-        assert_eq!(inserted[0].iid.as_deref(), Some("0x20"));
-        let stored: Option<ProjectedWire> =
-            serde_json::from_str(&manager.get_by_iid_json("0x20".into()).unwrap()).unwrap();
-        assert_eq!(stored.unwrap().values["score"]["value"]["value"], "3");
-        let updated: Vec<ProjectedWire> =
-            serde_json::from_str(&manager.update_json("0x20".into(), input("4")).unwrap()).unwrap();
-        assert_eq!(updated.len(), 1);
-        assert_eq!(updated[0].values["score"]["value"]["value"], "4");
-        manager.delete_by_iid("0x20".into()).unwrap();
+        let (database, state) = projection_recording_database_for_test(vec![]);
+        let runtime = ProviderRuntimeOwner::new().unwrap();
         let registry = Arc::new(installed.package.projection.match_registry().unwrap());
         let session = type_bridge_orm::SessionHandle::new(Arc::clone(&registry));
         let root = session.exact("person").unwrap();
@@ -9960,11 +9594,9 @@ plays:
             panic!("typed authority refusal")
         };
         assert_eq!(error.code().as_str(), "schema_authority_required");
-        transaction.rollback().unwrap();
         let state = state.lock().unwrap();
-        assert_eq!(state.queries.len(), 4);
-        assert_eq!(state.opens, ["write"]);
-        assert_eq!(state.rollbacks, 1);
+        assert!(state.queries.is_empty());
+        assert!(state.opens.is_empty());
     }
 
     #[test]
@@ -10073,7 +9705,7 @@ plays:
         };
         assert_eq!(
             error.reason,
-            "ordered successor projection requires exactly one generated batch materializer"
+            "native projection requires exactly one generated batch materializer"
         );
     }
 
@@ -10153,7 +9785,7 @@ plays:
             ordered_authority.resolved_schema(),
             BindingTarget::TypeScript,
             &ProjectionConfig::typescript(),
-            &emitter.generator_handlers(),
+            &[ProjectionHandler::typescript_v1()],
             &emitter.code_resources().unwrap(),
         )
         .unwrap();

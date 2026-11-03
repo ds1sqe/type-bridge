@@ -399,8 +399,6 @@ export interface NativeProjectedManager {
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
   ): NativeProjectedValueEnvelope[];
-  insertJson(instanceJson: string): string;
-  insertManyJson(batchJson: string): string;
   insertManyProjected<Complete>(
     rowCount: number,
     rowAt: (ordinal: number) => NativeProjectedCreateBatchRow,
@@ -409,8 +407,6 @@ export interface NativeProjectedManager {
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
   ): NativeProjectedValueEnvelope[];
-  putJson(instanceJson: string): string;
-  putManyJson(batchJson: string): string;
   putManyProjected<Complete>(
     rowCount: number,
     rowAt: (ordinal: number) => NativeProjectedCreateBatchRow,
@@ -420,7 +416,6 @@ export interface NativeProjectedManager {
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
   ): NativeProjectedValueEnvelope[];
-  updateJson(iid: string, instanceJson: string): string;
   updateManyProjected<Complete>(
     rowCount: number,
     rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow,
@@ -434,9 +429,7 @@ export interface NativeProjectedManager {
   ): void;
   managerFilter(): NativeProjectedManagerFilter;
   filterEntriesJson(filtersJson: string): NativeProjectedManager;
-  filterJson(filtersJson: string): NativeProjectedManager;
   getByIidProjected(iid: string): NativeProjectedValueEnvelope | null;
-  getByIidJson(iid: string): string;
   allJson(): string;
   firstJson(): string;
   count(): bigint;
