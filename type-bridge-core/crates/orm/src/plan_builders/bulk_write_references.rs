@@ -337,8 +337,25 @@ pub(crate) struct ReferenceProgram {
 }
 impl ReferenceProgram {
     pub(super) fn prepare_static(&mut self) -> Result<(), Diagnostic> {
-        if self.kind != WriteKind::Update
-            || self.rows.iter().any(|row| row.iid.is_none())
+        let supported = match self.kind {
+            WriteKind::Update => self.rows.iter().all(|row| row.iid.is_some()),
+            WriteKind::Insert => true,
+            WriteKind::Put => {
+                self.rows.iter().all(|row| row.iid.is_none())
+                    && self.rows.iter().flat_map(|row| &row.players).all(|player| {
+                        // A keyed put preserves its schema keys; other unique values may change.
+                        !player.candidates.contains(&self.shape.type_id)
+                            || player.key.as_ref().is_none_or(|(attribute, _)| {
+                                self.shape
+                                    .keys
+                                    .iter()
+                                    .any(|key| key.attribute() == attribute)
+                            })
+                    })
+            }
+            _ => false,
+        };
+        if !supported
             || self
                 .rows
                 .iter()
@@ -388,15 +405,17 @@ impl ReferenceProgram {
                 )),
                 Some(identity),
             ]));
-            let digits = format!("{ordinal:x}");
-            let placeholder = format!(
-                "0x{}{}",
-                "0".repeat(type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS - digits.len()),
-                digits
-            );
-            placeholders.insert(placeholder.clone(), ordinal);
-            owned[row].players[player].iid = Some(placeholder);
-            owned[row].players[player].key = None;
+            if self.kind == WriteKind::Update {
+                let digits = format!("{ordinal:x}");
+                let placeholder = format!(
+                    "0x{}{}",
+                    "0".repeat(type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS - digits.len()),
+                    digits
+                );
+                placeholders.insert(placeholder.clone(), ordinal);
+                owned[row].players[player].iid = Some(placeholder);
+                owned[row].players[player].key = None;
+            }
         }
         let lookups = if framed {
             // Keep the first seed's reference last: its required cell gates the
@@ -462,21 +481,7 @@ impl ReferenceProgram {
             .collect::<Result<BTreeMap<_, _>, Diagnostic>>()?;
         let mut steps = VecDeque::new();
         for (ordinal, row) in owned.iter().enumerate() {
-            let players = row
-                .players
-                .iter()
-                .map(|player| {
-                    Ok((
-                        player.role.clone(),
-                        Reference {
-                            candidates: &player.candidates,
-                            identity: ReferenceIdentity::Iid(
-                                player.iid.as_deref().ok_or_else(identity_error)?,
-                            ),
-                        },
-                    ))
-                })
-                .collect::<Result<Vec<_>, Diagnostic>>()?;
+            let players = player_references(&row.players)?;
             let WriteProgram::Split(program) = split_with_guards(
                 &self.authority,
                 self.kind,
@@ -488,7 +493,7 @@ impl ReferenceProgram {
                 }],
                 ordinal,
                 false,
-                Some(&frames),
+                (self.kind == WriteKind::Update).then_some(&frames),
             )?
             else {
                 return Err(identity_error());
@@ -548,11 +553,12 @@ impl ReferenceProgram {
     pub(super) fn next(&mut self) -> Result<Option<WriteStep>, Diagnostic> {
         if self.frozen {
             if !self.locations.is_empty() && self.resolved.iter().all(Option::is_some) {
-                let capture = self.rows.iter().any(|row| {
-                    row.players.iter().any(|player| {
-                        player.key.is_some() && player.candidates.contains(&self.shape.type_id)
-                    })
-                });
+                let capture = self.kind == WriteKind::Update
+                    && self.rows.iter().any(|row| {
+                        row.players.iter().any(|player| {
+                            player.key.is_some() && player.candidates.contains(&self.shape.type_id)
+                        })
+                    });
                 let mut snapshots = ReferenceSnapshots::new();
                 if capture {
                     for (index, &(row, player)) in self.locations.iter().enumerate() {
@@ -690,6 +696,30 @@ impl ReferenceProgram {
     }
 }
 
+fn player_references(players: &[Player]) -> Result<Vec<(RoleId, Reference<'_>)>, Diagnostic> {
+    players
+        .iter()
+        .map(|player| {
+            let identity = if let Some(iid) = &player.iid {
+                ReferenceIdentity::Iid(iid)
+            } else {
+                let (attribute, value) = player.key.as_ref().ok_or_else(identity_error)?;
+                ReferenceIdentity::Key {
+                    attribute,
+                    value: value.clone(),
+                }
+            };
+            Ok((
+                player.role.clone(),
+                Reference {
+                    candidates: &player.candidates,
+                    identity,
+                },
+            ))
+        })
+        .collect()
+}
+
 fn body(
     authority: &PlanAuthority,
     kind: WriteKind,
@@ -701,21 +731,9 @@ fn body(
         .iter()
         .enumerate()
         .map(|(index, row)| {
-            replacements
-                .map_or(row.players.as_slice(), |players| players[index].as_slice())
-                .iter()
-                .map(|player| {
-                    Ok((
-                        player.role.clone(),
-                        Reference {
-                            candidates: &player.candidates,
-                            identity: ReferenceIdentity::Iid(
-                                player.iid.as_deref().ok_or_else(identity_error)?,
-                            ),
-                        },
-                    ))
-                })
-                .collect::<Result<Vec<_>, Diagnostic>>()
+            player_references(
+                replacements.map_or(row.players.as_slice(), |players| players[index].as_slice()),
+            )
         })
         .collect::<Result<Vec<_>, Diagnostic>>()?;
     let rows = owned
@@ -1021,6 +1039,58 @@ mod tests {
         ]);
         assert!(step.reference_iids(&answer).is_err());
     }
+    #[test]
+    fn insert_and_keyed_put_prefix_proofs_preserve_allocation_dependencies() {
+        for kind in [WriteKind::Insert, WriteKind::Put] {
+            let WriteProgram::References(mut owner) = program(false) else {
+                panic!("references")
+            };
+            owner.kind = kind;
+            owner.rows[0].iid = None;
+            let mut second = owner.rows[0].clone();
+            second
+                .fields
+                .retain(|(field, _)| owner.shape.keys.contains(field));
+            second.fields[0].1 =
+                CanonicalValue::String(CanonicalString::new("second-key").unwrap());
+            second.players.push(second.players[0].clone());
+            second.players[1].key.as_mut().unwrap().1 =
+                CanonicalValue::String(CanonicalString::new("other-key").unwrap());
+            owner.rows.push(second);
+            owner.locations = vec![(0, 0), (1, 0), (1, 1)];
+            owner.resolved = vec![None; 3];
+            let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+            limits.structural.selected_slots = 4;
+            owner.authority = owner
+                .authority
+                .with_query_limits(std::sync::Arc::new(limits));
+            let authority = owner.authority.clone();
+            let program = WriteProgram::References(owner).prepare_static().unwrap();
+            let entries = program
+                .staged_entries(&authority)
+                .unwrap()
+                .expect("closed presence proofs");
+            assert_eq!(entries.len(), 5);
+            assert!(entries[..2].iter().all(|entry| !entry.plan().writes()));
+            assert!(entries[2..].iter().all(|entry| entry.plan().writes()));
+            assert!(
+                entries[2]
+                    .result_refs()
+                    .iter()
+                    .all(|reference| reference.source_plan == 1)
+            );
+            assert_eq!(entries[3].result_refs().len(), 1);
+            assert_eq!(entries[3].result_refs()[0].source_plan, 2);
+            assert_eq!(entries[3].result_refs()[0].source_column, 1);
+            assert_eq!(program.guard_contexts().len(), 3);
+            assert!(entries[2..].iter().any(|entry| {
+                String::from_utf8(entry.plan().canonical_bytes().unwrap())
+                    .unwrap()
+                    .contains("old-key")
+            }));
+        }
+    }
+
     #[test]
     fn oversized_snapshot_tuples_chain_before_writes_and_split_sources() {
         use type_bridge_contract::query_remote::RemoteValue;

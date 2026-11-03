@@ -191,9 +191,21 @@ impl StaticProgram {
                 .iter()
                 .map(|row| row.values().to_vec())
                 .collect::<Vec<_>>();
-            let mut refs = Vec::new();
+            let offset = u32::try_from(last_source + 1).map_err(|_| identity_error())?;
+            let mut refs = entry
+                .result_refs()
+                .iter()
+                .cloned()
+                .map(|mut reference| {
+                    reference.source_plan = reference
+                        .source_plan
+                        .checked_add(offset)
+                        .ok_or_else(identity_error)?;
+                    Ok(reference)
+                })
+                .collect::<Result<Vec<_>, Diagnostic>>()?;
             for (column, input) in plan.inputs().iter().enumerate() {
-                if !input.public_name().as_str().starts_with("player_") {
+                if placeholders.is_empty() || !input.public_name().as_str().starts_with("player_") {
                     continue;
                 }
                 let mut ordinal = None;

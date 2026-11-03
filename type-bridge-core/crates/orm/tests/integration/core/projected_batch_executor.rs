@@ -4574,39 +4574,93 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
                 }
             }
         }
-        *log.lock().unwrap() = DispatchLog::default();
-        let future = key_reference(&installed, &edge, &key, "future");
-        let invocation_start = ProjectedBatch::try_new(
-            &installed,
-            edge.clone(),
+        for operation in [
             ProjectedBatchOperation::Insert,
-            vec![
-                ProjectedBatchRow::Create(create("future", 300, None)),
-                ProjectedBatchRow::Create(create("future-child", 0, Some(future))),
-            ],
-        )
-        .unwrap();
-        let failure = ProjectedBatchExecutor::new(&installed)
-            .execute(&counted, &invocation_start, control())
-            .await
-            .unwrap_err();
-        assert_eq!(failure.code().as_str(), "projected_batch_reference_missing");
-        assert_eq!(
-            failure.category(),
-            type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::Integrity
-        );
-        assert_eq!(raw.count().await.unwrap(), 2);
-        let observed = log.lock().unwrap();
-        assert_eq!(observed.opened, [TxType::Write]);
-        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
-        assert!(
-            observed
-                .statements
-                .iter()
-                .all(|source| !source.contains("insert ")
-                    && !source.contains("put ")
-                    && !source.contains("delete "))
-        );
+            ProjectedBatchOperation::Put,
+        ] {
+            *log.lock().unwrap() = DispatchLog::default();
+            let inserting = operation == ProjectedBatchOperation::Insert;
+            let batch = ProjectedBatch::try_new(
+                &installed,
+                edge.clone(),
+                operation,
+                vec![
+                    ProjectedBatchRow::Create(create(
+                        if inserting { "fresh-a" } else { "a" },
+                        300,
+                        None,
+                    )),
+                    ProjectedBatchRow::Create(create(
+                        if inserting { "fresh-b" } else { "b" },
+                        0,
+                        Some(key_reference(&installed, &edge, &key, "a")),
+                    )),
+                ],
+            )
+            .unwrap();
+            let tx = counted.transaction_context(TxType::Write).await.unwrap();
+            let result = ProjectedBatchExecutor::new(&installed)
+                .execute_in_transaction(&tx, &batch, control())
+                .await
+                .unwrap();
+            let output = things(result);
+            assert_eq!(output.len(), 2);
+            assert_eq!(output[0].fields()[&field(&edge, &tag)].len(), 300);
+            assert_eq!(output[1].roles()[&prior][0].iid(), first.iid());
+            if inserting {
+                assert_ne!(output[0].iid(), first.iid());
+                assert_ne!(output[1].iid(), second.iid());
+            } else {
+                assert_eq!(output[0].iid(), first.iid());
+                assert_eq!(output[1].iid(), second.iid());
+            }
+            assert_eq!(
+                log.lock().unwrap().statements.len(),
+                if selected_slots == 4 { 5 } else { 4 }
+            );
+            tx.rollback().await.unwrap();
+            assert_eq!(log.lock().unwrap().commits, 0);
+            assert_eq!(log.lock().unwrap().rollbacks, 1);
+            assert_eq!(raw.count().await.unwrap(), 2);
+        }
+        for operation in [
+            ProjectedBatchOperation::Insert,
+            ProjectedBatchOperation::Put,
+        ] {
+            *log.lock().unwrap() = DispatchLog::default();
+            let future = key_reference(&installed, &edge, &key, "future");
+            let invocation_start = ProjectedBatch::try_new(
+                &installed,
+                edge.clone(),
+                operation,
+                vec![
+                    ProjectedBatchRow::Create(create("future", 300, None)),
+                    ProjectedBatchRow::Create(create("future-child", 0, Some(future))),
+                ],
+            )
+            .unwrap();
+            let failure = ProjectedBatchExecutor::new(&installed)
+                .execute(&counted, &invocation_start, control())
+                .await
+                .unwrap_err();
+            assert_eq!(failure.code().as_str(), "projected_batch_reference_missing");
+            assert_eq!(
+                failure.category(),
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::Integrity
+            );
+            assert_eq!(raw.count().await.unwrap(), 2);
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+            assert!(
+                observed
+                    .statements
+                    .iter()
+                    .all(|source| !source.contains("insert ")
+                        && !source.contains("put ")
+                        && !source.contains("delete "))
+            );
+        }
     }
     assert!(failures.is_empty(), "{failures:?}");
 }
