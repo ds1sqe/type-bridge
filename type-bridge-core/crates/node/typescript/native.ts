@@ -704,6 +704,7 @@ interface NativeRuntimeProjectionHandle {
     answerLimits?: NativeQueryExecutionResources,
     cancellation?: NativeQueryCancellation,
   ): NativeRustDatabase;
+  managerForProxy(typeKey: string, connection: NativeProxyConnection): NativeProjectedManager;
   managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
   managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
   matchSessionWithResources(

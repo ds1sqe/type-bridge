@@ -1,6 +1,6 @@
 import { QueryV2Authority, type NativeRustDatabase, type NativeRustTransactionContext, type Database, type TransactionContext } from "./index.js";
 import { loadNative } from "./native.js";
-import type { NativePlan, NativePendingPlanAnswer, NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
+import type { NativePlan, NativePendingPlanAnswer, NativeProxyConnection, NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
 type NativeModule = ReturnType<typeof loadNative>;
 type NativeRuntimeProjection = InstanceType<NativeModule["NodeRuntimeProjection"]>;
@@ -19,7 +19,7 @@ export type RuntimeProjectionMatchQuery = ReturnType<RuntimeProjectionMatchSessi
 export type RuntimeProjectionMatchResult = Awaited<ReturnType<RuntimeProjectionMatchQuery["executeFetchRowsOwned"]>>;
 export type RuntimeProjectionMatchThing = ReturnType<RuntimeProjectionMatchResult["slotThing"]>;
 export type RuntimeProjectionReduction = "count" | "sum" | "min" | "max" | "mean" | "median" | "std";
-export type RuntimeProjectionConnection = Database | TransactionContext;
+export type RuntimeProjectionConnection = Database | TransactionContext | ProxyConnection;
 export interface RuntimeProjectionBinding {
     readonly typeKey: string;
     readonly targetName: string;
@@ -223,6 +223,7 @@ export interface NativeProjectedManagerFilter {
 export declare function projectedManagerNativeCall<Result>(operation: () => Result): Result;
 export interface NativeProjectionHandle {
     connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation, queryLimits?: NativeQueryLimits): NativeRustDatabase;
+    managerForProxy(typeKey: string, connection: NativeProxyConnection): NativeProjectedManager;
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
     matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, queryLimits?: NativeQueryLimits | null): RuntimeProjectionMatchSession;

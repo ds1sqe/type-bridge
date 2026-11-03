@@ -64,7 +64,9 @@ export type RuntimeProjectionReduction =
 type RuntimeProjectionRemoteContext = ReturnType<NativeModule["queryV2RemoteModelContextWithResources"]>;
 type RuntimeProjectionRemotePending = ReturnType<NativeModule["queryV2PrepareRemoteModelRows"]>;
 
-export type RuntimeProjectionConnection = Database | TransactionContext;
+export type RuntimeProjectionConnection = Database | TransactionContext | ProxyConnection;
+
+const proxyConnectionHandles = new WeakMap<ProxyConnection, NativeProxyConnection>();
 
 export interface RuntimeProjectionBinding {
   readonly typeKey: string;
@@ -475,6 +477,7 @@ export interface NativeProjectionHandle {
     cancellation?: NativeQueryCancellation,
     queryLimits?: NativeQueryLimits,
   ): NativeRustDatabase;
+  managerForProxy(typeKey: string, connection: NativeProxyConnection): NativeProjectedManager;
   managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
   managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
   matchSessionWithResources(
@@ -607,6 +610,10 @@ export class InstalledRuntimeProjection {
 
   /** @internal Bind one generated token without exposing its native handle. */
   manager(typeKey: string, connection: RuntimeProjectionConnection): NativeProjectedManager {
+    const proxy = proxyConnectionHandles.get(connection as ProxyConnection);
+    if (proxy !== undefined) {
+      return this.#native.managerForProxy(typeKey, proxy);
+    }
     if (!isRegisteredRustConnection(connection)) {
       throw new TypeError("projected manager requires a registered Database or TransactionContext");
     }
@@ -817,7 +824,8 @@ export class InstalledRuntimeProjection {
 
   /** @internal Reject structural or foreign connection lookalikes. */
   assertConnection(connection: RuntimeProjectionConnection): void {
-    if (!isRegisteredRustConnection(connection)) {
+    if (!proxyConnectionHandles.has(connection as ProxyConnection)
+      && !isRegisteredRustConnection(connection)) {
       throw new TypeError("generated query requires a registered Database or TransactionContext");
     }
   }
@@ -845,6 +853,9 @@ export class InstalledRuntimeProjection {
    * and resolve without blocking the event loop.
    */
   direct(connection: RuntimeProjectionConnection): RuntimeProjectionRemote {
+    if (proxyConnectionHandles.has(connection as ProxyConnection)) {
+      return connection as ProxyConnection;
+    }
     if (!isRegisteredRustConnection(connection)) {
       throw new TypeError("generated query requires a registered Rust connection");
     }
@@ -1308,6 +1319,7 @@ export class ProxyConnection implements RuntimeProjectionRemote {
 
   private constructor(native: NativeProxyConnection) {
     this.#native = native;
+    proxyConnectionHandles.set(this, native);
     Object.freeze(this);
   }
 

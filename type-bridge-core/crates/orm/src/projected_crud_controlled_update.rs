@@ -35,6 +35,18 @@ impl ProjectedCrudExecutor<'_> {
         row: ProjectedBatchRow,
         control: &ProjectedBatchInvocationControl,
     ) -> Result<ProjectedBatch, SdkExecutionDiagnostic> {
+        let operation = if operation == ProjectedBatchOperation::Put
+            && self
+                .installed
+                .projection()
+                .models()
+                .get(model)
+                .is_some_and(|model| model.reference_read().key_fields().is_empty())
+        {
+            ProjectedBatchOperation::Insert
+        } else {
+            operation
+        };
         ProjectedBatch::try_single_write(self.installed, model.clone(), operation, row, control)
     }
 

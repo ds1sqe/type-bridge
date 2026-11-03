@@ -32,6 +32,9 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- Node projected single-write envelopes materialize inside Core's controlled
+  write mapper and use the connection-selected direct or proxy target.
+
 - Proxy staged commit failures retain a caller-owned transport error as
   their source while keeping `commit_outcome_unknown` as the outcome.
   Rust SDK conversion preserves that cause and the typed commit failure.

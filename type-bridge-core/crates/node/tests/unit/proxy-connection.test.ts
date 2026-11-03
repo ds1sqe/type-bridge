@@ -8,6 +8,7 @@ import test = require("node:test");
 import { QueryV2Authority } from "../../typescript/index.js";
 import { loadNative } from "../../typescript/native.js";
 import {
+  InstalledRuntimeProjection,
   ProxyConnection,
   QueryExecutionResourceLimits,
 } from "../../typescript/runtime-projection.js";
@@ -237,4 +238,30 @@ test("invalid V3 query policy is refused before direct I/O", async () => {
   assert.throws(() => Database.connect("127.0.0.1:1", "app", {
     queryLimits: new QueryLimits({ bindings: 8n }),
   }), /selected_slots/);
+});
+
+
+test("generated managers select the registered proxy without exposing its native handle", async () => {
+  const connection = await ProxyConnection.connect(authority(), await closedEndpoint(), {
+    advertisement: advertisement(),
+  });
+  const manager = Object.freeze({});
+  let calls = 0;
+  const projection = new InstalledRuntimeProjection({
+    managerForProxy: (typeKey: string, native: unknown) => {
+      assert.equal(typeKey, "entity:person");
+      assert.ok(native);
+      calls++;
+      return manager;
+    },
+  } as never);
+  assert.equal(projection.manager("entity:person", connection), manager);
+  assert.equal(calls, 1);
+  assert.equal(projection.direct(connection), connection);
+  assert.doesNotThrow(() => projection.assertConnection(connection));
+  const forged = Object.create(ProxyConnection.prototype) as ProxyConnection;
+  assert.throws(() => projection.manager("entity:person", forged), TypeError);
+  assert.throws(() => projection.direct(forged), TypeError);
+  assert.throws(() => projection.assertConnection(forged), TypeError);
+  assert.equal(calls, 1);
 });

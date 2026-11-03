@@ -299,6 +299,10 @@ impl NodeProxyConnection {
 }
 
 impl NodeProxyConnection {
+    pub(crate) fn handles(&self) -> (Arc<ProxyQueryConnection>, Arc<ProviderRuntimeOwner>) {
+        (Arc::clone(&self.connection), Arc::clone(&self.runtime))
+    }
+
     /// Validate one request on the JavaScript thread, then run it on this
     /// connection under the query session's policy constrained by the
     /// connection's ceiling.

@@ -2276,6 +2276,26 @@ impl NodeRuntimeProjection {
         })
     }
 
+    /// Bind one exact projected model to a verified proxy connection.
+    #[napi(js_name = "managerForProxy")]
+    pub fn manager_for_proxy(
+        &self,
+        type_key: String,
+        connection: &crate::proxy_connection_runtime::NodeProxyConnection,
+    ) -> napi::Result<NodeProjectedModelManager> {
+        let type_id = manageable_type(self.package.as_ref(), &type_key)?;
+        let (connection, runtime) = connection.handles();
+        Ok(NodeProjectedModelManager {
+            transaction_supports_given_stage: false,
+            package: Arc::clone(&self.package),
+            type_id,
+            target: Some(OwnedQueryTarget::Proxy(connection)),
+            successor_batch_marker: None,
+            runtime,
+            filters: vec![],
+        })
+    }
+
     /// Bind one exact projected model to a borrowed transaction manager.
     #[napi(js_name = "managerForTransaction")]
     pub fn manager_for_transaction(
@@ -3359,28 +3379,7 @@ impl NodeProjectedModelManager {
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
-        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let projected = match (self.type_id.kind(), self.database(), self.transaction()) {
-            (TypeKind::Entity, Some(database), None) => self
-                .runtime
-                .block_on(executor.insert_entity(database, &instance)),
-            (TypeKind::Entity, None, Some(transaction)) => self
-                .runtime
-                .block_on(executor.insert_entity_in_transaction(transaction, &instance)),
-            (TypeKind::Relation, Some(database), None) => self
-                .runtime
-                .block_on(executor.insert_relation(database, &instance)),
-            (TypeKind::Relation, None, Some(transaction)) => self
-                .runtime
-                .block_on(executor.insert_relation_in_transaction(transaction, &instance)),
-            _ => return Err(runtime_error("projected manager has no execution target")),
-        }
-        .map_err(napi_sdk_diagnostic)?;
-        projected
-            .into_items()
-            .into_iter()
-            .map(|thing| projected_envelope(Arc::clone(&self.package), thing))
-            .collect()
+        self.write_single_projected(instance, ProjectedBatchOperation::Insert, None)
     }
 
     /// Put one ordered successor value through the common projected executor.
@@ -3394,28 +3393,7 @@ impl NodeProjectedModelManager {
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
-        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let projected = match (self.type_id.kind(), self.database(), self.transaction()) {
-            (TypeKind::Entity, Some(database), None) => self
-                .runtime
-                .block_on(executor.put_entity(database, &instance)),
-            (TypeKind::Entity, None, Some(transaction)) => self
-                .runtime
-                .block_on(executor.put_entity_in_transaction(transaction, &instance)),
-            (TypeKind::Relation, Some(database), None) => self
-                .runtime
-                .block_on(executor.put_relation(database, &instance)),
-            (TypeKind::Relation, None, Some(transaction)) => self
-                .runtime
-                .block_on(executor.put_relation_in_transaction(transaction, &instance)),
-            _ => return Err(runtime_error("projected manager has no execution target")),
-        }
-        .map_err(napi_sdk_diagnostic)?;
-        projected
-            .into_items()
-            .into_iter()
-            .map(|thing| projected_envelope(Arc::clone(&self.package), thing))
-            .collect()
+        self.write_single_projected(instance, ProjectedBatchOperation::Put, None)
     }
 
     /// Replace one ordered successor value through the common projected executor.
@@ -3430,28 +3408,7 @@ impl NodeProjectedModelManager {
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
-        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let projected = match (self.type_id.kind(), self.database(), self.transaction()) {
-            (TypeKind::Entity, Some(database), None) => self
-                .runtime
-                .block_on(executor.update_entity(database, &iid, &instance)),
-            (TypeKind::Entity, None, Some(transaction)) => self
-                .runtime
-                .block_on(executor.update_entity_in_transaction(transaction, &iid, &instance)),
-            (TypeKind::Relation, Some(database), None) => self
-                .runtime
-                .block_on(executor.update_relation(database, &iid, &instance)),
-            (TypeKind::Relation, None, Some(transaction)) => self
-                .runtime
-                .block_on(executor.update_relation_in_transaction(transaction, &iid, &instance)),
-            _ => return Err(runtime_error("projected manager has no execution target")),
-        }
-        .map_err(napi_sdk_diagnostic)?;
-        projected
-            .into_items()
-            .into_iter()
-            .map(|thing| projected_envelope(Arc::clone(&self.package), thing))
-            .collect()
+        self.write_single_projected(instance, ProjectedBatchOperation::Update, Some(iid))
     }
 
     /// Insert ordered successor values atomically through the common executor.
@@ -3965,6 +3922,60 @@ impl NodeProjectedModelManager {
 }
 
 impl NodeProjectedModelManager {
+    fn write_single_projected(
+        &self,
+        instance: ProjectedCreate,
+        operation: ProjectedBatchOperation,
+        iid: Option<String>,
+    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+        let control =
+            ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+        let row = match operation {
+            ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put => {
+                ProjectedBatchRow::Create(instance)
+            }
+            ProjectedBatchOperation::Update => ProjectedBatchRow::Update {
+                iid: iid.ok_or_else(|| runtime_error("projected update omitted its IID"))?,
+                replacement: instance,
+            },
+            ProjectedBatchOperation::Delete => {
+                return Err(runtime_error("projected create cannot select deletion"));
+            }
+        };
+        let batch = executor
+            .single_controlled_write_batch(&self.type_id, operation, row, &control)
+            .map_err(napi_sdk_diagnostic)?;
+        let target = self
+            .target
+            .as_ref()
+            .ok_or_else(|| runtime_error("projected manager has no execution target"))?
+            .as_target();
+        self.runtime
+            .block_on(
+                executor.execute_single_write_on_target(target, &batch, control, |result| {
+                    result
+                        .into_items()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(ordinal, thing)| {
+                            projected_envelope(Arc::clone(&self.package), thing).map_err(|_| {
+                                ProjectedBatchExecutor::binding_materialization_failure(
+                                    ordinal as u64,
+                                )
+                            })
+                        })
+                        .collect()
+                }),
+            )
+            .map_err(|error| {
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                )
+            })
+            .map_err(napi_sdk_diagnostic)
+    }
+
     #[inline]
     fn database(&self) -> Option<&Arc<Database>> {
         self.target.as_ref().and_then(OwnedQueryTarget::database)
@@ -8065,6 +8076,127 @@ entities:
                 )
                 .unwrap();
             assert_eq!(original, std::ptr::from_ref(cache.get().unwrap()));
+        }
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn node_single_projected_writes_materialize_complete_results_before_completion() {
+        use type_bridge_orm::TxType;
+        use type_bridge_orm::session::backend::QueryResult;
+
+        let schema = ORDERED_SCHEMA.replace(
+            "      subject:\n        card: { min: 0, max: 4 }\n        ordered: true\n        distinct: true",
+            "      subject:\n        card: { min: 0, max: 4 }",
+        );
+        for (kind, label) in [
+            (TypeKind::Entity, "group"),
+            (TypeKind::Relation, "activity-link"),
+        ] {
+            for operation in [
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchOperation::Put,
+                ProjectedBatchOperation::Update,
+            ] {
+                for borrowed in [false, true] {
+                    for count in 0..=2 {
+                        if count == 2 && operation == ProjectedBatchOperation::Update {
+                            continue;
+                        }
+                        let projection = runtime_for_schema(&schema, "node-single-target.yaml");
+                        let documents = (0..count)
+                            .map(|index| {
+                                let mut document = serde_json::json!({
+                                    "_iid": format!("0xa{}", index + 1),
+                                    "_type": label,
+                                    "attributes": {"tag": []},
+                                });
+                                if kind == TypeKind::Relation {
+                                    document["attributes"] = serde_json::json!({});
+                                    document["_role_0_iid"] = serde_json::json!("0xd1");
+                                    document["_role_0_type"] = serde_json::json!("plain-activity");
+                                    document["_role_0_attributes"] = serde_json::json!({});
+                                }
+                                document
+                            })
+                            .collect();
+                        let (database, state) = projection_recording_database_for_test(vec![
+                            ProjectionRecordingResponse::Query(QueryResult::Documents(documents)),
+                        ]);
+                        let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                        let transaction = borrowed.then(|| {
+                            runtime
+                                .block_on(database.transaction_context(TxType::Write))
+                                .unwrap()
+                        });
+                        let manager = NodeProjectedModelManager {
+                            transaction_supports_given_stage: false,
+                            package: Arc::clone(&projection.package),
+                            type_id: TypeId::new(kind, label).unwrap(),
+                            target: Some(match &transaction {
+                                Some(transaction) => {
+                                    OwnedQueryTarget::Transaction(transaction.clone())
+                                }
+                                None => OwnedQueryTarget::Database(Arc::clone(&database)),
+                            }),
+                            successor_batch_marker: borrowed
+                                .then(|| Arc::new(AtomicBool::new(false))),
+                            runtime: Arc::clone(&runtime),
+                            filters: Vec::new(),
+                        };
+                        let roles = if kind == TypeKind::Relation {
+                            vec![(
+                                RoleId::new(label, "subject").unwrap(),
+                                vec![
+                                    ProjectedReference::try_new(
+                                        &projection.package.projection,
+                                        TypeId::new(TypeKind::Relation, "plain-activity").unwrap(),
+                                        Some("0xd1".into()),
+                                        Vec::new(),
+                                    )
+                                    .unwrap(),
+                                ],
+                            )]
+                        } else {
+                            Vec::new()
+                        };
+                        let instance = ProjectedCreate::try_new(
+                            &projection.package.projection,
+                            manager.type_id.clone(),
+                            Vec::new(),
+                            roles,
+                        )
+                        .unwrap();
+                        let values = manager
+                            .write_single_projected(
+                                instance,
+                                operation,
+                                (operation == ProjectedBatchOperation::Update)
+                                    .then(|| "0xa1".into()),
+                            )
+                            .unwrap_or_else(|error| {
+                                panic!("{kind:?}/{operation:?}/{borrowed}/{count}: {error:?}")
+                            });
+                        assert_eq!(values.len(), count);
+                        for (index, value) in values.iter().enumerate() {
+                            assert_eq!(value.thing.iid(), format!("0xa{}", index + 1));
+                            assert!(value.thing.origin_carrier().is_some());
+                            let wire: ProjectedWire = serde_json::from_str(&value.json).unwrap();
+                            assert_eq!(wire.iid.as_deref(), Some(value.thing.iid()));
+                        }
+                        {
+                            let state = state.lock().unwrap();
+                            assert_eq!(state.queries.len(), 1);
+                            assert_eq!(state.commits, usize::from(!borrowed));
+                            assert_eq!(state.rollbacks, 0);
+                        }
+                        if let Some(transaction) = transaction {
+                            runtime.block_on(transaction.commit_sdk()).unwrap();
+                            assert_eq!(state.lock().unwrap().commits, 1);
+                        }
+                    }
+                }
+            }
         }
     }
 
