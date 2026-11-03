@@ -505,9 +505,9 @@ pub(crate) fn prepare_remote_model_query_with_policy(
             limits: StagedLimitsV3 {
                 collect_phase_timestamps: held.collect_phase_timestamps,
                 admission_window_milliseconds,
-                deadline_ms: deadline
-                    .earliest(QueryExecutionDeadline::for_limits(held))
-                    .remaining_milliseconds(),
+                deadline_ms: wire_execution_deadline(
+                    deadline.earliest(QueryExecutionDeadline::for_limits(held)),
+                ),
                 max_bytes: held.bytes,
                 max_items: held.items,
                 max_graph_nodes: Some(held.graph_nodes),
@@ -626,6 +626,13 @@ fn check_reply_budget(
         .into());
     }
     Ok(())
+}
+
+// Expiry after the budget check remains an execution refusal, not malformed wire limits.
+fn wire_execution_deadline(deadline: QueryExecutionDeadline) -> Option<u64> {
+    deadline
+        .remaining_milliseconds()
+        .map(|remaining| remaining.max(1))
 }
 
 #[cfg(test)]
@@ -1588,5 +1595,24 @@ mod answer_limit_refusal_tests {
         // A refusal that reports no answer dimension is left alone.
         let other = answer_limit_refusal(refusal("row_window_exceeded"), budget(1), budget(1));
         assert!(other.details().is_empty());
+    }
+    #[test]
+    fn wire_deadline_race_keeps_expiry_an_execution_error() {
+        let expired = QueryExecutionDeadline::expired();
+        assert_eq!(wire_execution_deadline(expired), Some(1));
+        assert_eq!(
+            expired
+                .check(&AnswerCancellation::default())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "transaction_deadline_exceeded"
+        );
+        assert_eq!(
+            wire_execution_deadline(QueryExecutionDeadline::from_timeout(
+                crate::QueryTimeout::NONE
+            )),
+            None
+        );
     }
 }
