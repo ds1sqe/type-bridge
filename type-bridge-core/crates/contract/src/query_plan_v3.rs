@@ -27,7 +27,7 @@ pub const QUERY_PLAN_FORMAT_V3: &str = "typebridge.query-plan/v3";
 pub const QUERY_PLAN_CANONICALIZATION_V3: &str = "typebridge.query-plan-c14n/v3";
 /// Domain for diagnostic plan shapes, excluding transported caller values.
 pub const QUERY_PLAN_SHAPE_FINGERPRINT_DOMAIN: &str = "typebridge.query.plan-shape";
-/// Read-only re-match after a selected window, retaining only visible bindings.
+/// Read-only re-match after a selected window or reduction, retaining visible bindings.
 pub const CAP_QUERY_PIPELINE_REMATCH: &str = "query.pipeline.rematch";
 /// Nonliteral IID predicates under negation; TypeDB 3.12 cannot safely execute them.
 pub const CAP_NEGATED_GIVEN_IID: &str = "query.pattern.negated-given-iid";
@@ -1194,6 +1194,7 @@ fn validate_stages(
     let mut read_tail = Vec::new();
     let mut reading = false;
     let mut rematched = false;
+    let mut reduced_dropped = BTreeSet::new();
     let mut fetched: Option<&ThingDocument> = None;
     let mut captured_environment = None;
     if !matches!(
@@ -1246,30 +1247,35 @@ fn validate_stages(
                     None
                 } else {
                     let writing = matches!(spec.operation, Operation::Write { .. });
+                    let reduced = read_tail
+                        .iter()
+                        .any(|stage| matches!(stage, ReadStage::Reduce { .. }));
+                    let selected_window =
+                        matches!(read_tail.first(), Some(ReadStage::Select { .. }))
+                            && read_tail
+                                .iter()
+                                .any(|stage| matches!(stage, ReadStage::Distinct))
+                            && read_tail.iter().all(|stage| {
+                                matches!(
+                                    stage,
+                                    ReadStage::Select { .. }
+                                        | ReadStage::Distinct
+                                        | ReadStage::Sort { .. }
+                                        | ReadStage::Offset { .. }
+                                        | ReadStage::Limit { .. }
+                                )
+                            });
                     if (!writing && rematched)
                         || (writing
                             && !matches!(
                                 read_tail.as_slice(),
                                 [ReadStage::Select { .. }, ReadStage::Distinct]
                             ))
-                        || !matches!(read_tail.first(), Some(ReadStage::Select { .. }))
-                        || !read_tail
-                            .iter()
-                            .any(|stage| matches!(stage, ReadStage::Distinct))
-                        || read_tail.iter().any(|stage| {
-                            !matches!(
-                                stage,
-                                ReadStage::Select { .. }
-                                    | ReadStage::Distinct
-                                    | ReadStage::Sort { .. }
-                                    | ReadStage::Offset { .. }
-                                    | ReadStage::Limit { .. }
-                            )
-                        })
+                        || !(selected_window || (!writing && reduced))
                     {
                         return Err(invalid(
                             "query_plan_stage_order",
-                            "match occurs only at the start or after a read-only selected window",
+                            "match occurs only at the start, after a selected window, or after a read-only reduce",
                         ));
                     }
                     let visible = validate_v3_read_tail(
@@ -1281,6 +1287,26 @@ fn validate_stages(
                         limits.structural,
                         &scalar_types,
                     )?;
+                    if reduced {
+                        reduced_dropped.extend(
+                            referenced
+                                .iter()
+                                .filter(|binding| {
+                                    !visible.0.contains(binding) && !visible.1.contains(binding)
+                                })
+                                .copied(),
+                        );
+                        for stage in &read_tail {
+                            if let ReadStage::Reduce { assignments, .. } = stage {
+                                for assignment in assignments {
+                                    if assignment.reducer() == Reducer::Count {
+                                        scalar_types
+                                            .insert(assignment.assigned(), ValueTypeTag::Long);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     read_tail.clear();
                     types.retain(|binding, _| {
                         visible.0.contains(binding) || visible.1.contains(binding)
@@ -1300,6 +1326,24 @@ fn validate_stages(
                         _ => None,
                     })
                     .collect();
+                if !reduced_dropped.is_empty() {
+                    let mut used = BTreeSet::new();
+                    for pattern in &reads {
+                        collect_pattern_bindings(pattern, &mut used);
+                    }
+                    for pattern in patterns {
+                        if let Pattern::Iid { binding, .. } | Pattern::Let { binding, .. } = pattern
+                        {
+                            used.insert(*binding);
+                        }
+                    }
+                    if !used.is_disjoint(&reduced_dropped) {
+                        return Err(invalid(
+                            "query_plan_reduce_dropped_binding",
+                            "match cannot reuse a binding dropped by reduce",
+                        ));
+                    }
+                }
                 *nodes -= reads.len();
                 if !reads.is_empty() {
                     (mandatory, optional, _) = validate_pipeline(

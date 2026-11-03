@@ -5113,3 +5113,249 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
             .unwrap();
     }
 }
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn reduced_full_match_equals_stepwise_candidates_live() {
+    use std::collections::BTreeSet;
+    use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_contract::migration_assertion::{
+        AssertionBinding, BindingId, QueryVariable, ValueComparator,
+    };
+    use type_bridge_contract::query_plan::v3::{
+        Expr, Operation, Pattern, PlanSpec, QueryPlanV3, Stage,
+    };
+    use type_bridge_contract::query_plan::{
+        InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
+        ReduceAssignment, Reducer,
+    };
+    use type_bridge_contract::query_remote::RemoteValue;
+    use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+    use type_bridge_contract::value::ValueTypeTag;
+    use type_bridge_orm::_manager::DynamicEntityManager;
+    use type_bridge_orm::Filter;
+    use type_bridge_orm::{AttributeValue, QueryExecutionDeadline};
+
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    let yaml = "format: typebridge.schema/v2\nattributes:\n  reduced-tag: { value: string }\nentities:\n  reduced-note:\n    owns:\n      reduced-tag: { card: { min: 0 } }\n";
+    let declared = normalize_documents(
+        &SchemaDocumentSet::parse([(DocumentId::new("reduced-full-match.yaml").unwrap(), yaml)])
+            .unwrap(),
+    )
+    .unwrap();
+    let profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let context = type_bridge_schema::ManagedDeltaContext::new(
+        ManagedScopeId::new("reduced-full-match-live").unwrap(),
+        profile,
+        type_bridge_contract::capability::CapabilitySet::new(),
+    );
+    let managed = type_bridge_schema::managed_schema_state(&declared, &context).unwrap();
+    database.execute_raw("define attribute reduced-tag, value string; entity reduced-note, owns reduced-tag @card(0..);", TxType::Schema).await.unwrap();
+    let note = TypeId::new(TypeKind::Entity, "reduced-note").unwrap();
+    let attribute = AttributeId::new("reduced-tag").unwrap();
+    let descriptor = installed
+        .manager_registry()
+        .unwrap()
+        .entity("reduced-note")
+        .unwrap();
+    let direct = DynamicEntityManager::new(&database, descriptor);
+    let full = (0..300)
+        .map(|index| format!("value-{index:04}"))
+        .collect::<Vec<_>>();
+    let seed = direct
+        .insert(
+            &full
+                .iter()
+                .map(|value| ("reduced-tag".into(), AttributeValue::String(value.clone())))
+                .collect(),
+        )
+        .await
+        .unwrap();
+    for case in ["hit", "last-near-miss", "absent"] {
+        let mut wanted = full.clone();
+        if case == "last-near-miss" {
+            wanted[299] = "last-missing".into();
+        }
+        if case == "absent" {
+            wanted
+                .iter_mut()
+                .for_each(|value| *value = format!("absent-{value}"));
+        }
+        let mut expected: Option<BTreeSet<String>> = None;
+        for chunk in wanted.chunks(32) {
+            let filters = chunk
+                .iter()
+                .map(|value| Filter::eq("reduced-tag", AttributeValue::String(value.clone())))
+                .collect::<Vec<_>>();
+            let found = direct
+                .get(&filters)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| row.iid.expect("hydrated direct IID"))
+                .collect::<BTreeSet<_>>();
+            match &mut expected {
+                Some(expected) => expected.retain(|iid| found.contains(iid)),
+                None => expected = Some(found),
+            }
+        }
+        let expected = expected.unwrap();
+        assert_eq!(
+            expected,
+            if case == "hit" {
+                BTreeSet::from([seed.clone()])
+            } else {
+                BTreeSet::new()
+            }
+        );
+        let id = |index| BindingId::new(index).unwrap();
+        let root = id(0);
+        let field = id(1);
+        let value = id(2);
+        let count = id(3);
+        let binding = |binding| QueryOperand::Binding { binding };
+        let plan = QueryPlanV3::new(
+            PlanSpec {
+                bindings: ["root", "field", "wanted", "matched"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, name)| {
+                        AssertionBinding::new(id(index as u16), QueryVariable::new(name).unwrap())
+                    })
+                    .collect(),
+                inputs: vec![InputColumn::new(
+                    InputColumnId::new(0),
+                    QueryVariable::new("input_value").unwrap(),
+                    ValueTypeTag::String,
+                    false,
+                )],
+                given_rows: Some(
+                    wanted
+                        .iter()
+                        .map(|value| {
+                            InputRow::new(vec![Some(CanonicalValue::String(
+                                CanonicalString::new(value.clone()).unwrap(),
+                            ))])
+                        })
+                        .collect(),
+                ),
+                operation: Operation::Rows,
+                pipeline: vec![
+                    Stage::Match {
+                        patterns: vec![
+                            QueryPattern::Isa {
+                                binding: root,
+                                type_id: note.clone(),
+                                include_subtypes: true,
+                            }
+                            .into(),
+                            QueryPattern::Has {
+                                owner: root,
+                                attribute: field,
+                                attribute_id: attribute.clone(),
+                            }
+                            .into(),
+                            QueryPattern::Value {
+                                comparator: ValueComparator::Equal,
+                                left: binding(field),
+                                right: binding(value),
+                            }
+                            .into(),
+                            Pattern::Let {
+                                binding: value,
+                                expr: Expr::Operand(QueryOperand::Input {
+                                    column: InputColumnId::new(0),
+                                }),
+                            },
+                        ],
+                    },
+                    Stage::Select {
+                        bindings: vec![root, value],
+                    },
+                    Stage::Distinct,
+                    Stage::Reduce {
+                        assignments: vec![ReduceAssignment::new(count, Reducer::Count, None)],
+                        groups: vec![root],
+                    },
+                    Stage::Match {
+                        patterns: vec![
+                            QueryPattern::Value {
+                                comparator: ValueComparator::Equal,
+                                left: binding(count),
+                                right: QueryOperand::Literal {
+                                    value: CanonicalValue::Long(300),
+                                },
+                            }
+                            .into(),
+                        ],
+                    },
+                    Stage::Select {
+                        bindings: vec![root, count],
+                    },
+                ],
+                output: QueryOutput::Rows {
+                    columns: vec![root, count],
+                },
+                managed_semantics: managed.managed_semantic_schema().clone(),
+                compatibility: None,
+                functions: vec![],
+            },
+            &declared,
+        )
+        .unwrap();
+        let (counted, log) = counted_connection(&database, false).await;
+        let limits = QueryExecutionResourceLimits::default();
+        let answers = counted
+            .execute_plans(
+                std::slice::from_ref(&plan),
+                &limits,
+                &AnswerCancellation::default(),
+                QueryExecutionDeadline::for_limits(limits),
+            )
+            .await
+            .unwrap();
+        let StagedAnswerV3::Rows { rows } = answers[0].to_staged_v3(&plan).unwrap() else {
+            panic!("typed rows")
+        };
+        let actual = rows
+            .into_iter()
+            .map(|row| {
+                let [
+                    RemoteValue::Thing { iid, .. },
+                    RemoteValue::Value {
+                        value: CanonicalValue::Long(count),
+                    },
+                ] = row.as_slice()
+                else {
+                    panic!("typed root and count: {row:?}")
+                };
+                assert_eq!(*count, 300);
+                iid.clone()
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected, "{case}");
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.opened, [TxType::Read]);
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!(observed.commits, 0);
+        eprintln!(
+            "REDUCE_REMATCH case={case} candidates={} statements=1 opened=1 commits=0",
+            actual.len()
+        );
+    }
+    database.delete_database().await.unwrap();
+}

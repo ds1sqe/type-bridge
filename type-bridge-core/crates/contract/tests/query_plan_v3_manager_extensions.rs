@@ -457,3 +457,170 @@ fn document_scalars_capture_bound_thing_iids_and_optional_absence() {
         );
     }
 }
+
+fn reduced_accounts(
+    groups: Vec<type_bridge_contract::migration_assertion::BindingId>,
+) -> Vec<Stage> {
+    use type_bridge_contract::query_plan::{ReduceAssignment, Reducer};
+    vec![
+        Stage::Match {
+            patterns: vec![
+                isa(0, entity("account")).into(),
+                QueryPattern::Has {
+                    owner: id(0),
+                    attribute: id(1),
+                    attribute_id: type_bridge_contract::id::AttributeId::new("score").unwrap(),
+                }
+                .into(),
+            ],
+        },
+        Stage::Select {
+            bindings: vec![id(0), id(1)],
+        },
+        Stage::Distinct,
+        Stage::Reduce {
+            assignments: vec![ReduceAssignment::new(id(2), Reducer::Count, None)],
+            groups,
+        },
+    ]
+}
+
+#[test]
+fn reduced_read_rematch_preserves_typed_thing_scalar_groups_and_count() {
+    use type_bridge_contract::query_plan::v3::{ArithOp, Expr};
+    let mut pipeline = reduced_accounts(vec![id(0), id(1)]);
+    pipeline.extend([
+        Stage::Match {
+            patterns: vec![Pattern::Let {
+                binding: id(3),
+                expr: Expr::Arith {
+                    op: ArithOp::Add,
+                    lhs: Box::new(Expr::Operand(
+                        type_bridge_contract::query_plan::QueryOperand::Binding { binding: id(1) },
+                    )),
+                    rhs: Box::new(Expr::Operand(
+                        type_bridge_contract::query_plan::QueryOperand::Binding { binding: id(2) },
+                    )),
+                },
+            }],
+        },
+        Stage::Select {
+            bindings: vec![id(0), id(2), id(3)],
+        },
+    ]);
+    let mut specification = spec(pipeline, vec![0, 2, 3]);
+    specification.bindings.push(binding(3, "sum"));
+    let plan = QueryPlanV3::new(specification, &schema()).unwrap();
+    assert_eq!(
+        plan.scalar_value_type(id(2)),
+        Some(type_bridge_contract::value::ValueTypeTag::Long)
+    );
+    assert_eq!(
+        plan.scalar_value_type(id(3)),
+        Some(type_bridge_contract::value::ValueTypeTag::Long)
+    );
+    assert_eq!(
+        plan.binding_types(id(0)).unwrap(),
+        &std::collections::BTreeSet::from([entity("account")])
+    );
+    let bytes = plan.canonical_bytes().unwrap();
+    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+}
+
+#[test]
+fn reduced_rematch_does_not_admit_write_plans_even_through_projection() {
+    use type_bridge_contract::query_plan::v3::Set;
+    for projected in [false, true] {
+        let mut pipeline = reduced_accounts(vec![id(0)]);
+        pipeline.push(Stage::Match {
+            patterns: vec![
+                QueryPattern::Value {
+                    comparator: type_bridge_contract::migration_assertion::ValueComparator::Greater,
+                    left: type_bridge_contract::query_plan::QueryOperand::Binding {
+                        binding: id(2),
+                    },
+                    right: literal(0),
+                }
+                .into(),
+            ],
+        });
+        if projected {
+            pipeline.extend([
+                Stage::Select {
+                    bindings: vec![id(0)],
+                },
+                Stage::Distinct,
+            ]);
+        }
+        pipeline.push(Stage::Update {
+            sets: vec![Set::Field {
+                owner: id(0),
+                field: field("score"),
+                operand: literal(1),
+            }],
+        });
+        assert_eq!(
+            QueryPlanV3::new(spec(pipeline, vec![0]), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_stage_order"
+        );
+    }
+}
+
+#[test]
+fn reduced_rematch_refuses_dropped_binding_and_keeps_count_type_checks() {
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::QueryOperand;
+    for (binding, comparator, right, code) in [
+        (
+            id(1),
+            ValueComparator::Equal,
+            literal(1),
+            "query_plan_reduce_dropped_binding",
+        ),
+        (
+            id(2),
+            ValueComparator::Contains,
+            string("x"),
+            "query_plan_compare_string_type",
+        ),
+    ] {
+        let mut pipeline = reduced_accounts(vec![id(0)]);
+        pipeline.push(Stage::Match {
+            patterns: vec![
+                QueryPattern::Value {
+                    comparator,
+                    left: QueryOperand::Binding { binding },
+                    right,
+                }
+                .into(),
+            ],
+        });
+        assert_eq!(
+            QueryPlanV3::new(spec(pipeline, vec![0]), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            code
+        );
+    }
+    let mut pipeline = reduced_accounts(vec![id(0)]);
+    pipeline.insert(
+        2,
+        Stage::Select {
+            bindings: vec![id(0)],
+        },
+    );
+    pipeline.push(Stage::Match {
+        patterns: vec![isa(0, entity("account")).into()],
+    });
+    assert_eq!(
+        QueryPlanV3::new(spec(pipeline, vec![0]), &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_stage_order"
+    );
+}
