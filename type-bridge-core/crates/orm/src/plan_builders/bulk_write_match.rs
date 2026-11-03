@@ -773,6 +773,7 @@ fn static_match(
         std::slice::from_ref(row),
         ordinal,
         false,
+        false,
     )?
     else {
         return Err(identity_error());

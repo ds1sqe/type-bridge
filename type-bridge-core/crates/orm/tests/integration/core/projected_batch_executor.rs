@@ -4507,9 +4507,11 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
                     let statements = if width == 0 {
                         1
                     } else if self_playing {
-                        if by_iid { 3 } else { 4 }
+                        3
+                    } else if by_iid {
+                        3
                     } else {
-                        5
+                        4
                     };
                     assert_eq!(log.lock().unwrap().statements.len(), statements);
                     let output = things(result.unwrap());

@@ -21,6 +21,11 @@ pub(crate) type ReferenceSnapshots = BTreeMap<usize, BTreeMap<RoleId, Vec<String
 
 pub(crate) type IdentityLayout = Vec<Option<Vec<(usize, String)>>>;
 
+pub(crate) enum ReferenceContext {
+    Guard(references::GuardContext),
+    Snapshot(usize),
+}
+
 pub(crate) enum WriteProgram {
     Compact(Vec<BuiltPlan>),
     Sequential(Vec<(BuiltPlan, Vec<usize>)>),
@@ -60,6 +65,10 @@ impl WriteProgram {
                     programs.push_back(program.prepare_static()?);
                 }
                 Ok(Self::Chain(programs))
+            }
+            Self::References(mut program) => {
+                program.prepare_static()?;
+                Ok(Self::References(program))
             }
             program => Ok(program),
         }
@@ -141,9 +150,10 @@ impl WriteProgram {
             }
         }
     }
-    pub(crate) fn guard_contexts(&self) -> BTreeMap<(usize, u16), references::GuardContext> {
+    pub(crate) fn guard_contexts(&self) -> BTreeMap<(usize, u16), ReferenceContext> {
         match self {
             Self::Static(program) => program.guard_contexts(),
+            Self::References(program) => program.guard_contexts(),
             Self::Chain(programs) => {
                 let mut contexts = BTreeMap::new();
                 let mut offset = 0;
@@ -193,7 +203,8 @@ impl WriteProgram {
                     _ => unreachable!("fixed ready steps"),
                 }).collect::<Result<Vec<_>, _>>().map(Some)
             }
-            Self::Split(_) | Self::MatchWide(_) | Self::References(_) => Ok(None),
+            Self::References(program) => program.staged_entries(authority),
+            Self::Split(_) | Self::MatchWide(_) => Ok(None),
         }
     }
 
@@ -386,7 +397,7 @@ impl WriteStep {
                     return Err(identity_error());
                 };
                 match &cells[1] {
-                    RemoteValue::Absent if self.reference_guard => {}
+                    RemoteValue::Absent if self.reference_resolution.is_some() => {}
                     RemoteValue::Thing { iid, type_id } => {
                         if !self
                             .plan
@@ -802,7 +813,7 @@ pub(super) fn split_at(
     rows: &[WriteRow<'_>],
     ordinal_offset: usize,
 ) -> Result<WriteProgram, Diagnostic> {
-    split_with_guards(authority, kind, shape, rows, ordinal_offset, true)
+    split_with_guards(authority, kind, shape, rows, ordinal_offset, true, false)
 }
 
 pub(super) fn split_resolved(
@@ -811,9 +822,10 @@ pub(super) fn split_resolved(
     shape: WriteShape<'_>,
     rows: &[WriteRow<'_>],
 ) -> Result<WriteProgram, Diagnostic> {
-    split_with_guards(authority, kind, shape, rows, 0, false)
+    split_with_guards(authority, kind, shape, rows, 0, false, false)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn split_with_guards(
     authority: &PlanAuthority,
     kind: WriteKind,
@@ -821,6 +833,7 @@ fn split_with_guards(
     rows: &[WriteRow<'_>],
     ordinal_offset: usize,
     guard_references: bool,
+    known_root: bool,
 ) -> Result<WriteProgram, Diagnostic> {
     let mut steps = VecDeque::new();
     let mut ordinal = 0;
@@ -950,7 +963,11 @@ fn split_with_guards(
             "0".repeat(type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS)
         );
         let base = Row {
-            iid: Some(placeholder),
+            iid: if known_root {
+                seed.iid.clone()
+            } else {
+                Some(placeholder)
+            },
             fields: vec![],
             players: vec![],
         };
@@ -981,10 +998,23 @@ fn split_with_guards(
                 complete,
                 output_ordinal,
             )?;
-            steps.push_back(Step::Target {
-                plan,
-                complete,
-                ordinal: output_ordinal,
+            steps.push_back(if known_root {
+                Step::Ready(WriteStep {
+                    plan,
+                    complete,
+                    ordinal: output_ordinal,
+                    expected_iid: seed.iid.clone(),
+                    missing_iid_noop: true,
+                    candidate_filter: false,
+                    reference_guard: false,
+                    reference_resolution: None,
+                })
+            } else {
+                Step::Target {
+                    plan,
+                    complete,
+                    ordinal: output_ordinal,
+                }
             });
             if complete {
                 break;

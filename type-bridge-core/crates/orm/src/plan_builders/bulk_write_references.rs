@@ -214,10 +214,17 @@ fn guard_proof(
     route: &LookupRoute,
     rows: &[InputRow],
 ) -> Result<BuiltPlan, Diagnostic> {
+    reference_tuple(authority, rows.iter().map(|row| (route, row)))
+}
+
+fn reference_tuple<'a>(
+    authority: &PlanAuthority,
+    cells: impl IntoIterator<Item = (&'a LookupRoute, &'a InputRow)>,
+) -> Result<BuiltPlan, Diagnostic> {
     let mut draft = authority.draft(ValueTransport::Given);
     let mut patterns = Vec::new();
     let mut columns = Vec::new();
-    for row in rows {
+    for (route, row) in cells {
         let ordinal = draft.bind("reference_ordinal")?;
         let root = draft.bind("reference")?;
         let value = draft.value(row.values()[1].clone().ok_or_else(identity_error)?)?;
@@ -326,8 +333,133 @@ pub(crate) struct ReferenceProgram {
     snapshots: Option<Box<ReferenceSnapshots>>,
     statements: usize,
     body_ceiling: usize,
+    frozen: bool,
 }
 impl ReferenceProgram {
+    pub(super) fn prepare_static(&mut self) -> Result<(), Diagnostic> {
+        if self.kind != WriteKind::Update
+            || self.rows.iter().any(|row| row.iid.is_none())
+            || self
+                .rows
+                .iter()
+                .flat_map(|row| &row.players)
+                .any(|player| !unique_player_identity(&self.authority, player))
+        {
+            return Ok(());
+        }
+        let prepared = self.frozen_program();
+        let program = match prepared {
+            Ok(program) => program,
+            Err(error) if forces_pieces(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        self.statements = program.statement_count();
+        self.body = Some(WriteProgram::Static(Box::new(program)));
+        self.lookups.clear();
+        self.frozen = true;
+        Ok(())
+    }
+
+    fn frozen_program(&self) -> Result<StaticProgram, Diagnostic> {
+        let mut routes = Vec::with_capacity(self.locations.len());
+        let mut cells = Vec::with_capacity(self.locations.len());
+        let mut placeholders = BTreeMap::new();
+        let mut owned = self.rows.clone();
+        for (ordinal, &(row, player)) in self.locations.iter().enumerate() {
+            let original = &self.rows[row].players[player];
+            routes.push(LookupRoute {
+                candidates: original.candidates.clone(),
+                key: original.key.as_ref().map(|(key, _)| key.clone()),
+            });
+            let identity = if let Some(iid) = &original.iid {
+                super::iid(iid)?
+            } else {
+                original.key.as_ref().ok_or_else(identity_error)?.1.clone()
+            };
+            cells.push(InputRow::new(vec![
+                Some(CanonicalValue::Long(
+                    i64::try_from(ordinal).map_err(|_| identity_error())?,
+                )),
+                Some(identity),
+            ]));
+            let digits = format!("{ordinal:x}");
+            let placeholder = format!(
+                "0x{}{}",
+                "0".repeat(type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS - digits.len()),
+                digits
+            );
+            placeholders.insert(placeholder.clone(), ordinal);
+            owned[row].players[player].iid = Some(placeholder);
+            owned[row].players[player].key = None;
+        }
+        let lookup = reference_tuple(&self.authority, routes.iter().zip(&cells))?;
+        let mut steps = VecDeque::new();
+        for (ordinal, row) in owned.iter().enumerate() {
+            let players = row
+                .players
+                .iter()
+                .map(|player| {
+                    Ok((
+                        player.role.clone(),
+                        Reference {
+                            candidates: &player.candidates,
+                            identity: ReferenceIdentity::Iid(
+                                player.iid.as_deref().ok_or_else(identity_error)?,
+                            ),
+                        },
+                    ))
+                })
+                .collect::<Result<Vec<_>, Diagnostic>>()?;
+            let WriteProgram::Split(program) = split_with_guards(
+                &self.authority,
+                self.kind,
+                self.shape.borrowed(),
+                &[WriteRow {
+                    iid: row.iid.as_deref(),
+                    fields: &row.fields,
+                    players: &players,
+                }],
+                ordinal,
+                false,
+                true,
+            )?
+            else {
+                return Err(identity_error());
+            };
+            steps.extend(program.steps);
+        }
+        StaticProgram::with_reference_lookup(
+            SplitProgram {
+                steps,
+                authority: self.authority.clone(),
+                identity: None,
+            },
+            lookup,
+            placeholders,
+        )
+    }
+
+    pub(super) fn guard_contexts(&self) -> BTreeMap<(usize, u16), ReferenceContext> {
+        if self.frozen {
+            self.body.as_ref().expect("prepared body").guard_contexts()
+        } else {
+            BTreeMap::new()
+        }
+    }
+    pub(super) fn staged_entries(
+        &self,
+        authority: &PlanAuthority,
+    ) -> Result<Option<Vec<type_bridge_contract::query_remote_v3::StagedPlanV3>>, Diagnostic> {
+        if self.frozen {
+            self.body
+                .as_ref()
+                .expect("prepared body")
+                .staged_entries(authority)
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(super) fn records_answers(&self) -> bool {
         self.body
             .as_ref()
@@ -347,6 +479,41 @@ impl ReferenceProgram {
         self.statements
     }
     pub(super) fn next(&mut self) -> Result<Option<WriteStep>, Diagnostic> {
+        if self.frozen {
+            if !self.locations.is_empty() && self.resolved.iter().all(Option::is_some) {
+                let capture = self.rows.iter().any(|row| {
+                    row.players.iter().any(|player| {
+                        player.key.is_some() && player.candidates.contains(&self.shape.type_id)
+                    })
+                });
+                let mut snapshots = ReferenceSnapshots::new();
+                if capture {
+                    for (index, &(row, player)) in self.locations.iter().enumerate() {
+                        snapshots
+                            .entry(row)
+                            .or_default()
+                            .entry(self.rows[row].players[player].role.clone())
+                            .or_default()
+                            .push(
+                                self.resolved[index]
+                                    .as_ref()
+                                    .expect("all resolved")
+                                    .to_ascii_lowercase(),
+                            );
+                    }
+                    for roles in snapshots.values_mut() {
+                        for iids in roles.values_mut() {
+                            iids.sort_unstable();
+                        }
+                    }
+                }
+                self.snapshots = capture.then(|| Box::new(snapshots));
+                self.rows.clear();
+                self.locations.clear();
+                self.resolved.clear();
+            }
+            return self.body.as_mut().expect("prepared body").next();
+        }
         if let Some((plan, ordinals)) = self.lookups.pop_front() {
             return Ok(Some(WriteStep {
                 plan,
@@ -631,6 +798,7 @@ pub(in crate::plan_builders::bulk_write) fn resolve_references(
         snapshots: None,
         statements,
         body_ceiling,
+        frozen: false,
     })))
 }
 
@@ -785,5 +953,93 @@ mod tests {
             serde_json::json!({"ordinal1":{"kind":"value","value":CanonicalValue::Long(0)},"root0":{"kind":"thing","iid":"0x01","type_id":TypeId::new(TypeKind::Entity,"wrong").unwrap()}}),
         ]);
         assert!(step.reference_iids(&answer).is_err());
+    }
+    #[test]
+    fn frozen_reference_graph_keeps_authored_targets_and_source_snapshots() {
+        use type_bridge_contract::query_remote::RemoteValue;
+        let mut program = program(false).prepare_static().unwrap();
+        let authority = match &program {
+            WriteProgram::References(program) => program.authority.clone(),
+            _ => panic!("reference owner"),
+        };
+        let entries = program
+            .staged_entries(&authority)
+            .unwrap()
+            .expect("a frozen proxy graph");
+        assert_eq!(entries.len(), 3);
+        assert!(!entries[0].plan().writes());
+        assert!(
+            entries[1..]
+                .iter()
+                .flat_map(|entry| entry.result_refs())
+                .all(|reference| reference.source_plan == 0)
+        );
+        let lookup = program.next().unwrap().unwrap();
+        let model = TypeId::new(TypeKind::Relation, "r").unwrap();
+        let answer = PlanAnswer::from_staged_v3(
+            &StagedAnswerV3::Rows {
+                rows: vec![vec![
+                    RemoteValue::Value {
+                        value: CanonicalValue::Long(0),
+                    },
+                    RemoteValue::Thing {
+                        iid: "0x02".into(),
+                        type_id: model.clone(),
+                    },
+                ]],
+            },
+            lookup.plan.local(),
+        )
+        .unwrap();
+        program.record_answer(&lookup, &answer).unwrap();
+        program
+            .accept_reference_iids(&lookup, vec![(0, "0x02".into())])
+            .unwrap();
+        let seed = program.next().unwrap().unwrap();
+        seed.check_identity("0x01").unwrap();
+        assert!(seed.check_identity("0x02").is_err());
+        let plan = String::from_utf8(seed.plan.local().canonical_bytes().unwrap()).unwrap();
+        assert!(!plan.contains("old-key"));
+        assert!(plan.contains("new-key"));
+        let snapshot = program.take_reference_snapshots().unwrap();
+        assert_eq!(
+            snapshot[&0][&RoleId::new("r", "prior").unwrap()],
+            vec!["0x02".to_owned()]
+        );
+        let answer = PlanAnswer::from_staged_v3(
+            &StagedAnswerV3::Rows {
+                rows: vec![vec![
+                    RemoteValue::Value {
+                        value: CanonicalValue::Long(0),
+                    },
+                    RemoteValue::Thing {
+                        iid: "0x01".into(),
+                        type_id: model,
+                    },
+                ]],
+            },
+            seed.plan.local(),
+        )
+        .unwrap();
+        program.record_answer(&seed, &answer).unwrap();
+        let final_step = program.next().unwrap().unwrap();
+        assert!(final_step.complete);
+        assert!(
+            final_step
+                .plan
+                .local()
+                .inputs()
+                .iter()
+                .enumerate()
+                .filter(|(_, input)| input.public_name().as_str() == "target_iid")
+                .all(|(column, _)| final_step
+                    .plan
+                    .local()
+                    .given_rows()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row.values()[column] == Some(super::super::iid("0x01").unwrap())))
+        );
+        assert!(program.next().unwrap().is_none());
     }
 }

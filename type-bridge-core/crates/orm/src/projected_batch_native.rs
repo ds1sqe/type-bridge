@@ -351,6 +351,10 @@ impl ProjectedBatchExecutor<'_> {
                                     .map(|reference| reference.reference.type_id().clone())
                             })?;
                         }
+                        if step.reference_resolution.as_ref().is_some_and(|resolution| resolution.guard.is_none()) {
+                            let iids = step.reference_iids(&answer).map_err(diagnostic)?;
+                            program.accept_reference_iids(&step, iids).map_err(diagnostic)?;
+                        }
                         if step.complete {
                             accept_hydration_answer(step.plan.local(), answer, &mut consumer)?;
                         } else if !records_answers {
@@ -401,18 +405,15 @@ impl ProjectedBatchExecutor<'_> {
                             coordinate("source_plan")?,
                             u16::try_from(coordinate("source_column")?).ok()?,
                         ))?;
-                        context
-                            .validate(&[], |role, reference_ordinal| {
-                                plan.role_references
-                                    .iter()
-                                    .find(|reference| {
-                                        reference.owner_ordinal == context.row()
-                                            && reference.role == *role
-                                            && reference.reference_ordinal == reference_ordinal
-                                    })
-                                    .map(|reference| reference.reference.type_id().clone())
-                            })
-                            .err()
+                        match context {
+                            crate::plan_builders::bulk_write::ReferenceContext::Guard(context) => context.validate(&[], |role, reference_ordinal| plan.role_references.iter().find(|reference| reference.owner_ordinal == context.row() && reference.role == *role && reference.reference_ordinal == reference_ordinal).map(|reference| reference.reference.type_id().clone())).err(),
+                            crate::plan_builders::bulk_write::ReferenceContext::Snapshot(ordinal) => {
+                                let mut references = plan.role_references.iter().collect::<Vec<_>>();
+                                references.sort_by_key(|reference| reference.owner_ordinal);
+                                let reference = references.get(*ordinal)?;
+                                Some(integrity_at_reference("projected_batch_reference_missing", "A projected role-player reference did not resolve exactly once", plan.model.id(), &reference.role, reference.owner_ordinal, reference.reference_ordinal, reference.reference.type_id()))
+                            },
+                        }
                     },
                 )))
             })
@@ -786,7 +787,11 @@ impl ProjectedBatchExecutor<'_> {
                         &mut ledger,
                         true,
                         &authority,
-                        &mut |_: &AnswerItem| {},
+                        &mut |item: &AnswerItem| {
+                            if records_answers {
+                                recorded.push(item.clone());
+                            }
+                        },
                     )
                     .await?;
                     if let Some(missing) = resolution
@@ -808,6 +813,7 @@ impl ProjectedBatchExecutor<'_> {
                     program
                         .accept_reference_iids(&step, returned)
                         .map_err(diagnostic)?;
+                    record_static_answer(&mut program, &step, recorded, records_answers)?;
                     continue;
                 }
                 if !step.complete {

@@ -146,6 +146,108 @@ impl StaticProgram {
         })
     }
 
+    pub(super) fn with_reference_lookup(
+        body: SplitProgram,
+        lookup: BuiltPlan,
+        placeholders: BTreeMap<String, usize>,
+    ) -> Result<Self, Diagnostic> {
+        use type_bridge_contract::query_plan::InputColumnId;
+        use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
+        let mut program = Self::new(body)?;
+        let source = StagedPlanV3::new(
+            lookup.local(),
+            lookup.local().given_rows().unwrap_or_default().to_vec(),
+            program.authority.declared(),
+        )?;
+        let columns = match source.plan().output() {
+            QueryOutput::Rows { columns } => columns.clone(),
+            _ => return Err(identity_error()),
+        };
+        let mut entries = Vec::with_capacity(program.entries.len() + 1);
+        entries.push(source);
+        let mut seen = std::collections::BTreeSet::new();
+        for (index, entry) in program.entries.into_iter().enumerate() {
+            let plan = entry.plan();
+            let mut rows = entry
+                .rows()
+                .iter()
+                .map(|row| row.values().to_vec())
+                .collect::<Vec<_>>();
+            let mut refs = Vec::new();
+            for (column, input) in plan.inputs().iter().enumerate() {
+                if !input.public_name().as_str().starts_with("player_") {
+                    continue;
+                }
+                let mut ordinal = None;
+                for row in &mut rows {
+                    let Some(CanonicalValue::String(value)) = &row[column] else {
+                        continue;
+                    };
+                    let mapped = *placeholders
+                        .get(value.as_str())
+                        .ok_or_else(identity_error)?;
+                    if ordinal.is_some_and(|previous| previous != mapped) {
+                        return Err(identity_error());
+                    }
+                    ordinal = Some(mapped);
+                    row[column] = None;
+                }
+                if let Some(ordinal) = ordinal {
+                    seen.insert(ordinal);
+                    let source_column = ordinal
+                        .checked_mul(2)
+                        .and_then(|value| value.checked_add(1))
+                        .ok_or_else(identity_error)?;
+                    refs.push(StagedResultRefV3 {
+                        input: InputColumnId::new(
+                            u16::try_from(column).map_err(|_| identity_error())?,
+                        ),
+                        source_plan: 0,
+                        source_column: u16::try_from(source_column)
+                            .map_err(|_| identity_error())?,
+                        expected_types: entries[0]
+                            .plan()
+                            .binding_types(columns[source_column])
+                            .ok_or_else(identity_error)?
+                            .iter()
+                            .cloned()
+                            .collect(),
+                    });
+                }
+            }
+            let entry = StagedPlanV3::new_with_result_refs(
+                plan,
+                rows.into_iter().map(InputRow::new).collect(),
+                refs,
+                program.authority.declared(),
+            )?;
+            entries.push(if index == 0 {
+                gate(entry, &entries[0], 0, &program.authority)?
+            } else {
+                entry
+            });
+        }
+        if seen.len() != placeholders.len() {
+            return Err(identity_error());
+        }
+        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+            &entries,
+            program.authority.declared(),
+        )?;
+        program.steps.push_front(StaticStep {
+            complete: false,
+            ordinal: 0,
+            missing_iid_noop: false,
+            expected_iid: None,
+            reference_resolution: Some(Box::new(references::ResolutionStep {
+                ordinals: (0..placeholders.len()).collect(),
+                guard: None,
+            })),
+        });
+        program.entries = entries;
+        Ok(program)
+    }
+
     pub(super) fn with_match_probe(
         miss: SplitProgram,
         guards: Vec<WriteStep>,
@@ -308,16 +410,24 @@ impl StaticProgram {
         Ok(program)
     }
 
-    pub(super) fn guard_contexts(&self) -> BTreeMap<(usize, u16), references::GuardContext> {
+    pub(super) fn guard_contexts(&self) -> BTreeMap<(usize, u16), ReferenceContext> {
         let mut contexts = BTreeMap::new();
         for (index, step) in self.steps.iter().enumerate() {
-            if let Some(guard) = step
-                .reference_resolution
-                .as_ref()
-                .and_then(|resolution| resolution.guard.as_ref())
-            {
-                for (column, context) in guard.cells() {
-                    contexts.insert((index, column), context);
+            if let Some(resolution) = &step.reference_resolution {
+                if let Some(guard) = &resolution.guard {
+                    for (column, context) in guard.cells() {
+                        contexts.insert((index, column), ReferenceContext::Guard(context));
+                    }
+                } else {
+                    for (column, ordinal) in resolution.ordinals.iter().enumerate() {
+                        contexts.insert(
+                            (
+                                index,
+                                u16::try_from(column * 2 + 1).expect("validated reference column"),
+                            ),
+                            ReferenceContext::Snapshot(*ordinal),
+                        );
+                    }
                 }
             }
         }
@@ -434,7 +544,10 @@ impl StaticProgram {
             expected_iid,
             missing_iid_noop: step.missing_iid_noop,
             candidate_filter: false,
-            reference_guard: step.reference_resolution.is_some(),
+            reference_guard: step
+                .reference_resolution
+                .as_ref()
+                .is_some_and(|resolution| resolution.guard.is_some()),
             reference_resolution: step.reference_resolution,
         }))
     }

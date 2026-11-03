@@ -1881,10 +1881,12 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
                             expected.code().as_str(),
                             "projected_batch_reference_missing"
                         );
-                        assert_eq!(
-                            contexts[&(0, 3)].validate(&[], |_, _| None).unwrap_err(),
-                            expected
-                        );
+                        let super::bulk_write::ReferenceContext::Guard(context) =
+                            &contexts[&(0, 3)]
+                        else {
+                            panic!("guard metadata");
+                        };
+                        assert_eq!(context.validate(&[], |_, _| None).unwrap_err(), expected);
                         let refusal = program
                             .next()
                             .err()

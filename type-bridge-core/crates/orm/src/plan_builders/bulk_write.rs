@@ -24,7 +24,8 @@ mod program;
 #[path = "bulk_write_sequence.rs"]
 mod sequence;
 pub(crate) use program::{
-    IdentityLayout, ReferenceSnapshots, WriteProgram, WriteStep, forces_pieces, forces_pieces_code,
+    IdentityLayout, ReferenceContext, ReferenceSnapshots, WriteProgram, WriteStep, forces_pieces,
+    forces_pieces_code,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -985,9 +986,12 @@ pub(crate) fn write_many(
         && rows.iter().any(|row| {
             row.players.iter().any(|(_, reference)| {
                 reference.candidates.contains(shape.type_id)
-                    && (rows.len() > 1
-                        || (kind == WriteKind::Update
-                            && matches!(reference.identity, ReferenceIdentity::Key { .. })))
+                    && if kind == WriteKind::Update {
+                        // Updates neither create roots nor change their IIDs.
+                        matches!(reference.identity, ReferenceIdentity::Key { .. })
+                    } else {
+                        rows.len() > 1
+                    }
             })
         });
     if mutable_references && program.statement_count() > 1 {

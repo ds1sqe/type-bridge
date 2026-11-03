@@ -810,7 +810,7 @@ mod tests {
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
     fn wide_single_projection() -> InstalledRuntimeProjection {
-        let source = "format: typebridge.schema/v2\nattributes:\n  item-key: { value: string }\n  item-tag: { value: string }\nentities:\n  wide-item:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\nrelations:\n  wide-edge:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\n    relates:\n      member: { card: { min: 0, max: 4 } }\nplays:\n  wide-item:\n    wide-edge: [member]\n";
+        let source = "format: typebridge.schema/v2\nattributes:\n  item-key: { value: string }\n  item-tag: { value: string }\nentities:\n  wide-item:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\nrelations:\n  wide-edge:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\n    relates:\n      member: { card: { min: 0, max: 4 } }\nplays:\n  wide-item:\n    wide-edge: [member]\n  wide-edge:\n    wide-edge: [member]\n";
         let declared = normalize_documents(
             &SchemaDocumentSet::parse([(DocumentId::new("single-wide.yaml").unwrap(), source)])
                 .unwrap(),
@@ -871,6 +871,20 @@ mod tests {
                     self.advertisement.query_limits(),
                 )
                 .unwrap();
+                let self_player = request.plans().iter().any(|entry| {
+                    !entry.plan().writes()
+                        && match entry.plan().output() {
+                            type_bridge_contract::query_plan::QueryOutput::Rows { columns }
+                                if columns.len() >= 2 =>
+                            {
+                                entry
+                                    .plan()
+                                    .binding_types(columns[1])
+                                    .is_some_and(|types| types.contains(&self.model))
+                            }
+                            _ => false,
+                        }
+                });
                 let input_indexes = self.input_indexes.lock().unwrap().clone();
                 let mut answers = Vec::new();
                 for entry in request.plans() {
@@ -928,9 +942,18 @@ mod tests {
                                     RemoteValue::Absent
                                 } else {
                                     RemoteValue::Thing {
-                                        iid: format!("0x{:02x}", 0x10 + ordinal),
-                                        type_id: TypeId::new(TypeKind::Entity, "wide-item")
-                                            .unwrap(),
+                                        iid: if self_player {
+                                            "0x20".into()
+                                        } else {
+                                            format!("0x{:02x}", 0x10 + ordinal)
+                                        },
+                                        type_id: plan
+                                            .binding_types(pair[1])
+                                            .unwrap()
+                                            .iter()
+                                            .next()
+                                            .unwrap()
+                                            .clone(),
                                     }
                                 },
                             );
@@ -960,7 +983,11 @@ mod tests {
                                 document[scalar.key.as_str()] = serde_json::json!(input_index);
                             }
                             for (index, role) in fetch.roles.iter().enumerate() {
-                                let player = serde_json::json!({"_iid":"0x10", "_type":"wide-item", "attributes":{"item-key":"player"}});
+                                let player = if self_player {
+                                    serde_json::json!({"_iid":"0x20", "_type":self.model.label().as_str(), "attributes":{"item-key":"key"}})
+                                } else {
+                                    serde_json::json!({"_iid":"0x10", "_type":"wide-item", "attributes":{"item-key":"player"}})
+                                };
                                 if role.collect {
                                     document[format!("_role_{index}_players")] =
                                         serde_json::json!([player]);
@@ -1170,6 +1197,119 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn proxy_wide_updates_freeze_self_key_references_in_one_exchange() {
+        for missing in [false, true] {
+            let model = TypeId::new(TypeKind::Relation, "wide-edge").unwrap();
+            let role = RoleId::new("wide-edge", "member").unwrap();
+            let key =
+                OwnsFactId::new(model.clone(), AttributeId::new("item-key").unwrap()).unwrap();
+            let (installed, proxy, transport) = single_proxy_fixture(model.clone(), 1, 300);
+            if missing {
+                transport
+                    .missing_guard_ordinal
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+            let base = proxy_single_input(&installed, &model, 300);
+            let reference = ProjectedReference::try_new(
+                &installed,
+                model.clone(),
+                None,
+                vec![(
+                    key.clone(),
+                    ProjectedAttributeValue::try_new(
+                        &installed,
+                        TypeId::new(TypeKind::Attribute, "item-key").unwrap(),
+                        CanonicalValue::String(CanonicalString::new("old-key").unwrap()),
+                    )
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+            let create = ProjectedCreate::try_new(
+                &installed,
+                model.clone(),
+                base.fields()
+                    .iter()
+                    .map(|(field, values)| (field.clone(), values.clone()))
+                    .collect(),
+                vec![(role.clone(), vec![reference])],
+            )
+            .unwrap();
+            let control =
+                ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+            let batch = ProjectedBatch::try_new_for_invocation(
+                &installed,
+                model.clone(),
+                ProjectedBatchOperation::Update,
+                vec![ProjectedBatchRow::Update {
+                    iid: "0x20".into(),
+                    replacement: create,
+                }],
+                &control,
+            )
+            .unwrap();
+            let result = ProjectedBatchExecutor::new(&installed)
+                .execute_on_target_mapped(
+                    crate::QueryTarget::Proxy(&proxy),
+                    &batch,
+                    control,
+                    None,
+                    |result| Ok(Some(result)),
+                )
+                .await;
+            if missing {
+                let crate::QueryTargetError::Commit(error) = result.unwrap_err() else {
+                    panic!("signed refusal");
+                };
+                let expected = crate::projected_batch_executor::integrity_at_reference(
+                    "projected_batch_reference_missing",
+                    "A projected role-player reference did not resolve exactly once",
+                    &model,
+                    &role,
+                    0,
+                    0,
+                    &model,
+                );
+                assert_eq!(error.diagnostic().code(), expected.code());
+                assert_eq!(error.diagnostic().path(), expected.path());
+                assert_eq!(
+                    error.error.commit_failure_certainty(),
+                    Some(crate::CommitFailureCertainty::DefinitelyAborted)
+                );
+                assert_eq!(
+                    transport
+                        .dispatched_writes
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    0
+                );
+            } else {
+                let Some(ProjectedBatchResult::Things(things)) = result.unwrap() else {
+                    panic!("written root");
+                };
+                assert_eq!(things.count(), 1);
+                assert_eq!(things.input_indexes(), [0]);
+                assert_eq!(things.items()[0].iid(), "0x20");
+                let player = &things.items()[0].roles()[&role][0];
+                assert_eq!(player.iid(), "0x20");
+                assert_eq!(
+                    player.keys()[&key].value(),
+                    &CanonicalValue::String(CanonicalString::new("key").unwrap())
+                );
+            }
+            let seen = transport.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].plans().len(), 3);
+            assert!(!seen[0].plans()[0].plan().writes());
+            assert!(
+                seen[0].plans()[1..]
+                    .iter()
+                    .flat_map(|entry| entry.result_refs())
+                    .all(|reference| reference.source_plan == 0)
+            );
+        }
     }
 
     #[tokio::test]
