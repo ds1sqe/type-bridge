@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -32,6 +32,9 @@ from type_bridge_core import (
 )
 from type_bridge_core import (
     Rows as Rows,
+)
+from type_bridge_core import (
+    StagedPlan as StagedPlan,
 )
 from type_bridge_core import (
     Transaction as Transaction,
@@ -112,6 +115,13 @@ class PlanInputCell[T]:
     input: PlanInput[T]
     value: T | None
     def __init__(self, input: PlanInput[T], value: T | None) -> None: ...
+
+@dataclass(frozen=True)
+class StagedResultRef:
+    input: PlanInput[Any]
+    source_plan: int
+    source_column: int
+    expected_types: Sequence[type[Any]]
 
 class PlanCondition:
     comparator: str
@@ -199,6 +209,7 @@ class PlanBuilder(_Inputs):
     def __init__(self, *, query_limits: QueryLimits | None = None) -> None: ...
     def exact(self, model: type[Any]) -> PlanThing: ...
     def subtypes(self, model: type[Any]) -> PlanThing: ...
+    def by_iid_input(self, thing: PlanThing, column: PlanInput[str]) -> Self: ...
     def field(self, thing: PlanThing, token: _FieldToken) -> PlanValue: ...
     def where_(self, condition: PlanCondition) -> Self: ...
     def links(self, relation: PlanThing, role: _RoleToken, player: PlanThing) -> Self: ...
@@ -217,6 +228,12 @@ class PlanBuilder(_Inputs):
     def count(self) -> Self: ...
     def exists(self) -> Self: ...
     def build(self, authority: QueryV2Authority) -> Plan[_Answer]: ...
+    def build_staged(
+        self,
+        authority: QueryV2Authority,
+        rows: Iterable[Iterable[PlanInputCell[Any]]],
+        result_refs: Iterable[StagedResultRef] = (),
+    ) -> StagedPlan: ...
 
 type Condition = PlanCondition
 type _ValueLike[T] = T | Value[T] | Expr[T] | PlanInput[T] | PlanLiteral[T]
