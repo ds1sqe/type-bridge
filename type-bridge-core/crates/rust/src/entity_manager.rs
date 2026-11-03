@@ -4,7 +4,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use type_bridge_contract::id::is_canonical_thing_iid;
-use type_bridge_orm::session::backend::TxType;
 use type_bridge_orm::{
     ProjectedBatchOperation, ProjectedBatchRow, ProjectedCrudExecutor, ProjectedManagerComparison,
 };
@@ -24,6 +23,7 @@ use crate::projected_batch::{
 use crate::projected_codec::{materialize_projected, project_create};
 use type_bridge_orm::{ProjectedManagerFilterExecutor, QueryTarget};
 
+use crate::manager_target::{ManagerTarget, schema_not_bound};
 use crate::projected_filter::ProjectedEntityFilter;
 use crate::projected_filter::manager_read_control;
 use crate::schema::Schema;
@@ -42,16 +42,6 @@ fn invalid_iid() -> Error {
     )
 }
 
-fn schema_not_bound() -> Error {
-    Error::model_validation(
-        ModelValidationPhase::Input,
-        "schema_not_bound",
-        vec![],
-        "database is not schema-bound",
-        None,
-    )
-}
-
 impl<S, M> EntitySubtypeManager<'_, S, M>
 where
     S: Schema,
@@ -63,7 +53,7 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -71,12 +61,7 @@ where
             false,
         )?;
         ProjectedManagerFilterExecutor::new(installed)
-            .get_by_iid_including_subtypes_on_target(
-                QueryTarget::Database(self.db.inner_orm()),
-                &id,
-                iid,
-                manager_read_control(self.db.inner_orm()),
-            )
+            .get_by_iid_including_subtypes_on_target(target, &id, iid, manager_read_control(target))
             .await
             .map_err(crate::remote::target_error)?
             .map(|thing| {
@@ -95,7 +80,7 @@ where
     /// generated leaf or family result. Validation, database, hydration, and close errors
     /// are returned without exposing implementation details.
     pub async fn all(&self) -> Result<Vec<M::Subtypes>> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -103,11 +88,7 @@ where
             false,
         )?;
         ProjectedManagerFilterExecutor::new(installed)
-            .all_including_subtypes_on_target(
-                QueryTarget::Database(self.db.inner_orm()),
-                &id,
-                manager_read_control(self.db.inner_orm()),
-            )
+            .all_including_subtypes_on_target(target, &id, manager_read_control(target))
             .await
             .map_err(crate::remote::target_error)?
             .into_iter()
@@ -125,7 +106,7 @@ where
     }
     /// Counts the root and all concrete descendants using the inclusive subtype scope.
     pub async fn count(&self) -> Result<u64> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -133,11 +114,7 @@ where
             false,
         )?;
         ProjectedManagerFilterExecutor::new(installed)
-            .count_including_subtypes_on_target(
-                QueryTarget::Database(self.db.inner_orm()),
-                &id,
-                manager_read_control(self.db.inner_orm()),
-            )
+            .count_including_subtypes_on_target(target, &id, manager_read_control(target))
             .await
             .map_err(crate::remote::target_error)
     }
@@ -147,9 +124,9 @@ where
 /// Exact reads and writes exclude subtypes; methods return client input/schema-validation,
 /// database/transaction/close, or hydration/model-validation errors as applicable.
 pub struct EntityManager<'db, S: Schema, M: EntityModel<Schema = S>> {
-    db: &'db Database<S>,
+    context: Option<ManagerTarget<'db>>,
     hooks: HookRunner,
-    marker: PhantomData<M>,
+    marker: PhantomData<(S, M)>,
 }
 
 /// Read-only, schema/model-branded manager for an inclusive generated subtype association.
@@ -161,19 +138,8 @@ pub struct EntitySubtypeManager<
     S: Schema,
     M: SubtypeRootModel<Schema = S> + EntityModel<Schema = S>,
 > {
-    db: &'db Database<S>,
-    marker: PhantomData<M>,
-}
-
-impl<'db, S: Schema, M: SubtypeRootModel<Schema = S> + EntityModel<Schema = S>>
-    EntitySubtypeManager<'db, S, M>
-{
-    pub(crate) fn new(db: &'db Database<S>) -> Self {
-        Self {
-            db,
-            marker: PhantomData,
-        }
-    }
+    context: Option<ManagerTarget<'db>>,
+    marker: PhantomData<(S, M)>,
 }
 
 impl<'db, S, M> EntityManager<'db, S, M>
@@ -184,14 +150,17 @@ where
     /// Switches only the read scope and result shape to the generated inclusive subtype
     /// association; it does not add write operations.
     pub fn subtypes(&self) -> EntitySubtypeManager<'db, S, M> {
-        EntitySubtypeManager::new(self.db)
+        EntitySubtypeManager {
+            context: self.context,
+            marker: PhantomData,
+        }
     }
 }
 
 impl<'db, S: Schema, M: EntityModel<Schema = S>> Clone for EntityManager<'db, S, M> {
     fn clone(&self) -> Self {
         Self {
-            db: self.db,
+            context: self.context,
             hooks: self.hooks.clone(),
             marker: PhantomData,
         }
@@ -199,12 +168,19 @@ impl<'db, S: Schema, M: EntityModel<Schema = S>> Clone for EntityManager<'db, S,
 }
 
 impl<S: Schema, M: EntityModel<Schema = S>> EntityManager<'_, S, M> {
-    pub(crate) fn new(db: &Database<S>) -> EntityManager<'_, S, M> {
+    pub(crate) fn for_target(context: Option<ManagerTarget<'_>>) -> EntityManager<'_, S, M> {
         EntityManager {
-            db,
+            context,
             hooks: HookRunner::default(),
             marker: PhantomData,
         }
+    }
+
+    pub(crate) fn new(db: &Database<S>) -> EntityManager<'_, S, M> {
+        Self::for_target(db.installed_schema().map(|installed| ManagerTarget {
+            installed,
+            target: QueryTarget::Database(db.inner_orm()),
+        }))
     }
 }
 
@@ -215,7 +191,7 @@ where
 {
     /// Start one empty immutable canonical filter for this exact entity model.
     pub fn filter(&self) -> Result<ProjectedEntityFilter<'db, S, M>> {
-        ProjectedEntityFilter::for_database(self.db)
+        ProjectedEntityFilter::for_target(self.context.ok_or_else(schema_not_bound)?)
     }
 
     /// Start a canonical filter with one exact generated field comparison.
@@ -386,7 +362,7 @@ where
         iids: &[String],
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(iids.len())?;
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -422,12 +398,8 @@ where
                 );
             }
         }
-        let snapshots = crate::projected_batch::execute_owned_deleted_things(
-            self.db.inner_orm(),
-            installed,
-            &batch,
-        )
-        .await?;
+        let snapshots =
+            crate::projected_batch::execute_owned_deleted_things(target, installed, &batch).await?;
         for (iid, state) in iids.iter().zip(states) {
             self.hooks
                 .run_post(
@@ -483,7 +455,7 @@ where
         inputs: Vec<(String, M::Create)>,
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -494,7 +466,7 @@ where
         if !self.hooks.has_hooks() {
             let rows = crate::projected_batch::update_rows(installed, &id, inputs)?;
             let batch = prepare_batch(installed, id, ProjectedBatchOperation::Update, rows)?;
-            return execute_owned_things(self.db.inner_orm(), installed, &batch).await;
+            return execute_owned_things(target, installed, &batch).await;
         }
         let mut hook_inputs = reserved_binding_vec(inputs.len())?;
         let mut rows = reserved_binding_vec(inputs.len())?;
@@ -526,7 +498,7 @@ where
             );
         }
 
-        let outputs = execute_owned_things::<M>(self.db.inner_orm(), installed, &batch).await?;
+        let outputs = execute_owned_things::<M>(target, installed, &batch).await?;
         self.hooks
             .run_post_batch(
                 M::TYPE_ID_JSON,
@@ -545,7 +517,7 @@ where
     /// whole batch, and post-hook failures do not change the committed result.
     pub async fn delete_many(&self, iids: &[String]) -> Result<()> {
         validate_binding_row_count(iids.len())?;
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -581,7 +553,7 @@ where
                 );
             }
         }
-        execute_owned_delete(self.db.inner_orm(), installed, &batch).await?;
+        execute_owned_delete(target, installed, &batch).await?;
         for (iid, state) in iids.iter().zip(states) {
             self.hooks
                 .run_post(
@@ -603,7 +575,7 @@ where
         operation: CrudOperation,
         iid: Option<&str>,
     ) -> Result<WriteResult<M>> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -614,60 +586,25 @@ where
         create
             .validate_native_write()
             .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))?;
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Write)
+        ManagerTarget { installed, target }
+            .write(create, operation, iid, ModelKind::Entity)
             .await
-            .map_err(Error::from_orm)?;
-        let value = match crate::projected_batch::execute_transaction_single(
-            &tx,
-            installed,
-            create,
-            operation,
-            iid,
-            ModelKind::Entity,
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return Err(error);
-            }
-        };
-        tx.commit_classified()
-            .await
-            .map_err(|error| Error::from_orm(error.into_orm_error()))?;
-        Ok(value)
     }
 
     async fn projected_delete(&self, iid: &str) -> Result<()> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Write)
-            .await
-            .map_err(Error::from_orm)?;
-        let result = ProjectedCrudExecutor::new(installed)
-            .delete_entity_by_iid_in_transaction_with_compatibility(&tx, &id, iid)
-            .await;
-        if let Err(error) = result {
-            let mapped =
-                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Delete));
-            let _ = tx.rollback().await;
-            return Err(mapped);
-        }
-        tx.commit_classified()
-            .await
-            .map_err(|error| Error::from_orm(error.into_orm_error()))
+        let mut rows = reserved_binding_vec(1)?;
+        rows.push(ProjectedBatchRow::Delete {
+            iid: iid.to_owned(),
+        });
+        let batch = prepare_batch(installed, id, ProjectedBatchOperation::Delete, rows)?;
+        execute_owned_delete(target, installed, &batch).await
     }
 
     async fn write_many_with_hooks(
@@ -675,7 +612,7 @@ where
         inputs: Vec<M::Create>,
         crud_operation: CrudOperation,
     ) -> Result<crate::BatchWriteResult<M>> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -713,7 +650,7 @@ where
             );
         }
 
-        let outputs = execute_owned_things::<M>(self.db.inner_orm(), installed, &batch).await?;
+        let outputs = execute_owned_things::<M>(target, installed, &batch).await?;
         self.hooks
             .run_post_batch(
                 M::TYPE_ID_JSON,
@@ -732,7 +669,7 @@ where
         inputs: Vec<M::Create>,
         put: bool,
     ) -> Result<crate::BatchWriteResult<M>> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -742,21 +679,35 @@ where
         let rows = create_rows(installed, &id, inputs)?;
         let operation = create_operation(installed, &id, put);
         let batch = prepare_batch(installed, id, operation, rows)?;
-        execute_owned_things(self.db.inner_orm(), installed, &batch).await
+        execute_owned_things(target, installed, &batch).await
     }
     /// Counts only exact models, excluding subtypes.
     pub async fn count(&self) -> Result<u64> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        ProjectedCrudExecutor::new(installed)
-            .count_entities_with_compatibility(self.db.inner_orm(), &id)
+        let executor = ProjectedCrudExecutor::new(installed);
+        if let QueryTarget::Database(database) = target {
+            return executor
+                .count_entities_with_compatibility(database, &id)
+                .await
+                .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None));
+        }
+        executor
+            .count_on_target(
+                target,
+                &id,
+                type_bridge_orm::projected_crud::ProjectedCrudInvocationControl::capture(
+                    target.answer_limits().unwrap_or_default(),
+                    type_bridge_orm::AnswerCancellation::default(),
+                ),
+            )
             .await
-            .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None))
+            .map_err(crate::remote::target_error)
     }
 
     /// Reads one exact model by canonical IID; invalid IIDs are rejected before I/O and a
@@ -765,17 +716,26 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        ProjectedCrudExecutor::new(installed)
-            .get_entity_by_iid_with_compatibility(self.db.inner_orm(), &id, iid)
-            .await
-            .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None))?
+        let executor = ProjectedCrudExecutor::new(installed);
+        let value = if let QueryTarget::Database(database) = target {
+            executor
+                .get_entity_by_iid_with_compatibility(database, &id, iid)
+                .await
+                .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None))?
+        } else {
+            executor
+                .get_by_iid_on_target(target, &id, iid, None)
+                .await
+                .map_err(crate::remote::target_error)?
+        };
+        value
             .map(|projected| materialize_projected(projected, installed))
             .transpose()
     }
@@ -783,7 +743,7 @@ where
     /// Reads all exact models in application result order, excluding subtypes; each result is
     /// a complete hydrated model.
     pub async fn all(&self) -> Result<Vec<M>> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
         let (id, _) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -791,12 +751,7 @@ where
             true,
         )?;
         ProjectedManagerFilterExecutor::new(installed)
-            .compatibility_all_on_target(
-                QueryTarget::Database(self.db.inner_orm()),
-                &id,
-                &[],
-                manager_read_control(self.db.inner_orm()),
-            )
+            .compatibility_all_on_target(target, &id, &[], manager_read_control(target))
             .await
             .map_err(crate::remote::target_error)?
             .into_iter()

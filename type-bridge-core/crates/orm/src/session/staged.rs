@@ -456,6 +456,15 @@ impl std::error::Error for CommitError {
     }
 }
 impl CommitError {
+    /// Attach a binding's original materialization error while retaining the
+    /// classified commit outcome and diagnostic.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_binding_source(mut self, source: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        self.source_error = Some(Box::new(crate::QueryTargetError::Callback(source)));
+        self
+    }
+
     fn new(error: ClassifiedCommitError, op_index: Option<usize>, context: FailureContext) -> Self {
         let failure = error.failure().map(|failure| {
             match op_index.and_then(|index| u32::try_from(index).ok()) {

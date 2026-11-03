@@ -373,8 +373,11 @@ has the same canonical plan bytes (`Plan::canonical_bytes`).
 
 ## Direct or proxy
 
-A program that queries through a `Connection` runs unchanged against TypeDB
-or a TypeBridge server; only the policy passed to `SCHEMA.connect` differs:
+Generated managers and typed queries on a `Connection` use the configured
+TypeDB or TypeBridge server target. For example,
+`connection.entities::<Person>().count().await?` works with either policy.
+`ProxyDatabase` also exposes `entities()` and `relations()` directly. Only
+the policy passed to `SCHEMA.connect` differs:
 
 ```rust
 use models::{AppSchema, Person, SCHEMA};

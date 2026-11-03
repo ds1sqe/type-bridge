@@ -24,6 +24,7 @@ pub use type_bridge_contract::execution_timeline::{
 };
 pub use type_bridge_contract::failure;
 pub mod hooks;
+mod manager_target;
 pub mod migration;
 pub mod model;
 pub mod plan;

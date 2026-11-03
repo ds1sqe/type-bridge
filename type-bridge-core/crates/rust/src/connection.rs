@@ -37,9 +37,8 @@ impl From<ProxyConnectionPolicy> for ConnectionPolicy {
 
 /// A schema-bound connection opened by [`crate::SchemaPackage::connect`].
 ///
-/// Queries behave the same on both variants. Match on the variant only for
-/// what one of them alone offers, such as CRUD managers on a direct
-/// [`Database`].
+/// Queries and generated CRUD managers select their execution target from
+/// the connection policy and behave the same on both variants.
 pub enum Connection<S: Schema> {
     /// Directly against TypeDB.
     Direct(Database<S>),
@@ -57,6 +56,28 @@ impl<S: Schema> std::fmt::Debug for Connection<S> {
 }
 
 impl<S: Schema> Connection<S> {
+    /// Create an exact entity manager on the configured connection target.
+    pub fn entities<M>(&self) -> crate::entity_manager::EntityManager<'_, S, M>
+    where
+        M: crate::__codegen::EntityModel<Schema = S>,
+    {
+        match self {
+            Self::Direct(database) => database.entities(),
+            Self::Proxy(proxy) => proxy.entities(),
+        }
+    }
+
+    /// Create an exact relation manager on the configured connection target.
+    pub fn relations<M>(&self) -> crate::relation_manager::RelationManager<'_, S, M>
+    where
+        M: crate::__codegen::RelationModel<Schema = S>,
+    {
+        match self {
+            Self::Direct(database) => database.relations(),
+            Self::Proxy(proxy) => proxy.relations(),
+        }
+    }
+
     /// Start one query session under this connection's answer-limit ceiling.
     pub fn query(&self) -> Result<QuerySession<'_, S>> {
         self.query_with_resources(

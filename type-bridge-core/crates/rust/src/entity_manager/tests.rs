@@ -1422,7 +1422,15 @@ async fn public_put_update_delete_success_lifecycles() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Rows(Vec::new()))]);
     db.entities::<Record>().delete("0x2").await.unwrap();
     let events = &state.lock().unwrap().events;
-    assert_queries(events, &[&["isa! record", "iid 0x2", "delete"]]);
+    assert_queries(
+        events,
+        &[&[
+            "isa! record",
+            "let $PlanLiteralCell1 = \"0x2\"",
+            "iid($thing1) == $target_iid",
+            "delete",
+        ]],
+    );
 }
 
 #[tokio::test]

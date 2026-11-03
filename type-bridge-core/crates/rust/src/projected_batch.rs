@@ -4,9 +4,9 @@ use type_bridge_contract::id::TypeId;
 use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticCategory, SdkExecutionDiagnostic};
 use type_bridge_orm::session::context::TransactionContext;
 use type_bridge_orm::{
-    AnswerCancellation, Database, InstalledRuntimeProjection, ProjectedBatch,
-    ProjectedBatchExecutor, ProjectedBatchInvocationControl, ProjectedBatchOperation,
-    ProjectedBatchResult, ProjectedBatchRow, QueryExecutionResourceLimits,
+    AnswerCancellation, InstalledRuntimeProjection, ProjectedBatch, ProjectedBatchExecutor,
+    ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
+    ProjectedBatchRow, QueryExecutionResourceLimits, QueryTarget, QueryTargetError,
 };
 
 use crate::__codegen::{CompleteModel, EncodedCreate, IntoEncodedCreate};
@@ -14,6 +14,13 @@ use crate::Result;
 use crate::entity_codec::map_validation_error;
 use crate::error::{Error, ModelValidationPhase};
 use crate::projected_codec::{materialize_projected, project_create, project_encoded_create};
+
+fn map_target_execution_error(error: QueryTargetError) -> Error {
+    match error {
+        QueryTargetError::Interrupted(error) => map_execution_error(error),
+        other => crate::remote::target_error(other),
+    }
+}
 
 #[cfg(test)]
 mod tests;
@@ -26,34 +33,9 @@ pub(crate) async fn execute_transaction_single<M: CompleteModel>(
     iid: Option<&str>,
     kind: crate::hooks::ModelKind,
 ) -> Result<crate::WriteResult<M>> {
-    use crate::hooks::CrudOperation;
-
-    let model = create.type_id().clone();
-    let (batch_operation, row) = match operation {
-        CrudOperation::Insert => (
-            ProjectedBatchOperation::Insert,
-            ProjectedBatchRow::Create(create),
-        ),
-        CrudOperation::Put => (
-            ProjectedBatchOperation::Put,
-            ProjectedBatchRow::Create(create),
-        ),
-        CrudOperation::Update => (
-            ProjectedBatchOperation::Update,
-            ProjectedBatchRow::Update {
-                iid: iid
-                    .expect("single update requires its validated IID")
-                    .to_owned(),
-                replacement: create,
-            },
-        ),
-        CrudOperation::Delete => unreachable!("a create payload cannot select deletion"),
-    };
     let control = transaction_control(transaction);
     let executor = type_bridge_orm::ProjectedCrudExecutor::new(installed);
-    let batch = executor
-        .single_controlled_write_batch(&model, batch_operation, row, &control)
-        .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))?;
+    let batch = prepare_single(installed, create, operation, iid, &control)?;
     let binding_error = std::sync::Mutex::new(None);
     let result = executor
         .execute_single_write_in_transaction_with_compatibility(
@@ -79,6 +61,72 @@ pub(crate) async fn execute_transaction_single<M: CompleteModel>(
         return Err(error);
     }
     result.map_err(|error| Error::from_projected_crud(error, kind, Some(operation)))
+}
+
+fn prepare_single(
+    installed: &InstalledRuntimeProjection,
+    create: type_bridge_orm::ProjectedCreate,
+    operation: crate::hooks::CrudOperation,
+    iid: Option<&str>,
+    control: &ProjectedBatchInvocationControl,
+) -> Result<ProjectedBatch> {
+    use crate::hooks::CrudOperation;
+    let model = create.type_id().clone();
+    let (batch_operation, row) = match operation {
+        CrudOperation::Insert => (
+            ProjectedBatchOperation::Insert,
+            ProjectedBatchRow::Create(create),
+        ),
+        CrudOperation::Put => (
+            ProjectedBatchOperation::Put,
+            ProjectedBatchRow::Create(create),
+        ),
+        CrudOperation::Update => (
+            ProjectedBatchOperation::Update,
+            ProjectedBatchRow::Update {
+                iid: iid
+                    .expect("single update requires its validated IID")
+                    .to_owned(),
+                replacement: create,
+            },
+        ),
+        CrudOperation::Delete => unreachable!("a create payload cannot select deletion"),
+    };
+    type_bridge_orm::ProjectedCrudExecutor::new(installed)
+        .single_controlled_write_batch(&model, batch_operation, row, control)
+        .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))
+}
+
+pub(crate) async fn execute_target_single<M: CompleteModel>(
+    target: QueryTarget<'_>,
+    installed: &InstalledRuntimeProjection,
+    create: type_bridge_orm::ProjectedCreate,
+    operation: crate::hooks::CrudOperation,
+    iid: Option<&str>,
+) -> Result<crate::WriteResult<M>> {
+    let control = control(target.answer_limits().unwrap_or_default());
+    let batch = prepare_single(installed, create, operation, iid, &control)?;
+    let binding_error = std::sync::Mutex::new(None);
+    let result = type_bridge_orm::ProjectedCrudExecutor::new(installed)
+        .execute_single_write_on_target(target, &batch, control, |things| {
+            crate::projected_codec::materialize_write_result(things, installed).map_err(|error| {
+                *binding_error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+                ProjectedBatchExecutor::binding_materialization_failure(0)
+            })
+        })
+        .await;
+    let original = binding_error
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    result.map_err(|error| match (error, original) {
+        (QueryTargetError::Commit(error), Some(original)) => {
+            Error::from(error.with_binding_source(Box::new(original)))
+        }
+        (_, Some(original)) => original,
+        (error, None) => map_target_execution_error(error),
+    })
 }
 
 pub(crate) fn create_operation(
@@ -183,38 +231,38 @@ pub(crate) fn delete_rows(iids: &[String]) -> Result<Vec<ProjectedBatchRow>> {
 }
 
 pub(crate) async fn execute_owned_things<M: CompleteModel>(
-    database: &Database,
+    target: QueryTarget<'_>,
     installed: &InstalledRuntimeProjection,
     batch: &ProjectedBatch,
 ) -> Result<crate::BatchWriteResult<M>> {
     ProjectedBatchExecutor::new(installed)
-        .execute_mapped(
-            database,
+        .execute_on_target_mapped(
+            target,
             batch,
-            database_control(database),
+            control(target.answer_limits().unwrap_or_default()),
             crate::BatchWriteResult::default(),
             |result| materialize_result(result, installed),
         )
         .await
-        .map_err(map_execution_error)
+        .map_err(map_target_execution_error)
 }
 
 pub(crate) async fn execute_owned_deleted_things<M: CompleteModel>(
-    database: &Database,
+    target: QueryTarget<'_>,
     installed: &InstalledRuntimeProjection,
     batch: &ProjectedBatch,
 ) -> Result<crate::BatchWriteResult<M>> {
     ProjectedBatchExecutor::new(installed)
         .returning_deleted()
-        .execute_mapped(
-            database,
+        .execute_on_target_mapped(
+            target,
             batch,
-            database_control(database),
+            control(target.answer_limits().unwrap_or_default()),
             crate::BatchWriteResult::default(),
             |result| materialize_result(result, installed),
         )
         .await
-        .map_err(map_execution_error)
+        .map_err(map_target_execution_error)
 }
 
 pub(crate) async fn execute_borrowed_things<M: CompleteModel>(
@@ -253,20 +301,20 @@ pub(crate) async fn execute_borrowed_deleted_things<M: CompleteModel>(
 }
 
 pub(crate) async fn execute_owned_delete(
-    database: &Database,
+    target: QueryTarget<'_>,
     installed: &InstalledRuntimeProjection,
     batch: &ProjectedBatch,
 ) -> Result<()> {
     ProjectedBatchExecutor::new(installed)
-        .execute_mapped(
-            database,
+        .execute_on_target_mapped(
+            target,
             batch,
-            database_control(database),
+            control(target.answer_limits().unwrap_or_default()),
             (),
             deleted_result,
         )
         .await
-        .map_err(map_execution_error)
+        .map_err(map_target_execution_error)
 }
 
 pub(crate) async fn execute_borrowed_delete(
@@ -343,10 +391,6 @@ fn deleted_result(result: ProjectedBatchResult) -> std::result::Result<(), SdkEx
 
 fn control(limits: QueryExecutionResourceLimits) -> ProjectedBatchInvocationControl {
     ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default())
-}
-
-fn database_control(database: &Database) -> ProjectedBatchInvocationControl {
-    control(database.answer_limits().unwrap_or_default())
 }
 
 fn transaction_control(transaction: &TransactionContext) -> ProjectedBatchInvocationControl {

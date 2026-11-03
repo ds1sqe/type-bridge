@@ -11,14 +11,15 @@ use type_bridge_orm::{
 };
 
 use crate::__codegen::{CompleteModel, EntityModel, FieldToken, Model, QueryValued, RelationModel};
+use crate::Result;
 use crate::entity_codec::resolve_entity_authority;
 use crate::error::{Error, ModelValidationPhase};
+use crate::manager_target::ManagerTarget;
 use crate::projected_codec::{
     manager_filter_error, materialize_projected, project_manager_predicate,
 };
 use crate::relation_codec::resolve_relation_authority;
 use crate::schema::Schema;
-use crate::{Database, Result};
 
 struct ProjectedFilterCore<'target> {
     installed: &'target InstalledRuntimeProjection,
@@ -28,12 +29,7 @@ struct ProjectedFilterCore<'target> {
 
 impl<'target> ProjectedFilterCore<'target> {
     fn control(&self) -> ProjectedManagerFilterInvocationControl {
-        let mut limits = self.target.answer_limits().unwrap_or_default();
-        limits.items = self
-            .target
-            .manager_item_limit()
-            .unwrap_or_else(|| QueryExecutionResourceLimits::default().items);
-        ProjectedManagerFilterInvocationControl::capture(limits, AnswerCancellation::default())
+        manager_read_control(self.target)
     }
 
     fn try_new(
@@ -129,19 +125,15 @@ where
     S: Schema,
     M: EntityModel<Schema = S> + CompleteModel,
 {
-    pub(crate) fn for_database(database: &'target Database<S>) -> Result<Self> {
-        let installed = database.installed_schema().ok_or_else(schema_not_bound)?;
+    pub(crate) fn for_target(context: ManagerTarget<'target>) -> Result<Self> {
+        let ManagerTarget { installed, target } = context;
         let (model, _) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             false,
         )?;
-        Self::new(
-            installed,
-            QueryTarget::Database(database.inner_orm()),
-            model,
-        )
+        Self::new(installed, target, model)
     }
 
     fn new(
@@ -203,19 +195,15 @@ where
     S: Schema,
     M: RelationModel<Schema = S> + CompleteModel,
 {
-    pub(crate) fn for_database(database: &'target Database<S>) -> Result<Self> {
-        let installed = database.installed_schema().ok_or_else(schema_not_bound)?;
+    pub(crate) fn for_target(context: ManagerTarget<'target>) -> Result<Self> {
+        let ManagerTarget { installed, target } = context;
         let (model, _) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             false,
         )?;
-        Self::new(
-            installed,
-            QueryTarget::Database(database.inner_orm()),
-            model,
-        )
+        Self::new(installed, target, model)
     }
 
     fn new(
@@ -370,16 +358,6 @@ where
     }
 }
 
-fn schema_not_bound() -> Error {
-    Error::model_validation(
-        ModelValidationPhase::Input,
-        "schema_not_bound",
-        vec![],
-        "database is not schema-bound",
-        None,
-    )
-}
-
 fn filter_target_error(error: QueryTargetError) -> Error {
     match error {
         QueryTargetError::Callback(_) => crate::remote::target_error(error),
@@ -391,9 +369,8 @@ fn filter_target_error(error: QueryTargetError) -> Error {
 
 /// Preserve the manager item ceiling while capturing the ordinary read budget.
 pub(crate) fn manager_read_control(
-    database: &type_bridge_orm::Database,
+    target: QueryTarget<'_>,
 ) -> ProjectedManagerFilterInvocationControl {
-    let target = QueryTarget::Database(database);
     let mut limits = target.answer_limits().unwrap_or_default();
     limits.items = target
         .manager_item_limit()

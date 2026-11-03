@@ -415,6 +415,34 @@ impl ProxyDatabase<Unbound> {
 }
 
 impl<S: Schema> ProxyDatabase<S> {
+    fn manager_target(&self) -> Option<crate::manager_target::ManagerTarget<'_>> {
+        self.installed
+            .as_deref()
+            .zip(self.runtime.as_deref())
+            .map(
+                |(installed, runtime)| crate::manager_target::ManagerTarget {
+                    installed,
+                    target: QueryTarget::Proxy(&runtime.connection),
+                },
+            )
+    }
+
+    /// Create a lightweight exact entity manager using this proxy connection.
+    pub fn entities<M>(&self) -> crate::entity_manager::EntityManager<'_, S, M>
+    where
+        M: crate::__codegen::EntityModel<Schema = S>,
+    {
+        crate::entity_manager::EntityManager::for_target(self.manager_target())
+    }
+
+    /// Create a lightweight exact relation manager using this proxy connection.
+    pub fn relations<M>(&self) -> crate::relation_manager::RelationManager<'_, S, M>
+    where
+        M: crate::__codegen::RelationModel<Schema = S>,
+    {
+        crate::relation_manager::RelationManager::for_target(self.manager_target())
+    }
+
     /// Open a staged transaction over this proxy.
     ///
     /// It has the same API as a direct
@@ -724,7 +752,10 @@ mod tests {
     impl crate::plan::StageSchema<TestSchema> for TestSchema {}
 
     #[derive(Debug)]
-    struct Person;
+    struct Person {
+        iid: String,
+        origin: __codegen::ReferenceOrigin,
+    }
     impl sealed::Sealed for Person {}
     impl Model for Person {
         type Schema = TestSchema;
@@ -740,15 +771,18 @@ mod tests {
         type Create = PersonCreate;
 
         fn iid(&self) -> &str {
-            unreachable!()
+            &self.iid
         }
     }
     impl MaterializeModel for Person {
         fn materialize(
-            _: &HydratedRow,
+            row: &HydratedRow,
             _: &HydrationCapability,
         ) -> std::result::Result<Self, ValidationError> {
-            Ok(Self)
+            Ok(Self {
+                iid: row.iid().to_owned(),
+                origin: row.origin().clone(),
+            })
         }
     }
 
@@ -757,7 +791,14 @@ mod tests {
     impl sealed::Sealed for PersonCreate {}
     impl IntoEncodedCreate for PersonCreate {
         fn into_encoded_create(self) -> std::result::Result<EncodedCreate, ValidationError> {
-            Ok(EncodedCreate::new(Person::TYPE_ID_JSON, vec![], vec![]))
+            Ok(EncodedCreate::new(
+                Person::TYPE_ID_JSON,
+                vec![(
+                    r#"{"attribute":"name","owner":{"kind":"entity","label":"person"}}"#,
+                    vec![__codegen::EncodedScalar::String("alice".into())],
+                )],
+                vec![],
+            ))
         }
     }
 
@@ -1003,7 +1044,7 @@ mod tests {
     fn package() -> SchemaPackage<TestSchema> {
         let documents = SchemaDocumentSet::parse([(
             DocumentId::new("remote.yaml").unwrap(),
-            "format: typebridge.schema/v2\nattributes:\n  name: { value: string }\nentities:\n  person:\n    owns: { name: { key: true } }\n",
+            "format: typebridge.schema/v2\nattributes:\n  name: { value: string }\nentities:\n  person:\n    owns: { name: { key: true } }\nrelations:\n  peer:\n    owns: { name: { key: true } }\n    relates: { member: { card: 1 } }\nplays:\n  person:\n    peer: [member]\n",
         )])
         .unwrap();
         let declared = normalize_documents(&documents).unwrap();
@@ -1197,6 +1238,28 @@ mod tests {
                         let plan=entry.plan();
                         if plan.operation() == Operation::Count { return StagedAnswerV3::Count {value:7}; }
                         if plan.operation() == Operation::Exists { return StagedAnswerV3::Exists {value:true}; }
+                        if let Some(rows) = plan.standalone_entity_rows() {
+                            use type_bridge_contract::query_remote::RemoteFieldValue;
+                            use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+                            let string = |value: &str| RemoteFieldValue::Scalar { value: CanonicalValue::String(CanonicalString::new(value).unwrap()) };
+                            let documents = rows.values.iter().enumerate().map(|(index, values)| {
+                                let fields = rows.fields.iter().zip(values).map(|(field, value)| (
+                                    field.attribute().label().as_str().to_owned(), RemoteFieldValue::Scalar { value: value.clone() },
+                                )).collect();
+                                let mut document = std::collections::BTreeMap::from([
+                                    ("_iid".into(), string(&format!("0x{:x}", 32 + index))),
+                                    ("_type".into(), string(rows.fields[0].owner().label().as_str())),
+                                    ("attributes".into(), RemoteFieldValue::Document { fields }),
+                                ]);
+                                if let Some(fetch) = plan.pipeline().iter().find_map(|stage| match stage { Stage::Fetch(fetch) => Some(fetch), _ => None }) {
+                                    for scalar in &fetch.scalars {
+                                        document.insert(scalar.key.as_str().to_owned(), RemoteFieldValue::Scalar { value: CanonicalValue::Long(index as i64) });
+                                    }
+                                }
+                                document
+                            }).collect();
+                            return StagedAnswerV3::Documents { documents };
+                        }
                         if plan.fetch_document_shape().is_some() {return StagedAnswerV3::Documents {documents:vec![]};}
                         let rows = if plan.pipeline().iter().any(|stage| matches!(stage, Stage::Reduce {..})) {
                             let type_bridge_contract::query_plan::QueryOutput::Rows {columns} = plan.output() else {panic!("scalar output");};
@@ -1273,6 +1336,345 @@ mod tests {
                 std::future::pending().await
             })
         }
+    }
+
+    #[derive(Debug)]
+    struct Peer {
+        iid: String,
+        origin: __codegen::ReferenceOrigin,
+    }
+    impl sealed::Sealed for Peer {}
+    impl Model for Peer {
+        type Schema = TestSchema;
+        const TYPE_ID_JSON: &'static str = r#"{"kind":"relation","label":"peer"}"#;
+    }
+    impl ThingModel for Peer {
+        fn thing_kind() -> __codegen::ThingKind {
+            __codegen::ThingKind::Relation
+        }
+    }
+    impl __codegen::RelationModel for Peer {}
+    impl CompleteModel for Peer {
+        type Create = PeerCreate;
+        fn iid(&self) -> &str {
+            &self.iid
+        }
+    }
+    impl MaterializeModel for Peer {
+        fn materialize(
+            row: &HydratedRow,
+            _: &HydrationCapability,
+        ) -> std::result::Result<Self, ValidationError> {
+            Ok(Self {
+                iid: row.iid().to_owned(),
+                origin: row.origin().clone(),
+            })
+        }
+    }
+    impl __codegen::SubtypeRootModel for Peer {
+        type Subtypes = Self;
+        fn __tb_dispatch_subtype(
+            row: &HydratedRow,
+            capability: &HydrationCapability,
+        ) -> std::result::Result<Self, ValidationError> {
+            Self::materialize(row, capability)
+        }
+    }
+    #[derive(Clone)]
+    struct PeerCreate;
+    impl sealed::Sealed for PeerCreate {}
+    impl IntoEncodedCreate for PeerCreate {
+        fn into_encoded_create(self) -> std::result::Result<EncodedCreate, ValidationError> {
+            Ok(EncodedCreate::new(
+                Peer::TYPE_ID_JSON,
+                vec![(
+                    r#"{"attribute":"name","owner":{"kind":"relation","label":"peer"}}"#,
+                    vec![__codegen::EncodedScalar::String("peers".into())],
+                )],
+                vec![(
+                    Box::leak(
+                        String::from_utf8(
+                            to_canonical_json(
+                                &type_bridge_contract::id::RoleId::new("peer", "member").unwrap(),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap()
+                        .into_boxed_str(),
+                    ),
+                    vec![__codegen::EncodedReference::try_new(
+                        Person::TYPE_ID_JSON,
+                        Some("0x10".into()),
+                        vec![],
+                        &__codegen::ValidationPath::root(),
+                    )?],
+                )],
+            ))
+        }
+    }
+
+    struct Name(String);
+    impl sealed::Sealed for Name {}
+    impl Model for Name {
+        type Schema = TestSchema;
+        const TYPE_ID_JSON: &'static str = r#"{"kind":"attribute","label":"name"}"#;
+    }
+    impl __codegen::IntoEncodedScalar for Name {
+        fn into_encoded_scalar(&self) -> __codegen::EncodedScalar {
+            __codegen::EncodedScalar::String(self.0.clone())
+        }
+    }
+    impl __codegen::QueryValued for Name {
+        type Domain = String;
+    }
+
+    impl __codegen::SubtypeRootModel for Person {
+        type Subtypes = Person;
+        fn __tb_dispatch_subtype(
+            row: &HydratedRow,
+            capability: &HydrationCapability,
+        ) -> std::result::Result<Self, ValidationError> {
+            Self::materialize(row, capability)
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_managers_use_one_staged_exchange_per_terminal() {
+        let (transport, exchanges) = sdk_queries_transport(0x7b);
+        let capabilities = Arc::clone(&transport.capabilities);
+        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
+            StagedOnlyTransport(transport),
+        ))
+        .await
+        .unwrap()
+        .with_schema(package())
+        .unwrap();
+        let connection = crate::Connection::Proxy(remote);
+        macro_rules! exercise_manager {
+            ($manager:expr, $create:expr, $model:ty, $insert_count:expr) => {{
+                let manager = $manager;
+                let base = exchanges.lock().unwrap().len();
+                let mut expected = base;
+                macro_rules! one_exchange {
+                    ($call:expr) => {{
+                        let value = $call
+                            .await
+                            .unwrap_or_else(|error| panic!("{}: {error:?}", stringify!($call)));
+                        expected += 1;
+                        assert_eq!(exchanges.lock().unwrap().len(), expected);
+                        value
+                    }};
+                }
+                assert!(
+                    manager
+                        .insert_many(vec![])
+                        .await
+                        .unwrap()
+                        .items()
+                        .is_empty()
+                );
+                assert!(manager.put_many(vec![]).await.unwrap().items().is_empty());
+                assert!(
+                    manager
+                        .update_many(vec![])
+                        .await
+                        .unwrap()
+                        .items()
+                        .is_empty()
+                );
+                manager.delete_many(&[]).await.unwrap();
+                assert!(
+                    manager
+                        .delete_many_returning(&[])
+                        .await
+                        .unwrap()
+                        .items()
+                        .is_empty()
+                );
+                assert_eq!(exchanges.lock().unwrap().len(), base);
+                assert!(one_exchange!(manager.all()).is_empty());
+                assert_eq!(one_exchange!(manager.count()), 7);
+                assert!(one_exchange!(manager.get_by_iid("0x10")).is_none());
+                assert!(one_exchange!(manager.filter().unwrap().all()).is_empty());
+                let refusal = manager.filter().unwrap().first().await.unwrap_err();
+                assert_eq!(refusal.code(), Some("manager_first_requires_identity"));
+                assert_eq!(exchanges.lock().unwrap().len(), expected);
+                let crate::Connection::Proxy(proxy) = &connection else {
+                    unreachable!()
+                };
+                let field = proxy
+                    .installed
+                    .as_deref()
+                    .unwrap()
+                    .projection()
+                    .models()
+                    .values()
+                    .find(|model| {
+                        to_canonical_json(model.id()).unwrap() == <$model>::TYPE_ID_JSON.as_bytes()
+                    })
+                    .unwrap()
+                    .query_tokens()
+                    .fields()
+                    .values()
+                    .next()
+                    .unwrap();
+                let name = __codegen::FieldToken::<$model, Name>::new(
+                    Box::leak(
+                        String::from_utf8(to_canonical_json(field.declaring_id()).unwrap())
+                            .unwrap()
+                            .into_boxed_str(),
+                    ),
+                    Box::leak(
+                        String::from_utf8(to_canonical_json(field).unwrap())
+                            .unwrap()
+                            .into_boxed_str(),
+                    ),
+                );
+                let keyed = manager
+                    .where_(
+                        name,
+                        type_bridge_orm::ProjectedManagerComparison::Eq,
+                        &Name("alice".into()),
+                    )
+                    .unwrap();
+                assert!(one_exchange!(keyed.first()).is_none());
+                assert_eq!(one_exchange!(manager.filter().unwrap().count()), 7);
+                assert!(one_exchange!(manager.filter().unwrap().exists()));
+                assert!(one_exchange!(manager.subtypes().all()).is_empty());
+                assert_eq!(one_exchange!(manager.subtypes().count()), 7);
+                assert!(one_exchange!(manager.subtypes().get_by_iid("0x10")).is_none());
+                let inserted = one_exchange!(manager.insert($create));
+                assert_eq!(inserted.count(), $insert_count);
+                if let Some(item) = inserted.item() {
+                    assert_eq!(item.iid(), "0x20");
+                    assert!(item.origin.projected().is_some());
+                }
+                assert_eq!(one_exchange!(manager.put($create)).count(), 0);
+                assert_eq!(one_exchange!(manager.update("0x10", $create)).count(), 0);
+                assert!(
+                    one_exchange!(manager.insert_many(vec![$create]))
+                        .items()
+                        .is_empty()
+                );
+                assert!(
+                    one_exchange!(manager.put_many(vec![$create]))
+                        .items()
+                        .is_empty()
+                );
+                assert!(
+                    one_exchange!(manager.update_many(vec![("0x10".into(), $create)]))
+                        .items()
+                        .is_empty()
+                );
+                one_exchange!(manager.delete("0x10"));
+                one_exchange!(manager.delete_many(&["0x10".into()]));
+                assert_eq!(one_exchange!(manager.delete_returning("0x10")).count(), 0);
+                assert!(
+                    one_exchange!(manager.delete_many_returning(&["0x10".into()]))
+                        .items()
+                        .is_empty()
+                );
+                assert_eq!(expected, base + 20);
+            }};
+        }
+        exercise_manager!(connection.entities::<Person>(), PersonCreate, Person, 1);
+        exercise_manager!(connection.relations::<Peer>(), PeerCreate, Peer, 0);
+        assert_eq!(*capabilities.lock().unwrap(), 1);
+        let authority = remote_fixture_authority();
+        let (decoder, _) = sdk_queries_transport(0x7b);
+        assert_eq!(exchanges.lock().unwrap().len(), 40);
+        for (index, bytes) in exchanges.lock().unwrap().iter().enumerate() {
+            let request = StagedRequestV3::decode(
+                bytes,
+                authority.declared(),
+                &decoder.advertisement_contract,
+            )
+            .unwrap();
+            assert_eq!(request.plans().len(), 1);
+            if index % 20 >= 18 {
+                // One plan owns the snapshot and deletion provider statements.
+                assert_eq!(request.plans()[0].plan().statement_counts(), (1, 1));
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct RejectedPerson;
+    impl sealed::Sealed for RejectedPerson {}
+    impl Model for RejectedPerson {
+        type Schema = TestSchema;
+        const TYPE_ID_JSON: &'static str = Person::TYPE_ID_JSON;
+    }
+    impl ThingModel for RejectedPerson {
+        fn thing_kind() -> __codegen::ThingKind {
+            __codegen::ThingKind::Entity
+        }
+    }
+    impl EntityModel for RejectedPerson {}
+    impl CompleteModel for RejectedPerson {
+        type Create = PersonCreate;
+        fn iid(&self) -> &str {
+            unreachable!()
+        }
+    }
+    impl MaterializeModel for RejectedPerson {
+        fn materialize(
+            row: &HydratedRow,
+            _: &HydrationCapability,
+        ) -> std::result::Result<Self, ValidationError> {
+            assert!(row.origin().projected().is_some());
+            Err(ValidationError::new("name", "rejected_materialization"))
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_manager_materializer_failure_retains_commit_outcome_and_original_cause() {
+        let (transport, exchanges) = sdk_queries_transport(0x7c);
+        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
+            StagedOnlyTransport(transport),
+        ))
+        .await
+        .unwrap()
+        .with_schema(package())
+        .unwrap();
+        let error = remote
+            .entities::<RejectedPerson>()
+            .insert(PersonCreate)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.failure(),
+            Some(type_bridge_contract::failure::Failure::Indeterminate { .. })
+        ));
+        let commit = std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<type_bridge_orm::session::staged::CommitError>()
+            .unwrap();
+        assert_eq!(
+            commit.diagnostic().code().as_str(),
+            "commit_outcome_unknown"
+        );
+        let callback = std::error::Error::source(commit)
+            .unwrap()
+            .downcast_ref::<QueryTargetError>()
+            .unwrap();
+        assert!(matches!(callback, QueryTargetError::Callback(_)));
+        let original = std::error::Error::source(callback)
+            .unwrap()
+            .downcast_ref::<Error>()
+            .unwrap();
+        assert_eq!(original.code(), Some("rejected_materialization"));
+        assert_eq!(
+            original.model_validation_phase(),
+            Some(crate::ModelValidationPhase::Hydration)
+        );
+        assert_eq!(original.path().unwrap(), &["name"]);
+        assert!(
+            std::error::Error::source(original)
+                .unwrap()
+                .is::<ValidationError>()
+        );
+        assert_eq!(exchanges.lock().unwrap().len(), 1);
     }
 
     struct StagedOnlyTransport(Transport);
@@ -1369,6 +1771,29 @@ mod tests {
             std::error::Error::source(&error).unwrap().to_string(),
             "application cause"
         );
+        for error in [
+            remote.entities::<Person>().count().await.unwrap_err(),
+            remote.entities::<Person>().all().await.unwrap_err(),
+            remote
+                .entities::<Person>()
+                .get_by_iid("0x10")
+                .await
+                .unwrap_err(),
+            remote
+                .entities::<Person>()
+                .filter()
+                .unwrap()
+                .count()
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(error.category(), crate::ErrorCategory::Remote);
+            assert_eq!(error.code(), Some("application_transport_down"));
+            assert_eq!(
+                std::error::Error::source(&error).unwrap().to_string(),
+                "application cause"
+            );
+        }
         let installed = remote.installed.as_ref().unwrap();
         let filter = type_bridge_orm::ProjectedManagerFilter::try_new(
             installed,
@@ -1449,6 +1874,8 @@ mod tests {
         let mut capabilities = query_plan_v3_capability_vocabulary();
         for capability in [
             CAP_QUERY_REMOTE_STAGED_V3,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_WRITE_V3,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF,
             CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
         ] {
             capabilities.insert(CapabilityId::new(capability).unwrap());

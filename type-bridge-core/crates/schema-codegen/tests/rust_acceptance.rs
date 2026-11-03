@@ -868,6 +868,14 @@ fn generated_external_manager_contract_compiles_exact_matrix() {
 use generated::{AppSchema, Contract, ContractCreate, ContractType, Empty, Employment, EmploymentFamily, EmploymentType, Helper, Model, Name, Never, Party, PartyFamily, PartyType, Person, PersonCreate, PersonType, Placement, Root, RootChild, RootFamily};
 use type_bridge::{Database, EntityManager, EntitySubtypeManager, Predicate, RelationManager, RelationSubtypeManager, WriteTransaction, WriteResult, BatchWriteResult};
 use type_bridge::value::Text;
+fn target_factories(connection: &type_bridge::Connection<AppSchema>, proxy: &type_bridge::ProxyDatabase<AppSchema>) {
+    let _: EntityManager<'_, AppSchema, Person> = connection.entities::<Person>();
+    let _: RelationManager<'_, AppSchema, Contract> = connection.relations::<Contract>();
+    let _: EntityManager<'_, AppSchema, Person> = proxy.entities::<Person>();
+    let _: RelationManager<'_, AppSchema, Contract> = proxy.relations::<Contract>();
+    let _: EntitySubtypeManager<'_, AppSchema, Party> = connection.entities::<Party>().subtypes();
+    let _: RelationSubtypeManager<'_, AppSchema, Employment> = connection.relations::<Employment>().subtypes();
+}
 async fn positive(db: &Database<AppSchema>, create: PersonCreate) {
     let exact = db.entities::<Person>();
     let _: EntityManager<'_, AppSchema, Person> = exact;
