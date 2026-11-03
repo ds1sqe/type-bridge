@@ -233,7 +233,7 @@ pub use type_bridge_contract::projection::{
 #[doc(hidden)]
 pub use type_bridge_core_lib::version::Version as _ProviderVersion;
 pub use value::AttributeValue;
-pub use write_result::WriteResult;
+pub use write_result::{BatchWriteResult, WriteResult};
 
 #[cfg(test)]
 #[path = "../tests/support/native_batch.rs"]
