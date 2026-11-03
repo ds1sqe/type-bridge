@@ -2813,310 +2813,59 @@ impl PyProjectedModelManager {
     /// Insert one exact generated model and attach the returned TypeDB IID.
     fn insert(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         self.ensure_instance(py, &instance)?;
-        if self.uses_successor_runtime() {
-            let input = project_create(py, self.package.as_ref(), &self.type_id, &instance)?;
-            input.validate_native_write().map_err(py_sdk_diagnostic)?;
-            return self.write_single_projected(
-                py,
-                instance,
-                input,
-                ProjectedBatchOperation::Insert,
-                None,
-            );
-        }
-        let snapshot = snapshot_projected_instance(&instance)?;
-        let items = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let attributes = lower_attributes(
-                    py,
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                provider_block_on(py, self.runtime.as_ref(), manager.insert(&attributes))
-                    .map_err(py_orm_error)?
-                    .into_items()
-                    .into_iter()
-                    .map(|row| hydrate_entity(py, self.package.as_ref(), &self.type_id, &row))
-                    .collect::<PyResult<Vec<_>>>()?
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let attributes = lower_attributes(
-                    py,
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let players = lower_roles(
-                    py,
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor,
-                    &instance,
-                )?;
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.insert(&attributes, &players),
-                )
-                .map_err(py_orm_error)?
-                .into_items()
-                .into_iter()
-                .map(|row| hydrate_relation(py, self.package.as_ref(), &self.type_id, &row))
-                .collect::<PyResult<Vec<_>>>()?
-            }
-        };
-        self.publish_dynamic_write(instance, snapshot, items)
+        let input = project_create(py, self.package.as_ref(), &self.type_id, &instance)?;
+        input.validate_native_write().map_err(py_sdk_diagnostic)?;
+        self.write_single_projected(py, instance, input, ProjectedBatchOperation::Insert, None)
     }
 
     /// Insert exact generated models atomically and attach IIDs in input order.
     fn insert_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        if self.uses_successor_runtime() {
-            return self.write_many_projected(
-                py,
-                bounded_projected_facades(&instances)?,
-                ProjectedBatchOperation::Insert,
-            );
-        }
-        self.write_many(py, instances.extract()?, false)
+        self.write_many_projected(
+            py,
+            bounded_projected_facades(&instances)?,
+            ProjectedBatchOperation::Insert,
+        )
     }
 
     /// Insert or update one exact generated model and attach its TypeDB IID.
     fn put(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         self.ensure_instance(py, &instance)?;
-        if self.uses_successor_runtime() {
-            let input = project_create(py, self.package.as_ref(), &self.type_id, &instance)?;
-            input.validate_native_write().map_err(py_sdk_diagnostic)?;
-            return self.write_single_projected(
-                py,
-                instance,
-                input,
-                ProjectedBatchOperation::Put,
-                None,
-            );
-        }
-        let snapshot = snapshot_projected_instance(&instance)?;
-        let items = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let attributes = lower_attributes(
-                    py,
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                provider_block_on(py, self.runtime.as_ref(), manager.put_exact(&attributes))
-                    .map_err(py_orm_error)?
-                    .into_items()
-                    .into_iter()
-                    .map(|row| hydrate_entity(py, self.package.as_ref(), &self.type_id, &row))
-                    .collect::<PyResult<Vec<_>>>()?
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let attributes = lower_attributes(
-                    py,
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let players = lower_roles(
-                    py,
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor,
-                    &instance,
-                )?;
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.put_exact(&attributes, &players),
-                )
-                .map_err(py_orm_error)?
-                .into_items()
-                .into_iter()
-                .map(|row| hydrate_relation(py, self.package.as_ref(), &self.type_id, &row))
-                .collect::<PyResult<Vec<_>>>()?
-            }
-        };
-        self.publish_dynamic_write(instance, snapshot, items)
+        let input = project_create(py, self.package.as_ref(), &self.type_id, &instance)?;
+        input.validate_native_write().map_err(py_sdk_diagnostic)?;
+        self.write_single_projected(py, instance, input, ProjectedBatchOperation::Put, None)
     }
 
     /// Put exact generated models atomically and attach IIDs in input order.
     fn put_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        if self.uses_successor_runtime() {
-            return self.write_many_projected(
-                py,
-                bounded_projected_facades(&instances)?,
-                ProjectedBatchOperation::Put,
-            );
-        }
-        self.write_many(py, instances.extract()?, true)
+        self.write_many_projected(
+            py,
+            bounded_projected_facades(&instances)?,
+            ProjectedBatchOperation::Put,
+        )
     }
 
     /// Replace one exact generated model already identified by its TypeDB IID.
     fn update(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         self.ensure_instance(py, &instance)?;
-        if self.uses_successor_runtime() {
-            let input = project_create(py, self.package.as_ref(), &self.type_id, &instance)?;
-            input.validate_native_write().map_err(py_sdk_diagnostic)?;
-            let iid = required_projected_iid(&instance)?;
-            return self.write_single_projected(
-                py,
-                instance,
-                input,
-                ProjectedBatchOperation::Update,
-                Some(iid),
-            );
-        }
+        let input = project_create(py, self.package.as_ref(), &self.type_id, &instance)?;
+        input.validate_native_write().map_err(py_sdk_diagnostic)?;
         let iid = required_projected_iid(&instance)?;
-        let snapshot = snapshot_projected_instance(&instance)?;
-        let items = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let attributes = lower_attributes(
-                    py,
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                let row = provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.update_and_get_exact(&iid, &attributes),
-                )
-                .map_err(py_orm_error)?;
-                row.into_items()
-                    .into_iter()
-                    .map(|row| hydrate_entity(py, self.package.as_ref(), &self.type_id, &row))
-                    .collect::<PyResult<Vec<_>>>()?
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let attributes = lower_attributes(
-                    py,
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let players = lower_roles(
-                    py,
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor,
-                    &instance,
-                )?;
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                let row = provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.update_and_get_exact(&iid, &attributes, &players),
-                )
-                .map_err(py_orm_error)?;
-                row.into_items()
-                    .into_iter()
-                    .map(|row| hydrate_relation(py, self.package.as_ref(), &self.type_id, &row))
-                    .collect::<PyResult<Vec<_>>>()?
-            }
-        };
-        self.publish_dynamic_write(instance, snapshot, items)
+        self.write_single_projected(
+            py,
+            instance,
+            input,
+            ProjectedBatchOperation::Update,
+            Some(iid),
+        )
     }
 
     /// Replace exact generated models atomically and rehydrate them in input order.
     fn update_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        if self.uses_successor_runtime() {
-            return self.write_many_projected(
-                py,
-                bounded_projected_facades(&instances)?,
-                ProjectedBatchOperation::Update,
-            );
-        }
-        let instances: Vec<Py<PyAny>> = instances.extract()?;
-        if instances.is_empty() {
-            return Ok(PyList::empty(py).into_any().unbind());
-        }
-        for instance in &instances {
-            self.ensure_instance(py, instance.bind(py))?;
-        }
-        let hydrated = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let items = instances
-                    .iter()
-                    .map(|instance| {
-                        Ok((
-                            required_projected_iid(instance.bind(py))?,
-                            lower_attributes(
-                                py,
-                                self.package.as_ref(),
-                                &self.type_id,
-                                &descriptor.owned_attributes,
-                                instance.bind(py),
-                            )?,
-                        ))
-                    })
-                    .collect::<PyResult<Vec<_>>>()?;
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.update_many_and_get_exact(&items),
-                )
-                .map_err(py_orm_error)?
-                .iter()
-                .map(|row| hydrate_entity(py, self.package.as_ref(), &self.type_id, row))
-                .collect::<PyResult<Vec<_>>>()?
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let items = instances
-                    .iter()
-                    .map(|instance| {
-                        Ok((
-                            required_projected_iid(instance.bind(py))?,
-                            lower_attributes(
-                                py,
-                                self.package.as_ref(),
-                                &self.type_id,
-                                &descriptor.owned_attributes,
-                                instance.bind(py),
-                            )?,
-                            lower_roles(
-                                py,
-                                self.package.as_ref(),
-                                &self.type_id,
-                                &descriptor,
-                                instance.bind(py),
-                            )?,
-                        ))
-                    })
-                    .collect::<PyResult<Vec<_>>>()?;
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.update_many_and_get_exact(&items),
-                )
-                .map_err(py_orm_error)?
-                .iter()
-                .map(|row| hydrate_relation(py, self.package.as_ref(), &self.type_id, row))
-                .collect::<PyResult<Vec<_>>>()?
-            }
-        };
-        if hydrated.len() != instances.len() {
-            return Err(py_runtime_error(
-                "projected batch update returned an unexpected model count",
-            ));
-        }
-        for (instance, stored) in instances.iter().zip(hydrated) {
-            replace_projected_instance(py, instance.bind(py).clone(), stored)?;
-        }
-        Ok(PyList::new(py, &instances)?.into_any().unbind())
+        self.write_many_projected(
+            py,
+            bounded_projected_facades(&instances)?,
+            ProjectedBatchOperation::Update,
+        )
     }
 
     /// Resolve an IID-less exact generated model through its projected identity.
@@ -3242,22 +2991,7 @@ impl PyProjectedModelManager {
             self.ensure_instance(py, &instance_or_iid)?;
             required_projected_iid(&instance_or_iid)?
         };
-        if self.uses_successor_runtime() {
-            return self.delete_projected(py, &iid);
-        }
-        match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                provider_block_on(py, self.runtime.as_ref(), manager.delete_by_iid_exact(&iid))
-                    .map_err(py_orm_error)?;
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                provider_block_on(py, self.runtime.as_ref(), manager.delete_by_iid_exact(&iid))
-                    .map_err(py_orm_error)?;
-            }
-        }
-        Ok(())
+        self.delete_projected(py, &iid)
     }
 
     /// Delete one exact model and return its stored pre-delete snapshot.
@@ -3276,31 +3010,7 @@ impl PyProjectedModelManager {
 
     /// Delete exact generated models atomically by canonical IID.
     fn delete_many(&self, py: Python<'_>, iids: Bound<'_, PyAny>) -> PyResult<()> {
-        if self.uses_successor_runtime() {
-            return self.delete_many_projected(py, bounded_projected_iids(&iids)?);
-        }
-        let iids: Vec<String> = iids.extract()?;
-        match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.delete_many_by_iid_exact(&iids),
-                )
-                .map_err(py_orm_error)?;
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.delete_many_by_iid_exact(&iids),
-                )
-                .map_err(py_orm_error)?;
-            }
-        }
-        Ok(())
+        self.delete_many_projected(py, bounded_projected_iids(&iids)?)
     }
 
     /// Return a new exact generated-model manager narrowed by keyword filters.
@@ -3487,39 +3197,11 @@ impl PyProjectedModelManager {
         if !is_canonical_thing_iid(iid) {
             return Ok(py.None());
         }
-        if self.uses_successor_runtime() {
-            return match self.get_projected(py, iid)? {
-                Some(projected) => {
-                    hydrate_projected_thing(py, self.package.as_ref(), Arc::new(projected))
-                }
-                None => Ok(py.None()),
-            };
-        }
-        let iid = iid.to_owned();
-        match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                let row =
-                    provider_block_on(py, self.runtime.as_ref(), manager.get_by_iid_exact(&iid))
-                        .map_err(py_orm_error)?;
-                match row {
-                    Some(row) => hydrate_entity(py, self.package.as_ref(), &self.type_id, &row),
-                    None => Ok(py.None()),
-                }
+        match self.get_projected(py, iid)? {
+            Some(projected) => {
+                hydrate_projected_thing(py, self.package.as_ref(), Arc::new(projected))
             }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                let rows =
-                    provider_block_on(py, self.runtime.as_ref(), manager.get_by_iid_exact(&iid))
-                        .map_err(py_orm_error)?;
-                match rows.as_slice() {
-                    [] => Ok(py.None()),
-                    [row] => hydrate_relation(py, self.package.as_ref(), &self.type_id, row),
-                    _ => Err(py_runtime_error(
-                        "exact IID relation query returned multiple rows",
-                    )),
-                }
-            }
+            None => Ok(py.None()),
         }
     }
 }
@@ -3545,11 +3227,6 @@ impl PyProjectedModelManager {
             runtime: Arc::clone(&self.runtime),
             filter,
         }
-    }
-
-    fn uses_successor_runtime(&self) -> bool {
-        self.package.projection.projection().generator_handlers()
-            == [type_bridge_contract::projection::ProjectionHandler::python_v2()]
     }
 
     fn write_single_projected(
@@ -3659,7 +3336,6 @@ impl PyProjectedModelManager {
                             materialize_deleted_batch_with_output(
                                 py,
                                 Arc::clone(&package),
-                                true,
                                 result,
                                 &binding_error,
                                 &pool,
@@ -3745,107 +3421,6 @@ impl PyProjectedModelManager {
             error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
         })
         .map_err(py_sdk_diagnostic)
-    }
-
-    fn publish_dynamic_write(
-        &self,
-        instance: Bound<'_, PyAny>,
-        snapshot: ProjectedFacadeSnapshot,
-        mut items: Vec<Py<PyAny>>,
-    ) -> PyResult<Py<PyAny>> {
-        let py = instance.py();
-        if items.len() == 1 {
-            let output = py_write_result(py, vec![instance.clone().unbind()])?;
-            replace_projected_instance_atomic(
-                py,
-                &instance,
-                items.pop().expect("one root"),
-                &snapshot,
-            )?;
-            Ok(output)
-        } else {
-            py_write_result(py, items)
-        }
-    }
-
-    fn write_many(
-        &self,
-        py: Python<'_>,
-        instances: Vec<Py<PyAny>>,
-        put: bool,
-    ) -> PyResult<Py<PyAny>> {
-        if instances.is_empty() {
-            return Ok(PyList::empty(py).into_any().unbind());
-        }
-        for instance in &instances {
-            self.ensure_instance(py, instance.bind(py))?;
-        }
-        let iids = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let items = instances
-                    .iter()
-                    .map(|instance| {
-                        lower_attributes(
-                            py,
-                            self.package.as_ref(),
-                            &self.type_id,
-                            &descriptor.owned_attributes,
-                            instance.bind(py),
-                        )
-                    })
-                    .collect::<PyResult<Vec<_>>>()?;
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                if put {
-                    provider_block_on(py, self.runtime.as_ref(), manager.put_many_exact(&items))
-                        .map_err(py_orm_error)?
-                } else {
-                    provider_block_on(py, self.runtime.as_ref(), manager.insert_many(&items))
-                        .map_err(py_orm_error)?
-                }
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let items = instances
-                    .iter()
-                    .map(|instance| {
-                        Ok((
-                            lower_attributes(
-                                py,
-                                self.package.as_ref(),
-                                &self.type_id,
-                                &descriptor.owned_attributes,
-                                instance.bind(py),
-                            )?,
-                            lower_roles(
-                                py,
-                                self.package.as_ref(),
-                                &self.type_id,
-                                &descriptor,
-                                instance.bind(py),
-                            )?,
-                        ))
-                    })
-                    .collect::<PyResult<Vec<_>>>()?;
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                if put {
-                    provider_block_on(py, self.runtime.as_ref(), manager.put_many_exact(&items))
-                        .map_err(py_orm_error)?
-                } else {
-                    provider_block_on(py, self.runtime.as_ref(), manager.insert_many(&items))
-                        .map_err(py_orm_error)?
-                }
-            }
-        };
-        if iids.len() != instances.len() {
-            return Err(py_runtime_error(
-                "projected batch write returned an unexpected IID count",
-            ));
-        }
-        for (instance, iid) in instances.iter().zip(iids) {
-            instance
-                .bind(py)
-                .call_method1("attach_runtime_iid", (iid,))?;
-        }
-        Ok(PyList::new(py, &instances)?.into_any().unbind())
     }
 
     fn write_many_projected(
@@ -4127,16 +3702,13 @@ impl PyProjectedModelManager {
     ) -> PyResult<Py<PyAny>> {
         let (batch, control) = self.prepare_delete_batch(iids)?;
         let package = Arc::clone(&self.package);
-        let callback_free = self.uses_successor_runtime();
         let database = self.database().cloned();
         let transaction = self.transaction().cloned();
         let marker = self.successor_batch_marker.clone();
         provider_block_on_with_gil(py, self.runtime.as_ref(), move |py| {
             Box::pin(async move {
                 let _gc_guard = SuccessorBatchGcGuard::disable(py);
-                if callback_free {
-                    package.validate_batch_hydration_layouts(py)?;
-                }
+                package.validate_batch_hydration_layouts(py)?;
                 let pool = BatchHydrationPool::try_new(&[]).map_err(py_sdk_diagnostic)?;
                 let binding_error = Mutex::new(None);
                 let empty = DeletedBatchOutput {
@@ -4148,7 +3720,6 @@ impl PyProjectedModelManager {
                     materialize_deleted_batch(
                         py,
                         Arc::clone(&package),
-                        callback_free,
                         result,
                         &binding_error,
                         &pool,
@@ -4669,26 +4240,16 @@ fn projected_batch_hydration_pool_capacity(
 fn materialize_deleted_batch(
     py: Python<'_>,
     package: Arc<InstalledPackage>,
-    callback_free: bool,
     result: ProjectedBatchResult,
     binding_error: &Mutex<Option<PyErr>>,
     pool: &BatchHydrationPool,
 ) -> Result<DeletedBatchOutput, SdkExecutionDiagnostic> {
-    materialize_deleted_batch_with_output(
-        py,
-        package,
-        callback_free,
-        result,
-        binding_error,
-        pool,
-        None,
-    )
+    materialize_deleted_batch_with_output(py, package, result, binding_error, pool, None)
 }
 
 fn materialize_deleted_batch_with_output(
     py: Python<'_>,
     package: Arc<InstalledPackage>,
-    callback_free: bool,
     result: ProjectedBatchResult,
     binding_error: &Mutex<Option<PyErr>>,
     pool: &BatchHydrationPool,
@@ -4697,9 +4258,7 @@ fn materialize_deleted_batch_with_output(
     let ProjectedBatchResult::Things(things) = result else {
         return Err(SdkExecutionDiagnostic::internal_failure());
     };
-    if callback_free {
-        pool.reserve_exact(projected_batch_hydration_pool_capacity(&things)?)?;
-    }
+    pool.reserve_exact(projected_batch_hydration_pool_capacity(&things)?)?;
     let mut values = reserved_binding_rows(things.len())?;
     let capacity = things
         .iter()
@@ -4719,8 +4278,8 @@ fn materialize_deleted_batch_with_output(
             thing.as_ref(),
             Some(&thing),
             &mut origins,
-            callback_free,
-            callback_free.then_some(pool),
+            true,
+            Some(pool),
         )
         .and_then(|value| {
             let origin = package.facade_origins.prepare(value.bind(py))?;
@@ -4736,9 +4295,7 @@ fn materialize_deleted_batch_with_output(
         })?;
         values.push(value);
     }
-    if callback_free {
-        pool.verify_fully_consumed()?;
-    }
+    pool.verify_fully_consumed()?;
     let output = match single_output {
         Some(output) => output.populate(py, &values),
         None => PyList::new(py, values.iter().map(|value| value.bind(py)))
@@ -7838,14 +7395,6 @@ fn role_cardinality(descriptor: &RoleDescriptor) -> (u32, Option<u32>) {
     descriptor.cardinality.unwrap_or((0, Some(1)))
 }
 
-fn py_write_result(py: Python<'_>, items: Vec<Py<PyAny>>) -> PyResult<Py<PyAny>> {
-    let items = PyList::new(py, items)?;
-    py.import("type_bridge_core.write_result")?
-        .getattr("WriteResult")?
-        .call1((items,))
-        .map(Bound::unbind)
-}
-
 fn hydrate_projected_thing(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -8533,59 +8082,6 @@ fn hydrate_entity(
         &row.attributes,
     )?;
     hydrate_complete(py, package, id, &values, row.iid.as_deref())
-}
-
-fn replace_projected_instance(
-    py: Python<'_>,
-    instance: Bound<'_, PyAny>,
-    hydrated: Py<PyAny>,
-) -> PyResult<Py<PyAny>> {
-    let stored = hydrated.bind(py);
-    let iid = required_projected_iid(stored)?;
-    let values = stored.call_method0("runtime_values")?;
-    instance.call_method1("initialize_runtime_values", (values,))?;
-    instance.call_method1("attach_runtime_iid", (iid,))?;
-    Ok(instance.unbind())
-}
-
-fn snapshot_projected_instance(instance: &Bound<'_, PyAny>) -> PyResult<ProjectedFacadeSnapshot> {
-    Ok(ProjectedFacadeSnapshot {
-        iid: instance.getattr("_iid")?.unbind(),
-        values: instance.getattr("_values")?.unbind(),
-    })
-}
-
-fn replace_projected_instance_atomic(
-    py: Python<'_>,
-    instance: &Bound<'_, PyAny>,
-    hydrated: Py<PyAny>,
-    snapshot: &ProjectedFacadeSnapshot,
-) -> PyResult<()> {
-    if let Err(error) = replace_projected_instance(py, instance.clone(), hydrated) {
-        if let Err(rollback) = restore_projected_instance(instance, snapshot) {
-            return Err(py_runtime_error(format!(
-                "projected facade replacement failed and rollback failed: {error}; {rollback}"
-            )));
-        }
-        return Err(error);
-    }
-    Ok(())
-}
-
-fn restore_projected_instance(
-    instance: &Bound<'_, PyAny>,
-    snapshot: &ProjectedFacadeSnapshot,
-) -> PyResult<()> {
-    let py = instance.py();
-    let values_error = instance.setattr("_values", snapshot.values.bind(py)).err();
-    let iid_error = instance.setattr("_iid", snapshot.iid.bind(py)).err();
-    match (values_error, iid_error) {
-        (None, None) => Ok(()),
-        (Some(error), None) | (None, Some(error)) => Err(error),
-        (Some(values), Some(iid)) => Err(py_runtime_error(format!(
-            "projected facade values and IID rollback both failed: {values}; {iid}"
-        ))),
-    }
 }
 
 fn hydrate_relation(
@@ -10105,20 +9601,6 @@ plays:
         gate: Option<Arc<BatchProviderGate>>,
     }
 
-    #[derive(Debug, Default)]
-    struct LegacyBatchRecordingState {
-        opens: Vec<TxType>,
-        queries: Vec<String>,
-        responses: VecDeque<QueryResult>,
-        legacy_commits: usize,
-        sdk_commits: usize,
-        rollbacks: usize,
-    }
-
-    struct LegacyBatchRecordingBackend {
-        state: Arc<Mutex<LegacyBatchRecordingState>>,
-    }
-
     #[derive(Default)]
     struct BatchProviderGate {
         entered: (Mutex<bool>, std::sync::Condvar),
@@ -10492,120 +9974,6 @@ plays:
                 state,
                 gate,
             )
-        }
-    }
-
-    impl LegacyBatchRecordingBackend {
-        fn fixture(
-            responses: Vec<QueryResult>,
-        ) -> (Arc<Database>, Arc<Mutex<LegacyBatchRecordingState>>) {
-            let state = Arc::new(Mutex::new(LegacyBatchRecordingState {
-                responses: responses.into(),
-                ..LegacyBatchRecordingState::default()
-            }));
-            (
-                Arc::new(Database::with_backend(
-                    Box::new(Self {
-                        state: Arc::clone(&state),
-                    }),
-                    "python-predecessor-batch",
-                )),
-                state,
-            )
-        }
-    }
-
-    impl DriverBackend for LegacyBatchRecordingBackend {
-        fn match_capabilities(&self) -> type_bridge_orm::CapabilitySet {
-            type_bridge_orm::CapabilitySet::all()
-        }
-
-        fn open_transaction(
-            &self,
-            _database: &str,
-            tx_type: TxType,
-        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
-            self.state.lock().unwrap().opens.push(tx_type);
-            let transaction = LegacyBatchRecordingTransaction {
-                state: Arc::clone(&self.state),
-            };
-            Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
-        }
-
-        fn is_open(&self) -> bool {
-            true
-        }
-
-        fn server_version(&self) -> Option<type_bridge_orm::_ProviderVersion> {
-            Some(type_bridge_orm::_ProviderVersion::new(3, 12, 1))
-        }
-
-        fn supports_given_rows(&self) -> bool {
-            false
-        }
-    }
-
-    struct LegacyBatchRecordingTransaction {
-        state: Arc<Mutex<LegacyBatchRecordingState>>,
-    }
-
-    impl TransactionOps for LegacyBatchRecordingTransaction {
-        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-            let response = {
-                let mut state = self.state.lock().unwrap();
-                state.queries.push(typeql.to_owned());
-                state
-                    .responses
-                    .pop_front()
-                    .expect("predecessor Python batch issued unexpected provider I/O")
-            };
-            let source = typeql.to_owned();
-            Box::pin(async move { Ok(native_batch::result(&source, response)) })
-        }
-
-        fn query_with_rows(
-            &mut self,
-            _typeql: &str,
-            _rows: GivenRowsSpec,
-        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-            Box::pin(async {
-                panic!("predecessor Python batch touched the successor GivenRows seam")
-            })
-        }
-
-        fn query_with_rows_bounded<'a>(
-            &'a mut self,
-            _typeql: &'a str,
-            _rows: GivenRowsSpec,
-            _limits: BoundedAnswerLimits,
-            _consumer: &'a mut dyn AnswerConsumer,
-        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-            Box::pin(async {
-                panic!("predecessor Python batch touched the bounded successor GivenRows seam")
-            })
-        }
-
-        fn supports_given_rows(&self) -> bool {
-            false
-        }
-
-        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
-            self.state.lock().unwrap().legacy_commits += 1;
-            Box::pin(async { Ok(()) })
-        }
-
-        fn commit_classified(&mut self) -> BoxFuture<'_, Result<(), ClassifiedCommitError>> {
-            self.state.lock().unwrap().sdk_commits += 1;
-            Box::pin(async { Ok(()) })
-        }
-
-        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
-            self.state.lock().unwrap().rollbacks += 1;
-            Box::pin(async { Ok(()) })
-        }
-
-        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
-            Box::pin(async { Ok(()) })
         }
     }
 
@@ -11313,84 +10681,6 @@ class StructBase:
             relation.call_method1("attach_runtime_iid", (iid,)).unwrap();
         }
         relation.unbind()
-    }
-
-    fn legacy_person(
-        py: Python<'_>,
-        package: &InstalledPackage,
-        identifier: &str,
-        iid: Option<&str>,
-    ) -> Py<PyAny> {
-        let person_id = package.type_by_label("person", TypeKind::Entity).unwrap();
-        let identifier_id = package
-            .type_by_label("identifier", TypeKind::Attribute)
-            .unwrap();
-        let identifier = package
-            .class(identifier_id, ProjectedModelForm::Complete)
-            .unwrap()
-            .bind(py)
-            .call1((identifier,))
-            .unwrap();
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("identifier", identifier).unwrap();
-        let person = package
-            .class(person_id, ProjectedModelForm::Complete)
-            .unwrap()
-            .bind(py)
-            .call((), Some(&kwargs))
-            .unwrap();
-        if let Some(iid) = iid {
-            person.call_method1("attach_runtime_iid", (iid,)).unwrap();
-        }
-        person.unbind()
-    }
-
-    fn legacy_membership(
-        py: Python<'_>,
-        package: &InstalledPackage,
-        player: &Py<PyAny>,
-        iid: Option<&str>,
-    ) -> Py<PyAny> {
-        let membership_id = package
-            .type_by_label("membership", TypeKind::Relation)
-            .unwrap();
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("member", player.bind(py)).unwrap();
-        let membership = package
-            .class(membership_id, ProjectedModelForm::Complete)
-            .unwrap()
-            .bind(py)
-            .call((), Some(&kwargs))
-            .unwrap();
-        if let Some(iid) = iid {
-            membership
-                .call_method1("attach_runtime_iid", (iid,))
-                .unwrap();
-        }
-        membership.unbind()
-    }
-
-    fn legacy_person_document(iid: &str, identifier: &str) -> serde_json::Value {
-        serde_json::json!({
-            "_iid": iid,
-            "_type": "person",
-            "attributes": {"identifier": [{"value": identifier}]},
-        })
-    }
-
-    fn native_membership_document(
-        iid: &str,
-        player_iid: &str,
-        player_identifier: &str,
-    ) -> serde_json::Value {
-        serde_json::json!({
-            "_iid": iid,
-            "_type": "membership",
-            "attributes": {},
-            "_role_0_iid": player_iid,
-            "_role_0_type": "person",
-            "_role_0_attributes": {"identifier": player_identifier},
-        })
     }
 
     fn batch_person_document(
@@ -15039,25 +14329,31 @@ def public_state(value):
     fn successor_single_write_results_preserve_all_roots_and_attach_only_one_input() {
         Python::initialize();
         Python::attach(|py| {
-            for kind in [TypeKind::Entity, TypeKind::Relation] {
-                let label = if kind == TypeKind::Entity {
-                    "person"
-                } else {
-                    "membership"
-                };
-                for borrowed in [false, true] {
-                    for operation in [
-                        ProjectedBatchOperation::Insert,
-                        ProjectedBatchOperation::Put,
-                        ProjectedBatchOperation::Update,
-                    ] {
-                        for count in 0..=2 {
-                            if count == 2 && operation == ProjectedBatchOperation::Update {
-                                continue;
-                            }
-                            let (_, package) = install_batch(py);
-                            let person_id = package.type_by_label(label, kind).unwrap().clone();
-                            let documents = (0..count)
+            for schema in [
+                BATCH_SCHEMA.to_owned(),
+                BATCH_SCHEMA
+                    .replace("        ordered: true\n", "")
+                    .replace("        distinct: true\n", ""),
+            ] {
+                for kind in [TypeKind::Entity, TypeKind::Relation] {
+                    let label = if kind == TypeKind::Entity {
+                        "person"
+                    } else {
+                        "membership"
+                    };
+                    for borrowed in [false, true] {
+                        for operation in [
+                            ProjectedBatchOperation::Insert,
+                            ProjectedBatchOperation::Put,
+                            ProjectedBatchOperation::Update,
+                        ] {
+                            for count in 0..=2 {
+                                if count == 2 && operation == ProjectedBatchOperation::Update {
+                                    continue;
+                                }
+                                let (_, package) = install_ordered_schema(py, &schema);
+                                let person_id = package.type_by_label(label, kind).unwrap().clone();
+                                let documents = (0..count)
                             .map(|index| {
                                 if kind == TypeKind::Entity {
                                     serde_json::json!({
@@ -15074,143 +14370,150 @@ def public_state(value):
                                 }
                             })
                             .collect();
-                            let (database, state) = BatchRecordingBackend::fixture(
-                                vec![BatchResponse::Documents(documents)],
-                                false,
-                            );
-                            let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
-                            let transaction = borrowed.then(|| {
-                                runtime
-                                    .block_on(database.transaction_context(TxType::Write))
-                                    .unwrap()
-                            });
-                            let manager = origin_manager(
-                                Arc::clone(&package),
-                                person_id,
-                                (!borrowed).then(|| Arc::clone(&database)),
-                                transaction.clone(),
-                                Arc::clone(&runtime),
-                            );
-                            let iid =
-                                (operation == ProjectedBatchOperation::Update).then_some("0x20");
-                            let instance = if kind == TypeKind::Entity {
-                                batch_person(py, &package, "person-0", "authored-0", iid)
-                            } else {
-                                let player = batch_person(
-                                    py,
-                                    &package,
-                                    "player-0",
-                                    "player-tag",
-                                    Some("0x10"),
+                                let (database, state) = BatchRecordingBackend::fixture(
+                                    vec![BatchResponse::Documents(documents)],
+                                    false,
                                 );
-                                batch_membership(py, &package, "membership-0", &player, iid)
-                            };
-                            let prior_values =
-                                instance.bind(py).getattr("_values").unwrap().unbind();
-                            let prior_iid = instance.bind(py).getattr("_iid").unwrap().unbind();
-                            let output = match operation {
-                                ProjectedBatchOperation::Insert => {
-                                    manager.insert(py, instance.bind(py).clone())
+                                let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                                let transaction = borrowed.then(|| {
+                                    runtime
+                                        .block_on(database.transaction_context(TxType::Write))
+                                        .unwrap()
+                                });
+                                let manager = origin_manager(
+                                    Arc::clone(&package),
+                                    person_id,
+                                    (!borrowed).then(|| Arc::clone(&database)),
+                                    transaction.clone(),
+                                    Arc::clone(&runtime),
+                                );
+                                let iid = (operation == ProjectedBatchOperation::Update)
+                                    .then_some("0x20");
+                                let instance = if kind == TypeKind::Entity {
+                                    batch_person(py, &package, "person-0", "authored-0", iid)
+                                } else {
+                                    let player = batch_person(
+                                        py,
+                                        &package,
+                                        "player-0",
+                                        "player-tag",
+                                        Some("0x10"),
+                                    );
+                                    batch_membership(py, &package, "membership-0", &player, iid)
+                                };
+                                let prior_values =
+                                    instance.bind(py).getattr("_values").unwrap().unbind();
+                                let prior_iid = instance.bind(py).getattr("_iid").unwrap().unbind();
+                                let output = match operation {
+                                    ProjectedBatchOperation::Insert => {
+                                        manager.insert(py, instance.bind(py).clone())
+                                    }
+                                    ProjectedBatchOperation::Put => {
+                                        manager.put(py, instance.bind(py).clone())
+                                    }
+                                    ProjectedBatchOperation::Update => {
+                                        manager.update(py, instance.bind(py).clone())
+                                    }
+                                    _ => unreachable!(),
                                 }
-                                ProjectedBatchOperation::Put => {
-                                    manager.put(py, instance.bind(py).clone())
-                                }
-                                ProjectedBatchOperation::Update => {
-                                    manager.update(py, instance.bind(py).clone())
-                                }
-                                _ => unreachable!(),
-                            }
-                            .unwrap_or_else(|error| {
-                                panic!("{operation:?}/{borrowed}/{count}: {error}")
-                            });
-                            let output = output.bind(py);
-                            assert_eq!(
-                                output.getattr("count").unwrap().extract::<usize>().unwrap(),
-                                count
-                            );
-                            let items = output
-                                .getattr("items")
-                                .unwrap()
-                                .cast_into::<PyList>()
-                                .unwrap();
-                            assert_eq!(items.len(), count);
-                            if count == 1 {
-                                assert!(output.getattr("item").unwrap().is(instance.bind(py)));
+                                .unwrap_or_else(|error| {
+                                    panic!("{operation:?}/{borrowed}/{count}: {error}")
+                                });
+                                let output = output.bind(py);
                                 assert_eq!(
-                                    instance
-                                        .bind(py)
-                                        .getattr("iid")
-                                        .unwrap()
-                                        .extract::<String>()
-                                        .unwrap(),
-                                    "0x20"
+                                    output.getattr("count").unwrap().extract::<usize>().unwrap(),
+                                    count
                                 );
-                            } else {
-                                assert!(output.getattr("item").unwrap().is_none());
-                                assert!(
-                                    instance
-                                        .bind(py)
-                                        .getattr("_values")
-                                        .unwrap()
-                                        .is(prior_values.bind(py))
-                                );
-                                assert!(
-                                    instance
-                                        .bind(py)
-                                        .getattr("_iid")
-                                        .unwrap()
-                                        .is(prior_iid.bind(py))
-                                );
-                                assert!(package.facade_origins.proof(instance.bind(py)).is_none());
-                            }
-                            for (index, item) in items.iter().enumerate() {
-                                assert_eq!(
-                                    item.getattr("iid").unwrap().extract::<String>().unwrap(),
-                                    format!("0x2{index}")
-                                );
-                                assert!(package.facade_origins.proof(&item).is_some());
-                                let values = item
-                                    .call_method0("runtime_values")
+                                let items = output
+                                    .getattr("items")
                                     .unwrap()
-                                    .cast_into::<PyDict>()
+                                    .cast_into::<PyList>()
                                     .unwrap();
-                                if kind == TypeKind::Entity {
-                                    let tags = values
-                                        .get_item("tag")
-                                        .unwrap()
-                                        .unwrap()
-                                        .cast_into::<PyTuple>()
-                                        .unwrap();
-                                    assert_eq!(tags.len(), 1);
+                                assert_eq!(items.len(), count);
+                                if count == 1 {
+                                    assert!(output.getattr("item").unwrap().is(instance.bind(py)));
                                     assert_eq!(
-                                        tags.get_item(0)
-                                            .unwrap()
-                                            .call_method0("runtime_attribute_value")
+                                        instance
+                                            .bind(py)
+                                            .getattr("iid")
                                             .unwrap()
                                             .extract::<String>()
                                             .unwrap(),
-                                        "normalized-0"
+                                        "0x20"
                                     );
                                 } else {
-                                    let member = values.get_item("member").unwrap().unwrap();
-                                    assert_eq!(
-                                        member.getattr("iid").unwrap().extract::<String>().unwrap(),
-                                        "0x10"
+                                    assert!(output.getattr("item").unwrap().is_none());
+                                    assert!(
+                                        instance
+                                            .bind(py)
+                                            .getattr("_values")
+                                            .unwrap()
+                                            .is(prior_values.bind(py))
+                                    );
+                                    assert!(
+                                        instance
+                                            .bind(py)
+                                            .getattr("_iid")
+                                            .unwrap()
+                                            .is(prior_iid.bind(py))
+                                    );
+                                    assert!(
+                                        package.facade_origins.proof(instance.bind(py)).is_none()
                                     );
                                 }
+                                for (index, item) in items.iter().enumerate() {
+                                    assert_eq!(
+                                        item.getattr("iid").unwrap().extract::<String>().unwrap(),
+                                        format!("0x2{index}")
+                                    );
+                                    assert!(package.facade_origins.proof(&item).is_some());
+                                    let values = item
+                                        .call_method0("runtime_values")
+                                        .unwrap()
+                                        .cast_into::<PyDict>()
+                                        .unwrap();
+                                    if kind == TypeKind::Entity {
+                                        let tags = values
+                                            .get_item("tag")
+                                            .unwrap()
+                                            .unwrap()
+                                            .cast_into::<PyTuple>()
+                                            .unwrap();
+                                        assert_eq!(tags.len(), 1);
+                                        assert_eq!(
+                                            tags.get_item(0)
+                                                .unwrap()
+                                                .call_method0("runtime_attribute_value")
+                                                .unwrap()
+                                                .extract::<String>()
+                                                .unwrap(),
+                                            "normalized-0"
+                                        );
+                                    } else {
+                                        let member = values.get_item("member").unwrap().unwrap();
+                                        assert_eq!(
+                                            member
+                                                .getattr("iid")
+                                                .unwrap()
+                                                .extract::<String>()
+                                                .unwrap(),
+                                            "0x10"
+                                        );
+                                    }
+                                }
+                                if let Some(transaction) = transaction {
+                                    assert_eq!(
+                                        runtime.block_on(transaction.lifecycle_state()),
+                                        TransactionContextState::Active
+                                    );
+                                    runtime.block_on(transaction.commit_sdk()).unwrap();
+                                }
+                                let state = state.lock().unwrap();
+                                assert_eq!(state.calls.len(), 1);
+                                assert_eq!(state.commits, 1);
+                                assert_eq!(state.legacy_commits, 0);
+                                assert_eq!(state.rollbacks, 0);
                             }
-                            if let Some(transaction) = transaction {
-                                assert_eq!(
-                                    runtime.block_on(transaction.lifecycle_state()),
-                                    TransactionContextState::Active
-                                );
-                                runtime.block_on(transaction.commit_sdk()).unwrap();
-                            }
-                            let state = state.lock().unwrap();
-                            assert_eq!(state.calls.len(), 1);
-                            assert_eq!(state.commits, 1);
-                            assert_eq!(state.legacy_commits, 0);
-                            assert_eq!(state.rollbacks, 0);
                         }
                     }
                 }
@@ -15317,99 +14620,108 @@ def public_state(value):
     fn successor_entity_batches_route_all_operations_for_owned_and_borrowed_targets() {
         Python::initialize();
         Python::attach(|py| {
-            for borrowed in [false, true] {
-                for operation in [
-                    ProjectedBatchOperation::Insert,
-                    ProjectedBatchOperation::Put,
-                    ProjectedBatchOperation::Update,
-                    ProjectedBatchOperation::Delete,
-                ] {
-                    let (_, package) = install_batch(py);
-                    let (database, state) =
-                        BatchRecordingBackend::fixture(entity_batch_responses(operation), false);
-                    let runtime = Arc::new(
-                        ProviderRuntimeOwner::new().expect("provider runtime should start"),
-                    );
-                    let transaction = borrowed.then(|| {
-                        runtime
-                            .block_on(database.transaction_context(TxType::Write))
-                            .unwrap()
-                    });
-                    let manager = origin_manager(
-                        Arc::clone(&package),
-                        package
-                            .type_by_label("person", TypeKind::Entity)
-                            .unwrap()
-                            .clone(),
-                        (!borrowed).then(|| Arc::clone(&database)),
-                        transaction.clone(),
-                        Arc::clone(&runtime),
-                    );
-                    let instances = (0..2)
-                        .map(|ordinal| {
-                            batch_person(
-                                py,
-                                package.as_ref(),
-                                &format!("person-{ordinal}"),
-                                &format!("authored-{ordinal}"),
-                                (operation == ProjectedBatchOperation::Update)
-                                    .then_some(if ordinal == 0 { "0x20" } else { "0x21" }),
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    let pointers = instances
-                        .iter()
-                        .map(|instance| instance.bind(py).as_ptr())
-                        .collect::<Vec<_>>();
-                    if operation == ProjectedBatchOperation::Delete {
-                        let iids = PyList::new(py, ["0x20", "0x21"]).unwrap();
-                        manager.delete_many(py, iids.into_any()).unwrap();
-                    } else {
-                        let rows =
-                            PyList::new(py, instances.iter().map(|instance| instance.bind(py)))
+            for schema in [
+                BATCH_SCHEMA.to_owned(),
+                BATCH_SCHEMA
+                    .replace("        ordered: true\n", "")
+                    .replace("        distinct: true\n", ""),
+            ] {
+                for borrowed in [false, true] {
+                    for operation in [
+                        ProjectedBatchOperation::Insert,
+                        ProjectedBatchOperation::Put,
+                        ProjectedBatchOperation::Update,
+                        ProjectedBatchOperation::Delete,
+                    ] {
+                        let (_, package) = install_ordered_schema(py, &schema);
+                        let (database, state) = BatchRecordingBackend::fixture(
+                            entity_batch_responses(operation),
+                            false,
+                        );
+                        let runtime = Arc::new(
+                            ProviderRuntimeOwner::new().expect("provider runtime should start"),
+                        );
+                        let transaction = borrowed.then(|| {
+                            runtime
+                                .block_on(database.transaction_context(TxType::Write))
                                 .unwrap()
-                                .into_any();
-                        let output = match operation {
-                            ProjectedBatchOperation::Insert => manager.insert_many(py, rows),
-                            ProjectedBatchOperation::Put => manager.put_many(py, rows),
-                            ProjectedBatchOperation::Update => manager.update_many(py, rows),
-                            ProjectedBatchOperation::Delete => unreachable!(),
+                        });
+                        let manager = origin_manager(
+                            Arc::clone(&package),
+                            package
+                                .type_by_label("person", TypeKind::Entity)
+                                .unwrap()
+                                .clone(),
+                            (!borrowed).then(|| Arc::clone(&database)),
+                            transaction.clone(),
+                            Arc::clone(&runtime),
+                        );
+                        let instances = (0..2)
+                            .map(|ordinal| {
+                                batch_person(
+                                    py,
+                                    package.as_ref(),
+                                    &format!("person-{ordinal}"),
+                                    &format!("authored-{ordinal}"),
+                                    (operation == ProjectedBatchOperation::Update)
+                                        .then_some(if ordinal == 0 { "0x20" } else { "0x21" }),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        let pointers = instances
+                            .iter()
+                            .map(|instance| instance.bind(py).as_ptr())
+                            .collect::<Vec<_>>();
+                        if operation == ProjectedBatchOperation::Delete {
+                            let iids = PyList::new(py, ["0x20", "0x21"]).unwrap();
+                            manager.delete_many(py, iids.into_any()).unwrap();
+                        } else {
+                            let rows =
+                                PyList::new(py, instances.iter().map(|instance| instance.bind(py)))
+                                    .unwrap()
+                                    .into_any();
+                            let output = match operation {
+                                ProjectedBatchOperation::Insert => manager.insert_many(py, rows),
+                                ProjectedBatchOperation::Put => manager.put_many(py, rows),
+                                ProjectedBatchOperation::Update => manager.update_many(py, rows),
+                                ProjectedBatchOperation::Delete => unreachable!(),
+                            }
+                            .unwrap();
+                            let output = output.bind(py).cast::<PyList>().unwrap();
+                            assert_eq!(output.len(), 2);
+                            for (ordinal, pointer) in pointers.iter().enumerate() {
+                                assert_eq!(output.get_item(ordinal).unwrap().as_ptr(), *pointer);
+                                assert_eq!(
+                                    output
+                                        .get_item(ordinal)
+                                        .unwrap()
+                                        .getattr("iid")
+                                        .unwrap()
+                                        .extract::<String>()
+                                        .unwrap(),
+                                    if ordinal == 0 { "0x20" } else { "0x21" },
+                                );
+                            }
                         }
-                        .unwrap();
-                        let output = output.bind(py).cast::<PyList>().unwrap();
-                        assert_eq!(output.len(), 2);
-                        for (ordinal, pointer) in pointers.iter().enumerate() {
-                            assert_eq!(output.get_item(ordinal).unwrap().as_ptr(), *pointer);
+                        if let Some(transaction) = transaction {
                             assert_eq!(
-                                output
-                                    .get_item(ordinal)
-                                    .unwrap()
-                                    .getattr("iid")
-                                    .unwrap()
-                                    .extract::<String>()
-                                    .unwrap(),
-                                if ordinal == 0 { "0x20" } else { "0x21" },
+                                runtime.block_on(transaction.lifecycle_state()),
+                                TransactionContextState::Active,
                             );
                         }
-                    }
-                    if let Some(transaction) = transaction {
-                        assert_eq!(
-                            runtime.block_on(transaction.lifecycle_state()),
-                            TransactionContextState::Active,
+                        let state = state.lock().unwrap();
+                        assert!(state.responses.is_empty());
+                        assert_eq!(state.opens, [TxType::Write]);
+                        assert_eq!(state.rollbacks, 0);
+                        assert_eq!(state.legacy_commits, 0);
+                        assert_eq!(state.commits, usize::from(!borrowed));
+                        assert_eq!(state.calls.len(), 1);
+                        assert_successor_batch_route_fingerprint(
+                            TypeKind::Entity,
+                            operation,
+                            &state.calls,
                         );
                     }
-                    let state = state.lock().unwrap();
-                    assert!(state.responses.is_empty());
-                    assert_eq!(state.opens, [TxType::Write]);
-                    assert_eq!(state.rollbacks, 0);
-                    assert_eq!(state.legacy_commits, 0);
-                    assert_eq!(state.commits, usize::from(!borrowed));
-                    assert_eq!(state.calls.len(), 1);
-                    assert_successor_batch_route_fingerprint(
-                        TypeKind::Entity,
-                        operation,
-                        &state.calls,
-                    );
                 }
             }
         });
@@ -15419,188 +14731,117 @@ def public_state(value):
     fn successor_relation_batches_route_all_operations_for_owned_and_borrowed_targets() {
         Python::initialize();
         Python::attach(|py| {
-            for borrowed in [false, true] {
-                for operation in [
-                    ProjectedBatchOperation::Insert,
-                    ProjectedBatchOperation::Put,
-                    ProjectedBatchOperation::Update,
-                    ProjectedBatchOperation::Delete,
-                ] {
-                    let (_, package) = install_batch(py);
-                    let (database, state) =
-                        BatchRecordingBackend::fixture(relation_batch_responses(operation), false);
-                    let runtime = Arc::new(
-                        ProviderRuntimeOwner::new().expect("provider runtime should start"),
-                    );
-                    let transaction = borrowed.then(|| {
-                        runtime
-                            .block_on(database.transaction_context(TxType::Write))
-                            .unwrap()
-                    });
-                    let manager = origin_manager(
-                        Arc::clone(&package),
-                        package
-                            .type_by_label("membership", TypeKind::Relation)
-                            .unwrap()
-                            .clone(),
-                        (!borrowed).then(|| Arc::clone(&database)),
-                        transaction.clone(),
-                        Arc::clone(&runtime),
-                    );
-                    let players = (0..2)
-                        .map(|ordinal| {
-                            batch_person(
-                                py,
-                                package.as_ref(),
-                                &format!("player-{ordinal}"),
-                                &format!("player-tag-{ordinal}"),
-                                None,
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    let instances = players
-                        .iter()
-                        .enumerate()
-                        .map(|(ordinal, player)| {
-                            batch_membership(
-                                py,
-                                package.as_ref(),
-                                &format!("membership-{ordinal}"),
-                                player,
-                                (operation == ProjectedBatchOperation::Update)
-                                    .then_some(if ordinal == 0 { "0x30" } else { "0x31" }),
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    let pointers = instances
-                        .iter()
-                        .map(|instance| instance.bind(py).as_ptr())
-                        .collect::<Vec<_>>();
-                    if operation == ProjectedBatchOperation::Delete {
-                        let iids = PyList::new(py, ["0x30", "0x31"]).unwrap();
-                        manager.delete_many(py, iids.into_any()).unwrap();
-                    } else {
-                        let rows =
-                            PyList::new(py, instances.iter().map(|instance| instance.bind(py)))
+            for schema in [
+                BATCH_SCHEMA.to_owned(),
+                BATCH_SCHEMA
+                    .replace("        ordered: true\n", "")
+                    .replace("        distinct: true\n", ""),
+            ] {
+                for borrowed in [false, true] {
+                    for operation in [
+                        ProjectedBatchOperation::Insert,
+                        ProjectedBatchOperation::Put,
+                        ProjectedBatchOperation::Update,
+                        ProjectedBatchOperation::Delete,
+                    ] {
+                        let (_, package) = install_ordered_schema(py, &schema);
+                        let (database, state) = BatchRecordingBackend::fixture(
+                            relation_batch_responses(operation),
+                            false,
+                        );
+                        let runtime = Arc::new(
+                            ProviderRuntimeOwner::new().expect("provider runtime should start"),
+                        );
+                        let transaction = borrowed.then(|| {
+                            runtime
+                                .block_on(database.transaction_context(TxType::Write))
                                 .unwrap()
-                                .into_any();
-                        let output = match operation {
-                            ProjectedBatchOperation::Insert => manager.insert_many(py, rows),
-                            ProjectedBatchOperation::Put => manager.put_many(py, rows),
-                            ProjectedBatchOperation::Update => manager.update_many(py, rows),
-                            ProjectedBatchOperation::Delete => unreachable!(),
+                        });
+                        let manager = origin_manager(
+                            Arc::clone(&package),
+                            package
+                                .type_by_label("membership", TypeKind::Relation)
+                                .unwrap()
+                                .clone(),
+                            (!borrowed).then(|| Arc::clone(&database)),
+                            transaction.clone(),
+                            Arc::clone(&runtime),
+                        );
+                        let players = (0..2)
+                            .map(|ordinal| {
+                                batch_person(
+                                    py,
+                                    package.as_ref(),
+                                    &format!("player-{ordinal}"),
+                                    &format!("player-tag-{ordinal}"),
+                                    None,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        let instances = players
+                            .iter()
+                            .enumerate()
+                            .map(|(ordinal, player)| {
+                                batch_membership(
+                                    py,
+                                    package.as_ref(),
+                                    &format!("membership-{ordinal}"),
+                                    player,
+                                    (operation == ProjectedBatchOperation::Update)
+                                        .then_some(if ordinal == 0 { "0x30" } else { "0x31" }),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        let pointers = instances
+                            .iter()
+                            .map(|instance| instance.bind(py).as_ptr())
+                            .collect::<Vec<_>>();
+                        if operation == ProjectedBatchOperation::Delete {
+                            let iids = PyList::new(py, ["0x30", "0x31"]).unwrap();
+                            manager.delete_many(py, iids.into_any()).unwrap();
+                        } else {
+                            let rows =
+                                PyList::new(py, instances.iter().map(|instance| instance.bind(py)))
+                                    .unwrap()
+                                    .into_any();
+                            let output = match operation {
+                                ProjectedBatchOperation::Insert => manager.insert_many(py, rows),
+                                ProjectedBatchOperation::Put => manager.put_many(py, rows),
+                                ProjectedBatchOperation::Update => manager.update_many(py, rows),
+                                ProjectedBatchOperation::Delete => unreachable!(),
+                            }
+                            .unwrap();
+                            let output = output.bind(py).cast::<PyList>().unwrap();
+                            assert_eq!(output.len(), 2);
+                            for (ordinal, pointer) in pointers.iter().enumerate() {
+                                let value = output.get_item(ordinal).unwrap();
+                                assert_eq!(value.as_ptr(), *pointer);
+                                assert_eq!(
+                                    value.getattr("iid").unwrap().extract::<String>().unwrap(),
+                                    if ordinal == 0 { "0x30" } else { "0x31" },
+                                );
+                            }
                         }
-                        .unwrap();
-                        let output = output.bind(py).cast::<PyList>().unwrap();
-                        assert_eq!(output.len(), 2);
-                        for (ordinal, pointer) in pointers.iter().enumerate() {
-                            let value = output.get_item(ordinal).unwrap();
-                            assert_eq!(value.as_ptr(), *pointer);
+                        if let Some(transaction) = transaction {
                             assert_eq!(
-                                value.getattr("iid").unwrap().extract::<String>().unwrap(),
-                                if ordinal == 0 { "0x30" } else { "0x31" },
+                                runtime.block_on(transaction.lifecycle_state()),
+                                TransactionContextState::Active,
                             );
                         }
-                    }
-                    if let Some(transaction) = transaction {
-                        assert_eq!(
-                            runtime.block_on(transaction.lifecycle_state()),
-                            TransactionContextState::Active,
+                        let state = state.lock().unwrap();
+                        assert!(state.responses.is_empty());
+                        assert_eq!(state.opens, [TxType::Write]);
+                        assert_eq!(state.rollbacks, 0);
+                        assert_eq!(state.legacy_commits, 0);
+                        assert_eq!(state.commits, usize::from(!borrowed));
+                        assert_eq!(state.calls.len(), 1);
+                        assert_successor_batch_route_fingerprint(
+                            TypeKind::Relation,
+                            operation,
+                            &state.calls,
                         );
                     }
-                    let state = state.lock().unwrap();
-                    assert!(state.responses.is_empty());
-                    assert_eq!(state.opens, [TxType::Write]);
-                    assert_eq!(state.rollbacks, 0);
-                    assert_eq!(state.legacy_commits, 0);
-                    assert_eq!(state.commits, usize::from(!borrowed));
-                    assert_eq!(state.calls.len(), 1);
-                    assert_successor_batch_route_fingerprint(
-                        TypeKind::Relation,
-                        operation,
-                        &state.calls,
-                    );
                 }
-            }
-        });
-    }
-
-    #[test]
-    fn returning_delete_supports_predecessor_hydration_and_rolls_back_callback_failure() {
-        Python::initialize();
-        Python::attach(|py| {
-            for fail_hydration in [false, true] {
-                let (_, package) = install(py);
-                let person_id = package
-                    .type_by_label("person", TypeKind::Entity)
-                    .unwrap()
-                    .clone();
-                assert!(package.batch_slots(&person_id).is_err());
-                if fail_hydration {
-                    package
-                        .class(&person_id, ProjectedModelForm::Complete)
-                        .unwrap()
-                        .bind(py)
-                        .setattr(
-                            "attach_runtime_iid",
-                            py.eval(ffi::c_str!("lambda self, iid: 1 / 0"), None, None)
-                                .unwrap(),
-                        )
-                        .unwrap();
-                }
-                let (database, state) = BatchRecordingBackend::fixture(
-                    vec![
-                        BatchResponse::Documents(vec![serde_json::json!({
-                            "ordinal": 0, "_iid": "0x20", "_type": "person",
-                            "attributes": {"identifier": [{"value": "stored"}], "aliases": []}
-                        })]),
-                        BatchResponse::Documents(vec![serde_json::json!({"ordinal": 0})]),
-                    ],
-                    false,
-                );
-                let manager = origin_manager(
-                    Arc::clone(&package),
-                    person_id,
-                    Some(database),
-                    None,
-                    Arc::new(ProviderRuntimeOwner::new().unwrap()),
-                );
-                let result = manager.delete_by_iid_returning(py, "0x20".into());
-                if fail_hydration {
-                    assert!(
-                        result
-                            .unwrap_err()
-                            .is_instance_of::<pyo3::exceptions::PyZeroDivisionError>(py)
-                    );
-                    assert_eq!(package.facade_origins.len(), 0);
-                } else {
-                    let result = result.unwrap();
-                    assert_eq!(
-                        result
-                            .bind(py)
-                            .getattr("count")
-                            .unwrap()
-                            .extract::<usize>()
-                            .unwrap(),
-                        1
-                    );
-                    let snapshot = result.bind(py).getattr("item").unwrap().unbind();
-                    assert!(facade_is_deleted(package.as_ref(), snapshot.bind(py)));
-                    assert_eq!(
-                        snapshot
-                            .bind(py)
-                            .getattr("iid")
-                            .unwrap()
-                            .extract::<String>()
-                            .unwrap(),
-                        "0x20"
-                    );
-                }
-                let state = state.lock().unwrap();
-                assert!(state.responses.is_empty());
-                assert_eq!(state.calls.len(), 2);
-                assert_eq!(state.commits, usize::from(!fail_hydration));
-                assert_eq!(state.rollbacks, usize::from(fail_hydration));
             }
         });
     }
@@ -15856,203 +15097,43 @@ def public_state(value):
     }
 
     #[test]
-    fn schema_less_public_borrowed_crud_uses_plans_but_typed_queries_require_authority() {
+    fn schema_less_typed_queries_require_authority_before_provider_io() {
         Python::initialize();
         Python::attach(|py| {
-            for kind in [TypeKind::Entity, TypeKind::Relation] {
-                for operation in [
-                    ProjectedBatchOperation::Insert,
-                    ProjectedBatchOperation::Put,
-                    ProjectedBatchOperation::Update,
-                    ProjectedBatchOperation::Delete,
-                ] {
-                    let (_, package) = install(py);
-                    let responses = if operation == ProjectedBatchOperation::Delete {
-                        vec![QueryResult::Rows(vec![serde_json::json!({})])]
-                    } else {
-                        let mut document = if kind == TypeKind::Entity {
-                            legacy_person_document("0x20", "legacy-person")
-                        } else {
-                            native_membership_document("0x30", "0x10", "legacy-player")
-                        };
-                        document["ordinal"] = serde_json::json!(0);
-                        vec![QueryResult::Documents(vec![document])]
-                    };
-                    let expected_queries = responses.len();
-                    let (database, state) = LegacyBatchRecordingBackend::fixture(responses);
-                    let runtime = Arc::new(
-                        ProviderRuntimeOwner::new().expect("provider runtime should start"),
-                    );
-                    let transaction = runtime
-                        .block_on(database.transaction_context(TxType::Write))
-                        .unwrap();
-                    let context = PyTransactionContext::from_parts_for_test(
-                        transaction.clone(),
-                        Arc::clone(&runtime),
-                    );
-                    let marker = context.successor_batch_marker();
-                    let label = if kind == TypeKind::Entity {
-                        "person"
-                    } else {
-                        "membership"
-                    };
-                    let manager = PyProjectedModelManager {
-                        transaction_supports_given_stage: false,
-                        package: Arc::clone(&package),
-                        type_id: package.type_by_label(label, kind).unwrap().clone(),
-                        target: Some(OwnedQueryTarget::Transaction(transaction.clone())),
-                        successor_batch_marker: Some(Arc::clone(&marker)),
-                        runtime: Arc::clone(&runtime),
-                        filters: Vec::new(),
-                        compatibility_filter: None,
-                    };
-                    assert!(!manager.uses_successor_runtime());
-
-                    let player = (kind == TypeKind::Relation)
-                        .then(|| legacy_person(py, package.as_ref(), "legacy-player", None));
-                    let input = if kind == TypeKind::Entity {
-                        legacy_person(
-                            py,
-                            package.as_ref(),
-                            "legacy-person",
-                            (operation == ProjectedBatchOperation::Update).then_some("0x20"),
-                        )
-                    } else {
-                        legacy_membership(
-                            py,
-                            package.as_ref(),
-                            player.as_ref().unwrap(),
-                            (operation == ProjectedBatchOperation::Update).then_some("0x30"),
-                        )
-                    };
-                    let pointer = input.bind(py).as_ptr();
-                    if operation == ProjectedBatchOperation::Delete {
-                        let iid = if kind == TypeKind::Entity {
-                            "0x20"
-                        } else {
-                            "0x30"
-                        };
-                        manager
-                            .delete_many(py, PyList::new(py, [iid]).unwrap().into_any())
-                            .unwrap();
-                    } else {
-                        let rows = PyList::new(py, [input.bind(py)]).unwrap().into_any();
-                        let output = match operation {
-                            ProjectedBatchOperation::Insert => manager.insert_many(py, rows),
-                            ProjectedBatchOperation::Put => manager.put_many(py, rows),
-                            ProjectedBatchOperation::Update => manager.update_many(py, rows),
-                            ProjectedBatchOperation::Delete => unreachable!(),
-                        }
-                        .unwrap_or_else(|error| {
-                            panic!(
-                                "{kind:?}/{operation:?}: {error:?}; {:?}",
-                                state.lock().unwrap().queries
-                            )
-                        });
-                        let output = output.bind(py).cast::<PyList>().unwrap();
-                        assert_eq!(output.len(), 1);
-                        assert_eq!(output.get_item(0).unwrap().as_ptr(), pointer);
-                        assert_eq!(
-                            output
-                                .get_item(0)
-                                .unwrap()
-                                .getattr("iid")
-                                .unwrap()
-                                .extract::<String>()
-                                .unwrap(),
-                            if kind == TypeKind::Entity {
-                                "0x20"
-                            } else {
-                                "0x30"
-                            },
-                        );
-                    }
-                    assert_eq!(
-                        runtime.block_on(transaction.lifecycle_state()),
-                        TransactionContextState::Active,
-                    );
-                    assert!(!marker.load(Ordering::Acquire));
-                    {
-                        let state = state.lock().unwrap();
-                        assert!(state.responses.is_empty());
-                        assert_eq!(state.opens, [TxType::Write]);
-                        assert_eq!(state.queries.len(), expected_queries);
-                        match operation {
-                            ProjectedBatchOperation::Insert => {
-                                assert!(state.queries.iter().any(|query| query.contains("insert")));
-                            }
-                            ProjectedBatchOperation::Put => {
-                                assert_eq!(state.queries.len(), 1);
-                                assert!(state.queries[0].contains(if kind == TypeKind::Entity {
-                                    "put"
-                                } else {
-                                    "insert"
-                                }));
-                            }
-                            ProjectedBatchOperation::Update => {
-                                assert!(state.queries.iter().any(|query| query.contains("delete")));
-                                assert!(state.queries.last().unwrap().contains("fetch"));
-                            }
-                            ProjectedBatchOperation::Delete => {
-                                assert!(state.queries[0].contains("delete"));
-                            }
-                        }
-                        assert_eq!(state.legacy_commits, 0);
-                        assert_eq!(state.sdk_commits, 0);
-                        assert_eq!(state.rollbacks, 0);
-                    }
-
-                    if kind == TypeKind::Entity && operation == ProjectedBatchOperation::Insert {
-                        let session = Py::new(
-                            py,
-                            PyRuntimeProjection {
-                                package: Arc::clone(&package),
-                            }
-                            .default_match_session()
-                            .unwrap(),
-                        )
-                        .unwrap();
-                        let session = session.bind(py);
-                        let root = session.call_method1("exact", ("person",)).unwrap();
-                        let shape = session
-                            .call_method1("positional", (vec![root.call_method0("one").unwrap()],))
-                            .unwrap();
-                        let query = session.call_method1("query", (shape,)).unwrap();
-                        let database = Py::new(
-                            py,
-                            PyDatabase::from_handles(
-                                Arc::clone(&database),
-                                Arc::clone(&runtime),
-                                None,
-                            ),
-                        )
-                        .unwrap();
-                        let error = query
-                            .call_method1("execute_count_by_owned", (database.bind(py), root))
-                            .unwrap_err();
-                        assert_eq!(
-                            error
-                                .value(py)
-                                .getattr("code")
-                                .unwrap()
-                                .extract::<String>()
-                                .unwrap(),
-                            "schema_authority_required"
-                        );
-                        assert_eq!(state.lock().unwrap().queries.len(), expected_queries);
-                    }
-
-                    Py::new(py, context)
-                        .unwrap()
-                        .bind(py)
-                        .call_method0("commit")
-                        .unwrap();
-                    let state = state.lock().unwrap();
-                    assert_eq!(state.legacy_commits, 1);
-                    assert_eq!(state.sdk_commits, 0);
-                    assert_eq!(state.rollbacks, 0);
-                }
-            }
+            let (_, package) = install(py);
+            let (backend, state) = QueryOriginBackend::new("0x20");
+            let database = Arc::new(Database::with_backend(Box::new(backend), "schema-less"));
+            let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+            let session = Py::new(
+                py,
+                PyRuntimeProjection { package }
+                    .default_match_session()
+                    .unwrap(),
+            )
+            .unwrap();
+            let session = session.bind(py);
+            let root = session.call_method1("exact", ("person",)).unwrap();
+            let shape = session
+                .call_method1("positional", (vec![root.call_method0("one").unwrap()],))
+                .unwrap();
+            let query = session.call_method1("query", (shape,)).unwrap();
+            let database = Py::new(py, PyDatabase::from_handles(database, runtime, None)).unwrap();
+            let error = query
+                .call_method1("execute_count_by_owned", (database.bind(py), root))
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "schema_authority_required"
+            );
+            let state = state.lock().unwrap();
+            assert!(state.opens.is_empty());
+            assert_eq!(state.selected, 0);
+            assert_eq!(state.hydrated, 0);
         });
     }
 
@@ -17747,7 +16828,7 @@ class CyclicFinalizer:
             ordered_authority.resolved_schema(),
             BindingTarget::Python,
             &ProjectionConfig::python(),
-            &emitter.generator_handlers(),
+            &[ProjectionHandler::python_v1()],
             &emitter.code_resources().unwrap(),
         )
         .unwrap();
@@ -18103,11 +17184,12 @@ class CyclicFinalizer:
     fn py_lowering_refusal(py: Python<'_>, error: PyErr) -> Value {
         use pythonize::depythonize;
 
-        assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
         assert_eq!(
             error.get_type(py).name().unwrap().to_string(),
-            "ProjectedCardinalityError"
+            "MatchRequestError",
+            "{error:?}"
         );
+
         let value = error.value(py);
         let form = PyDict::new(py);
         for key in [
@@ -18208,14 +17290,23 @@ class CyclicFinalizer:
                     .call_method1("attach_runtime_iid", ("0xa1",))
                     .unwrap();
                 let batch = || PyList::new(py, [instance.clone()]).unwrap().into_any();
-                // Every legacy write route lowers through the same core check.
-                for error in [
+                // Native single and batch routes retain the same count diagnostics.
+                for (index, error) in [
                     people.insert(py, instance.clone()).unwrap_err(),
                     people.put(py, instance.clone()).unwrap_err(),
                     people.update(py, attached).unwrap_err(),
                     people.insert_many(py, batch()).unwrap_err(),
                     people.put_many(py, batch()).unwrap_err(),
-                ] {
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let mut expected = expected.clone();
+                    if index >= 3 {
+                        let path = expected["path"].as_array_mut().unwrap();
+                        path.insert(0, json!({"kind": "argument", "value": "rows"}));
+                        path.insert(1, json!({"kind": "index", "value": 0}));
+                    }
                     assert_eq!(py_lowering_refusal(py, error), expected);
                 }
             }
@@ -18458,108 +17549,6 @@ class CyclicFinalizer:
                 item.getattr("iid").unwrap().extract::<String>().unwrap(),
                 "0x-event"
             );
-        });
-    }
-    #[test]
-    fn legacy_single_write_results_preserve_all_roots_and_attach_only_one_input() {
-        Python::initialize();
-        Python::attach(|py| {
-            for kind in [TypeKind::Entity, TypeKind::Relation] {
-                let counts: &[usize] = &[0, 1, 2];
-                for &count in counts {
-                    let (_, package) = install(py);
-                    let documents = ["0x30", "0x31"].into_iter().take(count).map(|iid| {
-                        if kind == TypeKind::Entity {
-                            serde_json::json!({"_iid":iid,"_type":"person","attributes":{"identifier":"legacy-person"}})
-                        } else {
-                            serde_json::json!({"_iid":iid,"_type":"membership","attributes":{},"_role_0_players":[{"_iid":"0x10","_type":"person","attributes":{"identifier":"legacy-player"}}]})
-                        }
-                    }).collect();
-                    let (database, state) =
-                        LegacyBatchRecordingBackend::fixture(vec![QueryResult::Documents(
-                            documents,
-                        )]);
-                    let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
-                    let label = if kind == TypeKind::Entity {
-                        "person"
-                    } else {
-                        "membership"
-                    };
-                    let manager = PyProjectedModelManager {
-                        transaction_supports_given_stage: false,
-                        package: Arc::clone(&package),
-                        type_id: package.type_by_label(label, kind).unwrap().clone(),
-                        target: Some(OwnedQueryTarget::Database(database)),
-                        successor_batch_marker: None,
-                        runtime,
-                        filters: Vec::new(),
-                        compatibility_filter: None,
-                    };
-                    assert!(!manager.uses_successor_runtime());
-                    let player = (kind == TypeKind::Relation)
-                        .then(|| legacy_person(py, package.as_ref(), "legacy-player", None));
-                    let input = if kind == TypeKind::Entity {
-                        legacy_person(py, package.as_ref(), "legacy-person", None)
-                    } else {
-                        legacy_membership(py, package.as_ref(), player.as_ref().unwrap(), None)
-                    };
-                    let values = input.bind(py).getattr("_values").unwrap();
-                    let result = manager.insert(py, input.bind(py).clone()).unwrap();
-                    let result = result.bind(py);
-                    assert_eq!(
-                        result.getattr("count").unwrap().extract::<usize>().unwrap(),
-                        count
-                    );
-                    let items = result.getattr("items").unwrap();
-                    assert_eq!(items.len().unwrap(), count);
-                    if count == 1 {
-                        assert_eq!(
-                            result.getattr("item").unwrap().as_ptr(),
-                            input.bind(py).as_ptr()
-                        );
-                        assert_eq!(
-                            input
-                                .bind(py)
-                                .getattr("iid")
-                                .unwrap()
-                                .extract::<String>()
-                                .unwrap(),
-                            "0x30"
-                        );
-                    } else {
-                        assert!(result.getattr("item").unwrap().is_none());
-                        assert!(input.bind(py).getattr("iid").unwrap().is_none());
-                        assert_eq!(
-                            input.bind(py).getattr("_values").unwrap().as_ptr(),
-                            values.as_ptr()
-                        );
-                        for index in 0..count {
-                            assert_ne!(
-                                items.get_item(index).unwrap().as_ptr(),
-                                input.bind(py).as_ptr()
-                            );
-                        }
-                    }
-                    if count > 0 {
-                        assert_eq!(
-                            items
-                                .get_item(0)
-                                .unwrap()
-                                .getattr("iid")
-                                .unwrap()
-                                .extract::<String>()
-                                .unwrap(),
-                            "0x30"
-                        );
-                    }
-                    let state = state.lock().unwrap();
-                    assert_eq!(state.opens, [TxType::Write]);
-                    assert_eq!(state.queries.len(), 1);
-                    assert_eq!(state.sdk_commits, 1);
-                    assert_eq!(state.legacy_commits, 0);
-                    assert_eq!(state.rollbacks, 0);
-                }
-            }
         });
     }
 }

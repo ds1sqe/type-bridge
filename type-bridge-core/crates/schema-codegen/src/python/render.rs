@@ -13,7 +13,7 @@ use type_bridge_contract::value::ValueTypeTag;
 
 use crate::{
     EmbeddedAuthority, GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE,
-    documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
+    documentation_annotation, invalid, model_documentation,
 };
 
 #[path = "plan.rs"]
@@ -22,6 +22,8 @@ mod plan;
 const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "CrudEvent",
     "CrudHook",
+    "DirectConnectionPolicy",
+    "DirectTlsMode",
     "FieldToken",
     "FunctionRef",
     "HookCancelled",
@@ -31,6 +33,7 @@ const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "ProjectedModelNotFoundError",
     "RoleToken",
     "WriteResult",
+    "connect",
 ];
 const PUBLIC_QUERY_NAMES: &[&str] = &[
     "Aggregate",
@@ -121,7 +124,6 @@ pub(super) fn render(
     py_typed: &[u8],
 ) -> Result<GeneratedPackage, Diagnostic> {
     validate_projection(projection)?;
-    let ordered = projection_uses_ordered_collections(projection);
     GeneratedPackage::try_new([
         (
             "_authority.py".to_owned(),
@@ -129,19 +131,19 @@ pub(super) fn render(
         ),
         (
             "__init__.py".to_owned(),
-            finish(render_init(projection, false, ordered)),
+            finish(render_init(projection, false)),
         ),
         (
             "__init__.pyi".to_owned(),
-            finish(render_init(projection, true, ordered)),
+            finish(render_init(projection, true)),
         ),
         (
             "_models.py".to_owned(),
-            finish(render_models(projection, false, ordered)?),
+            finish(render_models(projection, false)?),
         ),
         (
             "_models.pyi".to_owned(),
-            finish(render_models(projection, true, ordered)?),
+            finish(render_models(projection, true)?),
         ),
         ("_runtime.py".to_owned(), runtime_source.to_vec()),
         ("_runtime.pyi".to_owned(), runtime_stub.to_vec()),
@@ -168,7 +170,7 @@ fn finish(mut source: String) -> Vec<u8> {
     source.into_bytes()
 }
 
-fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> String {
+fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
     let mut output = String::from(
         "from ._runtime import CrudEvent as CrudEvent\n\
          from ._runtime import CrudHook as CrudHook\n\
@@ -186,13 +188,11 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
          from ._runtime import encode_archive as encode_archive\n\
          from ._runtime import encode_archive_controlled as encode_archive_controlled\n",
     );
-    if ordered {
-        output.push_str(
-            "from ._runtime import DirectConnectionPolicy as DirectConnectionPolicy\n\
+    output.push_str(
+        "from ._runtime import DirectConnectionPolicy as DirectConnectionPolicy\n\
              from ._runtime import DirectTlsMode as DirectTlsMode\n\
              from ._runtime import connect as connect\n",
-        );
-    }
+    );
     let query_imports = "from ._query import Aggregate as Aggregate\n\
          from ._query import BoundField as BoundField\n\
          from ._query import BoundRole as BoundRole\n\
@@ -219,7 +219,7 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
          from ._query import SubtypeBoundVar as SubtypeBoundVar\n\
          from ._query import aggregate as aggregate\n\
          from ._query import connect_proxy as connect_proxy\n";
-    if stub || !ordered {
+    if stub {
         output.push_str(query_imports);
     }
     if stub {
@@ -336,7 +336,7 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
         import(&mut output, &name);
         exports.push(name);
     }
-    if ordered && !stub {
+    if !stub {
         output.push_str(query_imports);
     }
     exports.sort();
@@ -394,11 +394,7 @@ fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     Ok(output)
 }
 
-fn render_models(
-    projection: &RuntimeProjection,
-    stub: bool,
-    ordered: bool,
-) -> Result<String, Diagnostic> {
+fn render_models(projection: &RuntimeProjection, stub: bool) -> Result<String, Diagnostic> {
     let mut body = String::new();
     for id in projection.emission().model_shells() {
         render_model(&mut body, projection, &projection.models()[id], stub)?;
@@ -463,7 +459,7 @@ fn render_models(
             &mut emitted_calls,
         )?;
     }
-    let defer_query_imports = ordered && !stub;
+    let defer_query_imports = !stub;
     if defer_query_imports {
         render_model_query_imports(&mut body, &function_body);
         body.push('\n');

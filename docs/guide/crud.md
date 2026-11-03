@@ -18,7 +18,9 @@ package.
 Single writes return `WriteResult` with `count`, `items`, and `item`. `item`
 is present only when exactly one root was written. Python attaches the input
 facade's IID only in that case; zero or multiple roots leave it unchanged.
-Successor managers hydrate and stage publication before completing the write.
+Generated Python managers use the same native runtime for ordered and unordered
+schemas. They hydrate and stage publication before completing the write.
+Regenerate older packages to replace their V1 manager resource.
 A failed owned write restores the input facade; a materialization failure in a
 borrowed write makes that transaction rollback-only.
 

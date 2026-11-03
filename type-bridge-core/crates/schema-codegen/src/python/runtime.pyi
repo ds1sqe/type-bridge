@@ -1,4 +1,5 @@
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from enum import Enum, StrEnum
 from typing import Any, ClassVar, Literal, Never, TypedDict, Unpack, overload
 
@@ -419,3 +420,27 @@ def install_runtime_projection(
     schema_authority: bytes,
     structs: Sequence[type[StructValueBase]] = ...,
 ) -> None: ...
+
+class DirectTlsMode(StrEnum):
+    DISABLED = "disabled"
+    NATIVE_ROOTS = "native_roots"
+    CUSTOM_ROOT = "custom_root"
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DirectConnectionPolicy:
+    endpoint: str
+    database: str
+    username: str = ...
+    password: str = ...
+    http_port: int = ...
+    tls: DirectTlsMode = ...
+    tls_root_ca: str | None = ...
+    connection_limits: QueryExecutionResourceLimits | None = ...
+    answer_limits: QueryExecutionResourceLimits | None = ...
+    query_limits: QueryLimits | None = ...
+
+def connect(
+    policy: DirectConnectionPolicy,
+    *,
+    cancellation: QueryCancellation | None = ...,
+) -> Database: ...

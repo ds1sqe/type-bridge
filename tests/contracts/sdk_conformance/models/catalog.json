@@ -54,7 +54,7 @@
         "algorithm": "sha256",
         "canonicalization": "typebridge.binding-projection/v1",
         "semantic_profile": "typedb-3.12.1/v1",
-        "digest": "611785aa4a4148c32d4e62a067941a7c043d37f868afdf30530c45ad0345070e"
+        "digest": "1bf702138f34a4320b42c0fba42cb3faca3b42bfbc87d7009bc2bde52057ef94"
       },
       "node": {
         "domain": "typebridge.binding.projection",

@@ -200,6 +200,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Generated Python managers now use the native projected runtime for ordered
+  and unordered schemas. Regenerate packages that carry the removed V1
+  manager resource. Manager write-lowering failures now use
+  `MatchRequestError` with the native diagnostic path and details.
+
 - Removed `DynamicEntityManager::new` and `DynamicEntityManager::new_canonical`;
   use `DynamicEntityManager::from_registry`. Removed
   `DynamicEntityManager::with_transaction` and

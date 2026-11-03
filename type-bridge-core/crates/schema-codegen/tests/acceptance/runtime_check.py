@@ -142,7 +142,9 @@ else:
 
 
 try:
-    ordered_connect(OrderedDirectConnectionPolicy("127.0.0.1:1", "app", query_limits=QueryLimits(bindings=8)))
+    ordered_connect(
+        OrderedDirectConnectionPolicy("127.0.0.1:1", "app", query_limits=QueryLimits(bindings=8))
+    )
 except ValueError as error:
     assert "selected_slots" in str(error)
 else:
@@ -356,15 +358,16 @@ for invalid_scalar_value in (
     else:
         raise AssertionError("unconstrained scalar bypassed canonical conversion")
 
-container = Container(item=[EventRef("event-iid")])
+container = Container(item=[EventRef("0xe0")])
 assert len(container.item) == 1
+assert container.item[0].iid == "0xe0"
 
 try:
     Container(
         item=[
-            EventRef("event-1"),
-            EventRef("event-2"),
-            EventRef("event-3"),
+            EventRef("0xe1"),
+            EventRef("0xe2"),
+            EventRef("0xe3"),
         ]
     )
 except ValueError as error:

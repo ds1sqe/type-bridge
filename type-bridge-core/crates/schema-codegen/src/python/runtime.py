@@ -4,6 +4,7 @@ import json
 import logging
 import warnings
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import Enum, StrEnum
@@ -24,7 +25,12 @@ from typing import (
 )
 from weakref import ReferenceType, ref
 
-from type_bridge_core import canonical_enum_spelling
+from type_bridge_core import (
+    QueryCancellation,
+    QueryExecutionResourceLimits,
+    QueryLimits,
+    canonical_enum_spelling,
+)
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 from type_bridge.plan import FieldToken as _AuthoringFieldToken
@@ -479,10 +485,12 @@ class ProjectedModelManager[ModelT: ModelBase]:
 
     def update(self, instance: ModelT) -> WriteResult[ModelT]:
         self._run_pre(CrudEvent.PRE_UPDATE, instance)
+        if instance.iid is None:
+            type(instance).__runtime_projection__.validate_create(type(instance), instance)
         if self._resolve_instance_iid(instance):
             result = self._native.update(instance)
         else:
-            result = WriteResult([])
+            result = WriteResult[ModelT]([])
         self._run_post_many(CrudEvent.POST_UPDATE, result.items)
         return result
 
@@ -993,6 +1001,20 @@ class _ProjectedField:
         return values[self.name]
 
     def __set__(self, instance: ModelBase, value: object) -> None:
+        values = instance.runtime_values()
+        had_value = self.name in values
+        previous = values.get(self.name)
+        self.set_value(instance, value)
+        try:
+            type(instance).__runtime_projection__.validate_create(type(instance), instance)
+        except BaseException:
+            if had_value:
+                values[self.name] = previous
+            else:
+                del values[self.name]
+            raise
+
+    def set_value(self, instance: ModelBase, value: object) -> None:
         require_live(instance)
         if self.create is None:
             raise AttributeError(f"{self.name} is read-only")
@@ -1128,7 +1150,15 @@ def initialize_model(
 ) -> None:
     instance.initialize_runtime_values({})
     for name, value in values.items():
-        setattr(instance, name, value)
+        descriptor: object | None = None
+        for owner in type(instance).__mro__:
+            if name in owner.__dict__:
+                descriptor = owner.__dict__[name]
+                break
+        if not isinstance(descriptor, _ProjectedField):
+            raise TypeError("generated model initializer requires a projected field")
+        descriptor.set_value(instance, value)
+    type(instance).__runtime_projection__.validate_create(type(instance), instance)
 
 
 def initialize_reference(
@@ -1297,6 +1327,11 @@ def install_runtime_projection(
         install_runtime_projection_with_authority as install_native,
     )
 
+    from ._authority import SCHEMA_AUTHORITY_BYTES
+
+    if schema_authority != SCHEMA_AUTHORITY_BYTES:
+        raise ValueError("generated schema authority does not match the package authority")
+
     installed = install_native(
         projection_json,
         semantic_fingerprint_json,
@@ -1314,3 +1349,57 @@ def install_runtime_projection(
     from ._query import install_projection
 
     install_projection(installed)
+
+
+class DirectTlsMode(StrEnum):
+    DISABLED = "disabled"
+    NATIVE_ROOTS = "native_roots"
+    CUSTOM_ROOT = "custom_root"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DirectConnectionPolicy:
+    endpoint: str
+    database: str
+    username: str = "admin"
+    password: str = field(default="password", repr=False)
+    http_port: int = 8000
+    tls: DirectTlsMode = DirectTlsMode.DISABLED
+    tls_root_ca: str | None = None
+    connection_limits: QueryExecutionResourceLimits | None = None
+    answer_limits: QueryExecutionResourceLimits | None = None
+    query_limits: QueryLimits | None = None
+
+    def __repr__(self) -> str:
+        return "DirectConnectionPolicy([REDACTED])"
+
+
+def connect(
+    policy: object,
+    *,
+    cancellation: QueryCancellation | None = None,
+) -> Database:
+    """Open a database owned and verified by this generated package."""
+    if not isinstance(policy, DirectConnectionPolicy):
+        raise TypeError("connect requires this generated package's DirectConnectionPolicy")
+    projection = _package_runtime_projection
+    if projection is None:
+        raise RuntimeError("generated package runtime projection is not installed")
+    native = projection.connect_direct(
+        policy.endpoint,
+        policy.database,
+        policy.username,
+        policy.password,
+        policy.http_port,
+        policy.tls.value,
+        policy.tls_root_ca,
+        policy.connection_limits,
+        policy.answer_limits,
+        cancellation,
+        policy.query_limits,
+    )
+    from type_bridge._native import database_from_core
+
+    return database_from_core(
+        policy.endpoint, policy.database, native, query_limits=policy.query_limits
+    )
