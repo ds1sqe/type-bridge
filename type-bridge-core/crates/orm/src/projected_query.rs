@@ -132,6 +132,21 @@ impl ProjectedQueryOrigin {
         }
     }
 
+    pub(crate) fn for_manager_target(
+        target: &crate::QueryTarget<'_>,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        match target {
+            crate::QueryTarget::Transaction(transaction)
+                if transaction.tx_type() == TxType::Write =>
+            {
+                Ok(Self {
+                    database_identity: Some(transaction.execution_identity().clone()),
+                })
+            }
+            _ => Self::for_target(target),
+        }
+    }
+
     /// Bind materialized things to one direct database.
     #[doc(hidden)]
     #[must_use]

@@ -3947,3 +3947,266 @@ async fn controlled_single_mapper_cancellation_fails_before_releasing_atomicity(
         assert_eq!(state.lock().unwrap().rollbacks, 1);
     }
 }
+
+#[tokio::test]
+async fn compatibility_reads_preserve_arbitrary_first_and_native_origins_on_every_direct_target() {
+    use type_bridge_orm::_dynamic::{DynamicComparisonOp, DynamicExpr};
+    use type_bridge_orm::{
+        ProjectedManagerFilterExecutor, ProjectedManagerFilterInvocationControl, QueryTarget,
+    };
+    for borrowed in [None, Some(TxType::Read), Some(TxType::Write)] {
+        for first in [false, true] {
+            for present in [false, true] {
+                let installed = installed_with_authority();
+                let model = type_id(TypeKind::Entity, "person");
+                let (mut backend, state) = RecordingBackend::new(
+                    vec![documents(if present {
+                        vec![person_document("0x10")]
+                    } else {
+                        vec![]
+                    })],
+                    CommitBehavior::Success,
+                );
+                backend.given_enabled = true;
+                let database = Database::with_backend(Box::new(backend), "compatibility-read");
+                let transaction = match borrowed {
+                    Some(kind) => Some(database.transaction_context(kind).await.unwrap()),
+                    None => None,
+                };
+                let target = transaction
+                    .as_ref()
+                    .map_or(QueryTarget::Database(&database), QueryTarget::Transaction);
+                let expressions = [DynamicExpr::Compare {
+                    attr_name: "email".into(),
+                    operator: DynamicComparisonOp::Eq,
+                    value: type_bridge_orm::value::AttributeValue::String(
+                        "ada@example.test".into(),
+                    ),
+                }];
+                let control = ProjectedManagerFilterInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                );
+                let executor = ProjectedManagerFilterExecutor::new(&installed);
+                let things = if first {
+                    executor
+                        .compatibility_first_on_target(target, &model, &expressions, control)
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                } else {
+                    executor
+                        .compatibility_all_on_target(target, &model, &expressions, control)
+                        .await
+                        .unwrap()
+                };
+                assert_eq!(things.len(), usize::from(present));
+                if let Some(thing) = things.first() {
+                    assert_eq!(thing.iid(), "0x10");
+                    assert!(
+                        thing
+                            .try_to_reference(&installed)
+                            .unwrap()
+                            .origin_carrier()
+                            .is_some()
+                    );
+                }
+                if let Some(transaction) = &transaction {
+                    assert_eq!(
+                        transaction.lifecycle_state().await,
+                        type_bridge_orm::TransactionContextState::Active
+                    );
+                }
+                let state = state.lock().unwrap();
+                assert_eq!(state.opens, [borrowed.unwrap_or(TxType::Read)]);
+                assert_eq!(state.queries.len(), 1);
+                assert_eq!(state.queries[0].contains("limit 1;"), first);
+                assert_eq!(state.commits, 0);
+                assert_eq!(state.rollbacks, 0);
+                assert_eq!(state.closes, usize::from(borrowed.is_none()));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn compatibility_read_failure_retains_the_borrowed_write_predispatch_state() {
+    use type_bridge_orm::{
+        ProjectedManagerFilterExecutor, ProjectedManagerFilterInvocationControl, QueryTarget,
+    };
+    let installed = installed_with_authority();
+    let (mut backend, state) = RecordingBackend::new(
+        vec![RecordingResponse::Error("read failed")],
+        CommitBehavior::Success,
+    );
+    backend.given_enabled = true;
+    let database = Database::with_backend(Box::new(backend), "compatibility-read-failure");
+    let transaction = database.transaction_context(TxType::Write).await.unwrap();
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .compatibility_all_on_target(
+            QueryTarget::Transaction(&transaction),
+            &type_id(TypeKind::Entity, "person"),
+            &[],
+            ProjectedManagerFilterInvocationControl::capture(
+                Default::default(),
+                Default::default(),
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, type_bridge_orm::QueryTargetError::Direct(OrmError::QueryExecution(ref message)) if message == "read failed")
+    );
+    assert_eq!(
+        transaction.lifecycle_state().await,
+        type_bridge_orm::TransactionContextState::Active
+    );
+    // A read-only plan fails before the lease has any possible mutation.
+    let (mut prior_backend, _) = RecordingBackend::new(
+        vec![RecordingResponse::Error("read failed")],
+        CommitBehavior::Success,
+    );
+    prior_backend.given_enabled = true;
+    let prior_database =
+        Database::with_backend(Box::new(prior_backend), "prior-compatibility-read");
+    let prior_transaction = prior_database
+        .transaction_context(TxType::Write)
+        .await
+        .unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let prior_manager = type_bridge_orm::_manager::DynamicEntityManager::with_registry_transaction(
+        prior_transaction.clone(),
+        Arc::clone(&registry),
+        registry.entity("person").unwrap(),
+    );
+    assert!(
+        matches!(prior_manager.all().await.unwrap_err(), OrmError::QueryExecution(ref message) if message == "read failed")
+    );
+    assert_eq!(
+        transaction.lifecycle_state().await,
+        prior_transaction.lifecycle_state().await
+    );
+    let state = state.lock().unwrap();
+    assert_eq!(state.queries.len(), 1);
+    assert_eq!((state.commits, state.rollbacks, state.closes), (0, 0, 0));
+}
+
+#[tokio::test]
+async fn compatibility_scalar_reads_share_plan_answers_on_owned_read_and_write_targets() {
+    use type_bridge_orm::{
+        ProjectedManagerFilterExecutor, ProjectedManagerFilterInvocationControl, QueryTarget,
+    };
+    for borrowed in [None, Some(TxType::Read), Some(TxType::Write)] {
+        let installed = installed_with_authority();
+        let model = type_id(TypeKind::Entity, "person");
+        let (mut backend, state) = RecordingBackend::new(
+            vec![
+                RecordingResponse::Result(QueryResult::Rows(vec![
+                    serde_json::json!({"count1":{"kind":"value","value":CanonicalValue::Long(3)}}),
+                ])),
+                RecordingResponse::Result(QueryResult::Rows(vec![
+                    serde_json::json!({"root0":{"kind":"thing","iid":"0x10","type_id":{"kind":"entity","label":"person"}}}),
+                ])),
+                RecordingResponse::Result(QueryResult::Rows(vec![])),
+                RecordingResponse::Result(QueryResult::Rows(vec![
+                    serde_json::json!({"count1":{"kind":"value","value":CanonicalValue::Long(-1)}}),
+                ])),
+            ],
+            CommitBehavior::Success,
+        );
+        backend.given_enabled = true;
+        let database = Database::with_backend(Box::new(backend), "compatibility-scalar");
+        let transaction = match borrowed {
+            Some(kind) => Some(database.transaction_context(kind).await.unwrap()),
+            None => None,
+        };
+        let target = transaction
+            .as_ref()
+            .map_or(QueryTarget::Database(&database), QueryTarget::Transaction);
+        let control = || {
+            ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default())
+        };
+        let executor = ProjectedManagerFilterExecutor::new(&installed);
+        assert_eq!(
+            executor
+                .compatibility_count_on_target(target, &model, &[], control())
+                .await
+                .unwrap(),
+            3
+        );
+        assert!(
+            executor
+                .compatibility_exists_on_target(target, &model, &[], control())
+                .await
+                .unwrap()
+        );
+        assert!(
+            !executor
+                .compatibility_exists_on_target(target, &model, &[], control())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            executor
+                .compatibility_count_on_target(target, &model, &[], control())
+                .await
+                .unwrap_err()
+                .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+                .code()
+                .as_str(),
+            "provider_count_cardinality_invalid"
+        );
+        let state = state.lock().unwrap();
+        assert_eq!(state.queries.len(), 4);
+        assert_eq!(state.commits, 0);
+        assert_eq!(state.rollbacks, 0);
+        assert_eq!(state.closes, if borrowed.is_some() { 0 } else { 4 });
+    }
+}
+
+#[tokio::test]
+async fn compatibility_read_admission_checks_budget_and_cancellation_before_provider_io() {
+    use type_bridge_orm::{
+        AnswerCancellation, ProjectedManagerFilterExecutor,
+        ProjectedManagerFilterInvocationControl, QueryExecutionResourceLimits, QueryTarget,
+    };
+    let installed = installed_with_authority();
+    let model = type_id(TypeKind::Entity, "person");
+    let (backend, state) = RecordingBackend::new(vec![], CommitBehavior::Success);
+    let database = Database::with_backend(Box::new(backend), "compatibility-preflight");
+    let executor = ProjectedManagerFilterExecutor::new(&installed);
+    let diagnostic = executor
+        .compatibility_all_on_target(
+            QueryTarget::Database(&database),
+            &model,
+            &[],
+            ProjectedManagerFilterInvocationControl::capture(
+                QueryExecutionResourceLimits {
+                    bytes: 1,
+                    ..Default::default()
+                },
+                AnswerCancellation::default(),
+            ),
+        )
+        .await
+        .unwrap_err()
+        .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read);
+    assert_eq!(diagnostic.code().as_str(), "manager_filter_byte_limit");
+    let cancellation = AnswerCancellation::default();
+    cancellation.cancel();
+    let diagnostic = executor
+        .compatibility_count_on_target(
+            QueryTarget::Database(&database),
+            &model,
+            &[],
+            ProjectedManagerFilterInvocationControl::capture(Default::default(), cancellation),
+        )
+        .await
+        .unwrap_err()
+        .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read);
+    assert_eq!(diagnostic.code().as_str(), "provider_cancelled");
+    let state = state.lock().unwrap();
+    assert!(state.opens.is_empty());
+    assert!(state.queries.is_empty());
+}

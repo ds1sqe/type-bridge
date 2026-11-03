@@ -665,6 +665,229 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         Self { installed }
     }
 
+    /// Preserve keyword-filter selection while using the native plan and hydration owners.
+    #[doc(hidden)]
+    pub async fn compatibility_all_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        self.compatibility_fetch_on_target(target, model, expressions, None, control)
+            .await
+    }
+
+    /// Return the released arbitrary first match without an identity-only precondition.
+    #[doc(hidden)]
+    pub async fn compatibility_first_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Option<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        let values = self
+            .compatibility_fetch_on_target(target, model, expressions, Some(1), control)
+            .await?;
+        Ok(values.into_iter().next())
+    }
+
+    /// Count exact keyword-filter matches through the common plan target.
+    #[doc(hidden)]
+    pub async fn compatibility_count_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<u64, crate::QueryTargetError> {
+        let (program, answer) = self
+            .compatibility_scalar_on_target(
+                target,
+                model,
+                expressions,
+                crate::plan_builders::manager::ReadTerminal::Count,
+                control,
+            )
+            .await?;
+        let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } =
+            answer.to_staged_v3(&program.plans()[0]).map_err(|error| {
+                crate::QueryTargetError::Direct(crate::plan_builders::manager::diagnostic(error))
+            })?
+        else {
+            return Err(SdkExecutionDiagnostic::internal_failure().into());
+        };
+        let invalid_count = || {
+            integrity(
+                "provider_count_cardinality_invalid",
+                "The provider count query did not return one nonnegative integer",
+                type_path(model),
+            )
+        };
+        match rows.as_slice() {
+            [row] => match row.as_slice() {
+                [
+                    type_bridge_contract::query_remote::RemoteValue::Value {
+                        value: CanonicalValue::Long(count),
+                    },
+                ] => u64::try_from(*count).map_err(|_| invalid_count().into()),
+                _ => Err(invalid_count().into()),
+            },
+            _ => Err(invalid_count().into()),
+        }
+    }
+
+    /// Test exact keyword-filter existence through the common plan target.
+    #[doc(hidden)]
+    pub async fn compatibility_exists_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<bool, crate::QueryTargetError> {
+        let (_, answer) = self
+            .compatibility_scalar_on_target(
+                target,
+                model,
+                expressions,
+                crate::plan_builders::manager::ReadTerminal::Exists,
+                control,
+            )
+            .await?;
+        match answer {
+            crate::query_plan_exec::PlanAnswer::Exists(value) => Ok(value),
+            _ => Err(SdkExecutionDiagnostic::internal_failure().into()),
+        }
+    }
+
+    fn compatibility_preflight(
+        &self,
+        model: &TypeId,
+        control: &ProjectedManagerFilterInvocationControl,
+    ) -> Result<(), SdkExecutionDiagnostic> {
+        require_manager_model(self.installed, model)?;
+        let bytes = type_id_bytes(model) as u64;
+        if bytes > control.limits.bytes {
+            return Err(resource_limit(
+                "manager_filter_byte_limit",
+                "The manager filter exceeds the captured byte ceiling",
+                predicate_collection_path(model),
+                bytes,
+                control.limits.bytes,
+                true,
+            ));
+        }
+        control.checkpoint(model)
+    }
+
+    async fn compatibility_scalar_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        terminal: crate::plan_builders::manager::ReadTerminal,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<
+        (
+            crate::plan_builders::manager::ManagerRead,
+            crate::query_plan_exec::PlanAnswer,
+        ),
+        crate::QueryTargetError,
+    > {
+        let control = control.constrained_by(target.answer_limits());
+        self.compatibility_preflight(model, &control)?;
+        let limits = target
+            .manager_query_limits(control.deadline, &control.cancellation)
+            .await?;
+        let registry = self
+            .installed
+            .manager_registry()
+            .map_err(crate::QueryTargetError::Direct)?;
+        let plans = crate::plan_builders::manager::ManagerPlans::new(registry)
+            .with_query_limits(limits.as_ref());
+        let program = plans.read(
+            model.label().as_str(),
+            true,
+            expressions,
+            &[],
+            None,
+            None,
+            &[],
+            terminal,
+        )?;
+        let mut answers = target
+            .execute_manager_read(
+                &program,
+                control.limits,
+                &control.cancellation,
+                control.deadline,
+            )
+            .await?;
+        if answers.len() != 1 {
+            return Err(SdkExecutionDiagnostic::internal_failure().into());
+        }
+        Ok((program, answers.pop().expect("one scalar plan answer")))
+    }
+
+    async fn compatibility_fetch_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        limit: Option<u64>,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        let control = control.constrained_by(target.answer_limits());
+        self.compatibility_preflight(model, &control)?;
+        let limits = target
+            .manager_query_limits(control.deadline, &control.cancellation)
+            .await?;
+        let registry = self
+            .installed
+            .manager_registry()
+            .map_err(crate::QueryTargetError::Direct)?;
+        let plans = crate::plan_builders::manager::ManagerPlans::new(Arc::clone(&registry))
+            .with_query_limits(limits.as_ref());
+        let program = plans.read(
+            model.label().as_str(),
+            true,
+            expressions,
+            &[],
+            limit,
+            None,
+            &[],
+            crate::plan_builders::manager::ReadTerminal::Fetch,
+        )?;
+        let answers = target
+            .execute_manager_read(
+                &program,
+                control.limits,
+                &control.cancellation,
+                control.deadline,
+            )
+            .await?;
+        let crate::plan_builders::manager::ManagerRead::Fetch(stack) = program else {
+            return Err(SdkExecutionDiagnostic::internal_failure().into());
+        };
+        let proof = stack
+            .resolve(&registry, &answers, stack.execution_limits(control.limits))
+            .map_err(|error| reply_error(lower_match_error(&error)))?;
+        let roots = collect_manager_roots(proof.request(), proof.result()).map_err(reply_error)?;
+        materialize_projected_manager_things_with_budget(
+            self.installed,
+            &registry,
+            ProjectedQueryOrigin::for_manager_target(&target)?,
+            model,
+            &roots,
+            control.limits.projected(),
+            &control.cancellation,
+            Some(control.deadline),
+        )
+        .map_err(reply_error)
+    }
+
     /// Return all distinct exact-model matches in an owned read transaction.
     pub async fn all(
         &self,
@@ -1190,7 +1413,7 @@ impl ManagerTerminal {
 }
 
 /// Borrow the root of every row of a manager `Rows` result, in result order.
-fn manager_roots<'result>(
+fn collect_manager_roots<'result>(
     request: &ValidatedMatchRequest,
     result: &'result ValidatedMatchResult,
 ) -> Result<Vec<&'result HydratedThing>, SdkExecutionDiagnostic> {
@@ -1210,6 +1433,14 @@ fn manager_roots<'result>(
         };
         roots.push(root);
     }
+    Ok(roots)
+}
+
+fn manager_roots<'result>(
+    request: &ValidatedMatchRequest,
+    result: &'result ValidatedMatchResult,
+) -> Result<Vec<&'result HydratedThing>, SdkExecutionDiagnostic> {
+    let roots = collect_manager_roots(request, result)?;
     let [binding] = request.request().plan.bindings.as_slice() else {
         return Err(SdkExecutionDiagnostic::internal_failure());
     };

@@ -885,6 +885,22 @@ impl QueryTarget<'_> {
         }
     }
 
+    pub(crate) async fn manager_query_limits(
+        &self,
+        deadline: QueryExecutionDeadline,
+        cancellation: &AnswerCancellation,
+    ) -> Result<Option<Arc<QueryLimits>>, QueryTargetError> {
+        match self {
+            Self::Database(database) => Ok(database.shared_query_limits().cloned()),
+            Self::Transaction(transaction) => Ok(transaction.shared_query_limits().cloned()),
+            Self::Proxy(proxy) => {
+                proxy
+                    .manager_write_query_limits(deadline, cancellation)
+                    .await
+            }
+        }
+    }
+
     pub(crate) async fn execute_manager_read(
         &self,
         program: &crate::plan_builders::manager::ManagerRead,
