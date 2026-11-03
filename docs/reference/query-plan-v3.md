@@ -728,8 +728,10 @@ provider dispatch. Entries without references keep their existing bytes.
 A referenced plan embeds its unbound canonical program and ordinary given-row
 templates. Every referenced cell is absent in the template; future IIDs are
 never encoded into the request. One source row broadcasts to all template
-rows. More than one source row zips by index only when its count equals the
-template count. Several columns from that same source zip together. An empty
+rows. One fixed template row inherits every row from its single IID source,
+retaining its ordinary fixed values for each root. With several template rows,
+more than one source row zips by index only when its count equals the template
+count. Several columns from that same source zip together. An empty
 source or absent source cell supplies absence only to an optional input; a
 required input refuses with `query_stage_result_ref_missing`. Other row-count
 mismatches refuse with `query_stage_result_ref_rows`. Binding validates the

@@ -10,9 +10,10 @@ use std::collections::BTreeSet;
 
 /// One later input column obtains an earlier plan's selected thing IID.
 ///
-/// A singleton answer broadcasts over the input template. Larger answers zip
-/// only with an equal number of template rows. Several references in one plan
-/// must use the same source; no cross product or data-dependent plan is implied.
+/// A singleton answer broadcasts over the input template. One fixed template
+/// row inherits every row of its single source; otherwise larger answers zip
+/// only with an equal number of template rows. References in one plan must use
+/// the same source; no cross product or data-dependent plan is implied.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct StagedResultRefV3 {
     /// Input column whose template cells must be absent.
@@ -233,18 +234,34 @@ impl StagedPlanV3 {
                 "result reference requires an earlier row answer",
             ));
         };
-        if source.len() > 1 && source.len() != self.rows().len() {
+        let inherit = self.rows().len() == 1 && source.len() > 1;
+        if source.len() > 1 && source.len() != self.rows().len() && !inherit {
             return Err(result_failure(
                 "query_stage_result_ref_rows",
-                "result reference rows must broadcast a singleton or zip equal counts",
+                "result references require a singleton source, one template row, or equal counts",
+            ));
+        }
+        if inherit
+            && !self
+                .plan
+                .limits()
+                .structural
+                .allows_input_rows(source.len())
+        {
+            return Err(limit(
+                "query_invocation_row_limit",
+                "result reference rows exceed the input row limit",
             ));
         }
         let parents = parents(schema);
-        let mut rows = self
-            .rows()
-            .iter()
-            .map(|row| row.values().to_vec())
-            .collect::<Vec<_>>();
+        let mut rows = if inherit {
+            vec![self.rows()[0].values().to_vec(); source.len()]
+        } else {
+            self.rows()
+                .iter()
+                .map(|row| row.values().to_vec())
+                .collect::<Vec<_>>()
+        };
         for reference in self.result_refs() {
             let target = usize::from(reference.input.get());
             let optional = self.plan.inputs()[target].optional();

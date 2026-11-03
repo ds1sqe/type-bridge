@@ -11,7 +11,8 @@ All notable changes to TypeBridge will be documented in this file.
   cannot be reused; write plans retain their existing stage restrictions.
 
 - The V3 staged contract carries typed IID result references. Singleton
-  answers broadcast; larger answers zip only with equal template row counts.
+  answers broadcast; one fixed template row inherits every row from its single
+  IID source. Other larger answers zip only with equal template row counts.
   Forward, scalar, incompatible-type and cross-source references are refused.
   Rust, Python and Node builders author invocation templates and queue them
   with `stage_stack` / `stageStack`; future IID cells remain absent until execution.

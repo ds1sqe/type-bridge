@@ -133,6 +133,45 @@ fn iid_refs_broadcast_zip_and_allow_absence_only_for_optional_inputs() {
 }
 
 #[test]
+fn one_fixed_template_inherits_all_rows_of_one_iid_source() {
+    let template = target(1, false, vec![reference(0, 0), reference(1, 0)]);
+    validate_staged_result_refs_v3(&[source(), template.clone()], &schema()).unwrap();
+    let bound = template
+        .bind_results(&[answer(&["0x30", "0x10"])], &schema())
+        .unwrap();
+    assert_eq!(
+        bound.given_rows().unwrap(),
+        ["0x30", "0x10"].map(|v| InputRow::new(vec![iid(v), iid(v)]))
+    );
+    let fixed = StagedPlanV3::new_with_result_refs(
+        template.plan(),
+        vec![InputRow::new(vec![None, iid("0x40")])],
+        vec![reference(0, 0)],
+        &schema(),
+    )
+    .unwrap();
+    let bound = fixed
+        .bind_results(&[answer(&["0x30", "0x10"])], &schema())
+        .unwrap();
+    assert_eq!(
+        bound.given_rows().unwrap(),
+        ["0x30", "0x10"].map(|v| InputRow::new(vec![iid(v), iid("0x40")]))
+    );
+    let too_many = answer(&vec![
+        "0x10";
+        template.plan().limits().structural.input_rows + 1
+    ]);
+    assert_eq!(
+        template
+            .bind_results(&[too_many], &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_invocation_row_limit"
+    );
+}
+
+#[test]
 fn iid_ref_graph_refuses_forward_scalar_and_incompatible_columns() {
     let forward = target(1, false, vec![reference(0, 1)]);
     assert_eq!(
