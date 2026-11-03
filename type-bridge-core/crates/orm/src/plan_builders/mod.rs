@@ -617,7 +617,7 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let mut program = write_many(
+        let program = write_many(
             &authority,
             WriteKind::MatchPut,
             WriteShape {
@@ -638,23 +638,27 @@ mod tests {
             }],
         )
         .unwrap();
-        let mut predicates = String::new();
-        let mut pieces = 0;
-        while let Some(step) = program.next().unwrap() {
-            if !step.candidate_filter {
-                break;
-            }
-            pieces += 1;
-            predicates.push_str(
-                &crate::query_plan_exec::staged_query(step.plan.local(), true)
-                    .unwrap()
-                    .typeql,
-            );
-            program
-                .accept_candidates(&step, &crate::query_plan_exec::PlanAnswer::Rows(vec![]))
-                .unwrap();
-        }
-        assert!(pieces > 1);
+        let entries = program
+            .staged_entries(&authority)
+            .unwrap()
+            .expect("wide role predicates have a static proxy graph");
+        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+            &entries,
+            authority.declared(),
+        )
+        .unwrap();
+        let predicates = entries
+            .iter()
+            .filter(|entry| !entry.plan().writes())
+            .map(|entry| {
+                assert!(
+                    entry.plan().bindings().len() + entry.plan().inputs().len()
+                        <= authority.query_limits().structural.bindings
+                );
+                String::from_utf8(entry.plan().canonical_bytes().unwrap()).unwrap()
+            })
+            .collect::<String>();
+        assert!(entries.iter().filter(|entry| entry.plan().writes()).count() > 1);
         for iid in iids {
             assert!(predicates.contains(&iid));
         }

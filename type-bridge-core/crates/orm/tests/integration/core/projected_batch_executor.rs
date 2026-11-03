@@ -4270,10 +4270,84 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
                 1
             );
         }
-        for row in result.items() {
-            raw.delete_by_iid(row.iid.as_deref().unwrap())
+        let mut roots = result
+            .items()
+            .iter()
+            .map(|row| row.iid.clone().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        for operation in ["put_hit", "put_miss"] {
+            if operation == "put_miss" {
+                for iid in &roots {
+                    raw.delete_by_iid(iid).await.unwrap();
+                }
+            }
+            *log.lock().unwrap() = DispatchLog::default();
+            let written = manager
+                .put(&fields, &players)
                 .await
-                .unwrap();
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{operation} literal={literal}: {error}; queries={:?}",
+                        log.lock().unwrap().statements
+                    )
+                });
+            assert_eq!(written.count(), 2);
+            let actual = written
+                .items()
+                .iter()
+                .map(|row| row.iid.clone().unwrap())
+                .collect::<std::collections::BTreeSet<_>>();
+            if operation == "put_hit" {
+                assert_eq!(actual, roots);
+            } else {
+                assert!(actual.is_disjoint(&roots));
+            }
+            for row in written.items() {
+                assert_eq!(row.attributes.len(), 300);
+                assert_eq!(row.role_players.len(), 3);
+            }
+            assert_eq!(raw.count().await.unwrap(), 2);
+            {
+                let observed = log.lock().unwrap();
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+            }
+            roots = actual;
+        }
+        let mut mixed = players.to_vec();
+        mixed.push(DynamicRolePlayerInput {
+            role_name: "member".into(),
+            player_type_name: "guard-person".into(),
+            iid: Some(iid.clone()),
+            key: None,
+        });
+        let mut mixed_roots = std::collections::BTreeSet::new();
+        for operation in ["mixed_miss", "mixed_hit"] {
+            let written = manager
+                .put(&fields, &mixed)
+                .await
+                .unwrap_or_else(|error| panic!("{operation} literal={literal}: {error}"));
+            assert_eq!(written.count(), 2);
+            let actual = written
+                .items()
+                .iter()
+                .map(|row| row.iid.clone().unwrap())
+                .collect::<std::collections::BTreeSet<_>>();
+            if operation == "mixed_hit" {
+                assert_eq!(actual, mixed_roots);
+            } else {
+                assert!(actual.is_disjoint(&roots));
+            }
+            for row in written.items() {
+                assert_eq!(row.attributes.len(), 300);
+                assert_eq!(row.role_players.len(), 4);
+            }
+            assert_eq!(raw.count().await.unwrap(), 4);
+            mixed_roots = actual;
+        }
+        roots.extend(mixed_roots);
+        for iid in roots {
+            raw.delete_by_iid(&iid).await.unwrap();
         }
         assert_eq!(raw.count().await.unwrap(), 0);
     }
@@ -4778,7 +4852,7 @@ async fn wide_relation_match_put_intersects_all_player_probe_chunks_live() {
         .await
         .unwrap();
     // Each key reference consumes a player binding, a key binding and an input.
-    // One hundred players force two probes and grouped Boolean read patterns.
+    // One hundred players force the predicate table and grouped Boolean patterns.
     let players = (0..101)
         .map(|index| DynamicRolePlayerInput {
             role_name: "member".into(),
@@ -4851,13 +4925,13 @@ async fn wide_relation_match_put_intersects_all_player_probe_chunks_live() {
             let probes = observed
                 .statements
                 .iter()
-                .filter(|query| query.contains("select $root0;"))
+                .filter(|query| query.contains("reduce $matched4 = count groupby $root0"))
                 .count();
             assert_eq!(
                 probes, 4,
-                "two bounded player probes for each full-match row"
+                "one allocation probe and one complete read for each full-match row"
             );
-            // Each row has two probes; a hit reads its IID, a miss fits one Insert.
+            // The compact miss insert is gated off for the hit row.
             assert_eq!(observed.statements.len(), 6);
             assert_eq!(
                 observed
@@ -4865,7 +4939,7 @@ async fn wide_relation_match_put_intersects_all_player_probe_chunks_live() {
                     .iter()
                     .filter(|query| query.contains("insert"))
                     .count(),
-                1
+                2
             );
             assert_eq!(observed.opened, [TxType::Write]);
             assert_eq!((observed.commits, observed.rollbacks), (1, 0));

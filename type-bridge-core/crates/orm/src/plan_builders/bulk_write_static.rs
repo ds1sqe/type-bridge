@@ -148,6 +148,7 @@ impl StaticProgram {
 
     pub(super) fn with_match_probe(
         miss: SplitProgram,
+        guards: Vec<WriteStep>,
         probe: BuiltPlan,
         final_read: BuiltPlan,
         ordinal: usize,
@@ -167,12 +168,36 @@ impl StaticProgram {
             .iter()
             .cloned()
             .collect::<Vec<_>>();
-        let mut entries = Vec::with_capacity(program.entries.len() + 2);
-        entries.push(StagedPlanV3::new(
+        let mut entries = Vec::with_capacity(program.entries.len() + guards.len() + 2);
+        let mut prefix = VecDeque::with_capacity(guards.len() + 1);
+        for guard in guards {
+            let mut entry = StagedPlanV3::new(
+                guard.plan.local(),
+                guard.plan.local().given_rows().unwrap_or_default().to_vec(),
+                program.authority.declared(),
+            )?;
+            if let Some(source) = entries.last() {
+                entry = gate(entry, source, entries.len() - 1, &program.authority)?;
+            }
+            entries.push(entry);
+            prefix.push_back(StaticStep {
+                complete: false,
+                ordinal: guard.ordinal,
+                missing_iid_noop: false,
+                expected_iid: guard.expected_iid,
+                reference_resolution: guard.reference_resolution,
+            });
+        }
+        let probe_index = entries.len();
+        let mut entry = StagedPlanV3::new(
             probe.local(),
             probe.local().given_rows().unwrap_or_default().to_vec(),
             program.authority.declared(),
-        )?);
+        )?;
+        if let Some(source) = entries.last() {
+            entry = gate(entry, source, entries.len() - 1, &program.authority)?;
+        }
+        entries.push(entry);
         for (index, entry) in program.entries.into_iter().enumerate() {
             let plan = entry.plan();
             let mut inputs = plan.inputs().to_vec();
@@ -208,7 +233,7 @@ impl StaticProgram {
                 );
                 refs.push(StagedResultRefV3 {
                     input,
-                    source_plan: 0,
+                    source_plan: u32::try_from(probe_index).map_err(|_| identity_error())?,
                     source_column: 1,
                     expected_types: expected_types.clone(),
                 });
@@ -216,7 +241,7 @@ impl StaticProgram {
                 for reference in &mut refs {
                     reference.source_plan = reference
                         .source_plan
-                        .checked_add(1)
+                        .checked_add(u32::try_from(probe_index + 1).map_err(|_| identity_error())?)
                         .ok_or_else(identity_error)?;
                     let column = usize::from(reference.input.get());
                     let input = &inputs[column];
@@ -254,13 +279,15 @@ impl StaticProgram {
             step.complete = false;
             step.missing_iid_noop = true;
         }
-        program.steps.push_front(StaticStep {
+        prefix.push_back(StaticStep {
             complete: false,
             ordinal,
             missing_iid_noop: true,
             expected_iid: None,
             reference_resolution: None,
         });
+        prefix.append(&mut program.steps);
+        program.steps = prefix;
         program.steps.push_back(StaticStep {
             complete: true,
             ordinal,
@@ -1230,5 +1257,194 @@ plays:
             observed += 1;
         }
         assert_eq!(observed, count * 2);
+    }
+    #[test]
+    fn full_match_graph_replays_guarded_and_compact_misses_without_truncating_roots() {
+        use type_bridge_contract::query_remote::RemoteValue;
+        use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+        use type_bridge_contract::value::CanonicalString;
+        let authority = PlanAuthority::new(
+            crate::query_plan_exec::race::schema(),
+            ManagedSemanticSchemaFingerprint::compute(
+                SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                b"full-match-graph-replay",
+            )
+            .unwrap(),
+        );
+        let text = |value: &str| CanonicalValue::String(CanonicalString::new(value).unwrap());
+        let relation = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        let candidates = [TypeId::new(TypeKind::Entity, "account").unwrap()];
+        let role = RoleId::new("purchase", "buyer").unwrap();
+        let field =
+            OwnsFactId::new(relation.clone(), AttributeId::new("order-id").unwrap()).unwrap();
+        let fields = (0..300)
+            .map(|index| (field.clone(), text(&format!("v-{index}"))))
+            .collect::<Vec<_>>();
+        let iids = ["0x02", "0x03", "0x04"];
+        let players = iids
+            .iter()
+            .map(|iid| {
+                (
+                    role.clone(),
+                    Reference {
+                        candidates: &candidates,
+                        identity: ReferenceIdentity::Iid(iid),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let key = AttributeId::new("account-id").unwrap();
+        let many = (0..100)
+            .map(|index| {
+                (
+                    role.clone(),
+                    Reference {
+                        candidates: &candidates,
+                        identity: ReferenceIdentity::Key {
+                            attribute: &key,
+                            value: text(&format!("p-{index}")),
+                        },
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        for (fields, players, guarded) in [
+            (fields.as_slice(), players.as_slice(), true),
+            (&[][..], many.as_slice(), false),
+        ] {
+            for hit in [false, true] {
+                let mut program = super::super::match_put::wide_match(
+                    &authority,
+                    WriteShape {
+                        references_see_prior_writes: true,
+                        single_input: false,
+                        type_id: &relation,
+                        keys: &[],
+                        cleared_fields: &[],
+                        cleared_roles: &[],
+                        document_roles: vec![],
+                        include_subtypes: true,
+                        return_documents: false,
+                    },
+                    &WriteRow {
+                        iid: None,
+                        fields,
+                        players,
+                    },
+                    0,
+                )
+                .unwrap();
+                let entries = program
+                    .staged_entries(&authority)
+                    .unwrap()
+                    .expect("a complete fixed graph");
+                type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+                    &entries,
+                    authority.declared(),
+                )
+                .unwrap();
+                let probe_index = usize::from(guarded);
+                if guarded {
+                    assert_eq!(entries[1].result_refs().len(), 2);
+                }
+                assert_eq!(
+                    entries[probe_index + 1].result_refs()[0].source_plan,
+                    probe_index as u32
+                );
+                if !guarded {
+                    assert_eq!(
+                        entries[1].rows().len(),
+                        1,
+                        "the hit gate preserves the compact allocation's single input row"
+                    );
+                }
+                let expected_roots = if hit {
+                    vec!["0x20", "0x22"]
+                } else {
+                    vec!["0x10"]
+                };
+                let mut completed = Vec::new();
+                let mut probes = 0;
+                while let Some(step) = program.next().unwrap() {
+                    let identity_row = |iid: &str| {
+                        vec![
+                            RemoteValue::Value {
+                                value: CanonicalValue::Long(0),
+                            },
+                            RemoteValue::Thing {
+                                iid: iid.into(),
+                                type_id: relation.clone(),
+                            },
+                        ]
+                    };
+                    let rows = if let Some(resolution) = &step.reference_resolution {
+                        vec![
+                            resolution
+                                .ordinals
+                                .iter()
+                                .flat_map(|ordinal| {
+                                    [
+                                        RemoteValue::Value {
+                                            value: CanonicalValue::Long(*ordinal as i64),
+                                        },
+                                        RemoteValue::Thing {
+                                            iid: iids[*ordinal].into(),
+                                            type_id: candidates[0].clone(),
+                                        },
+                                    ]
+                                })
+                                .collect(),
+                        ]
+                    } else if step.plan.local().writes() {
+                        if hit {
+                            vec![]
+                        } else {
+                            vec![identity_row("0x10")]
+                        }
+                    } else if step.complete {
+                        expected_roots.iter().map(|iid| identity_row(iid)).collect()
+                    } else {
+                        probes += 1;
+                        assert!(step.plan.local().pipeline().iter().any(|stage| matches!(
+                            stage,
+                            type_bridge_contract::query_plan::v3::Stage::Limit { rows: 1 }
+                        )));
+                        if hit {
+                            vec![identity_row("0x20")]
+                        } else {
+                            vec![]
+                        }
+                    };
+                    let answer = crate::query_plan_exec::PlanAnswer::from_staged_v3(
+                        &StagedAnswerV3::Rows { rows },
+                        step.plan.local(),
+                    )
+                    .unwrap();
+                    if step.complete {
+                        assert!(!step.plan.local().pipeline().iter().any(|stage| matches!(
+                            stage,
+                            type_bridge_contract::query_plan::v3::Stage::Limit { .. }
+                        )));
+                        completed = step
+                            .reference_iids(&answer)
+                            .unwrap()
+                            .into_iter()
+                            .map(|(_, iid)| iid)
+                            .collect();
+                    }
+                    if let Some(resolution) = &step.reference_resolution {
+                        resolution
+                            .guard
+                            .as_ref()
+                            .unwrap()
+                            .validate(&step.reference_iids(&answer).unwrap(), |_, _| None)
+                            .unwrap();
+                    }
+                    program.record_answer(&step, &answer).unwrap();
+                }
+                assert_eq!(probes, 1);
+                assert_eq!(completed, expected_roots);
+            }
+        }
     }
 }

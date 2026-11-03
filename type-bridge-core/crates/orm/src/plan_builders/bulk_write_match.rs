@@ -341,6 +341,44 @@ pub(in crate::plan_builders::bulk_write) fn wide_match(
     })))
 }
 
+fn bounded_conjunction(
+    mut patterns: Vec<QueryPattern>,
+    terms: usize,
+) -> Result<Vec<QueryPattern>, Diagnostic> {
+    if terms < 2 && patterns.len() > terms {
+        return Err(invalid(
+            "query_plan_pattern_limit",
+            "A conjunction exceeds the configured Boolean ceiling",
+        ));
+    }
+    while patterns.len() > terms {
+        patterns = patterns
+            .chunks(terms)
+            .map(|chunk| QueryPattern::Or {
+                branches: vec![chunk.to_vec()],
+            })
+            .collect();
+    }
+    Ok(patterns)
+}
+
+fn bounded_alternatives(
+    mut branches: Vec<Vec<QueryPattern>>,
+    terms: usize,
+) -> Vec<Vec<QueryPattern>> {
+    while branches.len() > terms {
+        branches = branches
+            .chunks(terms)
+            .map(|chunk| {
+                vec![QueryPattern::Or {
+                    branches: chunk.to_vec(),
+                }]
+            })
+            .collect();
+    }
+    branches
+}
+
 fn predicate_probe(
     authority: &PlanAuthority,
     shape: &WriteShape<'_>,
@@ -357,7 +395,36 @@ fn predicate_probe(
     let count = draft.bind("matched")?;
     // Duplicate unordered predicates remain existential, including when two
     // distinct fields carry the same scalar value.
-    let (mut patterns, rows) = if single_field {
+    let positive_width = row.players.iter().fold(
+        draft.bindings.len() + draft.inputs.len() + 1,
+        |width, (_, reference)| {
+            width.saturating_add(
+                1 + usize::from(matches!(reference.identity, ReferenceIdentity::Key { .. })),
+            )
+        },
+    );
+    // Keep the scalar fast path when positive player joins cannot fan out.
+    let table_players = row.fields.is_empty()
+        || positive_width > authority.query_limits().structural.bindings
+        || (if single_field { 4_usize } else { 3 }).saturating_add(row.players.len())
+            > authority.query_limits().structural.boolean_terms
+        || (row.players.len() > 1
+            && row
+                .players
+                .iter()
+                .any(|(role, reference)| match &reference.identity {
+                    ReferenceIdentity::Iid(_) => false,
+                    ReferenceIdentity::Key { attribute, value } => !unique_player_identity(
+                        authority,
+                        &Player {
+                            role: role.clone(),
+                            candidates: reference.candidates.to_vec(),
+                            iid: None,
+                            key: Some(((*attribute).clone(), value.clone())),
+                        },
+                    ),
+                }));
+    let (mut patterns, rows) = if single_field && !table_players {
         let input = draft.input("wanted_value", row.fields[0].1.value_type(), false)?;
         let values = row
             .fields
@@ -445,6 +512,96 @@ fn predicate_probe(
                 },
             ]);
         }
+        if table_players && !row.players.is_empty() {
+            let player = draft.bind("predicate_player")?;
+            let key = draft.bind("predicate_key")?;
+            let mut keyed = Vec::new();
+            let mut identified = Vec::new();
+            for (role, reference) in row.players {
+                let ordinal =
+                    CanonicalValue::Long(i64::try_from(rows.len()).map_err(|_| identity_error())?);
+                rows.push(InputRow::new(vec![Some(ordinal.clone())]));
+                let mut alternatives = Vec::new();
+                for candidate in reference.candidates {
+                    let mut patterns = vec![
+                        QueryPattern::Links {
+                            relation: root,
+                            relation_id: shape.type_id.clone(),
+                            players: vec![AssertionRolePlayer::new(role.clone(), player)],
+                        },
+                        QueryPattern::Isa {
+                            binding: player,
+                            type_id: candidate.clone(),
+                            include_subtypes: false,
+                        },
+                    ];
+                    match &reference.identity {
+                        ReferenceIdentity::Iid(iid) => patterns.push(QueryPattern::Iid {
+                            binding: player,
+                            iid: QueryOperand::Literal {
+                                value: super::iid(iid)?,
+                            },
+                        }),
+                        ReferenceIdentity::Key { attribute, value } => {
+                            patterns.push(QueryPattern::Has {
+                                owner: player,
+                                attribute: key,
+                                attribute_id: (*attribute).clone(),
+                            });
+                            patterns.push(QueryPattern::Value {
+                                comparator: ValueComparator::Equal,
+                                left: QueryOperand::Binding { binding: key },
+                                right: QueryOperand::Literal {
+                                    value: value.clone(),
+                                },
+                            });
+                        }
+                    }
+                    alternatives.push(bounded_conjunction(patterns, terms)?);
+                }
+                while alternatives.len() > terms {
+                    alternatives = alternatives
+                        .chunks(terms)
+                        .map(|branches| {
+                            vec![QueryPattern::Or {
+                                branches: branches.to_vec(),
+                            }]
+                        })
+                        .collect();
+                }
+                let criterion = vec![
+                    QueryPattern::Value {
+                        comparator: ValueComparator::Equal,
+                        left: QueryOperand::Binding { binding: wanted },
+                        right: QueryOperand::Literal { value: ordinal },
+                    },
+                    QueryPattern::Or {
+                        branches: alternatives,
+                    },
+                ];
+                if matches!(reference.identity, ReferenceIdentity::Key { .. }) {
+                    keyed.push(criterion);
+                } else {
+                    identified.push(criterion);
+                }
+            }
+            // A producer shared by only some arms must stay in their common scope.
+            let scalar = std::mem::take(&mut branches);
+            let mut players = Vec::new();
+            for group in [keyed, identified] {
+                if !group.is_empty() {
+                    players.push(vec![QueryPattern::Or {
+                        branches: bounded_alternatives(group, terms),
+                    }]);
+                }
+            }
+            if !scalar.is_empty() {
+                branches.push(vec![QueryPattern::Or {
+                    branches: bounded_alternatives(scalar, terms),
+                }]);
+            }
+            branches.push(vec![QueryPattern::Or { branches: players }]);
+        }
         while branches.len() > terms {
             branches = branches
                 .chunks(terms)
@@ -472,53 +629,55 @@ fn predicate_probe(
             rows,
         )
     };
-    for (role, reference) in row.players {
-        let player = draft.bind("player")?;
-        let key = matches!(reference.identity, ReferenceIdentity::Key { .. })
-            .then(|| draft.bind("player_key"))
-            .transpose()?;
-        let mut branches = Vec::with_capacity(reference.candidates.len());
-        for candidate in reference.candidates {
-            let mut branch = vec![
-                QueryPattern::Links {
-                    relation: root,
-                    relation_id: shape.type_id.clone(),
-                    players: vec![AssertionRolePlayer::new(role.clone(), player)],
-                },
-                QueryPattern::Isa {
-                    binding: player,
-                    type_id: candidate.clone(),
-                    include_subtypes: false,
-                },
-            ];
-            match &reference.identity {
-                ReferenceIdentity::Iid(iid) => branch.push(QueryPattern::Iid {
-                    binding: player,
-                    iid: QueryOperand::Literal {
-                        value: super::iid(iid)?,
+    if !table_players {
+        for (role, reference) in row.players {
+            let player = draft.bind("player")?;
+            let key = matches!(reference.identity, ReferenceIdentity::Key { .. })
+                .then(|| draft.bind("player_key"))
+                .transpose()?;
+            let mut branches = Vec::with_capacity(reference.candidates.len());
+            for candidate in reference.candidates {
+                let mut branch = vec![
+                    QueryPattern::Links {
+                        relation: root,
+                        relation_id: shape.type_id.clone(),
+                        players: vec![AssertionRolePlayer::new(role.clone(), player)],
                     },
-                }),
-                ReferenceIdentity::Key { attribute, value } => {
-                    let key = key.ok_or_else(identity_error)?;
-                    branch.extend([
-                        QueryPattern::Has {
-                            owner: player,
-                            attribute: key,
-                            attribute_id: (*attribute).clone(),
+                    QueryPattern::Isa {
+                        binding: player,
+                        type_id: candidate.clone(),
+                        include_subtypes: false,
+                    },
+                ];
+                match &reference.identity {
+                    ReferenceIdentity::Iid(iid) => branch.push(QueryPattern::Iid {
+                        binding: player,
+                        iid: QueryOperand::Literal {
+                            value: super::iid(iid)?,
                         },
-                        QueryPattern::Value {
-                            comparator: ValueComparator::Equal,
-                            left: QueryOperand::Binding { binding: key },
-                            right: QueryOperand::Literal {
-                                value: value.clone(),
+                    }),
+                    ReferenceIdentity::Key { attribute, value } => {
+                        let key = key.ok_or_else(identity_error)?;
+                        branch.extend([
+                            QueryPattern::Has {
+                                owner: player,
+                                attribute: key,
+                                attribute_id: (*attribute).clone(),
                             },
-                        },
-                    ]);
+                            QueryPattern::Value {
+                                comparator: ValueComparator::Equal,
+                                left: QueryOperand::Binding { binding: key },
+                                right: QueryOperand::Literal {
+                                    value: value.clone(),
+                                },
+                            },
+                        ]);
+                    }
                 }
+                branches.push(branch);
             }
-            branches.push(branch);
+            patterns.push(QueryPattern::Or { branches }.into());
         }
-        patterns.push(QueryPattern::Or { branches }.into());
     }
     let required = i64::try_from(rows.len()).map_err(|_| identity_error())?;
     let mut pipeline = vec![
@@ -555,6 +714,16 @@ fn predicate_probe(
             bindings: vec![root, output_ordinal],
         },
     ];
+    // Allocation only needs a hit witness; the final read retains every root.
+    if !complete {
+        pipeline.push(Stage::Sort {
+            terms: vec![type_bridge_contract::query_plan::OrderTerm::new(
+                output_ordinal,
+                type_bridge_contract::query_plan::OrderDirection::Ascending,
+            )],
+        });
+        pipeline.push(Stage::Limit { rows: 1 });
+    }
     let output = if complete && shape.return_documents {
         let mut document = ThingDocument::new(root, shape.document_roles.clone());
         document
@@ -570,6 +739,12 @@ fn predicate_probe(
             columns: vec![output_ordinal, root],
         }
     };
+    if draft.bindings.len() + draft.inputs.len() > authority.query_limits().structural.bindings {
+        return Err(invalid(
+            "query_plan_binding_limit",
+            "Match predicate variables exceed the configured binding ceiling",
+        ));
+    }
     draft.finish_rows(authority, pipeline, Operation::Rows, output, Some(rows))
 }
 
@@ -579,13 +754,6 @@ fn static_match(
     row: &WriteRow<'_>,
     ordinal: usize,
 ) -> Result<Option<WriteProgram>, Diagnostic> {
-    if row.fields.is_empty() {
-        return Ok(None);
-    }
-    // Additional references retain their existing pre-write existence guards.
-    if row.players.len() > 1 {
-        return Ok(None);
-    }
     let single_field = row
         .fields
         .iter()
@@ -598,17 +766,28 @@ fn static_match(
     let final_read = predicate_probe(authority, shape, row, ordinal, true, single_field)?;
     let mut miss_shape = shape.clone();
     miss_shape.return_documents = false;
-    let WriteProgram::Split(miss) = split_at(
+    let WriteProgram::Split(miss) = split_with_guards(
         authority,
         WriteKind::Insert,
         miss_shape,
         std::slice::from_ref(row),
         ordinal,
+        false,
     )?
     else {
         return Err(identity_error());
     };
+    let owned = Row::of(row);
+    let guards = if miss
+        .steps
+        .iter()
+        .any(|step| matches!(step, Step::Target { .. }))
+    {
+        references::guards(authority, shape.type_id, &owned.players, ordinal, &probe)?
+    } else {
+        Vec::new()
+    };
     Ok(Some(WriteProgram::Static(Box::new(
-        static_stack::StaticProgram::with_match_probe(miss, probe, final_read, ordinal)?,
+        static_stack::StaticProgram::with_match_probe(miss, guards, probe, final_read, ordinal)?,
     ))))
 }

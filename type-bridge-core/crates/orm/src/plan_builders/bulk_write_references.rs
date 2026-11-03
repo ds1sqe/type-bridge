@@ -136,6 +136,7 @@ pub(super) fn guards(
     let mut guards: Vec<WriteStep> = Vec::new();
     for (route, rows) in routes {
         let mut offset = 0;
+        let mut validated_seed_width = 0;
         while offset < rows.len() {
             let mut low = 0;
             let mut high = rows.len() - offset;
@@ -146,7 +147,11 @@ pub(super) fn guards(
                         if let Some(previous) = guards.last() {
                             StaticProgram::guard_fits(&proof, &previous.plan, authority)?;
                         }
-                        StaticProgram::guard_fits(seed, &proof, authority)?;
+                        // This route has identical output domains at every width.
+                        if count > validated_seed_width {
+                            StaticProgram::guard_fits(seed, &proof, authority)?;
+                            validated_seed_width = count;
+                        }
                         Ok(proof)
                     },
                 );
