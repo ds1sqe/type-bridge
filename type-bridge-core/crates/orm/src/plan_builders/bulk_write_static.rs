@@ -148,23 +148,41 @@ impl StaticProgram {
 
     pub(super) fn with_reference_lookup(
         body: SplitProgram,
-        lookup: BuiltPlan,
+        lookups: Vec<(BuiltPlan, Vec<usize>)>,
         placeholders: BTreeMap<String, usize>,
     ) -> Result<Self, Diagnostic> {
         use type_bridge_contract::query_plan::InputColumnId;
         use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
         let mut program = Self::new(body)?;
-        let source = StagedPlanV3::new(
-            lookup.local(),
-            lookup.local().given_rows().unwrap_or_default().to_vec(),
-            program.authority.declared(),
-        )?;
-        let columns = match source.plan().output() {
-            QueryOutput::Rows { columns } => columns.clone(),
-            _ => return Err(identity_error()),
-        };
-        let mut entries = Vec::with_capacity(program.entries.len() + 1);
-        entries.push(source);
+        let mut entries = Vec::with_capacity(program.entries.len() + lookups.len());
+        let mut sources = BTreeMap::new();
+        let mut prefix = VecDeque::new();
+        for (lookup, ordinals) in lookups {
+            let mut entry = StagedPlanV3::new(
+                lookup.local(),
+                lookup.local().given_rows().unwrap_or_default().to_vec(),
+                program.authority.declared(),
+            )?;
+            let index = entries.len();
+            for (position, ordinal) in ordinals.iter().enumerate() {
+                sources.insert(*ordinal, (index, position * 2 + 1));
+            }
+            if let Some(previous) = entries.last() {
+                entry = gate(entry, previous, index - 1, &program.authority)?;
+            }
+            entries.push(entry);
+            prefix.push_back(StaticStep {
+                complete: false,
+                ordinal: 0,
+                missing_iid_noop: false,
+                expected_iid: None,
+                reference_resolution: Some(Box::new(references::ResolutionStep {
+                    ordinals,
+                    guard: None,
+                })),
+            });
+        }
+        let last_source = entries.len().checked_sub(1).ok_or_else(identity_error)?;
         let mut seen = std::collections::BTreeSet::new();
         for (index, entry) in program.entries.into_iter().enumerate() {
             let plan = entry.plan();
@@ -194,19 +212,20 @@ impl StaticProgram {
                 }
                 if let Some(ordinal) = ordinal {
                     seen.insert(ordinal);
-                    let source_column = ordinal
-                        .checked_mul(2)
-                        .and_then(|value| value.checked_add(1))
-                        .ok_or_else(identity_error)?;
+                    let &(source_index, source_column) =
+                        sources.get(&ordinal).ok_or_else(identity_error)?;
+                    let source = entries[source_index].plan();
+                    let QueryOutput::Rows { columns } = source.output() else {
+                        return Err(identity_error());
+                    };
                     refs.push(StagedResultRefV3 {
                         input: InputColumnId::new(
                             u16::try_from(column).map_err(|_| identity_error())?,
                         ),
-                        source_plan: 0,
+                        source_plan: u32::try_from(source_index).map_err(|_| identity_error())?,
                         source_column: u16::try_from(source_column)
                             .map_err(|_| identity_error())?,
-                        expected_types: entries[0]
-                            .plan()
+                        expected_types: source
                             .binding_types(columns[source_column])
                             .ok_or_else(identity_error)?
                             .iter()
@@ -222,7 +241,12 @@ impl StaticProgram {
                 program.authority.declared(),
             )?;
             entries.push(if index == 0 {
-                gate(entry, &entries[0], 0, &program.authority)?
+                gate(
+                    entry,
+                    &entries[last_source],
+                    last_source,
+                    &program.authority,
+                )?
             } else {
                 entry
             });
@@ -234,16 +258,8 @@ impl StaticProgram {
             &entries,
             program.authority.declared(),
         )?;
-        program.steps.push_front(StaticStep {
-            complete: false,
-            ordinal: 0,
-            missing_iid_noop: false,
-            expected_iid: None,
-            reference_resolution: Some(Box::new(references::ResolutionStep {
-                ordinals: (0..placeholders.len()).collect(),
-                guard: None,
-            })),
-        });
+        prefix.append(&mut program.steps);
+        program.steps = prefix;
         program.entries = entries;
         Ok(program)
     }

@@ -347,7 +347,13 @@ impl ReferenceProgram {
         {
             return Ok(());
         }
-        let prepared = self.frozen_program();
+        let prepared = self.frozen_program(false).or_else(|error| {
+            if forces_pieces(&error) && self.locations.len() > 1 {
+                self.frozen_program(true)
+            } else {
+                Err(error)
+            }
+        });
         let program = match prepared {
             Ok(program) => program,
             Err(error) if forces_pieces(&error) => return Ok(()),
@@ -360,7 +366,7 @@ impl ReferenceProgram {
         Ok(())
     }
 
-    fn frozen_program(&self) -> Result<StaticProgram, Diagnostic> {
+    fn frozen_program(&self, framed: bool) -> Result<StaticProgram, Diagnostic> {
         let mut routes = Vec::with_capacity(self.locations.len());
         let mut cells = Vec::with_capacity(self.locations.len());
         let mut placeholders = BTreeMap::new();
@@ -392,7 +398,68 @@ impl ReferenceProgram {
             owned[row].players[player].iid = Some(placeholder);
             owned[row].players[player].key = None;
         }
-        let lookup = reference_tuple(&self.authority, routes.iter().zip(&cells))?;
+        let lookups = if framed {
+            // Keep the first seed's reference last: its required cell gates the
+            // first mutation after every earlier snapshot has been proved.
+            let final_lookup = reference_tuple(&self.authority, [(&routes[0], &cells[0])])?;
+            let mut lookups: Vec<(BuiltPlan, Vec<usize>)> = Vec::new();
+            let mut offset = 1;
+            while offset < cells.len() {
+                let build = |count| {
+                    let proof = reference_tuple(
+                        &self.authority,
+                        routes[offset..offset + count]
+                            .iter()
+                            .zip(&cells[offset..offset + count]),
+                    )?;
+                    if let Some((previous, _)) = lookups.last() {
+                        StaticProgram::guard_fits(&proof, previous, &self.authority)?;
+                    }
+                    StaticProgram::guard_fits(&final_lookup, &proof, &self.authority)?;
+                    Ok(proof)
+                };
+                let mut low = 0;
+                let mut high = cells.len() - offset;
+                while low < high {
+                    let count = low + (high - low).div_ceil(2);
+                    match build(count) {
+                        Ok(_) => low = count,
+                        Err(error) if forces_pieces(&error) => high = count - 1,
+                        Err(error) => return Err(error),
+                    }
+                }
+                if low == 0 {
+                    build(1)?;
+                    return Err(identity_error());
+                }
+                let proof = build(low)?;
+                lookups.push((proof, (offset..offset + low).collect()));
+                offset += low;
+            }
+            lookups.push((final_lookup, vec![0]));
+            lookups
+        } else {
+            vec![(
+                reference_tuple(&self.authority, routes.iter().zip(&cells))?,
+                (0..cells.len()).collect(),
+            )]
+        };
+        let ordinal_frames = lookups
+            .iter()
+            .enumerate()
+            .flat_map(|(index, (_, ordinals))| {
+                ordinals.iter().map(move |ordinal| (*ordinal, index))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let frames = placeholders
+            .iter()
+            .map(|(iid, ordinal)| {
+                Ok((
+                    iid.clone(),
+                    *ordinal_frames.get(ordinal).ok_or_else(identity_error)?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, Diagnostic>>()?;
         let mut steps = VecDeque::new();
         for (ordinal, row) in owned.iter().enumerate() {
             let players = row
@@ -421,7 +488,7 @@ impl ReferenceProgram {
                 }],
                 ordinal,
                 false,
-                true,
+                Some(&frames),
             )?
             else {
                 return Err(identity_error());
@@ -434,7 +501,7 @@ impl ReferenceProgram {
                 authority: self.authority.clone(),
                 identity: None,
             },
-            lookup,
+            lookups,
             placeholders,
         )
     }
@@ -811,7 +878,7 @@ mod tests {
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
 
     fn program(by_iid: bool) -> WriteProgram {
-        let yaml = "format: typebridge.schema/v2\nattributes:\n  k: { value: string }\n  t: { value: string }\nrelations:\n  r:\n    owns:\n      k: { key: true }\n      t: { card: { min: 0 } }\n    relates:\n      prior: { card: { min: 0, max: 1 } }\nplays:\n  r:\n    r: [prior]\n";
+        let yaml = "format: typebridge.schema/v2\nattributes:\n  k: { value: string }\n  t: { value: string }\nrelations:\n  r:\n    owns:\n      k: { key: true }\n      t: { card: { min: 0 } }\n    relates:\n      prior: { card: { min: 0 } }\nplays:\n  r:\n    r: [prior]\n";
         let declared = normalize_documents(
             &SchemaDocumentSet::parse([(DocumentId::new("snapshot.yaml").unwrap(), yaml)]).unwrap(),
         )
@@ -954,6 +1021,118 @@ mod tests {
         ]);
         assert!(step.reference_iids(&answer).is_err());
     }
+    #[test]
+    fn oversized_snapshot_tuples_chain_before_writes_and_split_sources() {
+        use type_bridge_contract::query_remote::RemoteValue;
+        let WriteProgram::References(mut owner) = program(false) else {
+            panic!("references")
+        };
+        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        limits.structural.selected_slots = 4;
+        owner.authority = owner
+            .authority
+            .with_query_limits(std::sync::Arc::new(limits));
+        let original = owner.rows[0].players[0].clone();
+        owner.rows[0].players = (0..6)
+            .map(|index| {
+                let mut player = original.clone();
+                player.key.as_mut().unwrap().1 = CanonicalValue::String(
+                    CanonicalString::new(format!("old-key-{index}")).unwrap(),
+                );
+                player
+            })
+            .collect();
+        owner.locations = (0..6).map(|player| (0, player)).collect();
+        owner.resolved = vec![None; 6];
+        let authority = owner.authority.clone();
+        let mut program = WriteProgram::References(owner).prepare_static().unwrap();
+        let entries = program
+            .staged_entries(&authority)
+            .unwrap()
+            .expect("bounded snapshots");
+        let lookups = entries
+            .iter()
+            .take_while(|entry| !entry.plan().writes())
+            .count();
+        assert_eq!(lookups, 4);
+        for (index, entry) in entries.iter().take(lookups).enumerate() {
+            assert!(!entry.plan().writes());
+            assert_eq!(
+                entry.result_refs().len(),
+                if index == 0 {
+                    0
+                } else {
+                    let QueryOutput::Rows { columns } = entries[index - 1].plan().output() else {
+                        panic!("snapshot tuple")
+                    };
+                    columns.len() / 2
+                }
+            );
+            assert!(
+                entry
+                    .result_refs()
+                    .iter()
+                    .all(|reference| reference.source_plan as usize + 1 == index)
+            );
+        }
+        assert!(
+            entries[lookups]
+                .result_refs()
+                .iter()
+                .all(|reference| reference.source_plan as usize == lookups - 1)
+        );
+        let mut referenced = std::collections::BTreeSet::new();
+        for entry in &entries[lookups..] {
+            let sources = entry
+                .result_refs()
+                .iter()
+                .map(|reference| reference.source_plan)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(sources.len() <= 1);
+            referenced.extend(sources);
+        }
+        assert_eq!(referenced, (0..4).collect());
+        let model = TypeId::new(TypeKind::Relation, "r").unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..lookups {
+            let step = program.next().unwrap().unwrap();
+            assert!(!step.plan.local().writes());
+            let ordinals = step.reference_resolution.as_ref().unwrap().ordinals.clone();
+            let mut cells = Vec::new();
+            let mut answers = Vec::new();
+            for ordinal in ordinals {
+                seen.insert(ordinal);
+                let iid = format!("0x{:02x}", ordinal + 2);
+                cells.push(RemoteValue::Value {
+                    value: CanonicalValue::Long(ordinal as i64),
+                });
+                cells.push(RemoteValue::Thing {
+                    iid: iid.clone(),
+                    type_id: model.clone(),
+                });
+                answers.push((ordinal, iid));
+            }
+            let answer = PlanAnswer::from_staged_v3(
+                &StagedAnswerV3::Rows { rows: vec![cells] },
+                step.plan.local(),
+            )
+            .unwrap();
+            program.record_answer(&step, &answer).unwrap();
+            program.accept_reference_iids(&step, answers).unwrap();
+        }
+        assert_eq!(seen, (0..6).collect());
+        let seed = program.next().unwrap().unwrap();
+        assert!(seed.plan.local().writes());
+        seed.check_identity("0x01").unwrap();
+        assert!(seed.check_identity("0x02").is_err());
+        assert_eq!(
+            program.take_reference_snapshots().unwrap()[&0][&RoleId::new("r", "prior").unwrap()],
+            (2..8)
+                .map(|index| format!("0x{index:02x}"))
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn frozen_reference_graph_keeps_authored_targets_and_source_snapshots() {
         use type_bridge_contract::query_remote::RemoteValue;

@@ -4448,8 +4448,19 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
         registry.relation("snapshot-edge").unwrap(),
     );
     let mut failures = Vec::new();
-    for literal in [false, true] {
+    for (literal, selected_slots) in [false, true].into_iter().flat_map(|literal| {
+        [
+            type_bridge_contract::limits::QueryLimits::V3
+                .structural
+                .selected_slots,
+            4,
+        ]
+        .map(move |slots| (literal, slots))
+    }) {
         let (counted, log) = counted_connection(&database, literal).await;
+        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        limits.structural.selected_slots = selected_slots;
+        let counted = counted.with_query_limits(limits).unwrap();
         for by_iid in [false, true] {
             let predecessor = || {
                 ProjectedReference::try_new(
@@ -4510,6 +4521,8 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
                         3
                     } else if by_iid {
                         3
+                    } else if selected_slots == 4 {
+                        5
                     } else {
                         4
                     };

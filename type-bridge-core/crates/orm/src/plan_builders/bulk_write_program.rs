@@ -813,7 +813,7 @@ pub(super) fn split_at(
     rows: &[WriteRow<'_>],
     ordinal_offset: usize,
 ) -> Result<WriteProgram, Diagnostic> {
-    split_with_guards(authority, kind, shape, rows, ordinal_offset, true, false)
+    split_with_guards(authority, kind, shape, rows, ordinal_offset, true, None)
 }
 
 pub(super) fn split_resolved(
@@ -822,7 +822,7 @@ pub(super) fn split_resolved(
     shape: WriteShape<'_>,
     rows: &[WriteRow<'_>],
 ) -> Result<WriteProgram, Diagnostic> {
-    split_with_guards(authority, kind, shape, rows, 0, false, false)
+    split_with_guards(authority, kind, shape, rows, 0, false, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -833,15 +833,26 @@ fn split_with_guards(
     rows: &[WriteRow<'_>],
     ordinal_offset: usize,
     guard_references: bool,
-    known_root: bool,
+    reference_frames: Option<&BTreeMap<String, usize>>,
 ) -> Result<WriteProgram, Diagnostic> {
     let mut steps = VecDeque::new();
     let mut ordinal = 0;
     while ordinal < rows.len() {
         let output_ordinal = ordinal_offset + ordinal;
         let row = Row::of(&rows[ordinal]);
-        match one(authority, kind, shape.clone(), &row, true, output_ordinal) {
-            Ok(_) => {
+        let single_frame = reference_frames.is_none_or(|frames| {
+            let mut sources = row
+                .players
+                .iter()
+                .filter_map(|player| player.iid.as_ref().and_then(|iid| frames.get(iid)));
+            sources
+                .next()
+                .is_none_or(|first| sources.all(|source| source == first))
+        });
+        let compact =
+            single_frame.then(|| one(authority, kind, shape.clone(), &row, true, output_ordinal));
+        match compact {
+            Some(Ok(_)) => {
                 let mut low = 1;
                 let mut high =
                     (rows.len() - ordinal).min(type_bridge_contract::limits::MAX_INPUT_ROWS);
@@ -882,8 +893,9 @@ fn split_with_guards(
                 ordinal += low;
                 continue;
             }
-            Err(error) if forces_pieces(&error) => {}
-            Err(error) => return Err(error),
+            Some(Err(error)) if forces_pieces(&error) => {}
+            Some(Err(error)) => return Err(error),
+            None => {}
         }
         if matches!(kind, WriteKind::Delete | WriteKind::DeleteReturning) {
             return one(authority, kind, shape.clone(), &row, true, output_ordinal)
@@ -963,7 +975,7 @@ fn split_with_guards(
             "0".repeat(type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS)
         );
         let base = Row {
-            iid: if known_root {
+            iid: if reference_frames.is_some() {
                 seed.iid.clone()
             } else {
                 Some(placeholder)
@@ -972,12 +984,44 @@ fn split_with_guards(
             players: vec![],
         };
         loop {
+            let mut bounded;
+            let available = if let Some(frames) = reference_frames {
+                bounded = remaining.clone();
+                let source = bounded
+                    .players
+                    .first()
+                    .and_then(|player| player.iid.as_ref())
+                    .and_then(|iid| frames.get(iid));
+                let count = bounded
+                    .players
+                    .iter()
+                    .take_while(|player| {
+                        player.iid.as_ref().and_then(|iid| frames.get(iid)) == source
+                    })
+                    .count();
+                bounded.players.truncate(count);
+                &bounded
+            } else {
+                &remaining
+            };
+            let mut piece_shape = attach_shape.clone();
+            if reference_frames.is_some() {
+                let mut roles = std::collections::BTreeSet::new();
+                if available
+                    .players
+                    .iter()
+                    .any(|player| !roles.insert(&player.role))
+                {
+                    // Multiple references in one role need separate input columns.
+                    piece_shape.single_input = true;
+                }
+            }
             let count = largest(
                 authority,
                 WriteKind::Attach,
-                attach_shape.clone(),
+                piece_shape.clone(),
                 &base,
-                &remaining,
+                available,
                 true,
                 output_ordinal,
             )?;
@@ -993,12 +1037,12 @@ fn split_with_guards(
             let plan = one(
                 authority,
                 WriteKind::Attach,
-                attach_shape.clone(),
+                piece_shape.clone(),
                 &piece,
                 complete,
                 output_ordinal,
             )?;
-            steps.push_back(if known_root {
+            steps.push_back(if reference_frames.is_some() {
                 Step::Ready(WriteStep {
                     plan,
                     complete,

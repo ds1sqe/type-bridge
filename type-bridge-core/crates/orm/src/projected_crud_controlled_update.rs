@@ -1313,6 +1313,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_update_snapshot_frames_keep_one_exchange_and_original_missing_coordinates() {
+        for missing in [false, true] {
+            let model = TypeId::new(TypeKind::Relation, "wide-edge").unwrap();
+            let role = RoleId::new("wide-edge", "member").unwrap();
+            let key =
+                OwnsFactId::new(model.clone(), AttributeId::new("item-key").unwrap()).unwrap();
+            let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+            limits.structural.selected_slots = 4;
+            let (installed, proxy, transport) =
+                single_proxy_fixture_with_limits(model.clone(), 1, 300, limits);
+            if missing {
+                transport
+                    .missing_guard_ordinal
+                    .store(3, std::sync::atomic::Ordering::Relaxed);
+            }
+            let base = proxy_single_input(&installed, &model, 300);
+            let reference = ProjectedReference::try_new(
+                &installed,
+                model.clone(),
+                None,
+                vec![(
+                    key.clone(),
+                    ProjectedAttributeValue::try_new(
+                        &installed,
+                        TypeId::new(TypeKind::Attribute, "item-key").unwrap(),
+                        CanonicalValue::String(CanonicalString::new("old-key").unwrap()),
+                    )
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+            let create = ProjectedCreate::try_new(
+                &installed,
+                model.clone(),
+                base.fields()
+                    .iter()
+                    .map(|(field, values)| (field.clone(), values.clone()))
+                    .collect(),
+                vec![(role.clone(), vec![reference; 4])],
+            )
+            .unwrap();
+            let control =
+                ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+            let executor = ProjectedCrudExecutor::new(&installed);
+            let batch = executor
+                .single_controlled_write_batch(
+                    &model,
+                    ProjectedBatchOperation::Update,
+                    ProjectedBatchRow::Update {
+                        iid: "0x20".into(),
+                        replacement: create,
+                    },
+                    &control,
+                )
+                .unwrap();
+            let result = executor
+                .execute_single_write_on_target(
+                    crate::QueryTarget::Proxy(&proxy),
+                    &batch,
+                    control,
+                    Ok,
+                )
+                .await;
+            if missing {
+                let crate::QueryTargetError::Commit(error) = result.unwrap_err() else {
+                    panic!("signed refusal");
+                };
+                let expected = crate::projected_batch_executor::integrity_at_reference(
+                    "projected_batch_reference_missing",
+                    "A projected role-player reference did not resolve exactly once",
+                    &model,
+                    &role,
+                    0,
+                    3,
+                    &model,
+                );
+                assert_eq!(error.diagnostic().code(), expected.code());
+                assert_eq!(error.diagnostic().path(), expected.path());
+                assert_eq!(
+                    error.error.commit_failure_certainty(),
+                    Some(crate::CommitFailureCertainty::DefinitelyAborted)
+                );
+                assert_eq!(
+                    transport
+                        .dispatched_writes
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    0
+                );
+            } else {
+                let things = result.unwrap();
+                assert_eq!(things.count(), 1);
+                assert_eq!(things.items()[0].iid(), "0x20");
+                let player = &things.items()[0].roles()[&role][0];
+                assert_eq!(player.iid(), "0x20");
+                assert_eq!(
+                    player.keys()[&key].value(),
+                    &CanonicalValue::String(CanonicalString::new("key").unwrap())
+                );
+            }
+            let seen = transport.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            let plans = seen[0].plans();
+            let lookups = plans
+                .iter()
+                .take_while(|entry| !entry.plan().writes())
+                .count();
+            assert_eq!(lookups, 3);
+            assert!(plans[lookups..].iter().all(|entry| {
+                entry
+                    .result_refs()
+                    .iter()
+                    .map(|reference| reference.source_plan)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    <= 1
+            }));
+        }
+    }
+
+    #[tokio::test]
     async fn proxy_wide_guard_maps_signed_missing_cell_before_any_write() {
         let model = TypeId::new(TypeKind::Relation, "wide-edge").unwrap();
         let player = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
