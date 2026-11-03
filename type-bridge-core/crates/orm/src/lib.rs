@@ -80,6 +80,7 @@ mod query_v2_wide_query_tests;
 pub mod runtime_projection;
 pub mod session;
 pub mod value;
+mod write_result;
 
 /// Integration-test bridge for exercising the production-internal V1-to-V2
 /// adapter from the live integration-test crate.
@@ -232,6 +233,7 @@ pub use type_bridge_contract::projection::{
 #[doc(hidden)]
 pub use type_bridge_core_lib::version::Version as _ProviderVersion;
 pub use value::AttributeValue;
+pub use write_result::WriteResult;
 
 #[cfg(test)]
 #[path = "../tests/support/native_batch.rs"]
