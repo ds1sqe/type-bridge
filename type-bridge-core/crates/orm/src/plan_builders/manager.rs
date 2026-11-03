@@ -679,6 +679,7 @@ impl ManagerPlans {
         players: &[DynamicRolePlayerInput],
         put: bool,
         exact_players: bool,
+        returning: bool,
     ) -> Result<BuiltPlan> {
         let type_id = self.type_id(name)?;
         let mut draft = self.authority()?.draft(self.transport);
@@ -715,6 +716,12 @@ impl ManagerPlans {
             bindings: vec![root],
         });
         pipeline.push(Stage::Distinct);
+        if returning {
+            pipeline.push(Stage::Fetch(ThingDocument::new(
+                root,
+                self.returning_roles(&type_id, !put)?,
+            )));
+        }
         draft
             .finish(
                 self.authority()?,
@@ -723,19 +730,43 @@ impl ManagerPlans {
                     returns: WriteReturns::Rows,
                 },
                 QueryOutput::Rows {
-                    columns: vec![root],
+                    columns: if returning { vec![] } else { vec![root] },
                 },
             )
             .map_err(diagnostic)
     }
 
-    pub(crate) fn relation_put(
+    pub(crate) fn single_write(
         &self,
         name: &str,
+        kind: super::bulk_write::WriteKind,
+        iid: Option<&str>,
         attributes: &DynamicAttributeMap,
         players: &[DynamicRolePlayerInput],
     ) -> Result<BuiltPlan> {
-        self.keyed_put(name, attributes, players, true)
+        use super::bulk_write::WriteKind;
+        match kind {
+            WriteKind::Insert => self.insert(name, attributes, players, false, false, true),
+            WriteKind::PartialPut if self.type_id(name)?.kind() == TypeKind::Entity => {
+                self.entity_put(name, attributes, false)
+            }
+            WriteKind::PartialPut => self.insert(name, attributes, players, true, false, true),
+            WriteKind::Put => self.keyed_put(name, attributes, players, true),
+            WriteKind::Update | WriteKind::PartialUpdate => self
+                .update_with_output(
+                    name,
+                    iid,
+                    attributes,
+                    players,
+                    kind == WriteKind::Update,
+                    true,
+                )?
+                .ok_or_else(|| invalid("manager_result_shape", "Returning write requires a plan")),
+            _ => Err(invalid(
+                "manager_write_operation",
+                "Single dynamic writes require insert, put or update",
+            )),
+        }
     }
 
     fn keyed_put(
@@ -762,7 +793,7 @@ impl ManagerPlans {
             }
         }
         if keys.is_empty() {
-            return self.insert(name, attributes, players, !exact, exact);
+            return self.insert(name, attributes, players, !exact, exact, true);
         }
         if exact {
             for attribute in descriptors
@@ -776,7 +807,7 @@ impl ManagerPlans {
         let cleared = cleared.into_iter().collect::<Vec<_>>();
         let put = super::put::KeyedPut {
             include_subtypes: !exact,
-            return_document: false,
+            return_document: true,
             type_id: &type_id,
             keys: &keys,
             fields: &[],
@@ -841,7 +872,7 @@ impl ManagerPlans {
             super::put::RelationPut {
                 players: &references,
                 cleared_roles: &roles,
-                document_roles: Vec::new(),
+                document_roles: self.returning_roles(&type_id, exact)?,
             },
         )
         .map_err(diagnostic)
@@ -1038,19 +1069,8 @@ impl ManagerPlans {
         Ok(ManagerRead::Aggregate { plan, keys })
     }
 
-    pub(crate) fn update_returning(
-        &self,
-        name: &str,
-        iid: &str,
-        attributes: &DynamicAttributeMap,
-        players: &[DynamicRolePlayerInput],
-    ) -> Result<BuiltPlan> {
-        self.update_with_output(name, Some(iid), attributes, players, true, true)?
-            .ok_or_else(|| invalid("manager_result_shape", "Returning update requires a plan"))
-    }
-
     #[allow(clippy::too_many_arguments)]
-    fn update_with_output(
+    pub(crate) fn update_with_output(
         &self,
         name: &str,
         iid: Option<&str>,
@@ -1213,7 +1233,7 @@ impl ManagerPlans {
         if returning {
             pipeline.push(Stage::Fetch(ThingDocument::new(
                 root,
-                self.document_roles(&type_id)?,
+                self.returning_roles(&type_id, exact)?,
             )));
         }
         draft
@@ -1237,17 +1257,6 @@ impl ManagerPlans {
             )
             .map(Some)
             .map_err(diagnostic)
-    }
-
-    pub(crate) fn update(
-        &self,
-        name: &str,
-        iid: Option<&str>,
-        attributes: &DynamicAttributeMap,
-        players: &[DynamicRolePlayerInput],
-        exact: bool,
-    ) -> Result<Option<BuiltPlan>> {
-        self.update_with_output(name, iid, attributes, players, exact, false)
     }
 
     pub(crate) fn delete(
@@ -1815,6 +1824,7 @@ mod tests {
                 &[],
                 false,
                 true,
+                false,
             )
             .unwrap();
         let Stage::Insert { things } = &insert.local().pipeline()[0] else {
@@ -1864,12 +1874,13 @@ mod tests {
                 vec![("note".into(), crate::AttributeValue::String("after".into()))],
             ] {
                 let plan = plans
-                    .update(name, Some("0x10"), &attributes, &[], true)
+                    .update_with_output(name, Some("0x10"), &attributes, &[], true, false)
                     .unwrap()
                     .unwrap();
                 let stages = plan.local().pipeline();
                 let returning = plans
-                    .update_returning(name, "0x10", &attributes, &[])
+                    .update_with_output(name, Some("0x10"), &attributes, &[], true, true)
+                    .unwrap()
                     .unwrap();
                 let (fetch, prefix) = returning.local().pipeline().split_last().unwrap();
                 assert!(matches!(fetch, Stage::Fetch(_)));
@@ -2122,6 +2133,7 @@ plays:
             )])
             .await
             .unwrap();
+        let iid = iid.item().expect("one inserted root").iid.clone().unwrap();
         let player = |role: &str| DynamicRolePlayerInput {
             role_name: role.into(),
             player_type_name: "person".into(),
@@ -2139,7 +2151,19 @@ plays:
             registry.relation("employment").unwrap(),
         );
         let membership = base.insert(&vec![], &[player("member")]).await.unwrap();
+        let membership = membership
+            .item()
+            .expect("one inserted root")
+            .iid
+            .clone()
+            .unwrap();
         let employment = child.insert(&vec![], &[player("worker")]).await.unwrap();
+        let employment = employment
+            .item()
+            .expect("one inserted root")
+            .iid
+            .clone()
+            .unwrap();
         let predicate = DynamicExpr::RolePlayer {
             role_name: "member".into(),
             expr: Box::new(DynamicExpr::Iid { iid: iid.clone() }),
@@ -2249,7 +2273,7 @@ plays:
             .err()
             .expect("missing authority refuses before reading descriptors");
         let insert = manager
-            .insert("missing", &vec![], &[], false, false)
+            .insert("missing", &vec![], &[], false, false, false)
             .expect_err("missing authority refuses insert");
         let delete = manager
             .delete("missing", "0x1e00000000000000000001", true, false)

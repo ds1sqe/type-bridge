@@ -149,43 +149,35 @@ async fn query_and_commit_sequence() {
 
 #[tokio::test]
 async fn batch_insert_many_uses_transaction_context() {
-    // insert_many opens a TransactionContext internally and runs one query per entity.
-    // Responses are popped LIFO, so push in reverse order.
-    let backend = MockBackend::new(vec![
-        insert_response("0x003"),
-        insert_response("0x002"),
-        insert_response("0x001"),
-    ]);
+    let docs = [("0x001", "Alice", 30), ("0x002", "Bob", 25), ("0x003", "Carol", 35)]
+        .into_iter().enumerate().map(|(ordinal, (iid, name, age))| serde_json::json!({"ordinal":ordinal,"_iid":iid,"_type":"person","attributes":{"name":name,"age":age}})).collect();
+    let backend = MockBackend::new(vec![QueryResult::Documents(docs)]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
-
     let mut entities = vec![
         make_person("Alice", 30),
         make_person("Bob", 25),
         make_person("Carol", 35),
     ];
-
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, manager_registry()).unwrap();
     let iids = manager.insert_many(&mut entities).await.unwrap();
-
-    assert_eq!(iids.len(), 3);
-    assert_eq!(iids[0], "0x001");
-    assert_eq!(iids[1], "0x002");
-    assert_eq!(iids[2], "0x003");
-
-    // All 3 insert queries should have been routed through the same
-    // shared queries vec (i.e., the same underlying transaction).
+    assert_eq!(iids, ["0x001", "0x002", "0x003"]);
+    assert_eq!(
+        entities
+            .iter()
+            .map(|person| person.iid.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        iids
+    );
     let recorded = queries.lock().unwrap();
-    assert_eq!(recorded.len(), 3);
+    assert_eq!(recorded.len(), 1);
     assert!(recorded[0].contains("insert"));
-    assert!(recorded[1].contains("insert"));
-    assert!(recorded[2].contains("insert"));
 }
 
 #[tokio::test]
 async fn batch_delete_many_uses_transaction_context() {
-    // delete_many opens a TransactionContext internally and runs one query per entity.
-    let backend = MockBackend::new(vec![QueryResult::Ok, QueryResult::Ok, QueryResult::Ok]);
+    // Native deletion packs these inputs into one plan in the shared transaction.
+    let backend = MockBackend::new(vec![QueryResult::Rows(vec![])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
@@ -195,14 +187,10 @@ async fn batch_delete_many_uses_transaction_context() {
         make_person_with_iid("Carol", 35, "0x003"),
     ];
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, manager_registry()).unwrap();
     manager.delete_many(&entities).await.unwrap();
 
-    // All 3 delete queries should have been routed through the shared
-    // queries vec (same underlying transaction via TransactionContext).
     let recorded = queries.lock().unwrap();
-    assert_eq!(recorded.len(), 3);
+    assert_eq!(recorded.len(), 1);
     assert!(recorded[0].contains("delete"));
-    assert!(recorded[1].contains("delete"));
-    assert!(recorded[2].contains("delete"));
 }

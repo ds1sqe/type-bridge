@@ -415,21 +415,30 @@ async fn dynamic_entity_transaction_commit_and_rollback_against_typedb() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("tx").await;
     let descriptor = schema.person_descriptor();
-    let db_manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let db_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
 
     let rollback_tx = db
         .transaction_context(TxType::Write)
         .await
         .expect("write transaction should open");
-    let rollback_manager =
-        DynamicEntityManager::with_transaction(rollback_tx.clone(), descriptor.clone());
+    let rollback_manager = DynamicEntityManager::with_registry_transaction(
+        rollback_tx.clone(),
+        schema.registry(),
+        descriptor.clone(),
+    );
     rollback_manager
-        .insert(&person_attrs("Rollback", 20))
+        .insert(&schema.person_attrs("Rollback", 20))
         .await
-        .expect("transaction-bound insert should succeed");
+        .expect("transaction-bound insert should succeed")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     assert_eq!(
         rollback_manager
-            .count_with_filters(&[Filter::string_eq("name", "Rollback")])
+            .count_with_filters(&[Filter::string_eq(&schema.name_attr, "Rollback")])
             .await
             .expect("transaction-bound read should see uncommitted write"),
         1
@@ -440,7 +449,7 @@ async fn dynamic_entity_transaction_commit_and_rollback_against_typedb() {
         .expect("rollback should succeed");
     assert!(
         db_manager
-            .get(&[Filter::string_eq("name", "Rollback")])
+            .get(&[Filter::string_eq(&schema.name_attr, "Rollback")])
             .await
             .expect("post-rollback lookup should succeed")
             .is_empty()
@@ -450,15 +459,24 @@ async fn dynamic_entity_transaction_commit_and_rollback_against_typedb() {
         .transaction_context(TxType::Write)
         .await
         .expect("write transaction should open");
-    let commit_manager = DynamicEntityManager::with_transaction(commit_tx.clone(), descriptor);
+    let commit_manager = DynamicEntityManager::with_registry_transaction(
+        commit_tx.clone(),
+        schema.registry(),
+        descriptor,
+    );
     commit_manager
-        .insert(&person_attrs("Commit", 21))
+        .insert(&schema.person_attrs("Commit", 21))
         .await
-        .expect("transaction-bound insert should succeed");
+        .expect("transaction-bound insert should succeed")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     commit_tx.commit().await.expect("commit should succeed");
 
     let committed = db_manager
-        .get(&[Filter::string_eq("name", "Commit")])
+        .get(&[Filter::string_eq(&schema.name_attr, "Commit")])
         .await
         .expect("post-commit lookup should succeed");
     assert_eq!(committed.len(), 1);
@@ -468,11 +486,17 @@ async fn dynamic_entity_transaction_commit_and_rollback_against_typedb() {
 async fn typed_string_predicates_execute_across_given_and_inline_provider_bands() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("typed-string-parameters").await;
-    let manager = DynamicEntityManager::new(&db, schema.person_descriptor());
+    let manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.person_descriptor());
     let alice_iid = manager
-        .insert(&person_attrs("Alice", 33))
+        .insert(&schema.person_attrs("Alice", 33))
         .await
-        .expect("typed string-predicate fixture should commit");
+        .expect("typed string-predicate fixture should commit")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let registry = DescriptorRegistry::new();
     registry
@@ -868,11 +892,16 @@ async fn selected_page_and_total_remain_on_one_read_snapshot_across_a_concurrent
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("selected-snapshot").await;
     let descriptor = schema.person_descriptor();
-    let manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let manager = DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
     let selected_iid = manager
-        .insert(&person_attrs("BeforeSnapshot", 20))
+        .insert(&schema.person_attrs("BeforeSnapshot", 20))
         .await
-        .expect("initial entity should commit");
+        .expect("initial entity should commit")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let registry = DescriptorRegistry::new();
     registry
@@ -933,7 +962,10 @@ async fn selected_page_and_total_remain_on_one_read_snapshot_across_a_concurrent
             async {
                 page_ready.notified().await;
                 manager
-                    .update(Some(&selected_iid), &person_attrs("BeforeSnapshot", 99))
+                    .update(
+                        Some(&selected_iid),
+                        &schema.person_attrs("BeforeSnapshot", 99),
+                    )
                     .await
                     .expect("inter-stage writer should commit");
                 events.lock().unwrap().push(SnapshotEvent::WriterCommitted);
@@ -1001,11 +1033,16 @@ async fn staged_reads_in_one_write_transaction_see_earlier_writes_with_consisten
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("staged-read-write-read").await;
     let descriptor = schema.person_descriptor();
-    let manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let manager = DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
     manager
-        .insert(&person_attrs("StagedBefore", 20))
+        .insert(&schema.person_attrs("StagedBefore", 20))
         .await
-        .expect("initial entity should commit");
+        .expect("initial entity should commit")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let registry = DescriptorRegistry::new();
     registry
         .register_entity(descriptor.as_ref().clone())
@@ -1091,11 +1128,16 @@ async fn selected_owned_execution_recovers_after_real_resource_failures() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("selected-owned-resource").await;
     let descriptor = schema.person_descriptor();
-    let manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let manager = DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
     let selected_iid = manager
-        .insert(&person_attrs("OwnedResource", 31))
+        .insert(&schema.person_attrs("OwnedResource", 31))
         .await
-        .expect("owned resource fixture should commit");
+        .expect("owned resource fixture should commit")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let registry = DescriptorRegistry::new();
     registry
         .register_entity(descriptor.as_ref().clone())
@@ -1147,11 +1189,16 @@ async fn selected_borrowed_context_survives_real_resource_failures_until_caller_
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("selected-borrowed-resource").await;
     let descriptor = schema.person_descriptor();
-    let manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let manager = DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
     let selected_iid = manager
-        .insert(&person_attrs("BorrowedResource", 32))
+        .insert(&schema.person_attrs("BorrowedResource", 32))
         .await
-        .expect("borrowed resource fixture should commit");
+        .expect("borrowed resource fixture should commit")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let registry = DescriptorRegistry::new();
     registry
         .register_entity(descriptor.as_ref().clone())

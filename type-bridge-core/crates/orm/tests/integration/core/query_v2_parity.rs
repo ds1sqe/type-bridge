@@ -351,12 +351,34 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
         role.cardinality = None;
     }
 
-    let person_manager = DynamicEntityManager::new(&db, person_descriptor.clone());
-    let employee_manager =
-        DynamicEntityManager::new(&db, std::sync::Arc::new(employee_descriptor.clone()));
-    let company_manager = DynamicEntityManager::new(&db, company_descriptor.clone());
-    let employment_manager =
-        DynamicRelationManager::new(&db, std::sync::Arc::new(employment_descriptor.clone()));
+    let manager_registry =
+        crate::common::dynamic_crud::registry_from_yaml(&schema.schema_yaml().replace(
+            "relations:\n",
+            &format!(
+                "  {employee_type}:\n    sub: {}\nrelations:\n",
+                schema.person_type
+            ),
+        ));
+    let person_manager = DynamicEntityManager::from_registry(
+        &db,
+        std::sync::Arc::clone(&manager_registry),
+        person_descriptor.clone(),
+    );
+    let employee_manager = DynamicEntityManager::from_registry(
+        &db,
+        std::sync::Arc::clone(&manager_registry),
+        std::sync::Arc::new(employee_descriptor.clone()),
+    );
+    let company_manager = DynamicEntityManager::from_registry(
+        &db,
+        std::sync::Arc::clone(&manager_registry),
+        company_descriptor.clone(),
+    );
+    let employment_manager = DynamicRelationManager::from_registry(
+        &db,
+        std::sync::Arc::clone(&manager_registry),
+        std::sync::Arc::new(employment_descriptor.clone()),
+    );
 
     let ada_iid = person_manager
         .insert(&parity_person_attrs(
@@ -372,7 +394,12 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
             "PT2H30M",
         ))
         .await
-        .expect("Ada parity row");
+        .expect("Ada parity row")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let grace_iid = person_manager
         .insert(&parity_person_attrs(
             &schema,
@@ -387,7 +414,12 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
             "PT1H",
         ))
         .await
-        .expect("Grace parity row");
+        .expect("Grace parity row")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     person_manager
         .insert(&parity_person_attrs(
             &schema,
@@ -402,7 +434,12 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
             "P1DT30M",
         ))
         .await
-        .expect("Alan parity row");
+        .expect("Alan parity row")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let eve_iid = employee_manager
         .insert(&parity_person_attrs(
             &schema,
@@ -417,15 +454,30 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
             "PT45M",
         ))
         .await
-        .expect("Eve employee parity row");
+        .expect("Eve employee parity row")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let acme_iid = company_manager
         .insert(&company_attrs("Acme"))
         .await
-        .expect("Acme parity row");
+        .expect("Acme parity row")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let beta_iid = company_manager
         .insert(&company_attrs("Beta"))
         .await
-        .expect("Beta parity row");
+        .expect("Beta parity row")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     for (person, company, since) in [
         (ada_iid.clone(), acme_iid.clone(), "2020-01-01"),
         (ada_iid.clone(), beta_iid.clone(), "2021-02-02"),
@@ -439,7 +491,12 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
                 &role_players(&schema, person, company),
             )
             .await
-            .expect("employment parity row");
+            .expect("employment parity row")
+            .item()
+            .expect("one written root")
+            .iid
+            .clone()
+            .unwrap();
     }
 
     let registry = DescriptorRegistry::new();

@@ -14,6 +14,7 @@ use super::typedb::{connect_options_from_env, ensure_database_exists};
 static NEXT_SCHEMA_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct DynamicCrudSchema {
+    registry: std::sync::OnceLock<Arc<DescriptorRegistry>>,
     pub person_type: String,
     pub company_type: String,
     pub employment_type: String,
@@ -35,6 +36,7 @@ impl DynamicCrudSchema {
         let id = NEXT_SCHEMA_ID.fetch_add(1, Ordering::SeqCst);
         let suffix = format!("rust-{scope}-{}-{id}", process::id());
         Self {
+            registry: std::sync::OnceLock::new(),
             person_type: format!("{suffix}-person"),
             company_type: format!("{suffix}-company"),
             employment_type: format!("{suffix}-employment"),
@@ -84,6 +86,122 @@ relation {employment_type}, relates employee, relates employer, owns {since_attr
             person_type = self.person_type,
             company_type = self.company_type,
             employment_type = self.employment_type,
+        )
+    }
+
+    pub fn person_attrs(&self, name: &str, age: i64) -> DynamicAttributeMap {
+        vec![
+            (self.name_attr.clone(), AttributeValue::String(name.into())),
+            (self.age_attr.clone(), AttributeValue::Long(age)),
+        ]
+    }
+    pub fn company_attrs(&self, name: &str) -> DynamicAttributeMap {
+        vec![(
+            self.company_name_attr.clone(),
+            AttributeValue::String(name.into()),
+        )]
+    }
+    pub fn relation_attrs(&self, since: &str) -> DynamicAttributeMap {
+        vec![(self.since_attr.clone(), AttributeValue::Date(since.into()))]
+    }
+    pub fn all_value_attrs(&self, name: &str, age: i64) -> DynamicAttributeMap {
+        let labels = [
+            ("name", &self.name_attr),
+            ("age", &self.age_attr),
+            ("score", &self.score_attr),
+            ("active", &self.active_attr),
+            ("birthday", &self.birthday_attr),
+            ("login_at", &self.login_at_attr),
+            ("seen_at", &self.seen_at_attr),
+            ("balance", &self.balance_attr),
+            ("session_length", &self.session_length_attr),
+        ];
+        all_value_attrs(name, age)
+            .into_iter()
+            .map(|(field, value)| {
+                (
+                    labels
+                        .iter()
+                        .find(|(name, _)| *name == field)
+                        .unwrap()
+                        .1
+                        .clone(),
+                    value,
+                )
+            })
+            .collect()
+    }
+    pub fn mean_age_aggregate(&self) -> DynamicAggregate {
+        DynamicAggregate {
+            attr_name: Some(self.age_attr.clone()),
+            ..mean_age_aggregate()
+        }
+    }
+
+    pub fn registry(&self) -> Arc<DescriptorRegistry> {
+        Arc::clone(
+            self.registry
+                .get_or_init(|| registry_from_yaml(&self.schema_yaml())),
+        )
+    }
+
+    pub fn schema_yaml(&self) -> String {
+        format!(
+            r#"format: typebridge.schema/v2
+attributes:
+  {name}: {{ value: string }}
+  {company_name}: {{ value: string }}
+  {age}: {{ value: integer }}
+  {score}: {{ value: double }}
+  {active}: {{ value: boolean }}
+  {birthday}: {{ value: date }}
+  {login_at}: {{ value: datetime }}
+  {seen_at}: {{ value: datetime-tz }}
+  {balance}: {{ value: decimal }}
+  {session_length}: {{ value: duration }}
+  {since}: {{ value: date }}
+entities:
+  {person}:
+    owns:
+      {name}: {{ key: true }}
+      {age}: {{ card: {{ min: 0, max: 5 }} }}
+      {score}: {{ card: {{ min: 0, max: 5 }} }}
+      {active}: {{ card: {{ min: 0, max: 5 }} }}
+      {birthday}: {{ card: {{ min: 0, max: 5 }} }}
+      {login_at}: {{ card: {{ min: 0, max: 5 }} }}
+      {seen_at}: {{ card: {{ min: 0, max: 5 }} }}
+      {balance}: {{ card: {{ min: 0, max: 5 }} }}
+      {session_length}: {{ card: {{ min: 0, max: 5 }} }}
+  {company}:
+    owns:
+      {company_name}: {{ key: true }}
+relations:
+  {employment}:
+    owns:
+      {since}: {{ card: {{ min: 0, max: 5 }} }}
+    relates:
+      employee: {{ card: {{ min: 0 }} }}
+      employer: {{ card: {{ min: 0 }} }}
+plays:
+  {person}:
+    {employment}: [employee]
+  {company}:
+    {employment}: [employer]
+"#,
+            name = self.name_attr,
+            company_name = self.company_name_attr,
+            age = self.age_attr,
+            score = self.score_attr,
+            active = self.active_attr,
+            birthday = self.birthday_attr,
+            login_at = self.login_at_attr,
+            seen_at = self.seen_at_attr,
+            balance = self.balance_attr,
+            session_length = self.session_length_attr,
+            since = self.since_attr,
+            person = self.person_type,
+            company = self.company_type,
+            employment = self.employment_type
         )
     }
 
@@ -356,4 +474,32 @@ pub fn attr(
         doc: None,
         meta: Default::default(),
     }
+}
+
+/// Install the live fixture's matching Split-YAML model authority.
+pub fn registry_from_yaml(schema: &str) -> Arc<DescriptorRegistry> {
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
+    use type_bridge_contract::schema::DocumentId;
+    use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("dynamic-live.yaml").unwrap(), schema)])
+            .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
+    let projection = project(
+        &resolved,
+        BindingTarget::Python,
+        &ProjectionConfig::python(),
+        &[ProjectionHandler::python_v1()],
+        &[],
+    )
+    .unwrap();
+    InstalledRuntimeProjection::try_new(projection)
+        .unwrap()
+        .manager_registry()
+        .unwrap()
 }

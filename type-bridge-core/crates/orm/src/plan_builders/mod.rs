@@ -1208,7 +1208,7 @@ mod tests {
             ],
         ];
         let actual = cases.into_iter().map(|players| {
-            let plan = plans.update("purchase", Some("0x20"), &vec![], &players, true).unwrap().unwrap();
+            let plan = plans.update_with_output("purchase", Some("0x20"), &vec![], &players, true, false).unwrap().unwrap();
             let patterns = match &plan.local().pipeline()[0] { type_bridge_contract::query_plan::v3::Stage::Match { patterns } => patterns, _ => panic!("initial match") };
             let iid_lets = patterns.iter().filter(|pattern| matches!(pattern, Pattern::Let { expr: Expr::Iid { .. }, .. })).count();
             let guards = patterns.iter().filter(|pattern| matches!(pattern, Pattern::Read(QueryPattern::Value { comparator: type_bridge_contract::migration_assertion::ValueComparator::NotEqual, .. }))).count();
@@ -1235,11 +1235,12 @@ mod tests {
             ]
         );
         let scalar_update = plans
-            .update(
+            .update_with_output(
                 "doctor",
                 Some("0x20"),
                 &vec![("on-call".into(), crate::AttributeValue::Boolean(true))],
                 &[],
+                false,
                 false,
             )
             .unwrap()
@@ -1596,8 +1597,17 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
                 },
             ),
         ];
+        let same_role_players = [0, 1].map(|_| {
+            (
+                roles[0].clone(),
+                Reference {
+                    candidates: &accounts,
+                    identity: ReferenceIdentity::Iid("0x1e00000000000000000001"),
+                },
+            )
+        });
         for transport in [ValueTransport::Given, ValueTransport::Literal] {
-            for supplied in [players.as_slice(), &[]] {
+            for supplied in [players.as_slice(), same_role_players.as_slice(), &[]] {
                 let plan = keyed_relation_put(
                     &authority,
                     transport,
@@ -1642,7 +1652,9 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
                 assert!(matches!(&pipeline[seed + 2], Stage::Attach { items } if items.len() == 2));
                 let lowered = lower(plan.local()).unwrap();
                 assert!(lowered.snapshot.is_none());
-                tql::parse(&tql::render(&lowered.query).unwrap()).unwrap();
+                let query = tql::render(&lowered.query).unwrap();
+                assert!(!query.contains("!="));
+                tql::parse(&query).unwrap();
             }
         }
     }

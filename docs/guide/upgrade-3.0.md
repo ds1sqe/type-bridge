@@ -42,3 +42,19 @@ For Rust, retain the result with `let result = people.insert(input).await?;`,
 then use `result.item()` to borrow the single model, or `result.into_items()` to
 take ownership of all models. Rust exposes `count()`, `items()`, and `item()`
 accessors.
+
+## Core manager construction
+
+Core descriptor managers require registry authority. Replace
+`DynamicEntityManager::new` / `new_canonical` and
+`DynamicRelationManager::new` / `new_canonical` with `::from_registry`.
+Replace their `with_transaction` / `with_canonical_transaction` constructors
+with `::with_registry_transaction`. Use `literal_values()` when the owning
+provider requires literal transport.
+
+The generic core `EntityManager<T>::new` and `RelationManager<R>::new`
+constructors are replaced by `::from_registry` too. Their single writes and
+the dynamic managers' single writes return `WriteResult`, including exact
+put/update forms and returning deletes. Generic results contain hydrated models;
+dynamic results contain hydrated rows. The many-result methods retain their
+list contracts.

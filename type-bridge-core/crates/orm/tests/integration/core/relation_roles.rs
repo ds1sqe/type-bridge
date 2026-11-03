@@ -47,6 +47,41 @@ relation {trace_type}, relates origin @card(0..2), owns {label_attr};
         )
     }
 
+    fn registry(&self) -> Arc<DescriptorRegistry> {
+        registry_from_yaml(&format!(
+            r#"format: typebridge.schema/v2
+attributes:
+  {document_id}: {{ value: string }}
+  {subject}: {{ value: string }}
+  {label}: {{ value: string }}
+entities:
+  {document}:
+    owns:
+      {document_id}: {{ key: true }}
+  {email}:
+    owns:
+      {subject}: {{ key: true }}
+relations:
+  {trace}:
+    owns:
+      {label}: {{ card: 1 }}
+    relates:
+      origin: {{ card: {{ min: 0, max: 2 }} }}
+plays:
+  {document}:
+    {trace}: [origin]
+  {email}:
+    {trace}: [origin]
+"#,
+            document_id = self.document_id_attr,
+            subject = self.subject_attr,
+            label = self.label_attr,
+            document = self.document_type,
+            email = self.email_type,
+            trace = self.trace_type
+        ))
+    }
+
     fn document_descriptor(&self) -> Arc<EntityDescriptor> {
         Arc::new(EntityDescriptor {
             type_name: self.document_type.clone(),
@@ -141,6 +176,47 @@ relation {origin_type}, relates token, relates issue, owns {confidence_attr} @ca
         )
     }
 
+    fn registry(&self) -> Arc<DescriptorRegistry> {
+        registry_from_yaml(&format!(
+            r#"format: typebridge.schema/v2
+attributes:
+  {text}: {{ value: string }}
+  {key}: {{ value: string }}
+  {confidence}: {{ value: integer }}
+entities:
+  {token}:
+    abstract: true
+    owns:
+      {text}: {{ key: true }}
+  {symptom}: {{ sub: {token} }}
+  {problem}: {{ sub: {token} }}
+  {issue}:
+    owns:
+      {key}: {{ key: true }}
+relations:
+  {origin}:
+    owns:
+      {confidence}: {{ card: {{ min: 0, max: 5 }} }}
+    relates:
+      token: {{ card: {{ min: 0 }} }}
+      issue: {{ card: {{ min: 0 }} }}
+plays:
+  {token}:
+    {origin}: [token]
+  {issue}:
+    {origin}: [issue]
+"#,
+            text = self.token_text_attr,
+            key = self.issue_key_attr,
+            confidence = self.confidence_attr,
+            token = self.token_type,
+            symptom = self.symptom_type,
+            problem = self.problem_type,
+            issue = self.issue_type,
+            origin = self.origin_type
+        ))
+    }
+
     fn token_descriptor(&self) -> Arc<EntityDescriptor> {
         Arc::new(EntityDescriptor {
             type_name: self.token_type.clone(),
@@ -218,44 +294,70 @@ async fn dynamic_relation_single_role_accepts_multiple_player_types_against_type
     let _guard = crate::common::integration_test_guard().await;
     let schema = MultiRoleSchema::new();
     let db = setup_dynamic_typeql(&schema.define_typeql()).await;
-    let document_manager = DynamicEntityManager::new(&db, schema.document_descriptor());
-    let email_manager = DynamicEntityManager::new(&db, schema.email_descriptor());
-    let trace_manager = DynamicRelationManager::new(&db, schema.trace_descriptor());
+    let document_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.document_descriptor());
+    let email_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.email_descriptor());
+    let trace_manager =
+        DynamicRelationManager::from_registry(&db, schema.registry(), schema.trace_descriptor());
 
     let doc_iid = document_manager
         .insert(&vec![(
-            "document_id".into(),
+            schema.document_id_attr.clone(),
             AttributeValue::String("doc-001".into()),
         )])
         .await
-        .expect("document insert should return IID");
+        .expect("document insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let email_iid = email_manager
         .insert(&vec![(
-            "subject".into(),
+            schema.subject_attr.clone(),
             AttributeValue::String("Important".into()),
         )])
         .await
-        .expect("email insert should return IID");
+        .expect("email insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let doc_role = vec![role_player("origin", &schema.document_type, &doc_iid)];
     let email_role = vec![role_player("origin", &schema.email_type, &email_iid)];
     trace_manager
         .insert(
             &vec![(
-                "label".into(),
+                schema.label_attr.clone(),
                 AttributeValue::String("from-document".into()),
             )],
             &doc_role,
         )
         .await
-        .expect("document-origin trace insert should work");
+        .expect("document-origin trace insert should work")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let email_trace_iid = trace_manager
         .insert(
-            &vec![("label".into(), AttributeValue::String("from-email".into()))],
+            &vec![(
+                schema.label_attr.clone(),
+                AttributeValue::String("from-email".into()),
+            )],
             &email_role,
         )
         .await
-        .expect("email-origin trace insert should work");
+        .expect("email-origin trace insert should work")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let doc_rows = trace_manager
         .get_with_role_filters(&[], &doc_role)
@@ -272,7 +374,7 @@ async fn dynamic_relation_single_role_accepts_multiple_player_types_against_type
         .update(
             Some(email_trace_iid.as_str()),
             &vec![(
-                "label".into(),
+                schema.label_attr.clone(),
                 AttributeValue::String("updated-email".into()),
             )],
             &[],
@@ -305,24 +407,37 @@ async fn dynamic_relation_single_role_hydrates_multiple_players_against_typedb()
     let _guard = crate::common::integration_test_guard().await;
     let schema = MultiRoleSchema::new();
     let db = setup_dynamic_typeql(&schema.define_typeql()).await;
-    let document_manager = DynamicEntityManager::new(&db, schema.document_descriptor());
-    let email_manager = DynamicEntityManager::new(&db, schema.email_descriptor());
-    let trace_manager = DynamicRelationManager::new(&db, schema.trace_descriptor());
+    let document_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.document_descriptor());
+    let email_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.email_descriptor());
+    let trace_manager =
+        DynamicRelationManager::from_registry(&db, schema.registry(), schema.trace_descriptor());
 
     let doc_iid = document_manager
         .insert(&vec![(
-            "document_id".into(),
+            schema.document_id_attr.clone(),
             AttributeValue::String("doc-multi".into()),
         )])
         .await
-        .expect("document insert should return IID");
+        .expect("document insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let email_iid = email_manager
         .insert(&vec![(
-            "subject".into(),
+            schema.subject_attr.clone(),
             AttributeValue::String("Multi origin".into()),
         )])
         .await
-        .expect("email insert should return IID");
+        .expect("email insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let roles = vec![
         role_player("origin", &schema.document_type, &doc_iid),
@@ -330,14 +445,22 @@ async fn dynamic_relation_single_role_hydrates_multiple_players_against_typedb()
     ];
     trace_manager
         .insert(
-            &vec![("label".into(), AttributeValue::String("multi".into()))],
+            &vec![(
+                schema.label_attr.clone(),
+                AttributeValue::String("multi".into()),
+            )],
             &roles,
         )
         .await
-        .expect("same-role multi-player trace insert should work");
+        .expect("same-role multi-player trace insert should work")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let rows = trace_manager
-        .get(&[Filter::string_eq("label", "multi")])
+        .get(&[Filter::string_eq(&schema.label_attr, "multi")])
         .await
         .expect("same-role multi-player trace should fetch");
     assert!(
@@ -363,33 +486,53 @@ async fn dynamic_relation_abstract_role_resolves_concrete_players_against_typedb
     let _guard = crate::common::integration_test_guard().await;
     let schema = AbstractRoleSchema::new();
     let db = setup_dynamic_typeql(&schema.define_typeql()).await;
-    let token_manager = DynamicEntityManager::new(&db, schema.token_descriptor());
-    let symptom_manager = DynamicEntityManager::new(&db, schema.symptom_descriptor());
-    let problem_manager = DynamicEntityManager::new(&db, schema.problem_descriptor());
-    let issue_manager = DynamicEntityManager::new(&db, schema.issue_descriptor());
-    let origin_manager = DynamicRelationManager::new(&db, schema.origin_descriptor());
+    let token_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.token_descriptor());
+    let symptom_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.symptom_descriptor());
+    let problem_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.problem_descriptor());
+    let issue_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.issue_descriptor());
+    let origin_manager =
+        DynamicRelationManager::from_registry(&db, schema.registry(), schema.origin_descriptor());
 
     let symptom_iid = symptom_manager
         .insert(&vec![(
-            "text".into(),
+            schema.token_text_attr.clone(),
             AttributeValue::String("fever".into()),
         )])
         .await
-        .expect("symptom insert should return IID");
+        .expect("symptom insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let problem_iid = problem_manager
         .insert(&vec![(
-            "text".into(),
+            schema.token_text_attr.clone(),
             AttributeValue::String("infection".into()),
         )])
         .await
-        .expect("problem insert should return IID");
+        .expect("problem insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let issue_iid = issue_manager
         .insert(&vec![(
             "key".into(),
             AttributeValue::String("ISSUE-1".into()),
         )])
         .await
-        .expect("issue insert should return IID");
+        .expect("issue insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let symptom_roles = vec![
         role_player("token", &schema.symptom_type, &symptom_iid),
@@ -401,18 +544,28 @@ async fn dynamic_relation_abstract_role_resolves_concrete_players_against_typedb
     ];
     origin_manager
         .insert(
-            &vec![("confidence".into(), AttributeValue::Long(70))],
+            &vec![(schema.confidence_attr.clone(), AttributeValue::Long(70))],
             &symptom_roles,
         )
         .await
-        .expect("symptom-origin insert should work");
+        .expect("symptom-origin insert should work")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     origin_manager
         .insert(
-            &vec![("confidence".into(), AttributeValue::Long(90))],
+            &vec![(schema.confidence_attr.clone(), AttributeValue::Long(90))],
             &problem_roles,
         )
         .await
-        .expect("problem-origin insert should work");
+        .expect("problem-origin insert should work")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let tokens = token_manager
         .all()

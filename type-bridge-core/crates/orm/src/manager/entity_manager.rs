@@ -11,9 +11,11 @@ use super::hydration::materialize_entity_row;
 use crate::_dynamic::DynamicAttributeMap;
 use crate::_entity::TypeBridgeEntity;
 use crate::_registry::DescriptorRegistry;
+use crate::WriteResult;
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, TypeKind};
+use crate::plan_builders::bulk_write::WriteKind;
 use crate::query::EntityQuery;
 use crate::session::Database;
 use crate::session::backend::{QueryResult, TxType};
@@ -32,7 +34,7 @@ use super::query_builder;
 /// generated `Person` model values from a consumer package.
 ///
 /// ```ignore
-/// let manager = EntityManager::<Person>::new(&db);
+/// let manager = EntityManager::<Person>::from_registry(&db, registry)?;
 /// manager.insert(&mut alice).await?;
 /// let people = manager.all().await?;
 /// ```
@@ -44,16 +46,6 @@ pub struct EntityManager<'db, T: TypeBridgeEntity> {
 }
 
 impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
-    /// Create a new manager for the given database.
-    pub fn new(db: &'db Database) -> Self {
-        Self {
-            db,
-            hooks: HookRunner::new(),
-            dynamic: None,
-            _marker: PhantomData,
-        }
-    }
-
     /// Create a manager whose operations use native plans and installed registry authority.
     pub fn from_registry(db: &'db Database, registry: Arc<DescriptorRegistry>) -> Result<Self> {
         if registry.installed_schema_authority().is_none() {
@@ -82,82 +74,54 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
         self
     }
 
-    /// Insert an entity and return the assigned IID.
+    /// Insert an entity and return every hydrated root.
     ///
-    /// The entity's IID is also set in-place via [`TypeBridgeEntity::set_iid`].
+    /// The input IID is attached only when exactly one root is returned.
     #[tracing::instrument(skip(self, entity), fields(entity_type = T::TYPE_NAME))]
-    pub async fn insert(&self, entity: &mut T) -> Result<String> {
+    pub async fn insert(&self, entity: &mut T) -> Result<WriteResult<T>> {
         if self.hooks.has_hooks() {
-            let mut ctx = HookRunner::build_context(
+            let mut context = HookRunner::build_context(
                 T::TYPE_NAME,
                 TypeKind::Entity,
                 CrudOperation::Insert,
                 entity.to_attribute_values(),
-                entity.iid().map(String::from),
+                entity.iid().map(str::to_owned),
             );
-            self.hooks.run_pre_hooks(&mut ctx).await?;
+            self.hooks.run_pre_hooks(&mut context).await?;
         }
-
-        let iid = if let Some(manager) = &self.dynamic {
-            let iid = manager
-                .insert(
-                    &entity
-                        .to_attribute_values()
-                        .into_iter()
-                        .map(|(name, value)| (name.into(), value))
-                        .collect::<DynamicAttributeMap>(),
-                )
-                .await?;
-            entity.set_iid(iid.clone());
-            iid
-        } else {
-            let typeql = query_builder::build_insert_with_iid::<T>(entity, "$e")?;
-            tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "INSERT");
-
-            // raw remainder: no registry authority; removed in 06
-            let result = self.db.execute_raw(&typeql, TxType::Write).await?;
-            match result {
-                QueryResult::Documents(docs) => {
-                    let doc = docs.first().ok_or_else(|| OrmError::Hydration {
-                        type_name: T::TYPE_NAME.into(),
-                        message: "Insert returned no documents".into(),
-                    })?;
-
-                    let iid = doc
-                        .get("iid")
-                        .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
-                        .ok_or_else(|| OrmError::Hydration {
-                            type_name: T::TYPE_NAME.into(),
-                            message: "No IID in insert response".into(),
-                        })?
-                        .to_string();
-
-                    entity.set_iid(iid.clone());
-                    Ok(iid)
-                }
-                QueryResult::Ok => Err(OrmError::Hydration {
-                    type_name: T::TYPE_NAME.into(),
-                    message: "Expected Documents from insert+fetch, got Ok".into(),
-                }),
-                QueryResult::Rows(_) => Err(OrmError::Hydration {
-                    type_name: T::TYPE_NAME.into(),
-                    message: "Expected Documents from insert+fetch, got Rows".into(),
-                }),
-            }?
-        };
-
+        let manager = self.dynamic.as_ref().expect("registry-backed manager");
+        let attributes = entity
+            .to_attribute_values()
+            .into_iter()
+            .map(|(name, value)| (name.into(), value))
+            .collect::<DynamicAttributeMap>();
+        let result = manager
+            .write_mapped(WriteKind::Insert, None, &attributes, |rows| {
+                rows.into_items()
+                    .into_iter()
+                    .map(materialize_entity_row::<T>)
+                    .collect::<Result<Vec<_>>>()
+                    .map(WriteResult::new)
+            })
+            .await?;
+        if let Some(item) = result.item()
+            && let Some(iid) = item.iid()
+        {
+            entity.set_iid(iid.to_owned());
+        }
         if self.hooks.has_hooks() {
-            let ctx = HookRunner::build_context(
-                T::TYPE_NAME,
-                TypeKind::Entity,
-                CrudOperation::Insert,
-                entity.to_attribute_values(),
-                Some(iid.clone()),
-            );
-            self.hooks.run_post_hooks(&ctx).await;
+            for item in result.items() {
+                let context = HookRunner::build_context(
+                    T::TYPE_NAME,
+                    TypeKind::Entity,
+                    CrudOperation::Insert,
+                    item.to_attribute_values(),
+                    item.iid().map(str::to_owned),
+                );
+                self.hooks.run_post_hooks(&context).await;
+            }
         }
-
-        Ok(iid)
+        Ok(result)
     }
 
     /// Fetch entities matching the given filters.
@@ -266,15 +230,14 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
         Ok(())
     }
 
-    /// Delete one instance and return its complete pre-delete snapshot, if present.
+    /// Delete one instance and return every complete pre-delete snapshot.
     ///
     /// Requires [`Self::from_registry`]. Hydration receives the exact `_type`;
     /// relation snapshots also include `role_players` in `from_document`.
-    pub async fn delete_returning(&self, entity: &T) -> Result<Option<T>> {
-        Ok(self
-            .delete_many_returning(std::slice::from_ref(entity))
-            .await?
-            .pop())
+    pub async fn delete_returning(&self, entity: &T) -> Result<WriteResult<T>> {
+        self.delete_many_returning(std::slice::from_ref(entity))
+            .await
+            .map(WriteResult::new)
     }
 
     /// Capture every requested instance before deleting any, preserving input order.
@@ -376,127 +339,101 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     /// Identifies the entity by IID or @key attributes, then updates
     /// all other attribute values. Only non-key attributes are modified.
     #[tracing::instrument(skip(self, entity), fields(entity_type = T::TYPE_NAME))]
-    pub async fn update(&self, entity: &T) -> Result<()> {
+    pub async fn update(&self, entity: &T) -> Result<WriteResult<T>> {
         if self.hooks.has_hooks() {
-            let mut ctx = HookRunner::build_context(
+            let mut context = HookRunner::build_context(
                 T::TYPE_NAME,
                 TypeKind::Entity,
                 CrudOperation::Update,
                 entity.to_attribute_values(),
-                entity.iid().map(String::from),
+                entity.iid().map(str::to_owned),
             );
-            self.hooks.run_pre_hooks(&mut ctx).await?;
+            self.hooks.run_pre_hooks(&mut context).await?;
         }
-
-        if let Some(manager) = &self.dynamic {
-            manager
-                .update(
-                    entity.iid(),
-                    &entity
-                        .to_attribute_values()
+        let manager = self.dynamic.as_ref().expect("registry-backed manager");
+        let attributes = entity
+            .to_attribute_values()
+            .into_iter()
+            .map(|(name, value)| (name.into(), value))
+            .collect::<DynamicAttributeMap>();
+        let result = manager
+            .write_mapped(
+                WriteKind::PartialUpdate,
+                entity.iid(),
+                &attributes,
+                |rows| {
+                    rows.into_items()
                         .into_iter()
-                        .map(|(name, value)| (name.into(), value))
-                        .collect::<DynamicAttributeMap>(),
-                )
-                .await?;
-        } else {
-            let typeql = query_builder::build_update::<T>(entity, "$e")?;
-            tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "UPDATE");
-            // raw remainder: no registry authority; removed in 06
-            self.db.execute_raw(&typeql, TxType::Write).await?;
-        }
-
+                        .map(materialize_entity_row::<T>)
+                        .collect::<Result<Vec<_>>>()
+                        .map(WriteResult::new)
+                },
+            )
+            .await?;
         if self.hooks.has_hooks() {
-            let ctx = HookRunner::build_context(
-                T::TYPE_NAME,
-                TypeKind::Entity,
-                CrudOperation::Update,
-                entity.to_attribute_values(),
-                entity.iid().map(String::from),
-            );
-            self.hooks.run_post_hooks(&ctx).await;
+            for item in result.items() {
+                let context = HookRunner::build_context(
+                    T::TYPE_NAME,
+                    TypeKind::Entity,
+                    CrudOperation::Update,
+                    item.to_attribute_values(),
+                    item.iid().map(str::to_owned),
+                );
+                self.hooks.run_post_hooks(&context).await;
+            }
         }
-
-        Ok(())
+        Ok(result)
     }
 
     /// Idempotent insert-or-update (put) for an entity.
     ///
     /// If a matching entity exists, updates it. Otherwise inserts a new one.
-    /// Returns the IID of the entity (existing or newly created).
+    /// Returns every complete hydrated root in a write result.
     #[tracing::instrument(skip(self, entity), fields(entity_type = T::TYPE_NAME))]
-    pub async fn put(&self, entity: &mut T) -> Result<String> {
+    pub async fn put(&self, entity: &mut T) -> Result<WriteResult<T>> {
         if self.hooks.has_hooks() {
-            let mut ctx = HookRunner::build_context(
+            let mut context = HookRunner::build_context(
                 T::TYPE_NAME,
                 TypeKind::Entity,
                 CrudOperation::Put,
                 entity.to_attribute_values(),
-                entity.iid().map(String::from),
+                entity.iid().map(str::to_owned),
             );
-            self.hooks.run_pre_hooks(&mut ctx).await?;
+            self.hooks.run_pre_hooks(&mut context).await?;
         }
-
-        let iid = if let Some(manager) = &self.dynamic {
-            let iid = manager
-                .put(
-                    &entity
-                        .to_attribute_values()
-                        .into_iter()
-                        .map(|(name, value)| (name.into(), value))
-                        .collect::<DynamicAttributeMap>(),
-                )
-                .await?;
-            entity.set_iid(iid.clone());
-            iid
-        } else {
-            let typeql = query_builder::build_put::<T>(entity, "$e")?;
-            tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "PUT");
-
-            // raw remainder: no registry authority; removed in 06
-            let result = self.db.execute_raw(&typeql, TxType::Write).await?;
-            match result {
-                QueryResult::Documents(docs) => {
-                    let doc = docs.first().ok_or_else(|| OrmError::Hydration {
-                        type_name: T::TYPE_NAME.into(),
-                        message: "Put returned no documents".into(),
-                    })?;
-
-                    let iid = doc
-                        .get("iid")
-                        .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
-                        .ok_or_else(|| OrmError::Hydration {
-                            type_name: T::TYPE_NAME.into(),
-                            message: "No IID in put response".into(),
-                        })?
-                        .to_string();
-
-                    entity.set_iid(iid.clone());
-                    Ok(iid)
-                }
-                QueryResult::Ok => Err(OrmError::Hydration {
-                    type_name: T::TYPE_NAME.into(),
-                    message: "Expected Documents from put+fetch, got Ok".into(),
-                }),
-                QueryResult::Rows(_) => Err(OrmError::Hydration {
-                    type_name: T::TYPE_NAME.into(),
-                    message: "Expected Documents from put+fetch, got Rows".into(),
-                }),
-            }?
-        };
-
+        let manager = self.dynamic.as_ref().expect("registry-backed manager");
+        let attributes = entity
+            .to_attribute_values()
+            .into_iter()
+            .map(|(name, value)| (name.into(), value))
+            .collect::<DynamicAttributeMap>();
+        let result = manager
+            .write_mapped(WriteKind::PartialPut, None, &attributes, |rows| {
+                rows.into_items()
+                    .into_iter()
+                    .map(materialize_entity_row::<T>)
+                    .collect::<Result<Vec<_>>>()
+                    .map(WriteResult::new)
+            })
+            .await?;
+        if let Some(item) = result.item()
+            && let Some(iid) = item.iid()
+        {
+            entity.set_iid(iid.to_owned());
+        }
         if self.hooks.has_hooks() {
-            let ctx = HookRunner::build_context(
-                T::TYPE_NAME,
-                TypeKind::Entity,
-                CrudOperation::Put,
-                entity.to_attribute_values(),
-                Some(iid.clone()),
-            );
-            self.hooks.run_post_hooks(&ctx).await;
+            for item in result.items() {
+                let context = HookRunner::build_context(
+                    T::TYPE_NAME,
+                    TypeKind::Entity,
+                    CrudOperation::Put,
+                    item.to_attribute_values(),
+                    item.iid().map(str::to_owned),
+                );
+                self.hooks.run_post_hooks(&context).await;
+            }
         }
-
-        Ok(iid)
+        Ok(result)
     }
 
     /// Create a chainable query builder for this entity type.

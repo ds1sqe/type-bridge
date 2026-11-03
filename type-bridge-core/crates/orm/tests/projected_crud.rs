@@ -1549,19 +1549,23 @@ async fn dynamic_returning_delete_captures_all_roots_before_mutation() {
             .unwrap()
             .clone(),
     );
-    let (backend, state) = RecordingBackend::new(
+    let (mut backend, state) = RecordingBackend::new(
         vec![
             documents(vec![person_document("0x12"), person_document("0x10")]),
             RecordingResponse::Result(QueryResult::Ok),
         ],
         CommitBehavior::Success,
     );
+    backend.given_enabled = true;
     let database = Database::with_backend(Box::new(backend), "test");
-    let snapshots =
-        type_bridge_orm::_manager::DynamicEntityManager::new_canonical(&database, descriptor)
-            .delete_many_by_iid_exact_returning(&["0x10".into(), "0x11".into(), "0x12".into()])
-            .await
-            .unwrap();
+    let snapshots = type_bridge_orm::_manager::DynamicEntityManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        descriptor,
+    )
+    .delete_many_by_iid_exact_returning(&["0x10".into(), "0x11".into(), "0x12".into()])
+    .await
+    .unwrap();
     assert_eq!(
         snapshots,
         vec![person_document("0x10"), person_document("0x12")]
@@ -1571,9 +1575,9 @@ async fn dynamic_returning_delete_captures_all_roots_before_mutation() {
     assert_eq!(state.queries.len(), 2);
     assert_eq!(state.given_rows.len(), 2);
     for (query, rows) in state.queries.iter().zip(&state.given_rows) {
-        assert!(query.starts_with("given $snapshot_iid: string;"));
+        assert!(query.starts_with("given $in0: string;"));
         assert!(!query.contains("0x10") && !query.contains("0x11"));
-        assert_eq!(rows.variables, ["snapshot_iid"]);
+        assert_eq!(rows.variables, ["in0"]);
     }
     for rows in &state.given_rows {
         assert_eq!(
@@ -1597,19 +1601,23 @@ async fn dynamic_returning_delete_normalizes_iid_case_in_given_rows() {
             .unwrap()
             .clone(),
     );
-    let (backend, state) = RecordingBackend::new(
+    let (mut backend, state) = RecordingBackend::new(
         vec![
             documents(vec![person_document("0xab")]),
             RecordingResponse::Result(QueryResult::Ok),
         ],
         CommitBehavior::Success,
     );
+    backend.given_enabled = true;
     let database = Database::with_backend(Box::new(backend), "test");
-    let snapshots =
-        type_bridge_orm::_manager::DynamicEntityManager::new_canonical(&database, descriptor)
-            .delete_many_by_iid_exact_returning(&["0xAB".into()])
-            .await
-            .unwrap();
+    let snapshots = type_bridge_orm::_manager::DynamicEntityManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        descriptor,
+    )
+    .delete_many_by_iid_exact_returning(&["0xAB".into()])
+    .await
+    .unwrap();
     assert_eq!(snapshots, vec![person_document("0xab")]);
     let state = state.lock().unwrap();
     assert_eq!(state.given_rows.len(), 2);
@@ -1627,13 +1635,17 @@ async fn dynamic_returning_delete_refuses_duplicate_iids_before_opening() {
             .unwrap()
             .clone(),
     );
-    let (backend, state) = RecordingBackend::new(vec![], CommitBehavior::Success);
+    let (mut backend, state) = RecordingBackend::new(vec![], CommitBehavior::Success);
+    backend.given_enabled = true;
     let database = Database::with_backend(Box::new(backend), "test");
-    let error =
-        type_bridge_orm::_manager::DynamicEntityManager::new_canonical(&database, descriptor)
-            .delete_many_by_iid_exact_returning(&["0x10".into(), "0x10".into()])
-            .await
-            .unwrap_err();
+    let error = type_bridge_orm::_manager::DynamicEntityManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        descriptor,
+    )
+    .delete_many_by_iid_exact_returning(&["0x10".into(), "0x10".into()])
+    .await
+    .unwrap_err();
     assert!(matches!(error, OrmError::Match(_)));
     let state = state.lock().unwrap();
     assert!(state.opens.is_empty());
@@ -1649,18 +1661,22 @@ async fn dynamic_returning_delete_validates_the_entire_batch_before_mutation() {
             .unwrap()
             .clone(),
     );
-    let (backend, state) = RecordingBackend::new(
+    let (mut backend, state) = RecordingBackend::new(
         vec![
             // A provider result for a different root must invalidate the batch.
             documents(vec![person_document("0x10"), person_document("0x12")]),
         ],
         CommitBehavior::Success,
     );
+    backend.given_enabled = true;
     let database = Database::with_backend(Box::new(backend), "test");
-    let result =
-        type_bridge_orm::_manager::DynamicEntityManager::new_canonical(&database, descriptor)
-            .delete_many_by_iid_exact_returning(&["0x10".into(), "0x11".into()])
-            .await;
+    let result = type_bridge_orm::_manager::DynamicEntityManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        descriptor,
+    )
+    .delete_many_by_iid_exact_returning(&["0x10".into(), "0x11".into()])
+    .await;
     assert!(result.is_err());
     let state = state.lock().unwrap();
     assert_eq!(state.queries.len(), 1);
@@ -1685,7 +1701,7 @@ async fn dynamic_returning_delete_enforces_batch_answer_and_statement_limits() {
         ("attribute_values", 3, 1),
         ("collection_members", 3, 1),
     ] {
-        let (backend, state) = RecordingBackend::new(
+        let (mut backend, state) = RecordingBackend::new(
             vec![documents(vec![
                 person_document("0x10"),
                 person_document("0x11"),
@@ -1703,9 +1719,11 @@ async fn dynamic_returning_delete_enforces_batch_answer_and_statement_limits() {
             "collection_members" => limits.collection_members = ceiling,
             _ => unreachable!(),
         }
+        backend.given_enabled = true;
         let database = Database::with_backend_answer_limits(Box::new(backend), "test", limits);
-        let error = type_bridge_orm::_manager::DynamicEntityManager::new_canonical(
+        let error = type_bridge_orm::_manager::DynamicEntityManager::from_registry(
             &database,
+            installed.manager_registry().unwrap(),
             Arc::clone(&descriptor),
         )
         .delete_many_by_iid_exact_returning(&["0x10".into(), "0x11".into()])
@@ -1735,7 +1753,7 @@ async fn dynamic_returning_relation_enforces_cumulative_snapshot_limits() {
         "collection_members",
         "role_players",
     ] {
-        let (backend, state) = RecordingBackend::new(
+        let (mut backend, state) = RecordingBackend::new(
             vec![documents(vec![
                 membership_document("0x20"),
                 membership_document("0x21"),
@@ -1751,9 +1769,11 @@ async fn dynamic_returning_relation_enforces_cumulative_snapshot_limits() {
             "role_players" => limits.role_players = 1,
             _ => unreachable!(),
         }
+        backend.given_enabled = true;
         let database = Database::with_backend_answer_limits(Box::new(backend), "test", limits);
-        let error = type_bridge_orm::_manager::DynamicRelationManager::new_canonical(
+        let error = type_bridge_orm::_manager::DynamicRelationManager::from_registry(
             &database,
+            installed.manager_registry().unwrap(),
             Arc::clone(&descriptor),
         )
         .delete_many_by_iid_exact_returning(&["0x20".into(), "0x21".into()])
@@ -1781,16 +1801,18 @@ async fn dynamic_returning_delete_does_not_publish_on_commit_failure() {
         CommitFailureCertainty::DefinitelyAborted,
         CommitFailureCertainty::Unknown,
     ] {
-        let (backend, state) = RecordingBackend::new(
+        let (mut backend, state) = RecordingBackend::new(
             vec![
                 documents(vec![person_document("0x10")]),
                 RecordingResponse::Result(QueryResult::Ok),
             ],
             CommitBehavior::Failure(certainty, "commit failed"),
         );
+        backend.given_enabled = true;
         let database = Database::with_backend(Box::new(backend), "test");
-        let result = type_bridge_orm::_manager::DynamicEntityManager::new_canonical(
+        let result = type_bridge_orm::_manager::DynamicEntityManager::from_registry(
             &database,
+            installed.manager_registry().unwrap(),
             Arc::clone(&descriptor),
         )
         .delete_many_by_iid_exact_returning(&["0x10".into()])
@@ -1814,10 +1836,10 @@ async fn dynamic_returning_relation_coalesces_all_player_documents() {
     let document = |iid: &str, label: &str, key: &str| {
         serde_json::json!({
             "_iid":"0x20", "_type":"membership", "attributes":{},
-            "_role_0_iid":iid, "_role_0_type":label, "_role_0_attributes":{"identifier":key}
+            "_role_0_players":[{"_iid":iid,"_type":label,"attributes":{"identifier":key}}]
         })
     };
-    let (backend, state) = RecordingBackend::new(
+    let (mut backend, state) = RecordingBackend::new(
         vec![
             documents(vec![
                 document("0x10", "person", "ada"),
@@ -1827,12 +1849,16 @@ async fn dynamic_returning_relation_coalesces_all_player_documents() {
         ],
         CommitBehavior::Success,
     );
+    backend.given_enabled = true;
     let database = Database::with_backend(Box::new(backend), "test");
-    let snapshots =
-        type_bridge_orm::_manager::DynamicRelationManager::new_canonical(&database, descriptor)
-            .delete_many_by_iid_exact_returning(&["0x20".into()])
-            .await
-            .unwrap();
+    let snapshots = type_bridge_orm::_manager::DynamicRelationManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        descriptor,
+    )
+    .delete_many_by_iid_exact_returning(&["0x20".into()])
+    .await
+    .unwrap();
     assert_eq!(snapshots.len(), 1);
     let players = snapshots[0]["role_players"].as_array().unwrap();
     assert_eq!(players.len(), 2);
@@ -1845,7 +1871,7 @@ async fn dynamic_returning_relation_coalesces_all_player_documents() {
     assert_eq!(state.commits, 1);
     assert_eq!(state.given_rows.len(), 2);
     for (query, rows) in state.queries.iter().zip(&state.given_rows) {
-        assert!(query.starts_with("given $snapshot_iid: string;"));
+        assert!(query.starts_with("given $in0: string;"));
         assert!(!query.contains("0x20"));
         assert_eq!(rows.rows, vec![vec![GivenValue::String("0x20".into())]]);
     }
@@ -1860,22 +1886,27 @@ async fn dynamic_returning_relation_refuses_missing_required_role_before_deletio
             .unwrap()
             .clone(),
     );
-    let (backend, state) = RecordingBackend::new(
+    let (mut backend, state) = RecordingBackend::new(
         vec![documents(vec![serde_json::json!({
             "_iid":"0x20", "_type":"membership", "attributes":{}
         })])],
         CommitBehavior::Success,
     );
+    backend.given_enabled = true;
     let database = Database::with_backend(Box::new(backend), "test");
     assert!(
-        type_bridge_orm::_manager::DynamicRelationManager::new_canonical(&database, descriptor)
-            .delete_many_by_iid_exact_returning(&["0x20".into()])
-            .await
-            .is_err()
+        type_bridge_orm::_manager::DynamicRelationManager::from_registry(
+            &database,
+            installed.manager_registry().unwrap(),
+            descriptor
+        )
+        .delete_many_by_iid_exact_returning(&["0x20".into()])
+        .await
+        .is_err()
     );
     let state = state.lock().unwrap();
     assert_eq!(state.queries.len(), 1);
-    assert!(state.queries[0].contains("try"));
+    assert!(state.queries[0].contains("\"_role_0_players\""));
     assert_eq!(state.commits, 0);
     assert_eq!(state.rollbacks, 1);
 }
@@ -1889,18 +1920,20 @@ async fn dynamic_returning_delete_failure_poison_latches_borrowed_context() {
             .unwrap()
             .clone(),
     );
-    let (backend, state) = RecordingBackend::new(
+    let (mut backend, state) = RecordingBackend::new(
         vec![
             documents(vec![person_document("0x10")]),
             RecordingResponse::Error("delete failed"),
         ],
         CommitBehavior::Success,
     );
+    backend.given_enabled = true;
     let database = Database::with_backend(Box::new(backend), "test");
     let tx = database.transaction_context(TxType::Write).await.unwrap();
     assert!(
-        type_bridge_orm::_manager::DynamicEntityManager::with_canonical_transaction(
+        type_bridge_orm::_manager::DynamicEntityManager::with_registry_transaction(
             tx.clone(),
+            installed.manager_registry().unwrap(),
             descriptor
         )
         .delete_many_by_iid_exact_returning(&["0x10".into()])
@@ -2572,7 +2605,16 @@ impl type_bridge_orm::_entity::TypeBridgeEntity for NativePerson {
         self.iid = Some(iid);
     }
     fn to_attribute_values(&self) -> Vec<(&'static str, type_bridge_orm::AttributeValue)> {
-        vec![]
+        vec![
+            (
+                "identifier",
+                type_bridge_orm::AttributeValue::String(self.identifier.clone()),
+            ),
+            (
+                "email",
+                type_bridge_orm::AttributeValue::String(self.email.clone()),
+            ),
+        ]
     }
     fn from_document(doc: &serde_json::Map<String, serde_json::Value>) -> Result<Self, OrmError> {
         let identifier = doc["identifier"].as_str().unwrap().to_owned();
@@ -2613,15 +2655,16 @@ async fn handwritten_and_projected_returning_delete_share_queries_and_snapshots(
         registry,
     )
     .unwrap();
-    let snapshot = manager
+    let snapshots = manager
         .delete_returning(&NativePerson {
             iid: Some("0x10".into()),
             identifier: String::new(),
             email: String::new(),
         })
         .await
-        .unwrap()
         .unwrap();
+    assert_eq!(snapshots.count(), 1);
+    let snapshot = snapshots.into_items().remove(0);
     let (backend, projected_state) = make_backend();
     let projected_database = Database::with_backend(Box::new(backend), "test");
     let projected = ProjectedCrudExecutor::new(&installed)
@@ -2752,14 +2795,15 @@ async fn handwritten_and_projected_relations_share_returning_deletion() {
         Arc::new(installed.match_registry().unwrap()),
     )
     .unwrap();
-    let snapshot = manager
+    let snapshots = manager
         .delete_returning(&NativeMembership {
             iid: Some("0x20".into()),
             players: vec![],
         })
         .await
-        .unwrap()
         .unwrap();
+    assert_eq!(snapshots.count(), 1);
+    let snapshot = snapshots.into_items().remove(0);
     let (backend, projected_state) = make_backend();
     let projected_db = Database::with_backend(Box::new(backend), "test");
     let projected = ProjectedCrudExecutor::new(&installed)
@@ -2871,7 +2915,7 @@ async fn handwritten_returning_hooks_publish_only_after_successful_commit() {
             assert!(!error.to_string().contains("provider-secret"));
             assert_eq!(*events.lock().unwrap(), ["pre"]);
         } else {
-            assert!(result.unwrap().is_some());
+            assert_eq!(result.unwrap().count(), 1);
             assert_eq!(*events.lock().unwrap(), ["pre", "post"]);
         }
         let state = state.lock().unwrap();
@@ -3068,8 +3112,6 @@ async fn registry_manager_single_and_bulk_commits_keep_certainty_and_redact_prov
         (CommitFailureCertainty::Unknown, "commit_outcome_unknown"),
     ] {
         for (relation, bulk) in [(false, false), (false, true), (true, false), (true, true)] {
-            let label = if relation { "membership" } else { "person" };
-            let kind = if relation { "relation" } else { "entity" };
             let responses = if bulk {
                 let rows = (0..2)
                     .map(|index| {
@@ -3088,9 +3130,19 @@ async fn registry_manager_single_and_bulk_commits_keep_certainty_and_redact_prov
                     .collect();
                 vec![documents(rows)]
             } else {
-                vec![RecordingResponse::Result(QueryResult::Rows(vec![
-                    serde_json::json!({"root0":{"kind":"thing","iid":"0x10","type_id":{"kind":kind,"label":label}}}),
-                ]))]
+                let mut document = if relation {
+                    membership_document("0x10")
+                } else {
+                    person_document("0x10")
+                };
+                if relation {
+                    document
+                        .as_object_mut()
+                        .unwrap()
+                        .retain(|key, _| !key.starts_with("_role_"));
+                    document["_role_0_players"] = serde_json::json!([person_document("0x01")]);
+                }
+                vec![documents(vec![document])]
             };
             let (backend, state) = RecordingBackend::new(
                 responses,
@@ -3138,8 +3190,11 @@ async fn registry_manager_single_and_bulk_commits_keep_certainty_and_redact_prov
                     manager.insert(&attributes).await.map(|_| ())
                 }
             };
-            let OrmError::ExecutionDiagnostic(error) = result.unwrap_err() else {
-                panic!("classified native manager commit");
+            let error = result.unwrap_err();
+            let OrmError::ExecutionDiagnostic(error) = error else {
+                panic!(
+                    "classified native manager commit relation={relation} bulk={bulk}: {error:?}"
+                );
             };
             use type_bridge_contract::sdk_diagnostic::{
                 SdkCommitFailureOutcome, SdkDiagnosticCategory, SdkDiagnosticDetailValue,
@@ -3753,4 +3808,83 @@ async fn controlled_relation_update_diagnosis_errors_fail_the_lease_and_respect_
             assert_eq!((state.commits, state.rollbacks), (0, 1));
         }
     }
+}
+
+#[tokio::test]
+async fn handwritten_single_writes_materialize_all_roots_before_commit_and_attach_only_one_iid() {
+    for count in [1, 2] {
+        for put in [false, true] {
+            let installed = installed_with_authority();
+            let (backend, state) = RecordingBackend::new(
+                vec![documents(
+                    ["0x10", "0x11"]
+                        .into_iter()
+                        .take(count)
+                        .map(person_document)
+                        .collect(),
+                )],
+                CommitBehavior::Success,
+            );
+            let db = Database::with_backend(Box::new(backend), "native-full-results");
+            let manager = type_bridge_orm::_manager::EntityManager::<NativePerson>::from_registry(
+                &db,
+                installed.manager_registry().unwrap(),
+            )
+            .unwrap();
+            let mut input = NativePerson {
+                iid: None,
+                identifier: "ada".into(),
+                email: "ada@example.test".into(),
+            };
+            let result = if put {
+                manager.put(&mut input).await
+            } else {
+                manager.insert(&mut input).await
+            }
+            .unwrap();
+            assert_eq!(result.count(), count);
+            assert_eq!(result.item().is_some(), count == 1);
+            assert_eq!(
+                input.iid.as_deref(),
+                if count == 1 { Some("0x10") } else { None }
+            );
+            assert_eq!(
+                result
+                    .items()
+                    .iter()
+                    .map(|item| item.iid.as_deref().unwrap())
+                    .collect::<Vec<_>>(),
+                ["0x10", "0x11"][..count]
+            );
+            let state = state.lock().unwrap();
+            assert_eq!(state.queries.len(), 1);
+            assert_eq!((state.commits, state.rollbacks), (1, 0));
+        }
+    }
+    let installed = installed_with_authority();
+    let mut rejected = person_document("0x11");
+    rejected["attributes"]["email"] = serde_json::json!("reject@example.test");
+    let (backend, state) = RecordingBackend::new(
+        vec![documents(vec![person_document("0x10"), rejected])],
+        CommitBehavior::Success,
+    );
+    let db = Database::with_backend(Box::new(backend), "native-materialization-failure");
+    let manager = type_bridge_orm::_manager::EntityManager::<NativePerson>::from_registry(
+        &db,
+        installed.manager_registry().unwrap(),
+    )
+    .unwrap();
+    let mut input = NativePerson {
+        iid: None,
+        identifier: "ada".into(),
+        email: "ada@example.test".into(),
+    };
+    assert!(matches!(
+        manager.insert(&mut input).await,
+        Err(OrmError::Hydration { .. })
+    ));
+    assert!(input.iid.is_none());
+    let state = state.lock().unwrap();
+    assert_eq!(state.queries.len(), 1);
+    assert_eq!((state.commits, state.rollbacks), (0, 1));
 }

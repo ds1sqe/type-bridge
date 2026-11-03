@@ -13,19 +13,24 @@ use type_bridge_orm::*;
 async fn dynamic_entity_filter_then_iid_update_and_delete_against_typedb() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("chainable-entity").await;
-    let manager = DynamicEntityManager::new(&db, schema.person_descriptor());
+    let manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.person_descriptor());
 
     manager
         .insert_many(&[
-            person_attrs("Alice", 30),
-            person_attrs("Bob", 40),
-            person_attrs("Carol", 50),
+            schema.person_attrs("Alice", 30),
+            schema.person_attrs("Bob", 40),
+            schema.person_attrs("Carol", 50),
         ])
         .await
         .expect("entity insert_many should return IIDs");
 
     let selected = manager
-        .get(&[Filter::compare("age", ">=", AttributeValue::Long(40))])
+        .get(&[Filter::compare(
+            &schema.age_attr,
+            ">=",
+            AttributeValue::Long(40),
+        )])
         .await
         .expect("comparison filter should return rows");
     assert_eq!(selected.len(), 2);
@@ -38,13 +43,17 @@ async fn dynamic_entity_filter_then_iid_update_and_delete_against_typedb() {
             panic!("row has expected primitive values");
         };
         manager
-            .update(Some(iid), &person_attrs(name, age + 1))
+            .update(Some(iid), &schema.person_attrs(name, age + 1))
             .await
             .expect("IID-scoped update should work after filtered selection");
     }
 
     let updated = manager
-        .get(&[Filter::compare("age", ">", AttributeValue::Long(40))])
+        .get(&[Filter::compare(
+            &schema.age_attr,
+            ">",
+            AttributeValue::Long(40),
+        )])
         .await
         .expect("updated rows should be queryable");
     let updated_names: Vec<_> = updated
@@ -55,7 +64,11 @@ async fn dynamic_entity_filter_then_iid_update_and_delete_against_typedb() {
     assert!(updated_names.contains(&&AttributeValue::String("Carol".into())));
 
     let to_delete = manager
-        .get(&[Filter::compare("age", ">", AttributeValue::Long(50))])
+        .get(&[Filter::compare(
+            &schema.age_attr,
+            ">",
+            AttributeValue::Long(50),
+        )])
         .await
         .expect("delete selection should return rows");
     assert_eq!(to_delete.len(), 1);
@@ -79,37 +92,68 @@ async fn dynamic_entity_filter_then_iid_update_and_delete_against_typedb() {
 async fn dynamic_relation_filter_then_iid_update_and_delete_against_typedb() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("chainable-relation").await;
-    let person_manager = DynamicEntityManager::new(&db, schema.person_descriptor());
-    let company_manager = DynamicEntityManager::new(&db, schema.company_descriptor());
-    let relation_manager = DynamicRelationManager::new(&db, schema.employment_descriptor());
+    let person_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.person_descriptor());
+    let company_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.company_descriptor());
+    let relation_manager = DynamicRelationManager::from_registry(
+        &db,
+        schema.registry(),
+        schema.employment_descriptor(),
+    );
 
     let alice_iid = person_manager
-        .insert(&person_attrs("Alice", 30))
+        .insert(&schema.person_attrs("Alice", 30))
         .await
-        .expect("person insert should return IID");
+        .expect("person insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let bob_iid = person_manager
-        .insert(&person_attrs("Bob", 40))
+        .insert(&schema.person_attrs("Bob", 40))
         .await
-        .expect("person insert should return IID");
+        .expect("person insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let acme_iid = company_manager
-        .insert(&company_attrs("Acme"))
+        .insert(&schema.company_attrs("Acme"))
         .await
-        .expect("company insert should return IID");
+        .expect("company insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     relation_manager
         .insert(
-            &relation_attrs("2026-05-27"),
+            &schema.relation_attrs("2026-05-27"),
             &role_players(&schema, alice_iid, acme_iid.clone()),
         )
         .await
-        .expect("relation insert should return IID");
+        .expect("relation insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     relation_manager
         .insert(
-            &relation_attrs("2026-05-28"),
+            &schema.relation_attrs("2026-05-28"),
             &role_players(&schema, bob_iid, acme_iid),
         )
         .await
-        .expect("relation insert should return IID");
+        .expect("relation insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let selected = relation_manager
         .get(&[Filter::eq(
@@ -124,7 +168,11 @@ async fn dynamic_relation_filter_then_iid_update_and_delete_against_typedb() {
         .as_deref()
         .expect("relation row includes IID");
     relation_manager
-        .update(Some(selected_iid), &relation_attrs("2026-06-01"), &[])
+        .update(
+            Some(selected_iid),
+            &schema.relation_attrs("2026-06-01"),
+            &[],
+        )
         .await
         .expect("IID-scoped relation update should not require role players");
 

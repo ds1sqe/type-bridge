@@ -9,12 +9,11 @@
 
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{RoleId, TypeId};
-use type_bridge_contract::migration_assertion::ValueComparator;
+use type_bridge_contract::query_plan::QueryOutput;
 use type_bridge_contract::query_plan::v3::{
-    AttachItem, DeleteItem, DocumentRole, Expr, InsertThing, Operation, Pattern, Set, Stage,
-    ThingDocument, WriteReturns,
+    AttachItem, DeleteItem, DocumentRole, InsertThing, Operation, Set, Stage, ThingDocument,
+    WriteReturns,
 };
-use type_bridge_contract::query_plan::{QueryOperand, QueryOutput, QueryPattern};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
 
@@ -72,35 +71,8 @@ fn keyed_put(
     let mut patterns = Vec::new();
     let mut links = Vec::new();
     if let Some(relation) = &relation {
-        let mut player_iids = Vec::new();
         for (role, reference) in relation.players {
             let player = reference_binding(&mut draft, reference, &mut patterns)?;
-            if relation
-                .players
-                .iter()
-                .filter(|(candidate, _)| candidate == role)
-                .take(2)
-                .count()
-                > 1
-            {
-                let iid = draft.bind("player_iid")?;
-                patterns.push(Pattern::Let {
-                    binding: iid,
-                    expr: Expr::Iid { binding: player },
-                });
-                for (previous_role, previous_iid) in &player_iids {
-                    if previous_role == role {
-                        patterns.push(Pattern::Read(QueryPattern::Value {
-                            comparator: ValueComparator::NotEqual,
-                            left: QueryOperand::Binding {
-                                binding: *previous_iid,
-                            },
-                            right: QueryOperand::Binding { binding: iid },
-                        }));
-                    }
-                }
-                player_iids.push((role.clone(), iid));
-            }
             links.push(AttachItem::Links {
                 optional: false,
                 relation: thing,

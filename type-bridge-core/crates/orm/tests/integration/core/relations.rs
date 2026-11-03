@@ -9,29 +9,55 @@ use type_bridge_orm::*;
 async fn dynamic_relation_crud_against_typedb() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("relation").await;
-    let person_manager = DynamicEntityManager::new(&db, schema.person_descriptor());
-    let company_manager = DynamicEntityManager::new(&db, schema.company_descriptor());
-    let relation_manager = DynamicRelationManager::new(&db, schema.employment_descriptor());
+    let person_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.person_descriptor());
+    let company_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.company_descriptor());
+    let relation_manager = DynamicRelationManager::from_registry(
+        &db,
+        schema.registry(),
+        schema.employment_descriptor(),
+    );
 
     let alice_iid = person_manager
-        .insert(&person_attrs("Alice", 30))
+        .insert(&schema.person_attrs("Alice", 30))
         .await
-        .expect("person insert should return IID");
+        .expect("person insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let bob_iid = person_manager
-        .insert(&person_attrs("Bob", 40))
+        .insert(&schema.person_attrs("Bob", 40))
         .await
-        .expect("person insert should return IID");
+        .expect("person insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let acme_iid = company_manager
-        .insert(&company_attrs("Acme"))
+        .insert(&schema.company_attrs("Acme"))
         .await
-        .expect("company insert should return IID");
+        .expect("company insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let alice_roles = role_players(&schema, alice_iid, acme_iid.clone());
     let bob_roles = role_players(&schema, bob_iid, acme_iid);
     let relation_iid = relation_manager
-        .insert(&relation_attrs("2026-05-27"), &alice_roles)
+        .insert(&schema.relation_attrs("2026-05-27"), &alice_roles)
         .await
-        .expect("relation insert should return IID");
+        .expect("relation insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     assert!(!relation_iid.is_empty());
 
     let rows = relation_manager
@@ -59,7 +85,7 @@ async fn dynamic_relation_crud_against_typedb() {
     relation_manager
         .update(
             Some(&relation_iid),
-            &relation_attrs("2026-05-28"),
+            &schema.relation_attrs("2026-05-28"),
             &alice_roles,
         )
         .await
@@ -76,8 +102,8 @@ async fn dynamic_relation_crud_against_typedb() {
 
     let put_iids = relation_manager
         .put_many(&[
-            (relation_attrs("2026-05-29"), alice_roles),
-            (relation_attrs("2026-05-30"), bob_roles),
+            (schema.relation_attrs("2026-05-29"), alice_roles),
+            (schema.relation_attrs("2026-05-30"), bob_roles),
         ])
         .await
         .expect("relation put_many should return IIDs");

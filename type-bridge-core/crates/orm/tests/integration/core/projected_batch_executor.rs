@@ -1553,7 +1553,11 @@ async fn disjoint_role_insert(
     use type_bridge_orm::AttributeValue;
     let registry = installed.manager_registry().unwrap();
     let descriptor = registry.relation("poly-choice").unwrap();
-    let raw = DynamicRelationManager::new(database, Arc::clone(&descriptor));
+    let raw = DynamicRelationManager::from_registry(
+        database,
+        installed.manager_registry().unwrap(),
+        Arc::clone(&descriptor),
+    );
     let manager = DynamicRelationManager::from_registry(database, registry, descriptor);
     let player = |role: &str| DynamicRolePlayerInput {
         role_name: role.into(),
@@ -1575,7 +1579,18 @@ async fn disjoint_role_insert(
             vec![player("left"), player("right")],
         ),
     ];
-    let old_iids = raw.insert_many(&items).await.unwrap();
+    let mut old_iids = Vec::new();
+    for (attributes, players) in &items {
+        let result = raw.insert(attributes, players).await.unwrap();
+        old_iids.push(
+            result
+                .item()
+                .expect("one baseline root")
+                .iid
+                .clone()
+                .unwrap(),
+        );
+    }
     let mut baseline = Vec::new();
     for iid in &old_iids {
         let mut row = manager.get_by_iid_exact(iid).await.unwrap();
@@ -1600,16 +1615,19 @@ async fn disjoint_role_insert(
     aliased_players[0].iid = Some(first_player.clone());
     aliased_players[0].key = None;
     *log.lock().unwrap() = DispatchLog::default();
-    assert!(
-        manager
-            .put_exact(&items[0].0, &aliased_players)
-            .await
-            .is_err()
+    let aliased = manager
+        .put_exact(&items[0].0, &aliased_players)
+        .await
+        .unwrap();
+    assert_eq!(aliased.count(), 1);
+    assert_eq!(
+        aliased.item().unwrap().iid.as_deref(),
+        Some(iids[0].as_str())
     );
     {
         let observed = log.lock().unwrap();
         assert_eq!(observed.statements.len(), 1);
-        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+        assert_eq!((observed.commits, observed.rollbacks), (1, 0));
     }
     let mut unchanged = manager.get_by_iid_exact(&iids[0]).await.unwrap();
     unchanged[0].iid = None;
@@ -1618,7 +1636,18 @@ async fn disjoint_role_insert(
     put_items[0].1[0].iid = Some(first_player);
     put_items[0].1[0].key = None;
     put_items[2].0[0].1 = AttributeValue::String("new-mixed".into());
-    let old_put = raw.put_many_exact(&put_items).await.unwrap();
+    let mut old_put = Vec::new();
+    for (attributes, players) in &put_items {
+        let result = raw.put_exact(attributes, players).await.unwrap();
+        old_put.push(
+            result
+                .item()
+                .expect("one baseline root")
+                .iid
+                .clone()
+                .unwrap(),
+        );
+    }
     let mut put_baseline = Vec::new();
     for iid in &old_put {
         let mut row = manager.get_by_iid_exact(iid).await.unwrap();
@@ -2029,9 +2058,16 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
     let key_id = AttributeId::new(&key).unwrap();
     let tag_id = AttributeId::new(&tag).unwrap();
     let member = RoleId::new(&relation_name, "member").unwrap();
-    let raw_person = DynamicEntityManager::new(&database, registry.entity(&person_name).unwrap());
-    let raw_relation =
-        DynamicRelationManager::new(&database, registry.relation(&relation_name).unwrap());
+    let raw_person = DynamicEntityManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        registry.entity(&person_name).unwrap(),
+    );
+    let raw_relation = DynamicRelationManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        registry.relation(&relation_name).unwrap(),
+    );
     let fields = |value: &str, count: usize| -> DynamicAttributeMap {
         std::iter::once((key.clone(), AttributeValue::String(value.into())))
             .chain(
@@ -2040,7 +2076,15 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
             )
             .collect()
     };
-    let baseline_iid = raw_person.insert(&fields("baseline", 300)).await.unwrap();
+    let baseline_iid = raw_person
+        .insert(&fields("baseline", 300))
+        .await
+        .unwrap()
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let baseline = raw_person.get_by_iid(&baseline_iid).await.unwrap().unwrap();
     let baseline_values = baseline
         .attributes
@@ -2071,6 +2115,11 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
             &role_inputs,
         )
         .await
+        .unwrap()
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
         .unwrap();
     let mut baseline_role = raw_relation
         .get_by_iid(&baseline_relation_iid)
@@ -2665,7 +2714,17 @@ select $root; distinct;
     );
     let mut old_put = Vec::new();
     for fields in &put_items {
-        old_put.push(looped.put(fields).await.unwrap());
+        old_put.push(
+            looped
+                .put(fields)
+                .await
+                .unwrap()
+                .item()
+                .expect("one written root")
+                .iid
+                .clone()
+                .unwrap(),
+        );
     }
     tx.commit().await.unwrap();
     let mut put_expected = Vec::new();
@@ -2891,8 +2950,11 @@ select $root; distinct;
             },
         ];
         let tx = database.transaction_context(TxType::Write).await.unwrap();
-        let looped =
-            DynamicEntityManager::with_transaction(tx.clone(), registry.entity(&person).unwrap());
+        let looped = DynamicEntityManager::with_registry_transaction(
+            tx.clone(),
+            installed.manager_registry().unwrap(),
+            registry.entity(&person).unwrap(),
+        );
         for update in &wide_updates {
             let fields = update
                 .fields
@@ -3160,7 +3222,17 @@ plays:
             );
             let mut old = Vec::new();
             for item in &items {
-                old.push(looped.put(item).await.unwrap());
+                old.push(
+                    looped
+                        .put(item)
+                        .await
+                        .unwrap()
+                        .item()
+                        .expect("one written root")
+                        .iid
+                        .clone()
+                        .unwrap(),
+                );
             }
             tx.commit().await.unwrap();
             let mut expected = Vec::new();
@@ -3299,7 +3371,15 @@ plays:
             registry.clone(),
             registry.entity("seq-person").unwrap(),
         );
-        let person_iid = person.put(&fields(&[("seq-key", "p")])).await.unwrap();
+        let person_iid = person
+            .put(&fields(&[("seq-key", "p")]))
+            .await
+            .unwrap()
+            .item()
+            .expect("one written root")
+            .iid
+            .clone()
+            .unwrap();
         let edges = DynamicRelationManager::from_registry(
             &database,
             registry.clone(),
@@ -3341,9 +3421,25 @@ plays:
             let mut loop_ids = Vec::new();
             for (fields, players) in &inputs {
                 loop_ids.push(if put_exact {
-                    looped.put_exact(fields, players).await.unwrap()
+                    looped
+                        .put_exact(fields, players)
+                        .await
+                        .unwrap()
+                        .item()
+                        .expect("one written root")
+                        .iid
+                        .clone()
+                        .unwrap()
                 } else {
-                    looped.insert(fields, players).await.unwrap()
+                    looped
+                        .insert(fields, players)
+                        .await
+                        .unwrap()
+                        .item()
+                        .expect("one written root")
+                        .iid
+                        .clone()
+                        .unwrap()
                 });
             }
             let mut expected = Vec::new();
@@ -3401,6 +3497,11 @@ plays:
                     std::slice::from_ref(&node),
                 )
                 .await
+                .unwrap()
+                .item()
+                .expect("one written root")
+                .iid
+                .clone()
                 .unwrap();
             let relation = TypeId::new(TypeKind::Relation, "seq-edge").unwrap();
             let key = AttributeId::new("seq-key").unwrap();
@@ -3461,7 +3562,15 @@ plays:
             (fields(&[("seq-key", "b")]), vec![prior("a")]),
             (fields(&[("seq-key", "c")]), vec![prior("b")]),
         ];
-        let a = edges.put(&chain[0].0, &chain[0].1).await.unwrap();
+        let a = edges
+            .put(&chain[0].0, &chain[0].1)
+            .await
+            .unwrap()
+            .item()
+            .expect("one written root")
+            .iid
+            .clone()
+            .unwrap();
         let tx = database.transaction_context(TxType::Write).await.unwrap();
         let looped = DynamicRelationManager::with_registry_transaction(
             tx.clone(),
@@ -3470,7 +3579,17 @@ plays:
         );
         let mut old = Vec::new();
         for (fields, players) in &chain {
-            old.push(looped.put(fields, players).await.unwrap());
+            old.push(
+                looped
+                    .put(fields, players)
+                    .await
+                    .unwrap()
+                    .item()
+                    .expect("one written root")
+                    .iid
+                    .clone()
+                    .unwrap(),
+            );
         }
         tx.commit().await.unwrap();
         assert_eq!(old[0], a);
@@ -3516,7 +3635,15 @@ plays:
             registry.clone(),
             registry.relation("seq-edge").unwrap(),
         );
-        looped.put(&conflict[0].0, &conflict[0].1).await.unwrap();
+        looped
+            .put(&conflict[0].0, &conflict[0].1)
+            .await
+            .unwrap()
+            .item()
+            .expect("one written root")
+            .iid
+            .clone()
+            .unwrap();
         let before = looped
             .put(&conflict[1].0, &conflict[1].1)
             .await
@@ -3627,17 +3754,41 @@ async fn wide_sequential_and_full_match_puts_preserve_loop_answers_live() {
             .collect::<std::collections::BTreeSet<_>>()
     };
     for literal in [false, true] {
-        let raw_note = DynamicEntityManager::new(&database, note.clone());
+        let raw_note = DynamicEntityManager::from_registry(
+            &database,
+            installed.manager_registry().unwrap(),
+            note.clone(),
+        );
         let full = values(&format!("full-{literal}"));
-        let hit = raw_note.insert(&full).await.unwrap();
+        let hit = raw_note
+            .insert(&full)
+            .await
+            .unwrap()
+            .item()
+            .expect("one written root")
+            .iid
+            .clone()
+            .unwrap();
         let mut near = full.clone();
         near[299] = tag(format!("near-{literal}"));
         let items = vec![full.clone(), near.clone()];
         let tx = database.transaction_context(TxType::Write).await.unwrap();
-        let looped = DynamicEntityManager::with_transaction(tx.clone(), note.clone());
+        let looped = DynamicEntityManager::with_registry_transaction(
+            tx.clone(),
+            installed.manager_registry().unwrap(),
+            note.clone(),
+        );
         let mut expected = Vec::new();
         for fields in &items {
-            let iid = looped.put(fields).await.unwrap();
+            let iid = looped
+                .put(fields)
+                .await
+                .unwrap()
+                .item()
+                .expect("one written root")
+                .iid
+                .clone()
+                .unwrap();
             expected.push((
                 iid.clone(),
                 normalized(looped.get_by_iid(&iid).await.unwrap().unwrap().attributes),
@@ -3691,9 +3842,21 @@ async fn wide_sequential_and_full_match_puts_preserve_loop_answers_live() {
             "partial-key".to_owned(),
             AttributeValue::String(format!("overlap-{literal}")),
         );
-        let raw_keyed = DynamicEntityManager::new(&database, keyed.clone());
+        let raw_keyed = DynamicEntityManager::from_registry(
+            &database,
+            installed.manager_registry().unwrap(),
+            keyed.clone(),
+        );
         let initial = vec![key.clone(), tag("old".into())];
-        let iid = raw_keyed.insert(&initial).await.unwrap();
+        let iid = raw_keyed
+            .insert(&initial)
+            .await
+            .unwrap()
+            .item()
+            .expect("one written root")
+            .iid
+            .clone()
+            .unwrap();
         let mut wide = values(&format!("overlap-{literal}"));
         wide.push(key.clone());
         let rows = vec![
@@ -3731,7 +3894,11 @@ async fn wide_sequential_and_full_match_puts_preserve_loop_answers_live() {
         );
         raw_keyed.update(Some(&iid), &initial).await.unwrap();
         let tx = database.transaction_context(TxType::Write).await.unwrap();
-        let looped = DynamicEntityManager::with_transaction(tx.clone(), keyed.clone());
+        let looped = DynamicEntityManager::with_registry_transaction(
+            tx.clone(),
+            installed.manager_registry().unwrap(),
+            keyed.clone(),
+        );
         for fields in &rows {
             looped.update(Some(&iid), fields).await.unwrap();
         }
@@ -3864,10 +4031,19 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
     let registry = installed.manager_registry().unwrap();
     let person = registry.entity("guard-person").unwrap();
     let relation = registry.relation("guard-relation").unwrap();
-    let iid = DynamicEntityManager::new(&database, person)
-        .insert(&vec![])
-        .await
-        .unwrap();
+    let iid = DynamicEntityManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        person,
+    )
+    .insert(&vec![])
+    .await
+    .unwrap()
+    .item()
+    .expect("one written root")
+    .iid
+    .clone()
+    .unwrap();
     let players = [iid.as_str(), "0xffff"]
         .map(|iid| DynamicRolePlayerInput {
             role_name: "member".into(),
@@ -3884,16 +4060,33 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
             )
         })
         .collect();
-    let raw = DynamicRelationManager::new(&database, relation.clone());
+    let raw = DynamicRelationManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        relation.clone(),
+    );
     let tx = database.transaction_context(TxType::Write).await.unwrap();
-    let looped = DynamicRelationManager::with_transaction(tx.clone(), relation.clone());
+    let looped = DynamicRelationManager::with_registry_transaction(
+        tx.clone(),
+        installed.manager_registry().unwrap(),
+        relation.clone(),
+    );
     assert!(looped.put(&fields, &players).await.is_err());
     tx.rollback().await.unwrap();
     assert_eq!(raw.count().await.unwrap(), 0);
-    let other = DynamicEntityManager::new(&database, registry.entity("guard-person").unwrap())
-        .insert(&vec![])
-        .await
-        .unwrap();
+    let other = DynamicEntityManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        registry.entity("guard-person").unwrap(),
+    )
+    .insert(&vec![])
+    .await
+    .unwrap()
+    .item()
+    .expect("one written root")
+    .iid
+    .clone()
+    .unwrap();
     let valid_players = [iid.as_str(), other.as_str()]
         .map(|iid| DynamicRolePlayerInput {
             role_name: "member".into(),
@@ -4059,10 +4252,19 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
     let tag = AttributeId::new("snapshot-tag").unwrap();
     let anchor = RoleId::new("snapshot-edge", "anchor").unwrap();
     let prior = RoleId::new("snapshot-edge", "prior").unwrap();
-    let player = DynamicEntityManager::new(&database, registry.entity("snapshot-person").unwrap())
-        .insert(&vec![])
-        .await
-        .unwrap();
+    let player = DynamicEntityManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        registry.entity("snapshot-person").unwrap(),
+    )
+    .insert(&vec![])
+    .await
+    .unwrap()
+    .item()
+    .expect("one written root")
+    .iid
+    .clone()
+    .unwrap();
     let create = |value: &str, width: usize, predecessor: Option<ProjectedReference>| {
         let mut fields = vec![(
             field(&edge, &key),
@@ -4103,7 +4305,11 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
         .into_items()
         .pop()
         .expect("one written root");
-    let raw = DynamicRelationManager::new(&database, registry.relation("snapshot-edge").unwrap());
+    let raw = DynamicRelationManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        registry.relation("snapshot-edge").unwrap(),
+    );
     let mut failures = Vec::new();
     for literal in [false, true] {
         let (counted, log) = counted_connection(&database, literal).await;
@@ -4285,19 +4491,29 @@ async fn generic_relation_updates_keep_prior_row_visibility_and_snapshots_live()
     database.execute_raw("define attribute mutable-lookup, value string; entity mutable-person, plays mutable-edge:anchor; relation mutable-edge, owns mutable-lookup @card(0..1), relates anchor @card(0..1), relates prior @card(0..1), plays mutable-edge:prior;", TxType::Schema).await.unwrap();
     let registry = installed.manager_registry().unwrap();
     let descriptor = registry.relation("mutable-edge").unwrap();
-    let raw = DynamicRelationManager::new(&database, descriptor.clone());
+    let raw = DynamicRelationManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        descriptor.clone(),
+    );
     let fields = |value: &str| -> DynamicAttributeMap {
         vec![(
             "mutable-lookup".into(),
             type_bridge_orm::AttributeValue::String(value.into()),
         )]
     };
-    let person = type_bridge_orm::_manager::DynamicEntityManager::new(
+    let person = type_bridge_orm::_manager::DynamicEntityManager::from_registry(
         &database,
+        installed.manager_registry().unwrap(),
         registry.entity("mutable-person").unwrap(),
     )
     .insert(&vec![])
     .await
+    .unwrap()
+    .item()
+    .expect("one written root")
+    .iid
+    .clone()
     .unwrap();
     let anchor = || DynamicRolePlayerInput {
         role_name: "anchor".into(),
@@ -4305,8 +4521,24 @@ async fn generic_relation_updates_keep_prior_row_visibility_and_snapshots_live()
         iid: Some(person.clone()),
         key: None,
     };
-    let first = raw.insert(&fields("old"), &[anchor()]).await.unwrap();
-    let second = raw.insert(&fields("second"), &[anchor()]).await.unwrap();
+    let first = raw
+        .insert(&fields("old"), &[anchor()])
+        .await
+        .unwrap()
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
+    let second = raw
+        .insert(&fields("second"), &[anchor()])
+        .await
+        .unwrap()
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let player = |value: &str| DynamicRolePlayerInput {
         role_name: "prior".into(),
         player_type_name: "mutable-edge".into(),
@@ -4348,12 +4580,16 @@ async fn generic_relation_updates_keep_prior_row_visibility_and_snapshots_live()
                 ],
             };
             let tx = database.transaction_context(TxType::Write).await.unwrap();
-            let looped = DynamicRelationManager::with_transaction(tx.clone(), descriptor.clone());
+            let looped = DynamicRelationManager::with_registry_transaction(
+                tx.clone(),
+                installed.manager_registry().unwrap(),
+                descriptor.clone(),
+            );
             let mut expected = Vec::new();
             let mut old_failed = false;
             for (iid, fields, players) in &items {
                 match looped.update_and_get_exact(iid, fields, players).await {
-                    Ok(row) => expected.push(row),
+                    Ok(rows) => expected.push(rows.item().expect("one updated root").clone()),
                     Err(_) => {
                         old_failed = true;
                         break;
@@ -4492,7 +4728,11 @@ async fn wide_relation_match_put_intersects_all_player_probe_chunks_live() {
         })
         .collect::<Vec<_>>();
     let descriptor = registry.relation("probe-relation").unwrap();
-    let raw = DynamicRelationManager::new(&database, descriptor.clone());
+    let raw = DynamicRelationManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        descriptor.clone(),
+    );
     let full = players[..100].to_vec();
     let mut near = full.clone();
     near[99] = players[100].clone();
@@ -4509,7 +4749,15 @@ async fn wide_relation_match_put_intersects_all_player_probe_chunks_live() {
             .collect::<std::collections::BTreeSet<_>>()
     };
     for literal in [false, true] {
-        let hit = raw.insert(&vec![], &full).await.unwrap();
+        let hit = raw
+            .insert(&vec![], &full)
+            .await
+            .unwrap()
+            .item()
+            .expect("one written root")
+            .iid
+            .clone()
+            .unwrap();
         let (counted, log) = counted_connection(&database, literal).await;
         let manager =
             DynamicRelationManager::from_registry(&counted, registry.clone(), descriptor.clone());
@@ -4597,7 +4845,11 @@ async fn generic_manager_query_limits_choose_full_plans_or_existing_pieces_live(
     database.execute_raw("define attribute configured-tag, value string; entity configured-note, owns configured-tag @card(0..);", TxType::Schema).await.unwrap();
     let registry = installed.manager_registry().unwrap();
     let descriptor = registry.entity("configured-note").unwrap();
-    let raw = DynamicEntityManager::new(&database, descriptor.clone());
+    let raw = DynamicEntityManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        descriptor.clone(),
+    );
     for literal in [false, true] {
         for (bindings, terms) in [(256, 256), (1024, 256), (256, 512), (1024, 512)] {
             // Reuse identical values so deleted fixtures do not accumulate
@@ -4621,7 +4873,15 @@ async fn generic_manager_query_limits_choose_full_plans_or_existing_pieces_live(
                     )
                 })
                 .collect::<Vec<_>>();
-            let hit = raw.insert(&fields).await.unwrap();
+            let hit = raw
+                .insert(&fields)
+                .await
+                .unwrap()
+                .item()
+                .expect("one written root")
+                .iid
+                .clone()
+                .unwrap();
             *log.lock().unwrap() = DispatchLog::default();
             eprintln!("query policy literal={literal} bindings={bindings} terms={terms}: full hit");
             let actual = manager
@@ -5216,7 +5476,11 @@ async fn reduced_full_match_equals_stepwise_candidates_live() {
         .unwrap()
         .entity("reduced-note")
         .unwrap();
-    let direct = DynamicEntityManager::new(&database, descriptor);
+    let direct = DynamicEntityManager::from_registry(
+        &database,
+        installed.manager_registry().unwrap(),
+        descriptor,
+    );
     let full = (0..300)
         .map(|index| format!("value-{index:04}"))
         .collect::<Vec<_>>();
@@ -5228,6 +5492,11 @@ async fn reduced_full_match_equals_stepwise_candidates_live() {
                 .collect(),
         )
         .await
+        .unwrap()
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
         .unwrap();
     for case in ["hit", "last-near-miss", "absent"] {
         let mut wanted = full.clone();
@@ -5445,7 +5714,11 @@ async fn mixed_wide_full_match_puts_use_static_probes_and_rollback_last_piece_li
             .collect::<std::collections::BTreeSet<_>>()
     };
     for literal in [false, true] {
-        let raw = DynamicEntityManager::new(&database, note.clone());
+        let raw = DynamicEntityManager::from_registry(
+            &database,
+            installed.manager_registry().unwrap(),
+            note.clone(),
+        );
         let full = (0..100)
             .flat_map(|index| {
                 [
@@ -5461,7 +5734,15 @@ async fn mixed_wide_full_match_puts_use_static_probes_and_rollback_last_piece_li
                 ]
             })
             .collect::<DynamicAttributeMap>();
-        let hit = raw.insert(&full).await.unwrap();
+        let hit = raw
+            .insert(&full)
+            .await
+            .unwrap()
+            .item()
+            .expect("one written root")
+            .iid
+            .clone()
+            .unwrap();
         let mut near = full.clone();
         near[299] = ("mixed-number".into(), AttributeValue::Long(10_000));
         let mut repeated = full.clone();
@@ -5506,4 +5787,246 @@ async fn mixed_wide_full_match_puts_use_static_probes_and_rollback_last_piece_li
         );
     }
     database.delete_database().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires the assigned live TypeDB profile"]
+async fn dynamic_nonkey_single_write_results_follow_typeql_fanout_and_role_cardinality_live() {
+    use type_bridge_orm::_dynamic::DynamicRolePlayerInput;
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    use type_bridge_orm::AttributeValue;
+    let database = setup_db().await;
+    if !server_supports_v2_conformance(&database) {
+        database.delete_database().await.unwrap();
+        return;
+    }
+    let yaml = r#"format: typebridge.schema/v2
+attributes:
+  fanout-key: { value: string }
+  fanout-selector: { value: string }
+entities:
+  fanout-person:
+    owns:
+      fanout-key: { key: true }
+      fanout-selector: { card: { min: 0, max: 1 } }
+relations:
+  fanout-edge:
+    relates:
+      member: { card: 1 }
+plays:
+  fanout-person:
+    fanout-edge: [member]
+"#;
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("dynamic-fanout.yaml").unwrap(), yaml)])
+            .unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    let projection = project(
+        &resolved,
+        BindingTarget::Python,
+        &ProjectionConfig::python(),
+        &[ProjectionHandler::python_v1()],
+        &[],
+    )
+    .unwrap();
+    let context = type_bridge_schema::ManagedDeltaContext::new(
+        type_bridge_contract::managed_scope::ManagedScopeId::new("dynamic-fanout").unwrap(),
+        profile,
+        type_bridge_schema::schema_authority_capability_vocabulary(),
+    );
+    let authority = type_bridge_schema::build_schema_authority(
+        &declared,
+        declared.required_capabilities(),
+        &context,
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(projection)
+        .unwrap()
+        .with_schema_authority(&authority);
+    let registry = installed.manager_registry().unwrap();
+    database.execute_raw("define attribute fanout-key, value string; attribute fanout-selector, value string; entity fanout-person, owns fanout-key @key, owns fanout-selector @card(0..1), plays fanout-edge:member; relation fanout-edge, relates member @card(1);", TxType::Schema).await.unwrap();
+    let people = DynamicEntityManager::from_registry(
+        &database,
+        Arc::clone(&registry),
+        registry.entity("fanout-person").unwrap(),
+    );
+    let mut player_iids = Vec::new();
+    for key in ["alice", "bob"] {
+        let result = people
+            .insert(&vec![
+                ("fanout-key".into(), AttributeValue::String(key.into())),
+                (
+                    "fanout-selector".into(),
+                    AttributeValue::String("shared".into()),
+                ),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(result.count(), 1);
+        player_iids.push(result.item().unwrap().iid.clone().unwrap());
+    }
+    let all_edges = DynamicRelationManager::from_registry(
+        &database,
+        Arc::clone(&registry),
+        registry.relation("fanout-edge").unwrap(),
+    );
+    let player = |iid: Option<String>, key: Option<(&str, &str)>| DynamicRolePlayerInput {
+        role_name: "member".into(),
+        player_type_name: "fanout-person".into(),
+        iid,
+        key: key.map(|(field, value)| (field.into(), AttributeValue::String(value.into()))),
+    };
+    for literal in [false, true] {
+        let (counted, log) = counted_connection(&database, literal).await;
+        for borrowed in [false, true] {
+            let before = all_edges.count().await.unwrap();
+            *log.lock().unwrap() = DispatchLog::default();
+            let tx = if borrowed {
+                Some(counted.transaction_context(TxType::Write).await.unwrap())
+            } else {
+                None
+            };
+            let mut manager = if let Some(tx) = &tx {
+                DynamicRelationManager::with_registry_transaction(
+                    tx.clone(),
+                    Arc::clone(&registry),
+                    registry.relation("fanout-edge").unwrap(),
+                )
+            } else {
+                DynamicRelationManager::from_registry(
+                    &counted,
+                    Arc::clone(&registry),
+                    registry.relation("fanout-edge").unwrap(),
+                )
+            };
+            if literal {
+                manager = manager.literal_values();
+            }
+            let result = manager
+                .insert(
+                    &vec![],
+                    &[player(None, Some(("fanout-selector", "shared")))],
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.count(), 2);
+            assert!(result.item().is_none());
+            assert_eq!(
+                result
+                    .items()
+                    .iter()
+                    .map(|row| row.iid.clone().unwrap())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                2
+            );
+            assert_eq!(
+                result
+                    .items()
+                    .iter()
+                    .map(|row| {
+                        assert_eq!(row.role_players.len(), 1);
+                        row.role_players[0].player_iid.clone().unwrap()
+                    })
+                    .collect::<std::collections::BTreeSet<_>>(),
+                player_iids.iter().cloned().collect()
+            );
+            {
+                let observed = log.lock().unwrap();
+                assert_eq!(observed.statements.len(), 1);
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!(observed.commits, usize::from(!borrowed));
+                assert_eq!(observed.rollbacks, 0);
+                for forbidden in ["count(", "limit 1", " != "] {
+                    assert!(!observed.statements[0].contains(forbidden));
+                }
+            }
+            if let Some(tx) = tx {
+                tx.commit_sdk().await.unwrap();
+            }
+            assert_eq!(log.lock().unwrap().commits, 1);
+            assert_eq!(all_edges.count().await.unwrap(), before + 2);
+            eprintln!(
+                "DYNAMIC_NONKEY_FANOUT literal={literal} borrowed={borrowed} count=2 statements=1 transactions=1"
+            );
+        }
+        let manager = DynamicRelationManager::from_registry(
+            &counted,
+            Arc::clone(&registry),
+            registry.relation("fanout-edge").unwrap(),
+        );
+        let manager = if literal {
+            manager.literal_values()
+        } else {
+            manager
+        };
+        for key_alias in [false, true] {
+            let first = player(Some(player_iids[0].clone()), None);
+            let second = if key_alias {
+                player(None, Some(("fanout-key", "alice")))
+            } else {
+                first.clone()
+            };
+            let players = [first, second];
+            for operation in ["insert", "put_exact", "update_exact"] {
+                let seed = manager
+                    .insert(&vec![], &[player(Some(player_iids[0].clone()), None)])
+                    .await
+                    .unwrap();
+                let iid = seed.item().unwrap().iid.clone().unwrap();
+                *log.lock().unwrap() = DispatchLog::default();
+                let result = match operation {
+                    "insert" => manager.insert(&vec![], &players).await,
+                    "put_exact" => manager.put_exact(&vec![], &players).await,
+                    _ => manager.update_exact(&iid, &vec![], &players).await,
+                }
+                .unwrap();
+                assert_eq!(result.count(), 1);
+                assert_eq!(result.item().unwrap().role_players.len(), 1);
+                assert_eq!(
+                    result.item().unwrap().role_players[0].player_iid.as_deref(),
+                    Some(player_iids[0].as_str())
+                );
+                let observed = log.lock().unwrap();
+                assert_eq!(observed.statements.len(), 1);
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+            }
+        }
+        let before = all_edges.count().await.unwrap();
+        let provider_error = database.execute_raw(&format!("match $a isa fanout-person, iid {}; $b isa fanout-person, iid {}; insert $r isa fanout-edge, links (member: $a, member: $b);", player_iids[0], player_iids[1]), TxType::Write).await.unwrap_err();
+        assert!(
+            provider_error
+                .to_string()
+                .to_lowercase()
+                .contains("cardinality"),
+            "real TypeDB role cardinality refusal: {provider_error}"
+        );
+        assert_eq!(all_edges.count().await.unwrap(), before);
+        *log.lock().unwrap() = DispatchLog::default();
+        assert!(
+            manager
+                .insert(
+                    &vec![],
+                    &[
+                        player(Some(player_iids[0].clone()), None),
+                        player(Some(player_iids[1].clone()), None)
+                    ]
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(log.lock().unwrap().statements.len(), 1);
+        assert_eq!(all_edges.count().await.unwrap(), before);
+        let missing = player(None, Some(("fanout-selector", "missing")));
+        *log.lock().unwrap() = DispatchLog::default();
+        assert!(manager.insert(&vec![], &[missing]).await.is_err());
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+    }
+    database.delete_database().await.unwrap();
+    database.close().unwrap();
 }

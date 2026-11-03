@@ -417,15 +417,6 @@ impl TransactionContext {
         tx.query(typeql).await
     }
 
-    /// Execute a canonical provider-answer query for binding-neutral CRUD.
-    #[doc(hidden)]
-    pub(crate) async fn query_canonical(&self, typeql: &str) -> Result<QueryResult> {
-        self.check_schema_annotation_support(typeql)?;
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.query_canonical(typeql).await
-    }
-
     /// Stream a prepared read while preserving the caller's transaction lifecycle.
     pub(crate) async fn dispatch_read_plan_bounded(
         &self,

@@ -15,7 +15,7 @@
 //! let db = Arc::new(Database::connect("localhost:1729", "mydb", "admin", "password").await?);
 //! let db2 = Arc::clone(&db);
 //! tokio::spawn(async move {
-//!     let manager = EntityManager::<Person>::new(&db2);
+//!     let manager = EntityManager::<Person>::from_registry(&db2, registry)?;
 //!     manager.all().await.unwrap();
 //! });
 //! ```
@@ -948,21 +948,6 @@ impl Database {
             .get()
             .map(|answer| (*answer).clone())
             .map_err(|error| crate::error::OrmError::Transaction(error.to_string()))
-    }
-
-    pub(crate) async fn execute_canonical(
-        &self,
-        typeql: &str,
-        tx_type: TxType,
-    ) -> Result<QueryResult> {
-        if tx_type == TxType::Schema {
-            self.check_schema_annotation_support(typeql)?;
-        }
-        self.execute_staged(
-            super::staged::StagedQuery::new(typeql, tx_type != TxType::Read).canonical(),
-            tx_type,
-        )
-        .await
     }
 
     /// Execute a `given`-stage TypeQL query over input rows, auto-managing

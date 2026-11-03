@@ -8,6 +8,7 @@ use crate::_dynamic::{
     DynamicRelationIdentity, DynamicRelationRow, DynamicRolePlayerInput, DynamicSort,
 };
 use crate::_registry::DescriptorRegistry;
+use crate::WriteResult;
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
 use crate::match_request::{HydratedThing, MatchResult, SlotValue};
@@ -17,9 +18,8 @@ use crate::plan_builders::manager::{ManagerPlans, ManagerRead, ReadTerminal};
 use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
 use crate::query_plan_exec::PlanAnswer;
 use crate::session::backend::AnswerCancellation;
-use crate::session::backend::{GivenRowsSpec, GivenValue, QueryResult, TxType};
+use crate::session::backend::{QueryResult, TxType};
 use crate::session::{Database, TransactionContext};
-use crate::value::AttributeValue;
 
 use super::hydration::{
     coalesce_dynamic_relation_by_iid, coalesce_dynamic_relations, extract_count,
@@ -76,53 +76,11 @@ impl<'db> DynamicEntityManager<'db> {
         self
     }
 
-    fn sharing_plans(mut self, plans: &Option<ManagerPlans>) -> Self {
-        self.plans = plans.clone();
-        self
-    }
-
     pub(crate) fn in_transaction(&self, tx: TransactionContext) -> Self {
-        Self::with_transaction(tx, Arc::clone(&self.descriptor)).sharing_plans(&self.plans)
-    }
-
-    /// Create a dynamic entity manager from a registered descriptor.
-    pub fn new(db: &'db Database, descriptor: Arc<EntityDescriptor>) -> Self {
-        Self {
-            target: DynamicExecutionTarget::Database(db),
-            descriptor,
-            plans: None,
-        }
-    }
-
-    /// Create a dynamic entity manager bound to an existing transaction context.
-    pub fn with_transaction(tx: TransactionContext, descriptor: Arc<EntityDescriptor>) -> Self {
         Self {
             target: DynamicExecutionTarget::Transaction(tx),
-            descriptor,
-            plans: None,
-        }
-    }
-
-    /// Create a manager whose provider answers use canonical contract encoding.
-    #[doc(hidden)]
-    pub fn new_canonical(db: &'db Database, descriptor: Arc<EntityDescriptor>) -> Self {
-        Self {
-            target: DynamicExecutionTarget::CanonicalDatabase(db),
-            descriptor,
-            plans: None,
-        }
-    }
-
-    /// Bind a manager to an existing transaction using canonical answers.
-    #[doc(hidden)]
-    pub fn with_canonical_transaction(
-        tx: TransactionContext,
-        descriptor: Arc<EntityDescriptor>,
-    ) -> Self {
-        Self {
-            target: DynamicExecutionTarget::CanonicalTransaction(tx),
-            descriptor,
-            plans: None,
+            descriptor: Arc::clone(&self.descriptor),
+            plans: self.plans.clone(),
         }
     }
 
@@ -236,27 +194,13 @@ impl<'db> DynamicEntityManager<'db> {
             .await
     }
 
-    /// Insert one dynamic entity and return the assigned IID.
-    pub async fn insert(&self, attributes: &DynamicAttributeMap) -> Result<String> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.insert(&self.descriptor.type_name, attributes, &[], false, false)?;
-            return self
-                .target
-                .write_plan(&plan, |answer| {
-                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
-                })
-                .await;
-        }
-
-        let typeql = query_builder::build_dynamic_entity_insert_with_iid(
-            &self.descriptor,
-            attributes,
-            "$e",
-        )?;
-        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC INSERT");
-        // raw remainder: no registry authority; removed in 06
-        let result = self.target.execute(&typeql, TxType::Write).await?;
-        extract_insert_iid(&self.descriptor.type_name, result)
+    /// Insert an entity input and return every complete hydrated root.
+    pub async fn insert(
+        &self,
+        attributes: &DynamicAttributeMap,
+    ) -> Result<WriteResult<DynamicEntityRow>> {
+        self.write_mapped(WriteKind::Insert, None, attributes, Ok)
+            .await
     }
 
     /// Insert multiple dynamic entities in one Rust transaction.
@@ -264,23 +208,13 @@ impl<'db> DynamicEntityManager<'db> {
         self.write_many(items, DynamicWriteOperation::Insert).await
     }
 
-    /// Put one dynamic entity and return its IID.
-    pub async fn put(&self, attributes: &DynamicAttributeMap) -> Result<String> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.entity_put(&self.descriptor.type_name, attributes, false)?;
-            return self
-                .target
-                .write_plan(&plan, |answer| {
-                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
-                })
-                .await;
-        }
-
-        let typeql = query_builder::build_dynamic_entity_put(&self.descriptor, attributes, "$e")?;
-        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC PUT");
-        // raw remainder: no registry authority; removed in 06
-        let result = self.target.execute(&typeql, TxType::Write).await?;
-        extract_insert_iid(&self.descriptor.type_name, result)
+    /// Put an entity input and return every complete hydrated root.
+    pub async fn put(
+        &self,
+        attributes: &DynamicAttributeMap,
+    ) -> Result<WriteResult<DynamicEntityRow>> {
+        self.write_mapped(WriteKind::PartialPut, None, attributes, Ok)
+            .await
     }
 
     /// Put multiple dynamic entities in one Rust transaction.
@@ -289,51 +223,12 @@ impl<'db> DynamicEntityManager<'db> {
     }
 
     /// Insert or update one exact-type entity without reusing a subtype.
-    pub async fn put_exact(&self, attributes: &DynamicAttributeMap) -> Result<String> {
-        match &self.target {
-            DynamicExecutionTarget::Database(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = DynamicEntityManager::with_transaction(
-                    tx.clone(),
-                    Arc::clone(&self.descriptor),
-                )
-                .sharing_plans(&self.plans);
-                let iid = match manager.put_exact_in_transaction(attributes).await {
-                    Ok(iid) => iid,
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        return Err(error);
-                    }
-                };
-                commit_manager(&tx, &self.plans).await?;
-                Ok(iid)
-            }
-            DynamicExecutionTarget::Transaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                self.put_exact_in_transaction(attributes).await
-            }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = DynamicEntityManager::with_canonical_transaction(
-                    tx.clone(),
-                    Arc::clone(&self.descriptor),
-                )
-                .sharing_plans(&self.plans);
-                let iid = match manager.put_exact_in_transaction(attributes).await {
-                    Ok(iid) => iid,
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        return Err(error);
-                    }
-                };
-                commit_manager(&tx, &self.plans).await?;
-                Ok(iid)
-            }
-            DynamicExecutionTarget::CanonicalTransaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                self.put_exact_in_transaction(attributes).await
-            }
-        }
+    pub async fn put_exact(
+        &self,
+        attributes: &DynamicAttributeMap,
+    ) -> Result<WriteResult<DynamicEntityRow>> {
+        self.write_mapped(WriteKind::Put, None, attributes, Ok)
+            .await
     }
 
     /// Insert or update exact-type entities in input order within one transaction.
@@ -342,127 +237,30 @@ impl<'db> DynamicEntityManager<'db> {
             return Ok(vec![]);
         }
 
-        if let Some(plans) = &self.plans {
-            return self.write_many_by_plan(plans, items, WriteKind::Put).await;
-        }
-        match &self.target {
-            DynamicExecutionTarget::Database(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = DynamicEntityManager::with_transaction(
-                    tx.clone(),
-                    Arc::clone(&self.descriptor),
-                )
-                .sharing_plans(&self.plans);
-                let mut iids = Vec::with_capacity(items.len());
-                for item in items {
-                    match manager.put_exact_in_transaction(item).await {
-                        Ok(iid) => iids.push(iid),
-                        Err(error) => {
-                            let _ = tx.rollback().await;
-                            return Err(error);
-                        }
-                    }
-                }
-                commit_manager(&tx, &self.plans).await?;
-                Ok(iids)
-            }
-            DynamicExecutionTarget::Transaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                let mut iids = Vec::with_capacity(items.len());
-                for item in items {
-                    iids.push(self.put_exact_in_transaction(item).await?);
-                }
-                Ok(iids)
-            }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = DynamicEntityManager::with_canonical_transaction(
-                    tx.clone(),
-                    Arc::clone(&self.descriptor),
-                )
-                .sharing_plans(&self.plans);
-                let mut iids = Vec::with_capacity(items.len());
-                for item in items {
-                    match manager.put_exact_in_transaction(item).await {
-                        Ok(iid) => iids.push(iid),
-                        Err(error) => {
-                            let _ = tx.rollback().await;
-                            return Err(error);
-                        }
-                    }
-                }
-                commit_manager(&tx, &self.plans).await?;
-                Ok(iids)
-            }
-            DynamicExecutionTarget::CanonicalTransaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                let mut iids = Vec::with_capacity(items.len());
-                for item in items {
-                    iids.push(self.put_exact_in_transaction(item).await?);
-                }
-                Ok(iids)
-            }
-        }
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        return self.write_many_by_plan(plans, items, WriteKind::Put).await;
     }
 
     /// Update one dynamic entity's non-key attributes.
-    pub async fn update(&self, iid: Option<&str>, attributes: &DynamicAttributeMap) -> Result<()> {
-        if let Some(plans) = &self.plans {
-            if let Some(plan) =
-                plans.update(&self.descriptor.type_name, iid, attributes, &[], false)?
-            {
-                self.target.write_plan(&plan, Ok).await?;
-            }
-            return Ok(());
-        }
-
-        let typeql =
-            query_builder::build_dynamic_entity_update(&self.descriptor, iid, attributes, "$e")?;
-        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC UPDATE");
-        // raw remainder: no registry authority; removed in 06
-        self.target.execute(&typeql, TxType::Write).await?;
-        Ok(())
+    pub async fn update(
+        &self,
+        iid: Option<&str>,
+        attributes: &DynamicAttributeMap,
+    ) -> Result<WriteResult<DynamicEntityRow>> {
+        self.write_mapped(WriteKind::PartialUpdate, iid, attributes, Ok)
+            .await
     }
 
     /// Completely replace non-key ownership on one exact-type entity identified by a mandatory
     /// canonical IID; omitted optional and multivalue values are removed.
-    pub async fn update_exact(&self, iid: &str, attributes: &DynamicAttributeMap) -> Result<()> {
-        if let Some(plans) = &self.plans {
-            if let Some(plan) =
-                plans.update(&self.descriptor.type_name, Some(iid), attributes, &[], true)?
-            {
-                self.target.write_plan(&plan, Ok).await?;
-            }
-            return Ok(());
-        }
-
+    pub async fn update_exact(
+        &self,
+        iid: &str,
+        attributes: &DynamicAttributeMap,
+    ) -> Result<WriteResult<DynamicEntityRow>> {
         crate::_dynamic::validate_exact_iid(&self.descriptor.type_name, iid)?;
-        for (name, _) in attributes {
-            if self.descriptor.attribute(name).is_none() {
-                return Err(OrmError::QueryExecution(format!(
-                    "Dynamic exact update for {} references unknown attribute {name}",
-                    self.descriptor.type_name
-                )));
-            }
-        }
-        if self
-            .descriptor
-            .owned_attributes
-            .iter()
-            .all(|attribute| attribute.is_key())
-        {
-            return Ok(());
-        }
-        let typeql = query_builder::build_dynamic_entity_update_exact(
-            &self.descriptor,
-            iid,
-            attributes,
-            "$e",
-        )?;
-        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT UPDATE");
-        // raw remainder: no registry authority; removed in 06
-        self.target.execute(&typeql, TxType::Write).await?;
-        Ok(())
+        self.write_mapped(WriteKind::Update, Some(iid), attributes, Ok)
+            .await
     }
 
     /// Replace and rehydrate one exact entity in the same write transaction.
@@ -470,52 +268,8 @@ impl<'db> DynamicEntityManager<'db> {
         &self,
         iid: &str,
         attributes: &DynamicAttributeMap,
-    ) -> Result<DynamicEntityRow> {
-        match &self.target {
-            DynamicExecutionTarget::Database(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                    .sharing_plans(&self.plans);
-                match manager
-                    .update_and_get_exact_in_transaction(iid, attributes)
-                    .await
-                {
-                    Ok(row) => {
-                        commit_manager(&tx, &self.plans).await?;
-                        Ok(row)
-                    }
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        Err(error)
-                    }
-                }
-            }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                        .sharing_plans(&self.plans);
-                match manager
-                    .update_and_get_exact_in_transaction(iid, attributes)
-                    .await
-                {
-                    Ok(row) => {
-                        commit_manager(&tx, &self.plans).await?;
-                        Ok(row)
-                    }
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        Err(error)
-                    }
-                }
-            }
-            DynamicExecutionTarget::Transaction(tx)
-            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                self.update_and_get_exact_in_transaction(iid, attributes)
-                    .await
-            }
-        }
+    ) -> Result<WriteResult<DynamicEntityRow>> {
+        self.update_exact(iid, attributes).await
     }
 
     /// Replace and rehydrate exact entities atomically in input order.
@@ -529,8 +283,7 @@ impl<'db> DynamicEntityManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                    .sharing_plans(&self.plans);
+                let manager = self.in_transaction(tx.clone());
                 match manager
                     .update_many_and_get_exact_in_transaction(items)
                     .await
@@ -545,27 +298,8 @@ impl<'db> DynamicEntityManager<'db> {
                     }
                 }
             }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                        .sharing_plans(&self.plans);
-                match manager
-                    .update_many_and_get_exact_in_transaction(items)
-                    .await
-                {
-                    Ok(rows) => {
-                        commit_manager(&tx, &self.plans).await?;
-                        Ok(rows)
-                    }
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        Err(error)
-                    }
-                }
-            }
-            DynamicExecutionTarget::Transaction(tx)
-            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+
+            DynamicExecutionTarget::Transaction(tx) => {
                 ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
                 self.update_many_and_get_exact_in_transaction(items).await
             }
@@ -765,7 +499,13 @@ impl<'db> DynamicEntityManager<'db> {
                 &[],
                 ReadTerminal::Fetch,
             )?;
-            let rows = plan_fetch(&self.target, plans, program, plan_entity_row).await?;
+            let rows = plan_fetch(&self.target, plans, program, |registry, thing| {
+                if !iid.eq_ignore_ascii_case(thing.concept_id().as_str()) {
+                    return Err(snapshot_error(&self.descriptor.type_name));
+                }
+                plan_entity_row(registry, thing)
+            })
+            .await?;
             return match rows.len() {
                 0 => Ok(None),
                 1 => Ok(rows.into_iter().next()),
@@ -807,7 +547,13 @@ impl<'db> DynamicEntityManager<'db> {
                 &[],
                 ReadTerminal::Fetch,
             )?;
-            let rows = plan_fetch(&self.target, plans, program, plan_entity_row).await?;
+            let rows = plan_fetch(&self.target, plans, program, |registry, thing| {
+                if !iid.eq_ignore_ascii_case(thing.concept_id().as_str()) {
+                    return Err(snapshot_error(&self.descriptor.type_name));
+                }
+                plan_entity_row(registry, thing)
+            })
+            .await?;
             return match rows.len() {
                 0 => Ok(None),
                 1 => Ok(rows.into_iter().next()),
@@ -1146,32 +892,16 @@ impl<'db> DynamicEntityManager<'db> {
 
     /// Delete one entity by IID.
     pub async fn delete_by_iid(&self, iid: &str) -> Result<()> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.delete(&self.descriptor.type_name, iid, false, false)?;
-            return self.target.write_plan(&plan, Ok).await.map(|_| ());
-        }
-
-        let typeql =
-            query_builder::build_dynamic_entity_delete_by_iid(&self.descriptor, iid, "$e")?;
-        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC DELETE");
-        // raw remainder: no registry authority; removed in 06
-        self.target.execute(&typeql, TxType::Write).await?;
-        Ok(())
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        let plan = plans.delete(&self.descriptor.type_name, iid, false, false)?;
+        return self.target.write_plan(&plan, Ok).await.map(|_| ());
     }
 
     /// Delete an exact-type entity by mandatory canonical IID.
     pub async fn delete_by_iid_exact(&self, iid: &str) -> Result<()> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.delete(&self.descriptor.type_name, iid, true, false)?;
-            return self.target.write_plan(&plan, Ok).await.map(|_| ());
-        }
-
-        let typeql =
-            query_builder::build_dynamic_entity_delete_by_iid_exact(&self.descriptor, iid, "$e")?;
-        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT DELETE");
-        // raw remainder: no registry authority; removed in 06
-        self.target.execute(&typeql, TxType::Write).await?;
-        Ok(())
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        let plan = plans.delete(&self.descriptor.type_name, iid, true, false)?;
+        return self.target.write_plan(&plan, Ok).await.map(|_| ());
     }
 
     /// Delete exact-type entities, returning complete pre-delete documents in input order.
@@ -1226,8 +956,7 @@ impl<'db> DynamicEntityManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                    .sharing_plans(&self.plans);
+                let manager = self.in_transaction(tx.clone());
                 match manager.delete_many_by_iid_exact_in_transaction(iids).await {
                     Ok(()) => commit_manager(&tx, &self.plans).await,
                     Err(error) => {
@@ -1236,152 +965,55 @@ impl<'db> DynamicEntityManager<'db> {
                     }
                 }
             }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                        .sharing_plans(&self.plans);
-                match manager.delete_many_by_iid_exact_in_transaction(iids).await {
-                    Ok(()) => commit_manager(&tx, &self.plans).await,
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        Err(error)
-                    }
-                }
-            }
-            DynamicExecutionTarget::Transaction(tx)
-            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+
+            DynamicExecutionTarget::Transaction(tx) => {
                 ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
                 self.delete_many_by_iid_exact_in_transaction(iids).await
             }
         }
     }
 
-    async fn put_exact_in_transaction(&self, attributes: &DynamicAttributeMap) -> Result<String> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.entity_put(&self.descriptor.type_name, attributes, true)?;
-            return self
-                .target
-                .write_plan(&plan, |answer| {
-                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
-                })
-                .await;
-        }
-
-        let Some(typeql) = query_builder::build_dynamic_entity_exact_key_lookup(
-            &self.descriptor,
-            attributes,
-            "$e",
-        )?
-        else {
-            return self.insert(attributes).await;
-        };
-        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT KEY LOOKUP");
-        // raw remainder: no registry authority; removed in 06
-        let result = self.target.execute(&typeql, TxType::Read).await?;
-        match extract_exact_key_lookup_iid(&self.descriptor.type_name, result)? {
-            Some(iid) => {
-                self.update_exact(&iid, attributes).await?;
-                Ok(iid)
-            }
-            None => self.insert(attributes).await,
-        }
-    }
-
-    async fn update_and_get_exact_in_transaction(
-        &self,
-        iid: &str,
-        attributes: &DynamicAttributeMap,
-    ) -> Result<DynamicEntityRow> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.update_returning(&self.descriptor.type_name, iid, attributes, &[])?;
-            return self
-                .target
-                .write_plan(&plan, |answer| {
-                    let PlanAnswer::Documents(documents) = answer else {
-                        return Err(snapshot_error(&self.descriptor.type_name));
-                    };
-                    if documents.is_empty() {
-                        return Err(OrmError::NotFound(format!(
-                            "Exact entity {} at IID {iid} was not found after update",
-                            self.descriptor.type_name
-                        )));
-                    }
-                    let [document] = documents.as_slice() else {
-                        return Err(snapshot_error(&self.descriptor.type_name));
-                    };
-                    let row = hydrate_dynamic_entity(&self.descriptor, document)?;
-                    if row.iid.as_deref() != Some(iid) {
-                        return Err(snapshot_error(&self.descriptor.type_name));
-                    }
-                    Ok(row)
-                })
-                .await;
-        }
-        self.update_exact(iid, attributes).await?;
-        self.get_by_iid_exact(iid).await?.ok_or_else(|| {
-            OrmError::NotFound(format!(
-                "Exact entity {} at IID {iid} was not found after update",
-                self.descriptor.type_name
-            ))
-        })
-    }
-
     async fn update_many_and_get_exact_in_transaction(
         &self,
         items: &[(String, DynamicAttributeMap)],
     ) -> Result<Vec<DynamicEntityRow>> {
-        if let Some(plans) = &self.plans {
-            if items.is_empty() {
-                return Ok(Vec::new());
-            }
-            let inputs = items
-                .iter()
-                .map(|(iid, attributes)| (Some(iid.as_str()), attributes, &[][..]))
-                .collect::<Vec<_>>();
-            let plan = plans.write_many(&self.descriptor.type_name, WriteKind::Update, &inputs)?;
-            return self
-                .target
-                .write_plan_group(plan, |answer| {
-                    group_write_documents(answer, items.len(), &self.descriptor.type_name)?
-                        .iter()
-                        .zip(items)
-                        .map(|(documents, (iid, _))| {
-                            let [document] = documents.as_slice() else {
-                                return Err(snapshot_error(&self.descriptor.type_name));
-                            };
-                            let row = hydrate_dynamic_entity(&self.descriptor, document)?;
-                            if row.iid.as_deref() != Some(iid) {
-                                return Err(snapshot_error(&self.descriptor.type_name));
-                            }
-                            Ok(row)
-                        })
-                        .collect()
-                })
-                .await;
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        if items.is_empty() {
+            return Ok(Vec::new());
         }
-        let mut rows = Vec::with_capacity(items.len());
-        for (iid, attributes) in items {
-            rows.push(
-                self.update_and_get_exact_in_transaction(iid, attributes)
-                    .await?,
-            );
-        }
-        Ok(rows)
+        let inputs = items
+            .iter()
+            .map(|(iid, attributes)| (Some(iid.as_str()), attributes, &[][..]))
+            .collect::<Vec<_>>();
+        let plan = plans.write_many(&self.descriptor.type_name, WriteKind::Update, &inputs)?;
+        return self
+            .target
+            .write_plan_group(plan, |answer| {
+                group_write_documents(answer, items.len(), &self.descriptor.type_name)?
+                    .iter()
+                    .zip(items)
+                    .map(|(documents, (iid, _))| {
+                        let [document] = documents.as_slice() else {
+                            return Err(snapshot_error(&self.descriptor.type_name));
+                        };
+                        let row = hydrate_dynamic_entity(&self.descriptor, document)?;
+                        if row.iid.as_deref() != Some(iid) {
+                            return Err(snapshot_error(&self.descriptor.type_name));
+                        }
+                        Ok(row)
+                    })
+                    .collect()
+            })
+            .await;
     }
 
     async fn delete_many_by_iid_exact_in_transaction(&self, iids: &[String]) -> Result<()> {
-        if let Some(plans) = &self.plans {
-            if iids.is_empty() {
-                return Ok(());
-            }
-            let plan = plans.delete_many(&self.descriptor.type_name, iids, true, false)?;
-            return self.target.write_plan(&plan, |_| Ok(())).await;
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        if iids.is_empty() {
+            return Ok(());
         }
-        for iid in iids {
-            self.delete_by_iid_exact(iid).await?;
-        }
-        Ok(())
+        let plan = plans.delete_many(&self.descriptor.type_name, iids, true, false)?;
+        return self.target.write_plan(&plan, |_| Ok(())).await;
     }
 
     async fn write_many_by_plan(
@@ -1434,106 +1066,42 @@ impl<'db> DynamicEntityManager<'db> {
             return Ok(vec![]);
         }
 
-        if let Some(plans) = &self.plans {
-            let kind = match operation {
-                DynamicWriteOperation::Insert => WriteKind::Insert,
-                DynamicWriteOperation::Put => WriteKind::PartialPut,
-            };
-            return self.write_many_by_plan(plans, items, kind).await;
-        }
-
-        // Given-stage fast path (TypeDB 3.12+): one compiled insert pipeline
-        // over all rows, values passed through the driver API instead of
-        // being interpolated per row. Requires a homogeneous batch; anything
-        // else falls through to the per-row path below. The answer is only
-        // IIDs and row indexes, so canonical targets take it too.
-        if self.plans.is_none()
-            && matches!(operation, DynamicWriteOperation::Insert)
-            && let DynamicExecutionTarget::Database(db)
-            | DynamicExecutionTarget::CanonicalDatabase(db) = &self.target
-            && db.supports_given_stage()
-            && let Some((typeql, rows)) = given_entity_insert(&self.descriptor, items, "$e")
-        {
-            tracing::debug!(
-                typeql = %typeql,
-                entity_type = %self.descriptor.type_name,
-                rows = items.len(),
-                "DYNAMIC GIVEN INSERT MANY"
-            );
-            // raw remainder: no registry authority; removed in 06
-            let result = db.execute_with_rows(&typeql, TxType::Write, rows).await?;
-            return extract_insert_iids(&self.descriptor.type_name, result, items.len());
-        }
-
-        match &self.target {
-            DynamicExecutionTarget::Database(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = DynamicEntityManager::with_transaction(
-                    tx.clone(),
-                    Arc::clone(&self.descriptor),
-                )
-                .sharing_plans(&self.plans);
-                let mut iids = Vec::with_capacity(items.len());
-                for item in items {
-                    match manager.write_one(item, operation).await {
-                        Ok(iid) => iids.push(iid),
-                        Err(error) => {
-                            let _ = tx.rollback().await;
-                            return Err(error);
-                        }
-                    }
-                }
-                commit_manager(&tx, &self.plans).await?;
-                Ok(iids)
-            }
-            DynamicExecutionTarget::Transaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                let mut iids = Vec::with_capacity(items.len());
-                for item in items {
-                    iids.push(self.write_one(item, operation).await?);
-                }
-                Ok(iids)
-            }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = DynamicEntityManager::with_canonical_transaction(
-                    tx.clone(),
-                    Arc::clone(&self.descriptor),
-                )
-                .sharing_plans(&self.plans);
-                let mut iids = Vec::with_capacity(items.len());
-                for item in items {
-                    match manager.write_one(item, operation).await {
-                        Ok(iid) => iids.push(iid),
-                        Err(error) => {
-                            let _ = tx.rollback().await;
-                            return Err(error);
-                        }
-                    }
-                }
-                commit_manager(&tx, &self.plans).await?;
-                Ok(iids)
-            }
-            DynamicExecutionTarget::CanonicalTransaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                let mut iids = Vec::with_capacity(items.len());
-                for item in items {
-                    iids.push(self.write_one(item, operation).await?);
-                }
-                Ok(iids)
-            }
-        }
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        let kind = match operation {
+            DynamicWriteOperation::Insert => WriteKind::Insert,
+            DynamicWriteOperation::Put => WriteKind::PartialPut,
+        };
+        return self.write_many_by_plan(plans, items, kind).await;
     }
 
-    async fn write_one(
+    pub(crate) async fn write_mapped<T>(
         &self,
-        item: &DynamicAttributeMap,
-        operation: DynamicWriteOperation,
-    ) -> Result<String> {
-        match operation {
-            DynamicWriteOperation::Insert => self.insert(item).await,
-            DynamicWriteOperation::Put => self.put(item).await,
-        }
+        kind: WriteKind,
+        iid: Option<&str>,
+        attributes: &DynamicAttributeMap,
+        materialize: impl FnOnce(WriteResult<DynamicEntityRow>) -> Result<T>,
+    ) -> Result<T> {
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        let plan = plans.single_write(&self.descriptor.type_name, kind, iid, attributes, &[])?;
+        let require_row = matches!(
+            kind,
+            WriteKind::Insert | WriteKind::Put | WriteKind::PartialPut
+        );
+        self.target
+            .write_plan(&plan, |answer| {
+                hydrate_write_rows(
+                    plans,
+                    &plan,
+                    &self.descriptor.type_name,
+                    answer,
+                    self.target.answer_limits(),
+                    iid,
+                    require_row,
+                    plan_entity_row,
+                )
+                .and_then(materialize)
+            })
+            .await
     }
 
     fn hydrate_documents(&self, result: QueryResult) -> Result<Vec<DynamicEntityRow>> {
@@ -1620,53 +1188,11 @@ impl<'db> DynamicRelationManager<'db> {
         self
     }
 
-    fn sharing_plans(mut self, plans: &Option<ManagerPlans>) -> Self {
-        self.plans = plans.clone();
-        self
-    }
-
     pub(crate) fn in_transaction(&self, tx: TransactionContext) -> Self {
-        Self::with_transaction(tx, Arc::clone(&self.descriptor)).sharing_plans(&self.plans)
-    }
-
-    /// Create a dynamic relation manager from a registered descriptor.
-    pub fn new(db: &'db Database, descriptor: Arc<RelationDescriptor>) -> Self {
-        Self {
-            target: DynamicExecutionTarget::Database(db),
-            descriptor,
-            plans: None,
-        }
-    }
-
-    /// Create a dynamic relation manager bound to an existing transaction context.
-    pub fn with_transaction(tx: TransactionContext, descriptor: Arc<RelationDescriptor>) -> Self {
         Self {
             target: DynamicExecutionTarget::Transaction(tx),
-            descriptor,
-            plans: None,
-        }
-    }
-
-    /// Create a relation manager using canonical provider answers.
-    #[doc(hidden)]
-    pub fn new_canonical(db: &'db Database, descriptor: Arc<RelationDescriptor>) -> Self {
-        Self {
-            target: DynamicExecutionTarget::CanonicalDatabase(db),
-            descriptor,
-            plans: None,
-        }
-    }
-
-    /// Bind a relation manager to canonical answers in an existing transaction.
-    #[doc(hidden)]
-    pub fn with_canonical_transaction(
-        tx: TransactionContext,
-        descriptor: Arc<RelationDescriptor>,
-    ) -> Self {
-        Self {
-            target: DynamicExecutionTarget::CanonicalTransaction(tx),
-            descriptor,
-            plans: None,
+            descriptor: Arc::clone(&self.descriptor),
+            plans: self.plans.clone(),
         }
     }
 
@@ -1798,38 +1324,14 @@ impl<'db> DynamicRelationManager<'db> {
             .await
     }
 
-    /// Insert one dynamic relation and return the assigned IID.
+    /// Insert a relation input and return every complete hydrated root.
     pub async fn insert(
         &self,
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
-    ) -> Result<String> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.insert(
-                &self.descriptor.type_name,
-                attributes,
-                role_players,
-                false,
-                false,
-            )?;
-            return self
-                .target
-                .write_plan(&plan, |answer| {
-                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
-                })
-                .await;
-        }
-
-        let typeql = query_builder::build_dynamic_relation_insert_with_iid(
-            &self.descriptor,
-            attributes,
-            role_players,
-            "$r",
-        )?;
-        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION INSERT");
-        // raw remainder: no registry authority; removed in 06
-        let result = self.target.execute(&typeql, TxType::Write).await?;
-        extract_insert_iid(&self.descriptor.type_name, result)
+    ) -> Result<WriteResult<DynamicRelationRow>> {
+        self.write_mapped(WriteKind::Insert, None, attributes, role_players, Ok)
+            .await
     }
 
     /// Insert multiple dynamic relations in one Rust transaction.
@@ -1840,38 +1342,14 @@ impl<'db> DynamicRelationManager<'db> {
         self.write_many(items, DynamicWriteOperation::Insert).await
     }
 
-    /// Put one dynamic relation and return its IID.
+    /// Put a relation input and return every complete hydrated root.
     pub async fn put(
         &self,
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
-    ) -> Result<String> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.insert(
-                &self.descriptor.type_name,
-                attributes,
-                role_players,
-                true,
-                false,
-            )?;
-            return self
-                .target
-                .write_plan(&plan, |answer| {
-                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
-                })
-                .await;
-        }
-
-        let typeql = query_builder::build_dynamic_relation_put(
-            &self.descriptor,
-            attributes,
-            role_players,
-            "$r",
-        )?;
-        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION PUT");
-        // raw remainder: no registry authority; removed in 06
-        let result = self.target.execute(&typeql, TxType::Write).await?;
-        extract_insert_iid(&self.descriptor.type_name, result)
+    ) -> Result<WriteResult<DynamicRelationRow>> {
+        self.write_mapped(WriteKind::PartialPut, None, attributes, role_players, Ok)
+            .await
     }
 
     /// Put multiple dynamic relations in one Rust transaction.
@@ -1888,40 +1366,9 @@ impl<'db> DynamicRelationManager<'db> {
         iid: Option<&str>,
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
-    ) -> Result<()> {
-        if let Some(plans) = &self.plans {
-            if let Some(plan) = plans.update(
-                &self.descriptor.type_name,
-                iid,
-                attributes,
-                role_players,
-                false,
-            )? {
-                self.target
-                    .write_plan(&plan, |answer| {
-                        validate_relation_update_answer(
-                            &self.descriptor.type_name,
-                            answer,
-                            iid.is_some(),
-                            iid.is_some() || !role_players.is_empty(),
-                        )
-                    })
-                    .await?;
-            }
-            return Ok(());
-        }
-
-        let typeql = query_builder::build_dynamic_relation_update(
-            &self.descriptor,
-            iid,
-            attributes,
-            role_players,
-            "$r",
-        )?;
-        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION UPDATE");
-        // raw remainder: no registry authority; removed in 06
-        self.target.execute(&typeql, TxType::Write).await?;
-        Ok(())
+    ) -> Result<WriteResult<DynamicRelationRow>> {
+        self.write_mapped(WriteKind::PartialUpdate, iid, attributes, role_players, Ok)
+            .await
     }
 
     /// Replace the exact relation's owned state while preserving its IID.
@@ -1932,58 +1379,10 @@ impl<'db> DynamicRelationManager<'db> {
         iid: &str,
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
-    ) -> Result<()> {
+    ) -> Result<WriteResult<DynamicRelationRow>> {
         validate_relation_exact_update_input(&self.descriptor, iid, attributes, role_players)?;
-        match &self.target {
-            DynamicExecutionTarget::Database(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = DynamicRelationManager::with_transaction(
-                    tx.clone(),
-                    Arc::clone(&self.descriptor),
-                )
-                .sharing_plans(&self.plans);
-                match manager
-                    .update_exact_in_transaction(iid, attributes, role_players)
-                    .await
-                {
-                    Ok(()) => {
-                        commit_manager(&tx, &self.plans).await?;
-                        Ok(())
-                    }
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        Err(error)
-                    }
-                }
-            }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = DynamicRelationManager::with_canonical_transaction(
-                    tx.clone(),
-                    Arc::clone(&self.descriptor),
-                )
-                .sharing_plans(&self.plans);
-                match manager
-                    .update_exact_in_transaction(iid, attributes, role_players)
-                    .await
-                {
-                    Ok(()) => {
-                        commit_manager(&tx, &self.plans).await?;
-                        Ok(())
-                    }
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        Err(error)
-                    }
-                }
-            }
-            DynamicExecutionTarget::Transaction(tx)
-            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                self.update_exact_in_transaction(iid, attributes, role_players)
-                    .await
-            }
-        }
+        self.write_mapped(WriteKind::Update, Some(iid), attributes, role_players, Ok)
+            .await
     }
 
     /// Replace and rehydrate one exact relation in the same write transaction.
@@ -1992,53 +1391,8 @@ impl<'db> DynamicRelationManager<'db> {
         iid: &str,
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
-    ) -> Result<DynamicRelationRow> {
-        validate_relation_exact_update_input(&self.descriptor, iid, attributes, role_players)?;
-        match &self.target {
-            DynamicExecutionTarget::Database(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                    .sharing_plans(&self.plans);
-                match manager
-                    .update_and_get_exact_in_transaction(iid, attributes, role_players)
-                    .await
-                {
-                    Ok(row) => {
-                        commit_manager(&tx, &self.plans).await?;
-                        Ok(row)
-                    }
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        Err(error)
-                    }
-                }
-            }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                        .sharing_plans(&self.plans);
-                match manager
-                    .update_and_get_exact_in_transaction(iid, attributes, role_players)
-                    .await
-                {
-                    Ok(row) => {
-                        commit_manager(&tx, &self.plans).await?;
-                        Ok(row)
-                    }
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        Err(error)
-                    }
-                }
-            }
-            DynamicExecutionTarget::Transaction(tx)
-            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                self.update_and_get_exact_in_transaction(iid, attributes, role_players)
-                    .await
-            }
-        }
+    ) -> Result<WriteResult<DynamicRelationRow>> {
+        self.update_exact(iid, attributes, role_players).await
     }
 
     /// Replace and rehydrate exact relations atomically in input order.
@@ -2050,13 +1404,19 @@ impl<'db> DynamicRelationManager<'db> {
             return Ok(vec![]);
         }
         for (iid, attributes, role_players) in items {
-            validate_relation_exact_update_input(&self.descriptor, iid, attributes, role_players)?;
+            validate_relation_exact_write_input(
+                &self.descriptor,
+                Some(iid),
+                attributes,
+                role_players,
+                ExactWritePolicy::Update,
+                true,
+            )?;
         }
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                    .sharing_plans(&self.plans);
+                let manager = self.in_transaction(tx.clone());
                 match manager
                     .update_many_and_get_exact_in_transaction(items)
                     .await
@@ -2071,27 +1431,8 @@ impl<'db> DynamicRelationManager<'db> {
                     }
                 }
             }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                        .sharing_plans(&self.plans);
-                match manager
-                    .update_many_and_get_exact_in_transaction(items)
-                    .await
-                {
-                    Ok(rows) => {
-                        commit_manager(&tx, &self.plans).await?;
-                        Ok(rows)
-                    }
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        Err(error)
-                    }
-                }
-            }
-            DynamicExecutionTarget::Transaction(tx)
-            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+
+            DynamicExecutionTarget::Transaction(tx) => {
                 ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
                 self.update_many_and_get_exact_in_transaction(items).await
             }
@@ -2102,62 +1443,15 @@ impl<'db> DynamicRelationManager<'db> {
     ///
     /// Declared keys identify at most one relation. A hit preserves its IID
     /// and keys while replacing non-key and player state; a miss inserts it.
-    /// The canonical relation IID is returned.
+    /// Every complete hydrated relation is returned in answer order.
     pub async fn put_exact(
         &self,
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
-    ) -> Result<String> {
+    ) -> Result<WriteResult<DynamicRelationRow>> {
         validate_relation_exact_put_input(&self.descriptor, attributes, role_players)?;
-        match &self.target {
-            DynamicExecutionTarget::Database(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                    .sharing_plans(&self.plans);
-                match manager
-                    .put_exact_in_transaction(attributes, role_players)
-                    .await
-                {
-                    Ok(iid) => {
-                        commit_manager(&tx, &self.plans).await?;
-                        Ok(iid)
-                    }
-                    Err(e) => {
-                        let _ = tx.rollback().await;
-                        Err(e)
-                    }
-                }
-            }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                        .sharing_plans(&self.plans);
-                match manager
-                    .put_exact_in_transaction(attributes, role_players)
-                    .await
-                {
-                    Ok(iid) => {
-                        commit_manager(&tx, &self.plans).await?;
-                        Ok(iid)
-                    }
-                    Err(e) => {
-                        let _ = tx.rollback().await;
-                        Err(e)
-                    }
-                }
-            }
-            DynamicExecutionTarget::Transaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                self.put_exact_in_transaction(attributes, role_players)
-                    .await
-            }
-            DynamicExecutionTarget::CanonicalTransaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                self.put_exact_in_transaction(attributes, role_players)
-                    .await
-            }
-        }
+        self.write_mapped(WriteKind::Put, None, attributes, role_players, Ok)
+            .await
     }
 
     /// Put complete exact concrete relations in input order, atomically within
@@ -2167,7 +1461,14 @@ impl<'db> DynamicRelationManager<'db> {
         items: &[(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
     ) -> Result<Vec<String>> {
         for (attributes, role_players) in items {
-            validate_relation_exact_put_input(&self.descriptor, attributes, role_players)?;
+            validate_relation_exact_write_input(
+                &self.descriptor,
+                None,
+                attributes,
+                role_players,
+                ExactWritePolicy::Put,
+                true,
+            )?;
         }
         if items.is_empty() {
             return Ok(Vec::new());
@@ -2175,8 +1476,7 @@ impl<'db> DynamicRelationManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                    .sharing_plans(&self.plans);
+                let manager = self.in_transaction(tx.clone());
                 match manager.put_many_exact_in_transaction(items).await {
                     Ok(iids) => {
                         commit_manager(&tx, &self.plans).await?;
@@ -2188,24 +1488,8 @@ impl<'db> DynamicRelationManager<'db> {
                     }
                 }
             }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                        .sharing_plans(&self.plans);
-                match manager.put_many_exact_in_transaction(items).await {
-                    Ok(iids) => {
-                        commit_manager(&tx, &self.plans).await?;
-                        Ok(iids)
-                    }
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        Err(error)
-                    }
-                }
-            }
-            DynamicExecutionTarget::Transaction(tx)
-            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+
+            DynamicExecutionTarget::Transaction(tx) => {
                 ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
                 self.put_many_exact_in_transaction(items).await
             }
@@ -2216,288 +1500,47 @@ impl<'db> DynamicRelationManager<'db> {
         &self,
         items: &[(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
     ) -> Result<Vec<String>> {
-        if let Some(plans) = &self.plans {
-            return self.write_many_by_plan(plans, items, WriteKind::Put).await;
-        }
-        let mut result = Vec::with_capacity(items.len());
-        for (attributes, role_players) in items {
-            result.push(
-                self.put_exact_in_transaction(attributes, role_players)
-                    .await?,
-            );
-        }
-        Ok(result)
-    }
-
-    async fn put_exact_in_transaction(
-        &self,
-        attributes: &DynamicAttributeMap,
-        role_players: &[DynamicRolePlayerInput],
-    ) -> Result<String> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.relation_put(&self.descriptor.type_name, attributes, role_players)?;
-            return self
-                .target
-                .write_plan(&plan, |answer| {
-                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
-                })
-                .await;
-        }
-
-        if let Some(q) = query_builder::build_dynamic_relation_exact_key_lookup(
-            &self.descriptor,
-            attributes,
-            "$r",
-        )? && let Some(iid) = extract_exact_key_lookup_iid(
-            &self.descriptor.type_name,
-            // raw remainder: no registry authority; removed in 06
-            self.target.execute(&q, TxType::Write).await?,
-        )? {
-            self.update_exact_in_transaction(&iid, attributes, role_players)
-                .await?;
-            return Ok(iid);
-        }
-        let resolved = self.resolve_exact_role_players(role_players).await?;
-        let q = query_builder::build_dynamic_relation_insert_resolved_with_iid(
-            &self.descriptor,
-            attributes,
-            &resolved,
-            "$r",
-        )?;
-        // raw remainder: no registry authority; removed in 06
-        let answer = self.target.execute(&q, TxType::Write).await?;
-        extract_insert_iid(&self.descriptor.type_name, answer)
-    }
-
-    async fn resolve_exact_role_players(
-        &self,
-        role_players: &[DynamicRolePlayerInput],
-    ) -> Result<Vec<(String, String, String)>> {
-        let mut resolved = Vec::with_capacity(role_players.len());
-        for player in role_players {
-            let q = query_builder::build_dynamic_relation_player_lookup(
-                &player.player_type_name,
-                player.iid.as_deref(),
-                player.key.as_ref().map(|(n, v)| (n.as_str(), v)),
-                "$p",
-            )?;
-            // raw remainder: no registry authority; removed in 06
-            let answer = self.target.execute(&q, TxType::Write).await?;
-            let rows = match answer {
-                QueryResult::Documents(d) => d,
-                QueryResult::Ok => {
-                    return Err(OrmError::Hydration {
-                        type_name: self.descriptor.type_name.clone(),
-                        message: "Player resolution returned Ok; expected exactly one document"
-                            .into(),
-                    });
-                }
-                QueryResult::Rows(_) => {
-                    return Err(OrmError::Hydration {
-                        type_name: self.descriptor.type_name.clone(),
-                        message: "Player resolution returned Rows; expected exactly one document"
-                            .into(),
-                    });
-                }
-            };
-            if rows.len() != 1 {
-                return Err(OrmError::Hydration {
-                    type_name: self.descriptor.type_name.clone(),
-                    message: format!(
-                        "Player resolution returned {}; expected exactly one document",
-                        rows.len()
-                    ),
-                });
-            }
-            let identity =
-                super::hydration::extract_scalar_identity(&self.descriptor.type_name, &rows[0])?;
-            if let Some(requested) = &player.iid
-                && &identity != requested
-            {
-                return Err(OrmError::Hydration {
-                    type_name: self.descriptor.type_name.clone(),
-                    message: "Player resolution returned the wrong IID".into(),
-                });
-            }
-            resolved.push((
-                player.player_type_name.clone(),
-                identity,
-                player.role_name.clone(),
-            ));
-        }
-        let mut seen = std::collections::HashSet::new();
-        for (_, iid, role) in &resolved {
-            if !seen.insert((role.clone(), iid.clone())) {
-                return Err(OrmError::Hydration {
-                    type_name: self.descriptor.type_name.clone(),
-                    message: format!(
-                        "Player resolution converged on duplicate IID {iid} for role {role}"
-                    ),
-                });
-            }
-        }
-        Ok(resolved)
-    }
-
-    async fn update_exact_in_transaction(
-        &self,
-        iid: &str,
-        attributes: &DynamicAttributeMap,
-        role_players: &[DynamicRolePlayerInput],
-    ) -> Result<()> {
-        if let Some(plans) = &self.plans {
-            if let Some(plan) = plans.update(
-                &self.descriptor.type_name,
-                Some(iid),
-                attributes,
-                role_players,
-                true,
-            )? {
-                self.target
-                    .write_plan(&plan, |answer| {
-                        validate_relation_update_answer(
-                            &self.descriptor.type_name,
-                            answer,
-                            true,
-                            true,
-                        )
-                    })
-                    .await?;
-            }
-            return Ok(());
-        }
-
-        let resolved = self.resolve_exact_role_players(role_players).await?;
-        if !self.descriptor.owned_attributes.iter().all(|a| a.is_key()) {
-            let q = query_builder::build_dynamic_relation_update_exact(
-                &self.descriptor,
-                iid,
-                attributes,
-                "$r",
-            )?;
-            // raw remainder: no registry authority; removed in 06
-            self.target.execute(&q, TxType::Write).await?;
-        }
-        for role in &self.descriptor.roles {
-            let q = query_builder::build_dynamic_relation_clear_role(
-                &self.descriptor,
-                iid,
-                &role.role_name,
-                "$r",
-            )?;
-            // raw remainder: no registry authority; removed in 06
-            self.target.execute(&q, TxType::Write).await?;
-        }
-        if !resolved.is_empty() {
-            let q = query_builder::build_dynamic_relation_attach(
-                &self.descriptor,
-                iid,
-                &resolved,
-                "$r",
-            )?;
-            // raw remainder: no registry authority; removed in 06
-            self.target.execute(&q, TxType::Write).await?;
-        }
-        Ok(())
-    }
-
-    async fn update_and_get_exact_in_transaction(
-        &self,
-        iid: &str,
-        attributes: &DynamicAttributeMap,
-        role_players: &[DynamicRolePlayerInput],
-    ) -> Result<DynamicRelationRow> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.update_returning(
-                &self.descriptor.type_name,
-                iid,
-                attributes,
-                role_players,
-            )?;
-            return self
-                .target
-                .write_plan(&plan, |answer| {
-                    let PlanAnswer::Documents(documents) = answer else {
-                        return Err(snapshot_error(&self.descriptor.type_name));
-                    };
-                    let rows = coalesce_dynamic_relation_by_iid(&self.descriptor, &documents, iid)?;
-                    match rows.as_slice() {
-                        [row] => Ok(row.clone()),
-                        [] => Err(OrmError::NotFound(format!(
-                            "Exact relation {} at IID {iid} was not found after update",
-                            self.descriptor.type_name
-                        ))),
-                        _ => Err(snapshot_error(&self.descriptor.type_name)),
-                    }
-                })
-                .await;
-        }
-        self.update_exact_in_transaction(iid, attributes, role_players)
-            .await?;
-        match self.get_by_iid_exact(iid).await?.as_slice() {
-            [row] => Ok(row.clone()),
-            [] => Err(OrmError::NotFound(format!(
-                "Exact relation {} at IID {iid} was not found after update",
-                self.descriptor.type_name
-            ))),
-            rows => Err(OrmError::Hydration {
-                type_name: self.descriptor.type_name.clone(),
-                message: format!(
-                    "Exact relation update returned {} rows for IID {iid}",
-                    rows.len()
-                ),
-            }),
-        }
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        return self.write_many_by_plan(plans, items, WriteKind::Put).await;
     }
 
     async fn update_many_and_get_exact_in_transaction(
         &self,
         items: &[(String, DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
     ) -> Result<Vec<DynamicRelationRow>> {
-        if let Some(plans) = &self.plans {
-            if items.is_empty() {
-                return Ok(Vec::new());
-            }
-            let inputs = items
-                .iter()
-                .map(|(iid, attributes, players)| {
-                    (Some(iid.as_str()), attributes, players.as_slice())
-                })
-                .collect::<Vec<_>>();
-            let plan = plans.write_many(&self.descriptor.type_name, WriteKind::Update, &inputs)?;
-            return self
-                .target
-                .write_plan_group(plan, |answer| {
-                    group_write_documents(answer, items.len(), &self.descriptor.type_name)?
-                        .iter()
-                        .zip(items)
-                        .map(|(documents, (iid, _, players))| {
-                            let rows =
-                                coalesce_dynamic_relation_by_iid(&self.descriptor, documents, iid)?;
-                            let [row] = rows.as_slice() else {
-                                return Err(snapshot_error(&self.descriptor.type_name));
-                            };
-                            validate_written_players(
-                                &plans.registry,
-                                true,
-                                &self.descriptor.type_name,
-                                row,
-                                players,
-                            )?;
-                            Ok(row.clone())
-                        })
-                        .collect()
-                })
-                .await;
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        if items.is_empty() {
+            return Ok(Vec::new());
         }
-        let mut rows = Vec::with_capacity(items.len());
-        for (iid, attributes, role_players) in items {
-            rows.push(
-                self.update_and_get_exact_in_transaction(iid, attributes, role_players)
-                    .await?,
-            );
-        }
-        Ok(rows)
+        let inputs = items
+            .iter()
+            .map(|(iid, attributes, players)| (Some(iid.as_str()), attributes, players.as_slice()))
+            .collect::<Vec<_>>();
+        let plan = plans.write_many(&self.descriptor.type_name, WriteKind::Update, &inputs)?;
+        return self
+            .target
+            .write_plan_group(plan, |answer| {
+                group_write_documents(answer, items.len(), &self.descriptor.type_name)?
+                    .iter()
+                    .zip(items)
+                    .map(|(documents, (iid, _, players))| {
+                        let rows =
+                            coalesce_dynamic_relation_by_iid(&self.descriptor, documents, iid)?;
+                        let [row] = rows.as_slice() else {
+                            return Err(snapshot_error(&self.descriptor.type_name));
+                        };
+                        validate_written_players(
+                            &plans.registry,
+                            true,
+                            &self.descriptor.type_name,
+                            row,
+                            players,
+                        )?;
+                        Ok(row.clone())
+                    })
+                    .collect()
+            })
+            .await;
     }
 
     /// Fetch relations matching equality filters.
@@ -2726,7 +1769,13 @@ impl<'db> DynamicRelationManager<'db> {
                 &[],
                 ReadTerminal::Fetch,
             )?;
-            let rows = plan_fetch(&self.target, plans, program, plan_relation_row).await?;
+            let rows = plan_fetch(&self.target, plans, program, |registry, thing| {
+                if !iid.eq_ignore_ascii_case(thing.concept_id().as_str()) {
+                    return Err(snapshot_error(&self.descriptor.type_name));
+                }
+                plan_relation_row(registry, thing)
+            })
+            .await?;
             return Ok(rows);
         }
 
@@ -2756,7 +1805,13 @@ impl<'db> DynamicRelationManager<'db> {
                 &[],
                 ReadTerminal::Fetch,
             )?;
-            let rows = plan_fetch(&self.target, plans, program, plan_relation_row).await?;
+            let rows = plan_fetch(&self.target, plans, program, |registry, thing| {
+                if !iid.eq_ignore_ascii_case(thing.concept_id().as_str()) {
+                    return Err(snapshot_error(&self.descriptor.type_name));
+                }
+                plan_relation_row(registry, thing)
+            })
+            .await?;
             return Ok(rows);
         }
 
@@ -2893,15 +1948,9 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Delete one exact concrete relation instance by canonical IID.
     pub async fn delete_by_iid_exact(&self, iid: &str) -> Result<()> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.delete(&self.descriptor.type_name, iid, true, false)?;
-            return self.target.write_plan(&plan, Ok).await.map(|_| ());
-        }
-
-        let q =
-            query_builder::build_dynamic_relation_delete_by_iid_exact(&self.descriptor, iid, "$r")?;
-        // raw remainder: no registry authority; removed in 06
-        self.target.execute(&q, TxType::Write).await.map(|_| ())
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        let plan = plans.delete(&self.descriptor.type_name, iid, true, false)?;
+        return self.target.write_plan(&plan, Ok).await.map(|_| ());
     }
 
     /// Delete exact-type relations, returning complete pre-delete documents in input order.
@@ -2949,8 +1998,7 @@ impl<'db> DynamicRelationManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                    .sharing_plans(&self.plans);
+                let manager = self.in_transaction(tx.clone());
                 match manager.delete_many_by_iid_exact_in_transaction(iids).await {
                     Ok(()) => commit_manager(&tx, &self.plans).await,
                     Err(error) => {
@@ -2959,21 +2007,8 @@ impl<'db> DynamicRelationManager<'db> {
                     }
                 }
             }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
-                        .sharing_plans(&self.plans);
-                match manager.delete_many_by_iid_exact_in_transaction(iids).await {
-                    Ok(()) => commit_manager(&tx, &self.plans).await,
-                    Err(error) => {
-                        let _ = tx.rollback().await;
-                        Err(error)
-                    }
-                }
-            }
-            DynamicExecutionTarget::Transaction(tx)
-            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+
+            DynamicExecutionTarget::Transaction(tx) => {
                 ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
                 self.delete_many_by_iid_exact_in_transaction(iids).await
             }
@@ -2981,17 +2016,12 @@ impl<'db> DynamicRelationManager<'db> {
     }
 
     async fn delete_many_by_iid_exact_in_transaction(&self, iids: &[String]) -> Result<()> {
-        if let Some(plans) = &self.plans {
-            if iids.is_empty() {
-                return Ok(());
-            }
-            let plan = plans.delete_many(&self.descriptor.type_name, iids, true, false)?;
-            return self.target.write_plan(&plan, |_| Ok(())).await;
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        if iids.is_empty() {
+            return Ok(());
         }
-        for iid in iids {
-            self.delete_by_iid_exact(iid).await?;
-        }
-        Ok(())
+        let plan = plans.delete_many(&self.descriptor.type_name, iids, true, false)?;
+        return self.target.write_plan(&plan, |_| Ok(())).await;
     }
 
     /// Count relations for this descriptor.
@@ -3208,17 +2238,9 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Delete one relation by IID.
     pub async fn delete_by_iid(&self, iid: &str) -> Result<()> {
-        if let Some(plans) = &self.plans {
-            let plan = plans.delete(&self.descriptor.type_name, iid, false, false)?;
-            return self.target.write_plan(&plan, Ok).await.map(|_| ());
-        }
-
-        let typeql =
-            query_builder::build_dynamic_relation_delete_by_iid(&self.descriptor, iid, "$r")?;
-        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION DELETE");
-        // raw remainder: no registry authority; removed in 06
-        self.target.execute(&typeql, TxType::Write).await?;
-        Ok(())
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        let plan = plans.delete(&self.descriptor.type_name, iid, false, false)?;
+        return self.target.write_plan(&plan, Ok).await.map(|_| ());
     }
 
     async fn write_many_by_plan(
@@ -3280,83 +2302,49 @@ impl<'db> DynamicRelationManager<'db> {
             return Ok(vec![]);
         }
 
-        if let Some(plans) = &self.plans {
-            let kind = match operation {
-                DynamicWriteOperation::Insert => WriteKind::Insert,
-                DynamicWriteOperation::Put => WriteKind::MatchPut,
-            };
-            return self.write_many_by_plan(plans, items, kind).await;
-        }
-        match &self.target {
-            DynamicExecutionTarget::Database(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = DynamicRelationManager::with_transaction(
-                    tx.clone(),
-                    Arc::clone(&self.descriptor),
-                )
-                .sharing_plans(&self.plans);
-                let mut iids = Vec::with_capacity(items.len());
-                for (attributes, role_players) in items {
-                    match manager.write_one(attributes, role_players, operation).await {
-                        Ok(iid) => iids.push(iid),
-                        Err(error) => {
-                            let _ = tx.rollback().await;
-                            return Err(error);
-                        }
-                    }
-                }
-                commit_manager(&tx, &self.plans).await?;
-                Ok(iids)
-            }
-            DynamicExecutionTarget::Transaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                let mut iids = Vec::with_capacity(items.len());
-                for (attributes, role_players) in items {
-                    iids.push(self.write_one(attributes, role_players, operation).await?);
-                }
-                Ok(iids)
-            }
-            DynamicExecutionTarget::CanonicalDatabase(db) => {
-                let tx = db.transaction_context(TxType::Write).await?;
-                let manager = DynamicRelationManager::with_canonical_transaction(
-                    tx.clone(),
-                    Arc::clone(&self.descriptor),
-                )
-                .sharing_plans(&self.plans);
-                let mut iids = Vec::with_capacity(items.len());
-                for (attributes, role_players) in items {
-                    match manager.write_one(attributes, role_players, operation).await {
-                        Ok(iid) => iids.push(iid),
-                        Err(error) => {
-                            let _ = tx.rollback().await;
-                            return Err(error);
-                        }
-                    }
-                }
-                commit_manager(&tx, &self.plans).await?;
-                Ok(iids)
-            }
-            DynamicExecutionTarget::CanonicalTransaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                let mut iids = Vec::with_capacity(items.len());
-                for (attributes, role_players) in items {
-                    iids.push(self.write_one(attributes, role_players, operation).await?);
-                }
-                Ok(iids)
-            }
-        }
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        let kind = match operation {
+            DynamicWriteOperation::Insert => WriteKind::Insert,
+            DynamicWriteOperation::Put => WriteKind::MatchPut,
+        };
+        return self.write_many_by_plan(plans, items, kind).await;
     }
 
-    async fn write_one(
+    pub(crate) async fn write_mapped<T>(
         &self,
+        kind: WriteKind,
+        iid: Option<&str>,
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
-        operation: DynamicWriteOperation,
-    ) -> Result<String> {
-        match operation {
-            DynamicWriteOperation::Insert => self.insert(attributes, role_players).await,
-            DynamicWriteOperation::Put => self.put(attributes, role_players).await,
-        }
+        materialize: impl FnOnce(WriteResult<DynamicRelationRow>) -> Result<T>,
+    ) -> Result<T> {
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        let plan = plans.single_write(
+            &self.descriptor.type_name,
+            kind,
+            iid,
+            attributes,
+            role_players,
+        )?;
+        let require_row = matches!(
+            kind,
+            WriteKind::Insert | WriteKind::Put | WriteKind::PartialPut
+        ) || !role_players.is_empty();
+        self.target
+            .write_plan(&plan, |answer| {
+                hydrate_write_rows(
+                    plans,
+                    &plan,
+                    &self.descriptor.type_name,
+                    answer,
+                    self.target.answer_limits(),
+                    iid,
+                    require_row,
+                    plan_relation_row,
+                )
+                .and_then(materialize)
+            })
+            .await
     }
 
     fn hydrate_documents(&self, result: QueryResult) -> Result<Vec<DynamicRelationRow>> {
@@ -3383,11 +2371,18 @@ fn validate_relation_exact_write_input(
     attributes: &DynamicAttributeMap,
     players: &[DynamicRolePlayerInput],
     policy: ExactWritePolicy,
+    check_role_counts: bool,
 ) -> Result<()> {
     if matches!(policy, ExactWritePolicy::Update) {
         crate::_dynamic::validate_relation_iid(&descriptor.type_name, iid.unwrap_or_default())?;
     }
-    validate_relation_exact_update_input_inner(descriptor, attributes, players, policy)
+    validate_relation_exact_update_input_inner(
+        descriptor,
+        attributes,
+        players,
+        policy,
+        check_role_counts,
+    )
 }
 
 fn validate_relation_exact_update_input(
@@ -3402,6 +2397,7 @@ fn validate_relation_exact_update_input(
         attributes,
         players,
         ExactWritePolicy::Update,
+        false,
     )
 }
 
@@ -3416,6 +2412,7 @@ fn validate_relation_exact_put_input(
         attributes,
         players,
         ExactWritePolicy::Put,
+        false,
     )
 }
 
@@ -3424,6 +2421,7 @@ fn validate_relation_exact_update_input_inner(
     attributes: &DynamicAttributeMap,
     players: &[DynamicRolePlayerInput],
     policy: ExactWritePolicy,
+    check_role_counts: bool,
 ) -> Result<()> {
     if !type_bridge_core_lib::compiler::is_valid_typeql_label(&descriptor.type_name) {
         return Err(OrmError::QueryExecution(format!(
@@ -3493,7 +2491,6 @@ fn validate_relation_exact_update_input_inner(
             }
         }
     }
-    let mut seen = std::collections::HashSet::new();
     for role in &descriptor.roles {
         if !type_bridge_core_lib::compiler::is_valid_typeql_label(&role.role_name)
             || role.role_name.trim().is_empty()
@@ -3503,16 +2500,18 @@ fn validate_relation_exact_update_input_inner(
                 descriptor.type_name, role.role_name
             )));
         }
-        let count = players
-            .iter()
-            .filter(|p| p.role_name == role.role_name)
-            .count();
-        let (min, max) = role.cardinality.unwrap_or((0, None));
-        if count < min as usize || max.is_some_and(|m| count > m as usize) {
-            return Err(OrmError::QueryExecution(format!(
-                "{}: relation role {} violates cardinality",
-                descriptor.type_name, role.role_name
-            )));
+        if check_role_counts {
+            let count = players
+                .iter()
+                .filter(|p| p.role_name == role.role_name)
+                .count();
+            let (min, max) = role.cardinality.unwrap_or((0, None));
+            if count < min as usize || max.is_some_and(|m| count > m as usize) {
+                return Err(OrmError::QueryExecution(format!(
+                    "{}: relation role {} violates cardinality",
+                    descriptor.type_name, role.role_name
+                )));
+            }
         }
     }
     for player in players {
@@ -3547,37 +2546,21 @@ fn validate_relation_exact_update_input_inner(
                 descriptor.type_name
             )));
         }
-        if let Some(iid) = &player.iid {
-            if !type_bridge_contract::id::is_canonical_thing_iid(iid) {
-                return Err(OrmError::QueryExecution(format!(
-                    "{}: player IID must be canonical",
-                    descriptor.type_name
-                )));
-            }
-            if !seen.insert((
-                player.role_name.clone(),
-                format!("iid:{}:{iid}", player.player_type_name),
-            )) {
-                return Err(OrmError::QueryExecution(format!(
-                    "{}: duplicate relation player input",
-                    descriptor.type_name
-                )));
-            }
+        if let Some(iid) = &player.iid
+            && !type_bridge_contract::id::is_canonical_thing_iid(iid)
+        {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: player IID must be canonical",
+                descriptor.type_name
+            )));
         }
-        if let Some((key, value)) = &player.key {
-            if crate::_dynamic::is_blank_key_value(value) {
-                return Err(OrmError::QueryExecution(format!(
-                    "{}: player key value must be nonblank",
-                    descriptor.type_name
-                )));
-            }
-            let marker = format!("key:{}:{key}:{value:?}", player.player_type_name);
-            if !seen.insert((player.role_name.clone(), marker)) {
-                return Err(OrmError::QueryExecution(format!(
-                    "{}: duplicate relation player input",
-                    descriptor.type_name
-                )));
-            }
+        if let Some((_, value)) = &player.key
+            && crate::_dynamic::is_blank_key_value(value)
+        {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: player key value must be nonblank",
+                descriptor.type_name
+            )));
         }
     }
     if players.is_empty() {
@@ -3612,11 +2595,17 @@ async fn commit_manager(tx: &TransactionContext, plans: &Option<ManagerPlans>) -
 enum DynamicExecutionTarget<'db> {
     Database(&'db Database),
     Transaction(TransactionContext),
-    CanonicalDatabase(&'db Database),
-    CanonicalTransaction(TransactionContext),
 }
 
 impl DynamicExecutionTarget<'_> {
+    fn answer_limits(&self) -> QueryExecutionResourceLimits {
+        match self {
+            Self::Database(db) => db.answer_limits(),
+            Self::Transaction(tx) => tx.answer_limits(),
+        }
+        .unwrap_or_default()
+    }
+
     async fn returning<T>(
         &self,
         plans: &ManagerPlans,
@@ -3632,17 +2621,15 @@ impl DynamicExecutionTarget<'_> {
     ) -> Result<T> {
         plans.authority()?;
         let policy = match self {
-            Self::Database(db) | Self::CanonicalDatabase(db) => db.answer_limits(),
-            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => tx.answer_limits(),
+            Self::Database(db) => db.answer_limits(),
+            Self::Transaction(tx) => tx.answer_limits(),
         }
         .unwrap_or_default();
         let deadline = QueryExecutionDeadline::for_limits(policy);
         let cancellation = AnswerCancellation::default();
         let (transaction, owned) = match self {
-            Self::Database(db) | Self::CanonicalDatabase(db) => {
-                (db.transaction_context(TxType::Write).await?, true)
-            }
-            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => (tx.clone(), false),
+            Self::Database(db) => (db.transaction_context(TxType::Write).await?, true),
+            Self::Transaction(tx) => (tx.clone(), false),
         };
         let mut lease = transaction.acquire_mutation_lease().await?;
         let result = super::returning::delete_on_lease(
@@ -3699,11 +2686,11 @@ impl DynamicExecutionTarget<'_> {
             let cancellation = AnswerCancellation::default();
             let deadline = QueryExecutionDeadline::for_limits(limits);
             match self {
-                Self::Database(db) | Self::CanonicalDatabase(db) => {
+                Self::Database(db) => {
                     db.execute_plans(program.plans(), &limits, &cancellation, deadline)
                         .await
                 }
-                Self::Transaction(tx) | Self::CanonicalTransaction(tx) => {
+                Self::Transaction(tx) => {
                     if tx.tx_type() == TxType::Read {
                         return tx
                             .execute_plans(program.plans(), &limits, &cancellation, deadline)
@@ -3750,10 +2737,8 @@ impl DynamicExecutionTarget<'_> {
             .map_err(crate::plan_builders::manager::diagnostic)?;
         let statement_count = program.statement_count();
         let (tx, owned) = match self {
-            Self::Database(db) | Self::CanonicalDatabase(db) => {
-                (db.transaction_context(TxType::Write).await?, true)
-            }
-            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => (tx.clone(), false),
+            Self::Database(db) => (db.transaction_context(TxType::Write).await?, true),
+            Self::Transaction(tx) => (tx.clone(), false),
         };
         let policy = tx
             .answer_limits()
@@ -3878,9 +2863,9 @@ impl DynamicExecutionTarget<'_> {
         map: impl FnOnce(PlanAnswer) -> Result<T>,
     ) -> Result<T> {
         match self {
-            Self::Database(db) | Self::CanonicalDatabase(db) => {
+            Self::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                match dispatch_manager_plan(&tx, plan).await.and_then(map) {
+                match dispatch_manager_plan(&tx, plan, map).await {
                     Ok(answer) => {
                         super::returning::commit(&tx).await?;
                         Ok(answer)
@@ -3891,9 +2876,9 @@ impl DynamicExecutionTarget<'_> {
                     }
                 }
             }
-            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => {
+            Self::Transaction(tx) => {
                 ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                let result = dispatch_manager_plan(tx, plan).await.and_then(map);
+                let result = dispatch_manager_plan(tx, plan, map).await;
                 if let Err(error) = &result {
                     tx.latch_rollback_only(&crate::execution_diagnostic::lower_orm_error(
                         error,
@@ -3934,12 +2919,9 @@ impl DynamicExecutionTarget<'_> {
                 .into());
             }
         }
-        let canonical = matches!(
-            self,
-            Self::CanonicalDatabase(_) | Self::CanonicalTransaction(_)
-        );
+        let canonical = false;
         match self {
-            Self::Database(db) | Self::CanonicalDatabase(db) => {
+            Self::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
                 match tx
                     .delete_captured(statements, iids, canonical, hydrate)
@@ -3957,7 +2939,7 @@ impl DynamicExecutionTarget<'_> {
                     }
                 }
             }
-            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => {
+            Self::Transaction(tx) => {
                 ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
                 tx.delete_captured(statements, iids, canonical, hydrate)
                     .await
@@ -3973,48 +2955,129 @@ impl DynamicExecutionTarget<'_> {
                 ensure_transaction_can_execute(tx.tx_type(), required_tx_type)?;
                 tx.query(typeql).await
             }
-            Self::CanonicalDatabase(db) => db.execute_canonical(typeql, required_tx_type).await,
-            Self::CanonicalTransaction(tx) => {
-                ensure_transaction_can_execute(tx.tx_type(), required_tx_type)?;
-                tx.query_canonical(typeql).await
-            }
         }
     }
 }
 
-fn validate_relation_update_answer(
+#[allow(clippy::too_many_arguments)]
+fn hydrate_write_rows<T>(
+    plans: &ManagerPlans,
+    plan: &BuiltPlan,
     name: &str,
     answer: PlanAnswer,
-    exact: bool,
-    require_match: bool,
-) -> Result<()> {
-    match answer {
-        PlanAnswer::Matched(count) | PlanAnswer::Count(count)
-            if (!exact || count == 1) && (!require_match || count > 0) =>
-        {
-            Ok(())
-        }
-        _ => Err(OrmError::Hydration {
-            type_name: name.into(),
-            message: "Relation update must resolve its root and every requested player".into(),
-        }),
+    limits: QueryExecutionResourceLimits,
+    expected: Option<&str>,
+    require_row: bool,
+    map: impl Fn(&DescriptorRegistry, &HydratedThing) -> Result<T>,
+) -> Result<WriteResult<T>> {
+    let PlanAnswer::Documents(documents) = answer else {
+        return Err(snapshot_error(name));
+    };
+    let descriptor = plans
+        .registry
+        .descriptor_id(name)
+        .ok_or_else(|| OrmError::DescriptorNotFound(name.into()))?;
+    let (request, result) = crate::match_request::validated_match_result_from_plan(
+        &plans.registry,
+        plan.local(),
+        &documents,
+        &descriptor,
+        limits,
+    )?;
+    let MatchResult::Rows { rows } = result.for_request(&request)? else {
+        return Err(snapshot_error(name));
+    };
+    if require_row && rows.is_empty() {
+        return Err(snapshot_error(name));
     }
+    rows.iter()
+        .map(|row| match row.slots() {
+            [SlotValue::One(thing)] => {
+                if expected
+                    .is_some_and(|iid| !iid.eq_ignore_ascii_case(thing.concept_id().as_str()))
+                {
+                    return Err(snapshot_error(name));
+                }
+                map(&plans.registry, thing)
+            }
+            _ => Err(snapshot_error(name)),
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(WriteResult::new)
 }
 
-async fn dispatch_manager_plan(tx: &TransactionContext, plan: &BuiltPlan) -> Result<PlanAnswer> {
-    let prepared = tx.prepare_plan(plan.local()).await?;
-    let result = tx
-        .dispatch_plan(prepared)
-        .await
-        .and_then(|answer| TransactionContext::resolve_plan(plan.local(), answer));
-    if let Err(error) = &result {
-        tx.latch_rollback_only(&crate::execution_diagnostic::lower_orm_error(
-            error,
-            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
-        ))
-        .await;
+async fn dispatch_manager_plan<T>(
+    tx: &TransactionContext,
+    plan: &BuiltPlan,
+    map: impl FnOnce(PlanAnswer) -> Result<T>,
+) -> Result<T> {
+    let policy = tx
+        .answer_limits()
+        .unwrap_or_default()
+        .for_adapter_statements(1);
+    if policy.statement_limit() < 1 {
+        return Err(crate::match_request::MatchError::new(
+            crate::match_request::MatchErrorCategory::ResourceLimit,
+            "statement_count_limit",
+            "Manager write exceeds the provider statement ceiling",
+        )
+        .into());
     }
-    result
+    let cancellation = AnswerCancellation::default();
+    let deadline = QueryExecutionDeadline::for_limits(policy);
+    let limits = crate::query_plan_exec::plan_answer_limits(policy, &cancellation, deadline)?;
+    let mut lease = crate::session::staged::bounded(&limits.answer, async {
+        tx.acquire_mutation_lease().await
+    })
+    .await?;
+    let result = async {
+        let query = lease.prepare_plan(plan.local())?;
+        let request_bytes = (query.typeql.len() as u64).saturating_add(
+            query
+                .rows
+                .as_ref()
+                .map(crate::projected_batch_executor::given_rows_bytes)
+                .transpose()
+                .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?
+                .unwrap_or(0),
+        );
+        if request_bytes > policy.bytes {
+            return Err(crate::match_request::MatchError::new(
+                crate::match_request::MatchErrorCategory::ResourceLimit,
+                "projected_batch_transport_byte_limit",
+                "Manager write exceeds the captured byte ceiling",
+            )
+            .into());
+        }
+        let remaining = QueryExecutionResourceLimits {
+            bytes: policy.bytes - request_bytes,
+            ..policy
+        };
+        let limits =
+            crate::query_plan_exec::plan_answer_limits(remaining, &cancellation, deadline)?;
+        let (answer, _) = lease
+            .dispatch_plan_counted(query, limits, Some(plan.local()))
+            .await?;
+        let value = TransactionContext::resolve_plan(plan.local(), answer).and_then(map)?;
+        deadline
+            .check(&cancellation)
+            .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?;
+        Ok(value)
+    }
+    .await;
+    match result {
+        Ok(value) => {
+            lease.complete_success();
+            Ok(value)
+        }
+        Err(error) => {
+            lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                &error,
+                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+            ));
+            Err(error)
+        }
+    }
 }
 
 fn hydrated_attributes(
@@ -4188,7 +3251,26 @@ async fn plan_identities(
         &[],
         ReadTerminal::Identity,
     )?;
-    plan_identity_rows(target, &program).await
+    let rows = plan_identity_rows(target, &program).await?;
+    let expected = plans
+        .registry
+        .descriptor_id(name)
+        .ok_or_else(|| snapshot_error(name))?;
+    if rows.iter().any(|(_, actual)| {
+        plans
+            .registry
+            .descriptor_id(actual)
+            .is_none_or(|actual| !plans.registry.is_same_or_subtype(&actual, &expected))
+    }) {
+        return Err(snapshot_error(name));
+    }
+    if iid.is_some_and(|expected| {
+        rows.iter()
+            .any(|(actual, _)| !expected.eq_ignore_ascii_case(actual))
+    }) {
+        return Err(snapshot_error(name));
+    }
+    Ok(rows)
 }
 
 async fn plan_identity_rows(
@@ -4373,27 +3455,6 @@ fn validate_written_players(
     Ok(())
 }
 
-fn plan_insert_iid(name: &str, plan: &BuiltPlan, answer: PlanAnswer) -> Result<String> {
-    let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } = answer
-        .to_staged_v3(plan.local())
-        .map_err(crate::plan_builders::manager::diagnostic)?
-    else {
-        return Err(snapshot_error(name));
-    };
-    let mut identity = None;
-    for row in rows {
-        let [type_bridge_contract::query_remote::RemoteValue::Thing { iid, .. }] = row.as_slice()
-        else {
-            return Err(snapshot_error(name));
-        };
-        if identity.as_ref().is_some_and(|previous| previous != iid) {
-            return Err(snapshot_error(name));
-        }
-        identity = Some(iid.clone());
-    }
-    identity.ok_or_else(|| snapshot_error(name))
-}
-
 async fn plan_aggregate(
     target: &DynamicExecutionTarget<'_>,
     program: ManagerRead,
@@ -4498,7 +3559,7 @@ fn snapshot_documents(
 fn snapshot_error(type_name: &str) -> OrmError {
     OrmError::Hydration {
         type_name: type_name.into(),
-        message: "Deletion snapshot has invalid exact identity evidence".into(),
+        message: "Manager answer has invalid identity evidence".into(),
     }
 }
 
@@ -4550,251 +3611,6 @@ fn ensure_transaction_can_execute(active: TxType, required: TxType) -> Result<()
     }
 }
 
-/// Build the `given`-stage bulk insert for a homogeneous entity batch.
-///
-/// Returns `None` when the batch cannot ride one compiled pipeline, so the
-/// caller falls back to per-row inserts:
-/// - an item binds an attribute the descriptor does not know,
-/// - items bind different attribute sets (optional attributes present on
-///   some rows only), or repeat an attribute within one row,
-/// - a column's value type varies across rows, or
-/// - a value type has no given-row representation (decimal, duration).
-fn given_entity_insert(
-    descriptor: &EntityDescriptor,
-    items: &[DynamicAttributeMap],
-    var: &str,
-) -> Option<(String, GivenRowsSpec)> {
-    let first = items.first()?;
-    if first.is_empty() {
-        return None;
-    }
-
-    // Column layout comes from the first item: resolved TypeDB attribute
-    // names, the given type of each column, and one given variable each.
-    let mut columns: Vec<(String, &'static str)> = Vec::with_capacity(first.len());
-    for (name, value) in first {
-        let attr = descriptor.attribute(name)?;
-        let type_name = given_type_name(value)?;
-        if columns
-            .iter()
-            .any(|(existing, _)| *existing == attr.attr_name)
-        {
-            return None;
-        }
-        columns.push((attr.attr_name.clone(), type_name));
-    }
-
-    let mut rows = Vec::with_capacity(items.len());
-    for (row_index, item) in items.iter().enumerate() {
-        if item.len() != columns.len() {
-            return None;
-        }
-        let mut row: Vec<Option<GivenValue>> = vec![None; columns.len()];
-        for (name, value) in item {
-            let attr = descriptor.attribute(name)?;
-            let index = columns
-                .iter()
-                .position(|(attr_name, _)| *attr_name == attr.attr_name)?;
-            if row[index].is_some() || given_type_name(value)? != columns[index].1 {
-                return None;
-            }
-            row[index] = Some(given_value(value)?);
-        }
-        let mut row = row.into_iter().collect::<Option<Vec<_>>>()?;
-        // Synthetic trailing column: the input row index, fetched back so
-        // IIDs correlate to input rows explicitly instead of relying on
-        // pipeline stream order.
-        row.push(GivenValue::Integer(row_index as i64));
-        rows.push(row);
-    }
-
-    let mut variables: Vec<String> = (0..columns.len()).map(|i| format!("g{i}")).collect();
-    let given_header = columns
-        .iter()
-        .zip(&variables)
-        .map(|((_, type_name), variable)| format!("${variable}: {type_name}"))
-        .chain(std::iter::once("$g_row: integer".to_string()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let has_clauses = columns
-        .iter()
-        .zip(&variables)
-        .map(|((attr_name, _), variable)| format!("has {attr_name} == ${variable}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    variables.push("g_row".to_string());
-    let typeql = format!(
-        "given {given_header};\ninsert {var} isa {}, {has_clauses};\nfetch {{ \"iid\": iid({var}), \"row\": $g_row }};",
-        descriptor.type_name,
-    );
-
-    Some((typeql, GivenRowsSpec { variables, rows }))
-}
-
-/// The TypeQL value type name for a `given` header column, or `None` when
-/// the value has no given-row representation.
-fn given_type_name(value: &AttributeValue) -> Option<&'static str> {
-    Some(match value {
-        AttributeValue::String(_) => "string",
-        AttributeValue::Long(_) => "integer",
-        AttributeValue::Double(_) => "double",
-        AttributeValue::Boolean(_) => "boolean",
-        AttributeValue::Date(_) => "date",
-        AttributeValue::DateTime(_) => "datetime",
-        AttributeValue::DateTimeTZ(_) => "datetime-tz",
-        AttributeValue::Decimal(_) | AttributeValue::Duration(_) => return None,
-    })
-}
-
-/// Convert an attribute value into its given-row form, or `None` when the
-/// value type has no given-row representation.
-fn given_value(value: &AttributeValue) -> Option<GivenValue> {
-    Some(match value {
-        AttributeValue::String(s) => GivenValue::String(s.clone()),
-        AttributeValue::Long(n) => GivenValue::Integer(*n),
-        AttributeValue::Double(d) => GivenValue::Double(*d),
-        AttributeValue::Boolean(b) => GivenValue::Boolean(*b),
-        AttributeValue::Date(s) => GivenValue::Date(s.clone()),
-        AttributeValue::DateTime(s) => GivenValue::Datetime(s.clone()),
-        AttributeValue::DateTimeTZ(s) => GivenValue::DatetimeTz(s.clone()),
-        AttributeValue::Decimal(_) | AttributeValue::Duration(_) => return None,
-    })
-}
-
-/// Extract one IID per input row from a bulk insert + fetch result.
-///
-/// Each document carries the fetched-back input row index (`"row"`), so
-/// IIDs are placed by explicit correlation rather than stream order.
-fn extract_insert_iids(
-    type_name: &str,
-    result: QueryResult,
-    expected: usize,
-) -> Result<Vec<String>> {
-    let hydration_error = |message: String| OrmError::Hydration {
-        type_name: type_name.to_string(),
-        message,
-    };
-    match result {
-        QueryResult::Documents(docs) => {
-            if docs.len() != expected {
-                return Err(hydration_error(format!(
-                    "Bulk insert returned {} documents for {expected} input rows",
-                    docs.len()
-                )));
-            }
-            let mut iids: Vec<Option<String>> = vec![None; expected];
-            for doc in &docs {
-                let obj = doc.as_object().ok_or_else(|| {
-                    hydration_error("Expected JSON object from insert+fetch".into())
-                })?;
-                let iid = super::hydration::extract_scalar_string(obj, "iid")
-                    .ok_or_else(|| hydration_error("No IID in bulk insert response".into()))?;
-                let row_index = obj
-                    .get("row")
-                    .and_then(serde_json::Value::as_f64)
-                    .map(|row| row as usize)
-                    .ok_or_else(|| {
-                        hydration_error("No row index in bulk insert response".into())
-                    })?;
-                let slot = iids.get_mut(row_index).ok_or_else(|| {
-                    hydration_error(format!(
-                        "Bulk insert row index {row_index} out of range for {expected} input rows"
-                    ))
-                })?;
-                if slot.replace(iid).is_some() {
-                    return Err(hydration_error(format!(
-                        "Bulk insert returned row index {row_index} twice"
-                    )));
-                }
-            }
-            iids.into_iter()
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| hydration_error("Bulk insert response missing rows".into()))
-        }
-        QueryResult::Ok => Err(hydration_error(
-            "Expected Documents from bulk insert+fetch, got Ok".into(),
-        )),
-        QueryResult::Rows(_) => Err(hydration_error(
-            "Expected Documents from bulk insert+fetch, got Rows".into(),
-        )),
-    }
-}
-
-fn extract_insert_iid(type_name: &str, result: QueryResult) -> Result<String> {
-    match result {
-        QueryResult::Documents(docs) => {
-            let doc = (docs.len() == 1)
-                .then(|| &docs[0])
-                .ok_or_else(|| OrmError::Hydration {
-                    type_name: type_name.to_string(),
-                    message: format!(
-                        "Insert returned {} documents; expected exactly one",
-                        docs.len()
-                    ),
-                })?;
-            let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
-                type_name: type_name.to_string(),
-                message: "Expected JSON object from insert+fetch".into(),
-            })?;
-            let iid = super::hydration::extract_scalar_string(obj, "iid").ok_or_else(|| {
-                OrmError::Hydration {
-                    type_name: type_name.to_string(),
-                    message: "No IID in insert response".into(),
-                }
-            })?;
-            if !type_bridge_contract::id::is_canonical_thing_iid(&iid) {
-                return Err(OrmError::Hydration {
-                    type_name: type_name.to_string(),
-                    message: "Insert returned noncanonical IID".into(),
-                });
-            }
-            Ok(iid)
-        }
-        QueryResult::Ok => Err(OrmError::Hydration {
-            type_name: type_name.to_string(),
-            message: "Expected Documents from insert+fetch, got Ok".into(),
-        }),
-        QueryResult::Rows(_) => Err(OrmError::Hydration {
-            type_name: type_name.to_string(),
-            message: "Expected Documents from insert+fetch, got Rows".into(),
-        }),
-    }
-}
-
-fn extract_exact_key_lookup_iid(type_name: &str, result: QueryResult) -> Result<Option<String>> {
-    let hydration_error = |message: String| OrmError::Hydration {
-        type_name: type_name.to_string(),
-        message,
-    };
-    match result {
-        QueryResult::Documents(docs) => match docs.len() {
-            0 => Ok(None),
-            1 => {
-                let obj = docs[0].as_object().ok_or_else(|| {
-                    hydration_error("Expected JSON object from exact key lookup".into())
-                })?;
-                let iid = super::hydration::extract_scalar_string(obj, "iid")
-                    .ok_or_else(|| hydration_error("Exact key lookup omitted its IID".into()))?;
-                if !type_bridge_contract::id::is_canonical_thing_iid(&iid) {
-                    return Err(hydration_error(
-                        "Exact key lookup returned a noncanonical IID".into(),
-                    ));
-                }
-                Ok(Some(iid))
-            }
-            n => Err(hydration_error(format!(
-                "Expected at most one exact key identity, got {n}"
-            ))),
-        },
-        QueryResult::Ok => Err(hydration_error(
-            "Expected Documents from exact key lookup, got Ok".into(),
-        )),
-        QueryResult::Rows(_) => Err(hydration_error(
-            "Expected Documents from exact key lookup, got Rows".into(),
-        )),
-    }
-}
-
 fn extract_exists(type_name: &str, result: QueryResult) -> Result<bool> {
     match result {
         QueryResult::Documents(documents) => Ok(!documents.is_empty()),
@@ -4832,164 +3648,4 @@ fn extract_rows(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::_attribute::ValueType;
-    use crate::_descriptor::OwnedAttributeDescriptor;
-
-    fn attribute(
-        field_name: &str,
-        attr_name: &str,
-        value_type: ValueType,
-    ) -> OwnedAttributeDescriptor {
-        OwnedAttributeDescriptor {
-            field_name: field_name.to_string(),
-            attr_name: attr_name.to_string(),
-            value_type,
-            annotations: vec![],
-            is_optional: false,
-            is_ordered: false,
-            doc: None,
-            meta: std::collections::BTreeMap::new(),
-        }
-    }
-
-    fn person_descriptor() -> EntityDescriptor {
-        EntityDescriptor {
-            type_name: "person".to_string(),
-            is_abstract: false,
-            parent_type: None,
-            owned_attributes: vec![
-                attribute("name", "name", ValueType::String),
-                attribute("age", "age", ValueType::Long),
-            ],
-            doc: None,
-            meta: std::collections::BTreeMap::new(),
-        }
-    }
-
-    fn item(pairs: &[(&str, AttributeValue)]) -> DynamicAttributeMap {
-        pairs
-            .iter()
-            .map(|(name, value)| (name.to_string(), value.clone()))
-            .collect()
-    }
-
-    #[test]
-    fn given_insert_builds_typed_header_and_rows() {
-        let descriptor = person_descriptor();
-        let items = vec![
-            item(&[
-                ("name", AttributeValue::String("alice".into())),
-                ("age", AttributeValue::Long(28)),
-            ]),
-            item(&[
-                ("age", AttributeValue::Long(26)),
-                ("name", AttributeValue::String("bob".into())),
-            ]),
-        ];
-
-        let (typeql, spec) =
-            given_entity_insert(&descriptor, &items, "$e").expect("homogeneous batch");
-
-        assert_eq!(
-            typeql,
-            "given $g0: string, $g1: integer, $g_row: integer;\n\
-             insert $e isa person, has name == $g0, has age == $g1;\n\
-             fetch { \"iid\": iid($e), \"row\": $g_row };"
-        );
-        assert_eq!(
-            spec.variables,
-            vec!["g0".to_string(), "g1".to_string(), "g_row".to_string()]
-        );
-        // The second item binds in a different order; the row is normalized
-        // to the first item's column layout, with the trailing row index.
-        assert_eq!(
-            spec.rows,
-            vec![
-                vec![
-                    GivenValue::String("alice".into()),
-                    GivenValue::Integer(28),
-                    GivenValue::Integer(0),
-                ],
-                vec![
-                    GivenValue::String("bob".into()),
-                    GivenValue::Integer(26),
-                    GivenValue::Integer(1),
-                ],
-            ]
-        );
-    }
-
-    #[test]
-    fn given_insert_resolves_field_names_to_attr_names() {
-        let mut descriptor = person_descriptor();
-        descriptor.owned_attributes[0] =
-            attribute("display_name", "display-name", ValueType::String);
-        let items = vec![item(&[(
-            "display_name",
-            AttributeValue::String("alice".into()),
-        )])];
-
-        let (typeql, _) = given_entity_insert(&descriptor, &items, "$e").expect("resolvable");
-        assert!(
-            typeql.contains("has display-name == $g0"),
-            "field name must resolve to the TypeDB attribute name: {typeql}"
-        );
-    }
-
-    #[test]
-    fn given_insert_rejects_heterogeneous_attribute_sets() {
-        let descriptor = person_descriptor();
-        let items = vec![
-            item(&[
-                ("name", AttributeValue::String("alice".into())),
-                ("age", AttributeValue::Long(28)),
-            ]),
-            item(&[("name", AttributeValue::String("bob".into()))]),
-        ];
-        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
-    }
-
-    #[test]
-    fn given_insert_rejects_mixed_value_types_per_column() {
-        let descriptor = person_descriptor();
-        let items = vec![
-            item(&[("age", AttributeValue::Long(28))]),
-            item(&[("age", AttributeValue::Double(26.5))]),
-        ];
-        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
-    }
-
-    #[test]
-    fn given_insert_rejects_unrepresentable_value_types() {
-        let mut descriptor = person_descriptor();
-        descriptor.owned_attributes[0] = attribute("price", "price", ValueType::Decimal);
-        let items = vec![item(&[("price", AttributeValue::Decimal("1.50".into()))])];
-        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
-    }
-
-    #[test]
-    fn given_insert_rejects_repeated_attribute_within_row() {
-        let descriptor = person_descriptor();
-        let items = vec![item(&[
-            ("name", AttributeValue::String("alice".into())),
-            ("name", AttributeValue::String("also-alice".into())),
-        ])];
-        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
-    }
-
-    #[test]
-    fn given_insert_rejects_unknown_attribute() {
-        let descriptor = person_descriptor();
-        let items = vec![item(&[("nickname", AttributeValue::String("al".into()))])];
-        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
-    }
-
-    #[test]
-    fn given_insert_rejects_empty_first_item() {
-        let descriptor = person_descriptor();
-        let items = vec![item(&[])];
-        assert!(given_entity_insert(&descriptor, &items, "$e").is_none());
-    }
-}
+mod preflight_tests;

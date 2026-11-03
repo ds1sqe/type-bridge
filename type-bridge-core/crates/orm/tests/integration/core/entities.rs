@@ -9,16 +9,22 @@ use type_bridge_orm::*;
 async fn dynamic_entity_crud_against_typedb() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("entity").await;
-    let manager = DynamicEntityManager::new(&db, schema.person_descriptor());
+    let manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.person_descriptor());
 
     let alice_iid = manager
-        .insert(&person_attrs("Alice", 30))
+        .insert(&schema.person_attrs("Alice", 30))
         .await
-        .expect("entity insert should return IID");
+        .expect("entity insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     assert!(!alice_iid.is_empty());
 
     let rows = manager
-        .get(&[Filter::string_eq("name", "Alice")])
+        .get(&[Filter::string_eq(&schema.name_attr, "Alice")])
         .await
         .expect("entity get should return rows");
     assert_eq!(rows.len(), 1);
@@ -28,7 +34,7 @@ async fn dynamic_entity_crud_against_typedb() {
     );
 
     manager
-        .update(Some(&alice_iid), &person_attrs("Alice", 31))
+        .update(Some(&alice_iid), &schema.person_attrs("Alice", 31))
         .await
         .expect("entity update should succeed");
 
@@ -43,7 +49,10 @@ async fn dynamic_entity_crud_against_typedb() {
     );
 
     let put_iids = manager
-        .put_many(&[person_attrs("Bob", 40), person_attrs("Carol", 50)])
+        .put_many(&[
+            schema.person_attrs("Bob", 40),
+            schema.person_attrs("Carol", 50),
+        ])
         .await
         .expect("entity put_many should return IIDs");
     assert_eq!(put_iids.len(), 2);
@@ -51,7 +60,7 @@ async fn dynamic_entity_crud_against_typedb() {
     assert_eq!(manager.count().await.expect("entity count should work"), 3);
 
     let aggregate_rows = manager
-        .aggregate(&[], &[count_aggregate(), mean_age_aggregate()])
+        .aggregate(&[], &[count_aggregate(), schema.mean_age_aggregate()])
         .await
         .expect("entity aggregate should work");
     assert_eq!(aggregate_i64(&aggregate_rows[0], "count"), Some(3));
@@ -79,21 +88,32 @@ async fn dynamic_entity_crud_against_typedb() {
 async fn dynamic_entity_put_updates_existing_key_and_batch_delete_against_typedb() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("entity-put").await;
-    let manager = DynamicEntityManager::new(&db, schema.person_descriptor());
+    let manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.person_descriptor());
 
     let first_iid = manager
-        .put(&person_attrs("PutExisting", 20))
+        .put(&schema.person_attrs("PutExisting", 20))
         .await
-        .expect("initial put should return IID");
+        .expect("initial put should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let second_iid = manager
-        .put(&person_attrs("PutExisting", 21))
+        .put(&schema.person_attrs("PutExisting", 21))
         .await
-        .expect("second put should update existing keyed entity");
+        .expect("second put should update existing keyed entity")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     assert_eq!(first_iid, second_iid);
 
     let rows = manager
-        .get(&[Filter::string_eq("name", "PutExisting")])
+        .get(&[Filter::string_eq(&schema.name_attr, "PutExisting")])
         .await
         .expect("put row should be queryable");
     assert_eq!(rows.len(), 1);
@@ -104,8 +124,8 @@ async fn dynamic_entity_put_updates_existing_key_and_batch_delete_against_typedb
 
     let batch_iids = manager
         .insert_many(&[
-            person_attrs("DeleteBatchA", 30),
-            person_attrs("DeleteBatchB", 31),
+            schema.person_attrs("DeleteBatchA", 30),
+            schema.person_attrs("DeleteBatchB", 31),
         ])
         .await
         .expect("batch insert should return IIDs");
@@ -120,14 +140,14 @@ async fn dynamic_entity_put_updates_existing_key_and_batch_delete_against_typedb
 
     assert!(
         manager
-            .get(&[Filter::string_eq("name", "DeleteBatchA")])
+            .get(&[Filter::string_eq(&schema.name_attr, "DeleteBatchA")])
             .await
             .expect("deleted batch row lookup should succeed")
             .is_empty()
     );
     assert!(
         manager
-            .get(&[Filter::string_eq("name", "DeleteBatchB")])
+            .get(&[Filter::string_eq(&schema.name_attr, "DeleteBatchB")])
             .await
             .expect("deleted batch row lookup should succeed")
             .is_empty()

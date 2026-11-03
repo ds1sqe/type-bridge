@@ -172,8 +172,58 @@ entity party @abstract, owns identifier @key, plays membership:member;
 entity person sub party; entity company sub party;
 relation membership, relates member @card(1..2), owns note @card(0..1);";
 
+async fn raw_entity_rows(
+    db: &Database,
+    descriptor: &type_bridge_orm::_descriptor::EntityDescriptor,
+    expressions: &[type_bridge_orm::_dynamic::DynamicExpr],
+) -> Vec<type_bridge_orm::_dynamic::DynamicEntityRow> {
+    use type_bridge_orm::_manager::{hydration, query_builder};
+    let query = query_builder::build_dynamic_entity_expr_fetch(
+        descriptor,
+        expressions,
+        &[],
+        None,
+        None,
+        "$e",
+    )
+    .unwrap();
+    let QueryResult::Documents(documents) = db.execute_raw(&query, TxType::Read).await.unwrap()
+    else {
+        panic!("raw entity fetch must return documents");
+    };
+    documents
+        .iter()
+        .map(|document| hydration::hydrate_dynamic_entity(descriptor, document).unwrap())
+        .collect()
+}
+
+async fn raw_relation_rows(
+    db: &Database,
+    descriptor: &type_bridge_orm::_descriptor::RelationDescriptor,
+    expressions: &[type_bridge_orm::_dynamic::DynamicExpr],
+) -> Vec<type_bridge_orm::_dynamic::DynamicRelationRow> {
+    use type_bridge_orm::_manager::{hydration, query_builder};
+    let query = query_builder::build_dynamic_relation_expr_fetch(
+        descriptor,
+        expressions,
+        &[],
+        None,
+        None,
+        "$r",
+    )
+    .unwrap();
+    let QueryResult::Documents(documents) = db.execute_raw(&query, TxType::Read).await.unwrap()
+    else {
+        panic!("raw relation fetch must return documents");
+    };
+    documents
+        .iter()
+        .map(|document| hydration::hydrate_dynamic_relation(descriptor, document).unwrap())
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn registry_managers_and_nested_iids_match_legacy_results() {
+async fn registry_managers_and_nested_iids_match_raw_builder_results() {
     use std::sync::Arc;
     use type_bridge_orm::_dynamic::{DynamicComparisonOp, DynamicExpr, DynamicRolePlayerInput};
     use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
@@ -192,13 +242,17 @@ async fn registry_managers_and_nested_iids_match_legacy_results() {
     let person = registry.entity("person").unwrap();
     let planned =
         DynamicEntityManager::from_registry(&db, Arc::clone(&registry), Arc::clone(&person));
-    let legacy = DynamicEntityManager::new(&db, person);
     let first = planned
         .insert(&vec![(
             "identifier".into(),
             type_bridge_orm::AttributeValue::String("A".into()),
         )])
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     let second = planned
         .insert(&vec![(
@@ -206,6 +260,11 @@ async fn registry_managers_and_nested_iids_match_legacy_results() {
             type_bridge_orm::AttributeValue::String("B".into()),
         )])
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     assert_eq!(planned.count().await.unwrap(), 2);
     let iid_expression = db
@@ -223,7 +282,10 @@ async fn registry_managers_and_nested_iids_match_legacy_results() {
         inside_try.is_ok(),
         "IID predicate inside Try: {inside_try:?}"
     );
-    assert_eq!(planned.all().await.unwrap(), legacy.all().await.unwrap());
+    assert_eq!(
+        planned.all().await.unwrap(),
+        raw_entity_rows(&db, &person, &[]).await
+    );
     for expression in [
         DynamicExpr::Or {
             exprs: vec![
@@ -242,10 +304,7 @@ async fn registry_managers_and_nested_iids_match_legacy_results() {
                 .get_with_query(std::slice::from_ref(&expression), &[], None, None)
                 .await
                 .unwrap(),
-            legacy
-                .get_with_query(&[expression], &[], None, None)
-                .await
-                .unwrap()
+            raw_entity_rows(&db, &person, &[expression]).await
         );
     }
     assert!(
@@ -261,7 +320,6 @@ async fn registry_managers_and_nested_iids_match_legacy_results() {
     let membership = registry.relation("membership").unwrap();
     let relations =
         DynamicRelationManager::from_registry(&db, Arc::clone(&registry), Arc::clone(&membership));
-    let raw_relations = DynamicRelationManager::new(&db, membership);
     let relation_iid = relations
         .insert(
             &vec![(
@@ -276,6 +334,11 @@ async fn registry_managers_and_nested_iids_match_legacy_results() {
             }],
         )
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     let lookup = DynamicExpr::RolePlayer {
         role_name: "member".into(),
@@ -300,10 +363,7 @@ async fn registry_managers_and_nested_iids_match_legacy_results() {
             .get_with_query(std::slice::from_ref(&expression), &[], None, None)
             .await
             .unwrap(),
-        raw_relations
-            .get_with_query(&[expression], &[], None, None)
-            .await
-            .unwrap()
+        raw_relation_rows(&db, &membership, &[expression]).await
     );
     assert_eq!(
         relations
@@ -357,6 +417,11 @@ async fn registry_manager_heterogeneous_subtypes_keep_selection_evidence() {
                     AttributeValue::String(name.into()),
                 )])
                 .await
+                .unwrap()
+                .item()
+                .expect("one inserted root")
+                .iid
+                .clone()
                 .unwrap(),
         );
     }
@@ -398,13 +463,22 @@ async fn specialized_role_queries_keep_legacy_subtype_contract() {
         .replace("    membership: [member]", "    membership: [member]\n    employment: [employee]");
     let installed = party_projection_for_schema(&yaml);
     let registry = Arc::new(installed.match_registry().unwrap());
-    let people = DynamicEntityManager::new(&db, registry.entity("person").unwrap());
+    let people = DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("person").unwrap(),
+    );
     let person = people
         .insert(&vec![(
             "identifier".into(),
             AttributeValue::String("P".into()),
         )])
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     let player = |role: &str| DynamicRolePlayerInput {
         role_name: role.into(),
@@ -412,12 +486,33 @@ async fn specialized_role_queries_keep_legacy_subtype_contract() {
         iid: Some(person.clone()),
         key: None,
     };
-    let legacy = DynamicRelationManager::new(&db, registry.relation("membership").unwrap());
-    let membership = legacy.insert(&vec![], &[player("member")]).await.unwrap();
-    let employment = DynamicRelationManager::new(&db, registry.relation("employment").unwrap())
-        .insert(&vec![], &[player("employee")])
+    let legacy = DynamicRelationManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.relation("membership").unwrap(),
+    );
+    let membership = legacy
+        .insert(&vec![], &[player("member")])
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
+    let employment = DynamicRelationManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.relation("employment").unwrap(),
+    )
+    .insert(&vec![], &[player("employee")])
+    .await
+    .unwrap()
+    .item()
+    .expect("one inserted root")
+    .iid
+    .clone()
+    .unwrap();
     let planned = DynamicRelationManager::from_registry(
         &db,
         Arc::clone(&registry),
@@ -624,8 +719,9 @@ async fn dynamic_returning_deletes_preserve_subtype_and_relation_players() {
         .into_items()
         .pop()
         .expect("one written root");
-    let relations = DynamicRelationManager::new_canonical(
+    let relations = DynamicRelationManager::from_registry(
         &db,
+        installed.manager_registry().unwrap(),
         Arc::new(
             installed
                 .relation_descriptor(&relation_type)
@@ -655,8 +751,9 @@ async fn dynamic_returning_deletes_preserve_subtype_and_relation_players() {
             .unwrap()
             .is_some()
     );
-    let people = DynamicEntityManager::new_canonical(
+    let people = DynamicEntityManager::from_registry(
         &db,
+        installed.manager_registry().unwrap(),
         Arc::new(installed.entity_descriptor(&person_type).unwrap().clone()),
     );
     let snapshots = people
@@ -808,6 +905,11 @@ async fn registry_exact_updates_clear_optional_entity_and_relation_fields() {
             ("note".into(), AttributeValue::String("before".into())),
         ])
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     let player = DynamicRolePlayerInput {
         role_name: "member".into(),
@@ -821,6 +923,11 @@ async fn registry_exact_updates_clear_optional_entity_and_relation_fields() {
             std::slice::from_ref(&player),
         )
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     people.update_exact(&iid, &vec![]).await.unwrap();
     relations
@@ -2739,6 +2846,11 @@ async fn registry_relation_updates_refuse_unresolved_players_and_missing_roots()
             ("note".into(), AttributeValue::String("shared".into())),
         ])
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     people
         .insert(&vec![
@@ -2746,6 +2858,11 @@ async fn registry_relation_updates_refuse_unresolved_players_and_missing_roots()
             ("note".into(), AttributeValue::String("shared".into())),
         ])
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     let relations = DynamicRelationManager::from_registry(
         &db,
@@ -2767,6 +2884,11 @@ async fn registry_relation_updates_refuse_unresolved_players_and_missing_roots()
     let iid = relations
         .insert(&initial, std::slice::from_ref(&valid))
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     let missing_iid = DynamicRolePlayerInput {
         iid: Some("0x00".into()),
@@ -2975,6 +3097,11 @@ async fn registry_relation_update_emits_one_root_after_two_values_and_three_play
                 AttributeValue::String(index.to_string()),
             )])
             .await
+            .unwrap()
+            .item()
+            .expect("one inserted root")
+            .iid
+            .clone()
             .unwrap();
         players.push(DynamicRolePlayerInput {
             role_name: "member".into(),
@@ -2997,6 +3124,11 @@ async fn registry_relation_update_emits_one_root_after_two_values_and_three_play
     let iid = relations
         .insert(&notes("old1", "old2"), &players)
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     let tx = db
         .transaction_context_with_answer_limits(
@@ -3055,6 +3187,11 @@ async fn registry_relation_update_without_iid_keeps_multiple_root_semantics() {
             AttributeValue::String("shared".into()),
         )])
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     let player = DynamicRolePlayerInput {
         role_name: "member".into(),
@@ -3071,10 +3208,20 @@ async fn registry_relation_update_without_iid_keeps_multiple_root_semantics() {
     let first = relations
         .insert(&note("first"), std::slice::from_ref(&player))
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     let second = relations
         .insert(&note("second"), std::slice::from_ref(&player))
         .await
+        .unwrap()
+        .item()
+        .expect("one inserted root")
+        .iid
+        .clone()
         .unwrap();
     relations
         .update(None, &note("updated"), &[player])

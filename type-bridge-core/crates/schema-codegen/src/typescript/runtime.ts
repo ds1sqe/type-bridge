@@ -1447,7 +1447,7 @@ function projectedManagerForNative<Complete>(
           "projected insert requires the manager's exact complete model",
         );
       }
-      return writeResult([hydrateNativeResult<Complete>(native.insertJson(JSON.stringify(wire)), typeKey)]);
+      return writeResult(hydrateNativeResults<Complete>(native.insertJson(JSON.stringify(wire)), typeKey));
     },
     insertMany(instances: readonly Complete[]): readonly Complete[] {
       const wires = lowerManagerBatch(instances, typeKey, "insertMany");
@@ -1464,7 +1464,7 @@ function projectedManagerForNative<Complete>(
           "projected put requires the manager's exact complete model",
         );
       }
-      return writeResult([hydrateNativeResult<Complete>(native.putJson(JSON.stringify(wire)), typeKey)]);
+      return writeResult(hydrateNativeResults<Complete>(native.putJson(JSON.stringify(wire)), typeKey));
     },
     putMany(instances: readonly Complete[]): readonly Complete[] {
       const wires = lowerManagerBatch(instances, typeKey, "putMany");
@@ -1486,7 +1486,7 @@ function projectedManagerForNative<Complete>(
           "projected update requires the manager's exact complete model",
         );
       }
-      return writeResult([hydrateNativeResult<Complete>(native.updateJson(iid, JSON.stringify(wire)), typeKey)]);
+      return writeResult(hydrateNativeResults<Complete>(native.updateJson(iid, JSON.stringify(wire)), typeKey));
     },
     delete(instanceOrIid: Complete | string): void {
       requireLiveSnapshot(instanceOrIid);

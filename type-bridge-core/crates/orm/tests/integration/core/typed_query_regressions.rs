@@ -59,15 +59,23 @@ async fn typed_hydration_preserves_long_values_above_json_safe_integer_range() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("typed-long-precision").await;
     let descriptor = schema.person_descriptor();
-    let manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let manager = DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
     const VALUE: i64 = 9_007_199_254_740_993;
     manager
         .insert(&vec![
-            ("name".into(), AttributeValue::String("LargeLong".into())),
-            ("age".into(), AttributeValue::Long(VALUE)),
+            (
+                schema.name_attr.clone(),
+                AttributeValue::String("LargeLong".into()),
+            ),
+            (schema.age_attr.clone(), AttributeValue::Long(VALUE)),
         ])
         .await
-        .expect("large integer fixture should insert losslessly");
+        .expect("large integer fixture should insert losslessly")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let registry = DescriptorRegistry::new();
     registry
@@ -103,17 +111,25 @@ async fn typed_hydration_accepts_real_driver_fractional_decimal_spelling() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("typed-fractional-decimal").await;
     let descriptor = schema.person_descriptor();
-    let manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let manager = DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
     manager
         .insert(&vec![
             (
-                "name".into(),
+                schema.name_attr.clone(),
                 AttributeValue::String("FractionalDecimal".into()),
             ),
-            ("balance".into(), AttributeValue::Decimal("1234.56".into())),
+            (
+                schema.balance_attr.clone(),
+                AttributeValue::Decimal("1234.56".into()),
+            ),
         ])
         .await
-        .expect("fractional decimal fixture should insert");
+        .expect("fractional decimal fixture should insert")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let registry = DescriptorRegistry::new();
     registry

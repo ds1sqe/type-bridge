@@ -230,38 +230,6 @@ pub fn hydrate_dynamic_relation_identity(
     Ok(DynamicRelationIdentity { iid, type_name })
 }
 
-pub(crate) fn extract_scalar_identity(root: &str, doc: &serde_json::Value) -> Result<String> {
-    let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
-        type_name: root.into(),
-        message: "Player resolution returned a non-object".into(),
-    })?;
-    let value = obj.get("iid").ok_or_else(|| OrmError::Hydration {
-        type_name: root.into(),
-        message: "Player resolution omitted its IID".into(),
-    })?;
-    let scalar = value.get("value").unwrap_or(value);
-    let iid = scalar
-        .as_str()
-        .ok_or_else(|| OrmError::Hydration {
-            type_name: root.into(),
-            message: "Player resolution returned a nonstring IID".into(),
-        })?
-        .to_string();
-    if iid.trim().is_empty() {
-        return Err(OrmError::Hydration {
-            type_name: root.into(),
-            message: "Player resolution returned a blank IID".into(),
-        });
-    }
-    if !type_bridge_contract::id::is_canonical_thing_iid(&iid) {
-        return Err(OrmError::Hydration {
-            type_name: root.into(),
-            message: "Player resolution returned a noncanonical IID".into(),
-        });
-    }
-    Ok(iid)
-}
-
 fn relation_identity_scalar(
     obj: &serde_json::Map<String, serde_json::Value>,
     key: &str,

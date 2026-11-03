@@ -245,9 +245,8 @@ async fn query_with_gt_filter() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let _ = manager
-        .query()
         .filter(Expr::gt("age", AttributeValue::Long(18)))
         .execute()
         .await
@@ -265,9 +264,8 @@ async fn query_with_string_contains() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let _ = manager
-        .query()
         .filter(Expr::contains("name", "Ali"))
         .execute()
         .await
@@ -288,9 +286,8 @@ async fn query_with_and_expression() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let _ = manager
-        .query()
         .filter(Expr::And(vec![
             Expr::gte("age", AttributeValue::Long(18)),
             Expr::lte("age", AttributeValue::Long(65)),
@@ -311,9 +308,8 @@ async fn query_with_or_expression() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let _ = manager
-        .query()
         .filter(Expr::Or(vec![
             Expr::eq("name", AttributeValue::String("Alice".into())),
             Expr::eq("name", AttributeValue::String("Bob".into())),
@@ -333,9 +329,8 @@ async fn query_with_not_expression() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let _ = manager
-        .query()
         .filter(Expr::not(Expr::eq(
             "name",
             AttributeValue::String("Bob".into()),
@@ -358,9 +353,8 @@ async fn query_with_sort() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let _ = manager
-        .query()
         .order_by("name", SortDir::Asc)
         .execute()
         .await
@@ -378,8 +372,8 @@ async fn query_with_limit_offset() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
-    let _ = manager.query().limit(10).offset(5).execute().await.unwrap();
+    let manager = EntityQuery::<Person>::new(&db);
+    let _ = manager.limit(10).offset(5).execute().await.unwrap();
 
     let recorded = queries.lock().unwrap();
     let q = &recorded[0];
@@ -395,9 +389,8 @@ async fn query_execute_returns_entities() {
     ])]);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let people = manager
-        .query()
         .filter(Expr::gte("age", AttributeValue::Long(20)))
         .execute()
         .await
@@ -414,9 +407,8 @@ async fn query_first_returns_single() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let person = manager
-        .query()
         .filter(Expr::eq("name", AttributeValue::String("Alice".into())))
         .first()
         .await
@@ -435,8 +427,8 @@ async fn query_first_returns_none_when_empty() {
     let backend = MockBackend::new(vec![QueryResult::Documents(vec![])]);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
-    let person = manager.query().first().await.unwrap();
+    let manager = EntityQuery::<Person>::new(&db);
+    let person = manager.first().await.unwrap();
 
     assert!(person.is_none());
 }
@@ -449,9 +441,8 @@ async fn query_count_returns_value() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let count = manager
-        .query()
         .filter(Expr::gte("age", AttributeValue::Long(18)))
         .count()
         .await
@@ -473,9 +464,8 @@ async fn query_aggregate_sum() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let result = manager
-        .query()
         .aggregate(&[Agg::Sum("age".to_string())])
         .await
         .unwrap();
@@ -494,9 +484,8 @@ async fn query_chain_all_modifiers() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let people = manager
-        .query()
         .filter(Expr::gte("age", AttributeValue::Long(18)))
         .filter(Expr::lte("age", AttributeValue::Long(65)))
         .order_by("name", SortDir::Asc)
@@ -527,9 +516,8 @@ async fn relation_query_with_filter() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationManager::<Friendship>::new(&db);
+    let manager = RelationQuery::<Friendship>::new(&db);
     let results = manager
-        .query()
         .filter(Expr::eq(
             "since",
             AttributeValue::String("2024-01-01".into()),
@@ -559,9 +547,8 @@ async fn relation_query_with_sort_and_limit() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationManager::<Friendship>::new(&db);
+    let manager = RelationQuery::<Friendship>::new(&db);
     let _ = manager
-        .query()
         .order_by("since", SortDir::Desc)
         .limit(5)
         .execute()
@@ -582,8 +569,8 @@ async fn relation_query_count() {
     ])]);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationManager::<Friendship>::new(&db);
-    let count = manager.query().count().await.unwrap();
+    let manager = RelationQuery::<Friendship>::new(&db);
+    let count = manager.count().await.unwrap();
 
     assert_eq!(count, 7);
 }
@@ -596,8 +583,8 @@ async fn relation_query_first() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationManager::<Friendship>::new(&db);
-    let result = manager.query().first().await.unwrap();
+    let manager = RelationQuery::<Friendship>::new(&db);
+    let result = manager.first().await.unwrap();
 
     assert!(result.is_some());
     assert_eq!(result.unwrap().since.0, "2024-01-01");
@@ -615,8 +602,8 @@ async fn relation_query_aggregate() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationManager::<Friendship>::new(&db);
-    let result = manager.query().aggregate(&[Agg::Count]).await.unwrap();
+    let manager = RelationQuery::<Friendship>::new(&db);
+    let result = manager.aggregate(&[Agg::Count]).await.unwrap();
 
     assert_eq!(result.count(), Some(10));
 
@@ -632,9 +619,8 @@ async fn query_with_like_filter() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let _ = manager
-        .query()
         .filter(Expr::like("name", "Ali.*"))
         .execute()
         .await
@@ -655,9 +641,8 @@ async fn query_multiple_sort_fields() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let _ = manager
-        .query()
         .order_by("age", SortDir::Desc)
         .order_by("name", SortDir::Asc)
         .execute()
@@ -679,9 +664,8 @@ async fn query_with_in_range() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let _ = manager
-        .query()
         .filter(Expr::in_range(
             "age",
             AttributeValue::Long(20),
@@ -703,9 +687,8 @@ async fn query_with_startswith() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let _ = manager
-        .query()
         .filter(Expr::startswith("name", "Ali"))
         .execute()
         .await
@@ -726,9 +709,8 @@ async fn query_with_endswith() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let _ = manager
-        .query()
         .filter(Expr::endswith("name", "ice"))
         .execute()
         .await
@@ -754,9 +736,8 @@ async fn entity_group_by_aggregate() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let result = manager
-        .query()
         .group_by("department")
         .aggregate(&[Agg::Mean("age".into())])
         .await
@@ -791,9 +772,8 @@ async fn entity_group_by_with_filter() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityManager::<Person>::new(&db);
+    let manager = EntityQuery::<Person>::new(&db);
     let result = manager
-        .query()
         .filter(Expr::gte("age", AttributeValue::Long(18)))
         .group_by("department")
         .aggregate(&[Agg::Count])
@@ -817,9 +797,8 @@ async fn relation_group_by_aggregate() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationManager::<Friendship>::new(&db);
+    let manager = RelationQuery::<Friendship>::new(&db);
     let result = manager
-        .query()
         .group_by("since")
         .aggregate(&[Agg::Count])
         .await
@@ -843,9 +822,8 @@ async fn relation_query_with_role_player_filter() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationManager::<Friendship>::new(&db);
+    let manager = RelationQuery::<Friendship>::new(&db);
     let _ = manager
-        .query()
         .filter(Expr::role_player(
             "friend",
             Expr::gt("age", AttributeValue::Long(30)),
@@ -877,9 +855,8 @@ async fn relation_query_with_multiple_role_player_filters() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationManager::<Friendship>::new(&db);
+    let manager = RelationQuery::<Friendship>::new(&db);
     let _ = manager
-        .query()
         .filter(Expr::role_player(
             "friend",
             Expr::gt("age", AttributeValue::Long(18)),

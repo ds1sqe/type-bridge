@@ -172,6 +172,25 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Removed `DynamicEntityManager::new` and `DynamicEntityManager::new_canonical`;
+  use `DynamicEntityManager::from_registry`. Removed
+  `DynamicEntityManager::with_transaction` and
+  `DynamicEntityManager::with_canonical_transaction`; use
+  `DynamicEntityManager::with_registry_transaction`.
+- Removed `DynamicRelationManager::new` and
+  `DynamicRelationManager::new_canonical`; use
+  `DynamicRelationManager::from_registry`. Removed
+  `DynamicRelationManager::with_transaction` and
+  `DynamicRelationManager::with_canonical_transaction`; use
+  `DynamicRelationManager::with_registry_transaction`.
+- Removed `EntityManager<T>::new` and `RelationManager<R>::new`; use their
+  `::from_registry` constructors with installed schema authority.
+- Core dynamic single writes return `WriteResult<DynamicEntityRow>` or
+  `WriteResult<DynamicRelationRow>`; generic single writes return
+  `WriteResult<T>` or `WriteResult<R>`. This includes exact put/update and
+  returning deletes. Use `item()` only for one root or iterate `items()`;
+  an input's IID is attached only when exactly one root was returned.
+
 - Python single-item manager `insert`, `put`, `update`, and `delete_returning`
   return `WriteResult` with `count`, all hydrated `items`, and `item` only for
   exactly one root. Replace `x = manager.insert(...)` with

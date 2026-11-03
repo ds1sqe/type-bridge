@@ -3552,13 +3552,13 @@ impl NodeProjectedModelManager {
             .transpose()
     }
 
-    /// Insert one exact complete value and return its hydrated private wire.
+    /// Insert an exact complete input and return all hydrated private wires.
     #[napi(js_name = "insertJson")]
     pub fn insert_json(&self, instance_json: String) -> napi::Result<String> {
-        let mut instance = parse_wire(&instance_json)?;
+        let instance = parse_wire(&instance_json)?;
         ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
         self.validate_ordered_single_write(&instance)?;
-        let iid = match self.descriptor()? {
+        let items = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
@@ -3570,6 +3570,10 @@ impl NodeProjectedModelManager {
                 self.runtime
                     .block_on(manager.insert(&attributes))
                     .map_err(orm_error)?
+                    .into_items()
+                    .into_iter()
+                    .map(|row| hydrate_entity(self.package.as_ref(), &self.type_id, &row))
+                    .collect::<napi::Result<Vec<_>>>()?
             }
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
@@ -3584,10 +3588,13 @@ impl NodeProjectedModelManager {
                 self.runtime
                     .block_on(manager.insert(&attributes, &roles))
                     .map_err(orm_error)?
+                    .into_items()
+                    .into_iter()
+                    .map(|row| hydrate_relation(self.package.as_ref(), &self.type_id, &row))
+                    .collect::<napi::Result<Vec<_>>>()?
             }
         };
-        instance.iid = Some(iid);
-        wire_json(&instance)
+        serde_json::to_string(&items).map_err(json_error)
     }
 
     /// Insert exact complete values atomically and return hydrated wires in input order.
@@ -3596,13 +3603,13 @@ impl NodeProjectedModelManager {
         self.write_many_json(&batch_json, false)
     }
 
-    /// Insert or update one exact complete value and return its hydrated private wire.
+    /// Put an exact complete input and return all hydrated private wires.
     #[napi(js_name = "putJson")]
     pub fn put_json(&self, instance_json: String) -> napi::Result<String> {
-        let mut instance = parse_wire(&instance_json)?;
+        let instance = parse_wire(&instance_json)?;
         ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
         self.validate_ordered_single_write(&instance)?;
-        let iid = match self.descriptor()? {
+        let items = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
@@ -3614,6 +3621,10 @@ impl NodeProjectedModelManager {
                 self.runtime
                     .block_on(manager.put_exact(&attributes))
                     .map_err(orm_error)?
+                    .into_items()
+                    .into_iter()
+                    .map(|row| hydrate_entity(self.package.as_ref(), &self.type_id, &row))
+                    .collect::<napi::Result<Vec<_>>>()?
             }
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
@@ -3628,10 +3639,13 @@ impl NodeProjectedModelManager {
                 self.runtime
                     .block_on(manager.put_exact(&attributes, &roles))
                     .map_err(orm_error)?
+                    .into_items()
+                    .into_iter()
+                    .map(|row| hydrate_relation(self.package.as_ref(), &self.type_id, &row))
+                    .collect::<napi::Result<Vec<_>>>()?
             }
         };
-        instance.iid = Some(iid);
-        wire_json(&instance)
+        serde_json::to_string(&items).map_err(json_error)
     }
 
     /// Put exact complete values atomically and return hydrated wires in input order.
@@ -3647,7 +3661,7 @@ impl NodeProjectedModelManager {
         ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
         self.validate_ordered_single_write(&instance)?;
         ensure_iid(&iid)?;
-        let stored = match self.descriptor()? {
+        let items = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
@@ -3660,7 +3674,10 @@ impl NodeProjectedModelManager {
                     .runtime
                     .block_on(manager.update_and_get_exact(&iid, &attributes))
                     .map_err(orm_error)?;
-                hydrate_entity(self.package.as_ref(), &self.type_id, &row)?
+                row.into_items()
+                    .into_iter()
+                    .map(|row| hydrate_entity(self.package.as_ref(), &self.type_id, &row))
+                    .collect::<napi::Result<Vec<_>>>()?
             }
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
@@ -3676,10 +3693,13 @@ impl NodeProjectedModelManager {
                     .runtime
                     .block_on(manager.update_and_get_exact(&iid, &attributes, &roles))
                     .map_err(orm_error)?;
-                hydrate_relation(self.package.as_ref(), &self.type_id, &row)?
+                row.into_items()
+                    .into_iter()
+                    .map(|row| hydrate_relation(self.package.as_ref(), &self.type_id, &row))
+                    .collect::<napi::Result<Vec<_>>>()?
             }
         };
-        wire_json(&stored)
+        serde_json::to_string(&items).map_err(json_error)
     }
 
     /// Delete one exact value and retain its stored pre-delete snapshot.
@@ -8059,12 +8079,10 @@ entities:
             let (database, state) = projection_recording_database_for_test(vec![
                 ProjectionRecordingResponse::Query(QueryResult::Documents(vec![
                     serde_json::json!({
-                        "ordinal": 0, "_iid": "0xa1", "_type": "group", "attributes": {"tag": []}
+                        "_iid": "0xa1", "_type": "group", "attributes": {}
                     }),
                 ])),
-                ProjectionRecordingResponse::Query(QueryResult::Documents(vec![
-                    serde_json::json!({"ordinal": 0}),
-                ])),
+                ProjectionRecordingResponse::Query(QueryResult::Rows(vec![serde_json::json!({})])),
             ]);
             let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
             let transaction = borrowed.then(|| {
@@ -8085,10 +8103,13 @@ entities:
                 runtime: Arc::clone(&runtime),
                 filters: Vec::new(),
             };
-            let snapshot = manager
+            let mut snapshots = manager
                 .delete_by_iid_returning("0xa1".into())
-                .unwrap()
-                .unwrap();
+                .unwrap_or_else(|error| {
+                    panic!("{error:?}; queries={:?}", state.lock().unwrap().queries)
+                });
+            assert_eq!(snapshots.len(), 1);
+            let snapshot = snapshots.remove(0);
             assert!(snapshot.deleted());
             assert_eq!(snapshot.thing.iid(), "0xa1");
             assert_eq!(
@@ -8120,7 +8141,11 @@ entities:
         use type_bridge_orm::TxType;
         use type_bridge_orm::session::backend::QueryResult;
 
-        let runtime_projection = ordered_runtime();
+        let schema = ORDERED_SCHEMA.replace(
+            "      subject:\n        card: { min: 0, max: 4 }\n        ordered: true\n        distinct: true",
+            "      subject:\n        card: { min: 0, max: 4 }",
+        );
+        let runtime_projection = runtime_for_schema(&schema, "node-unordered-batch-atomicity.yaml");
         let cases = [
             (
                 TypeId::new(TypeKind::Entity, "group").unwrap(),
@@ -8132,7 +8157,6 @@ entities:
                     values: BTreeMap::from([("tag".into(), Value::Array(Vec::new()))]),
                 },
                 "group",
-                "0xa1",
                 serde_json::json!({
                     "ordinal": 0,
                     "_iid": "0xa1",
@@ -8162,47 +8186,29 @@ entities:
                     )]),
                 },
                 "activity-link",
-                "0xe1",
                 serde_json::json!({
                     "ordinal": 0,
                     "_iid": "0xe1",
                     "_type": "plain-activity",
                     "attributes": {},
-                    "role_players": [],
+                    "_role_0_players": [{"_iid":"0xd1", "_type":"plain-activity", "attributes":{}}],
                 }),
             ),
         ];
 
-        for (type_id, wire, provider_label, iid, malformed_hydration) in cases {
+        for (type_id, wire, provider_label, malformed_hydration) in cases {
             for (borrowed, rollback_first) in [(false, false), (true, false), (true, true)] {
                 for hydration_failure in [false, true] {
                     let relation = type_id.kind() == TypeKind::Relation;
-                    let mut responses = Vec::new();
-                    if relation {
-                        responses.push(ProjectionRecordingResponse::Query(QueryResult::Documents(
-                            vec![serde_json::json!({
-                                "kind": 1,
-                                "ordinal": 0,
-                                "reference_ordinal": 0,
-                                "iid": "0xd1",
-                                "type": "plain-activity",
-                            })],
-                        )));
-                    }
-                    if hydration_failure {
-                        responses.extend([
-                            ProjectionRecordingResponse::Query(QueryResult::Documents(vec![
-                                serde_json::json!({"ordinal": 0, "iid": iid}),
-                            ])),
-                            ProjectionRecordingResponse::Query(QueryResult::Documents(vec![
-                                malformed_hydration.clone(),
-                            ])),
-                        ]);
+                    let responses = if hydration_failure {
+                        vec![ProjectionRecordingResponse::Query(QueryResult::Documents(
+                            vec![malformed_hydration.clone()],
+                        ))]
                     } else {
-                        responses.push(ProjectionRecordingResponse::Failure {
+                        vec![ProjectionRecordingResponse::Failure {
                             provider_failure: true,
-                        });
-                    }
+                        }]
+                    };
                     let (database, state) = projection_recording_database_for_test(responses);
                     let provider_runtime = Arc::new(
                         ProviderRuntimeOwner::new()
@@ -8240,17 +8246,23 @@ entities:
                         .unwrap_err();
                     if hydration_failure {
                         assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
-                        assert_eq!(diagnostic.code().as_str(), "hydrated_type_mismatch");
+                        assert_eq!(
+                            diagnostic.code().as_str(),
+                            if relation {
+                                "query_remote_v3_document_type"
+                            } else {
+                                "query_remote_v3_answer_kind"
+                            },
+                            "relation={relation}; queries={:?}",
+                            state.lock().unwrap().queries
+                        );
                     } else {
                         assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Provider);
                     }
 
                     let state = state.lock().unwrap();
                     assert_eq!(state.opens, ["write"]);
-                    assert_eq!(
-                        state.queries.len(),
-                        1 + usize::from(relation) + usize::from(hydration_failure)
-                    );
+                    assert_eq!(state.queries.len(), 1);
                     assert!(
                         state
                             .queries
@@ -9760,11 +9772,8 @@ plays:
             ])
         };
         let (database, state) = projection_recording_database_for_test(vec![
-            ProjectionRecordingResponse::Query(QueryResult::Rows(vec![
-                json!({"root0":{"kind":"thing", "iid":"0x20", "type_id":{"kind":"entity", "label":"person"}}}),
-            ])),
             ProjectionRecordingResponse::Query(row(3)),
-            ProjectionRecordingResponse::Query(QueryResult::Rows(vec![json!({})])),
+            ProjectionRecordingResponse::Query(row(3)),
             ProjectionRecordingResponse::Query(row(4)),
             ProjectionRecordingResponse::Query(QueryResult::Rows(vec![json!({})])),
         ]);
@@ -9793,13 +9802,17 @@ plays:
             })
             .unwrap()
         };
-        let inserted = parse_wire(&manager.insert_json(input("3")).unwrap()).unwrap();
-        assert_eq!(inserted.iid.as_deref(), Some("0x20"));
+        let inserted: Vec<ProjectedWire> =
+            serde_json::from_str(&manager.insert_json(input("3")).unwrap()).unwrap();
+        assert_eq!(inserted.len(), 1);
+        assert_eq!(inserted[0].iid.as_deref(), Some("0x20"));
         let stored: Option<ProjectedWire> =
             serde_json::from_str(&manager.get_by_iid_json("0x20".into()).unwrap()).unwrap();
         assert_eq!(stored.unwrap().values["score"]["value"]["value"], "3");
-        let updated = parse_wire(&manager.update_json("0x20".into(), input("4")).unwrap()).unwrap();
-        assert_eq!(updated.values["score"]["value"]["value"], "4");
+        let updated: Vec<ProjectedWire> =
+            serde_json::from_str(&manager.update_json("0x20".into(), input("4")).unwrap()).unwrap();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].values["score"]["value"]["value"], "4");
         manager.delete_by_iid("0x20".into()).unwrap();
         let registry = Arc::new(installed.package.projection.match_registry().unwrap());
         let session = type_bridge_orm::SessionHandle::new(Arc::clone(&registry));
@@ -9817,7 +9830,7 @@ plays:
         assert_eq!(error.code().as_str(), "schema_authority_required");
         transaction.rollback().unwrap();
         let state = state.lock().unwrap();
-        assert_eq!(state.queries.len(), 5);
+        assert_eq!(state.queries.len(), 4);
         assert_eq!(state.opens, ["write"]);
         assert_eq!(state.rollbacks, 1);
     }

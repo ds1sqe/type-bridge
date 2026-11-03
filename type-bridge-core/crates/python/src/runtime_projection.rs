@@ -2760,7 +2760,8 @@ impl PyProjectedModelManager {
             let projected = self.insert_projected(py, &input)?;
             return self.publish_projected_write(instance, prepared, snapshot, projected);
         }
-        let iid = match self.descriptor()? {
+        let snapshot = snapshot_projected_instance(&instance)?;
+        let items = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     py,
@@ -2772,6 +2773,10 @@ impl PyProjectedModelManager {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
                 provider_block_on(py, self.runtime.as_ref(), manager.insert(&attributes))
                     .map_err(py_orm_error)?
+                    .into_items()
+                    .into_iter()
+                    .map(|row| hydrate_entity(py, self.package.as_ref(), &self.type_id, &row))
+                    .collect::<PyResult<Vec<_>>>()?
             }
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
@@ -2795,10 +2800,13 @@ impl PyProjectedModelManager {
                     manager.insert(&attributes, &players),
                 )
                 .map_err(py_orm_error)?
+                .into_items()
+                .into_iter()
+                .map(|row| hydrate_relation(py, self.package.as_ref(), &self.type_id, &row))
+                .collect::<PyResult<Vec<_>>>()?
             }
         };
-        instance.call_method1("attach_runtime_iid", (iid,))?;
-        py_write_result(py, vec![instance.unbind()])
+        self.publish_dynamic_write(instance, snapshot, items)
     }
 
     /// Insert exact generated models atomically and attach IIDs in input order.
@@ -2824,7 +2832,8 @@ impl PyProjectedModelManager {
             let projected = self.put_projected(py, &input)?;
             return self.publish_projected_write(instance, prepared, snapshot, projected);
         }
-        let iid = match self.descriptor()? {
+        let snapshot = snapshot_projected_instance(&instance)?;
+        let items = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     py,
@@ -2836,6 +2845,10 @@ impl PyProjectedModelManager {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
                 provider_block_on(py, self.runtime.as_ref(), manager.put_exact(&attributes))
                     .map_err(py_orm_error)?
+                    .into_items()
+                    .into_iter()
+                    .map(|row| hydrate_entity(py, self.package.as_ref(), &self.type_id, &row))
+                    .collect::<PyResult<Vec<_>>>()?
             }
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
@@ -2859,10 +2872,13 @@ impl PyProjectedModelManager {
                     manager.put_exact(&attributes, &players),
                 )
                 .map_err(py_orm_error)?
+                .into_items()
+                .into_iter()
+                .map(|row| hydrate_relation(py, self.package.as_ref(), &self.type_id, &row))
+                .collect::<PyResult<Vec<_>>>()?
             }
         };
-        instance.call_method1("attach_runtime_iid", (iid,))?;
-        py_write_result(py, vec![instance.unbind()])
+        self.publish_dynamic_write(instance, snapshot, items)
     }
 
     /// Put exact generated models atomically and attach IIDs in input order.
@@ -2889,7 +2905,8 @@ impl PyProjectedModelManager {
             let projected = self.update_projected(py, &iid, &input)?;
             return self.publish_projected_write(instance, prepared, snapshot, projected);
         }
-        let hydrated = match self.descriptor()? {
+        let snapshot = snapshot_projected_instance(&instance)?;
+        let items = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     py,
@@ -2905,7 +2922,10 @@ impl PyProjectedModelManager {
                     manager.update_and_get_exact(&iid, &attributes),
                 )
                 .map_err(py_orm_error)?;
-                hydrate_entity(py, self.package.as_ref(), &self.type_id, &row)?
+                row.into_items()
+                    .into_iter()
+                    .map(|row| hydrate_entity(py, self.package.as_ref(), &self.type_id, &row))
+                    .collect::<PyResult<Vec<_>>>()?
             }
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
@@ -2929,11 +2949,13 @@ impl PyProjectedModelManager {
                     manager.update_and_get_exact(&iid, &attributes, &players),
                 )
                 .map_err(py_orm_error)?;
-                hydrate_relation(py, self.package.as_ref(), &self.type_id, &row)?
+                row.into_items()
+                    .into_iter()
+                    .map(|row| hydrate_relation(py, self.package.as_ref(), &self.type_id, &row))
+                    .collect::<PyResult<Vec<_>>>()?
             }
         };
-        let item = replace_projected_instance(py, instance, hydrated)?;
-        py_write_result(py, vec![item])
+        self.publish_dynamic_write(instance, snapshot, items)
     }
 
     /// Replace exact generated models atomically and rehydrate them in input order.
@@ -3619,6 +3641,27 @@ impl PyProjectedModelManager {
             error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
         })
         .map_err(py_sdk_diagnostic)
+    }
+
+    fn publish_dynamic_write(
+        &self,
+        instance: Bound<'_, PyAny>,
+        snapshot: ProjectedFacadeSnapshot,
+        mut items: Vec<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let py = instance.py();
+        if items.len() == 1 {
+            let output = py_write_result(py, vec![instance.clone().unbind()])?;
+            replace_projected_instance_atomic(
+                py,
+                &instance,
+                items.pop().expect("one root"),
+                &snapshot,
+            )?;
+            Ok(output)
+        } else {
+            py_write_result(py, items)
+        }
     }
 
     fn publish_projected_write(
@@ -18089,6 +18132,105 @@ class CyclicFinalizer:
                 item.getattr("iid").unwrap().extract::<String>().unwrap(),
                 "0x-event"
             );
+        });
+    }
+    #[test]
+    fn legacy_single_write_results_preserve_all_roots_and_attach_only_one_input() {
+        Python::initialize();
+        Python::attach(|py| {
+            for kind in [TypeKind::Entity, TypeKind::Relation] {
+                for count in [1usize, 2] {
+                    let (_, package) = install(py);
+                    let documents = ["0x30", "0x31"].into_iter().take(count).map(|iid| {
+                        if kind == TypeKind::Entity {
+                            serde_json::json!({"_iid":iid,"_type":"person","attributes":{"identifier":"legacy-person"}})
+                        } else {
+                            serde_json::json!({"_iid":iid,"_type":"membership","attributes":{},"_role_0_players":[{"_iid":"0x10","_type":"person","attributes":{"identifier":"legacy-player"}}]})
+                        }
+                    }).collect();
+                    let (database, state) =
+                        LegacyBatchRecordingBackend::fixture(vec![QueryResult::Documents(
+                            documents,
+                        )]);
+                    let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                    let label = if kind == TypeKind::Entity {
+                        "person"
+                    } else {
+                        "membership"
+                    };
+                    let manager = PyProjectedModelManager {
+                        transaction_supports_given_stage: false,
+                        package: Arc::clone(&package),
+                        type_id: package.type_by_label(label, kind).unwrap().clone(),
+                        target: Some(OwnedQueryTarget::Database(database)),
+                        successor_batch_marker: None,
+                        runtime,
+                        filters: Vec::new(),
+                        compatibility_filter: None,
+                    };
+                    assert!(!manager.uses_successor_runtime());
+                    let player = (kind == TypeKind::Relation)
+                        .then(|| legacy_person(py, package.as_ref(), "legacy-player", None));
+                    let input = if kind == TypeKind::Entity {
+                        legacy_person(py, package.as_ref(), "legacy-person", None)
+                    } else {
+                        legacy_membership(py, package.as_ref(), player.as_ref().unwrap(), None)
+                    };
+                    let values = input.bind(py).getattr("_values").unwrap();
+                    let result = manager.insert(py, input.bind(py).clone()).unwrap();
+                    let result = result.bind(py);
+                    assert_eq!(
+                        result.getattr("count").unwrap().extract::<usize>().unwrap(),
+                        count
+                    );
+                    let items = result.getattr("items").unwrap();
+                    assert_eq!(items.len().unwrap(), count);
+                    if count == 1 {
+                        assert_eq!(
+                            result.getattr("item").unwrap().as_ptr(),
+                            input.bind(py).as_ptr()
+                        );
+                        assert_eq!(
+                            input
+                                .bind(py)
+                                .getattr("iid")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            "0x30"
+                        );
+                    } else {
+                        assert!(result.getattr("item").unwrap().is_none());
+                        assert!(input.bind(py).getattr("iid").unwrap().is_none());
+                        assert_eq!(
+                            input.bind(py).getattr("_values").unwrap().as_ptr(),
+                            values.as_ptr()
+                        );
+                        for index in 0..count {
+                            assert_ne!(
+                                items.get_item(index).unwrap().as_ptr(),
+                                input.bind(py).as_ptr()
+                            );
+                        }
+                    }
+                    assert_eq!(
+                        items
+                            .get_item(0)
+                            .unwrap()
+                            .getattr("iid")
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        "0x30"
+                    );
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.opens, [TxType::Write]);
+                    assert_eq!(state.queries.len(), 1);
+                    assert_eq!(state.sdk_commits, 1);
+                    assert_eq!(state.legacy_commits, 0);
+                    assert_eq!(state.rollbacks, 0);
+                }
+            }
         });
     }
 }

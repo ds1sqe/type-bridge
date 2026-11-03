@@ -9,16 +9,22 @@ use type_bridge_orm::*;
 async fn dynamic_entity_all_primitive_attribute_values_against_typedb() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("attrs").await;
-    let manager = DynamicEntityManager::new(&db, schema.person_descriptor());
+    let manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.person_descriptor());
 
     let iid = manager
-        .insert(&all_value_attrs("AllTypes", 33))
+        .insert(&schema.all_value_attrs("AllTypes", 33))
         .await
-        .expect("entity insert with all primitive attributes should return IID");
+        .expect("entity insert with all primitive attributes should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     assert!(!iid.is_empty());
 
     let rows = manager
-        .get(&[Filter::string_eq("name", "AllTypes")])
+        .get(&[Filter::string_eq(&schema.name_attr, "AllTypes")])
         .await
         .expect("entity get should return rows");
     assert_eq!(rows.len(), 1);
@@ -62,22 +68,31 @@ async fn dynamic_entity_all_primitive_attribute_values_against_typedb() {
     );
 
     let updated_attrs = vec![
-        ("name".into(), AttributeValue::String("AllTypes".into())),
-        ("age".into(), AttributeValue::Long(34)),
-        ("score".into(), AttributeValue::Double(99.5)),
-        ("active".into(), AttributeValue::Boolean(false)),
-        ("birthday".into(), AttributeValue::Date("1991-03-04".into())),
         (
-            "login_at".into(),
+            schema.name_attr.clone(),
+            AttributeValue::String("AllTypes".into()),
+        ),
+        (schema.age_attr.clone(), AttributeValue::Long(34)),
+        (schema.score_attr.clone(), AttributeValue::Double(99.5)),
+        (schema.active_attr.clone(), AttributeValue::Boolean(false)),
+        (
+            schema.birthday_attr.clone(),
+            AttributeValue::Date("1991-03-04".into()),
+        ),
+        (
+            schema.login_at_attr.clone(),
             AttributeValue::DateTime("2026-05-28T11:45:00".into()),
         ),
         (
-            "seen_at".into(),
+            schema.seen_at_attr.clone(),
             AttributeValue::DateTimeTZ("2026-05-28T11:45:00+00:00".into()),
         ),
-        ("balance".into(), AttributeValue::Decimal("4321.00".into())),
         (
-            "session_length".into(),
+            schema.balance_attr.clone(),
+            AttributeValue::Decimal("4321.00".into()),
+        ),
+        (
+            schema.session_length_attr.clone(),
             AttributeValue::Duration("PT45M".into()),
         ),
     ];
