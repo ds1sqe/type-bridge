@@ -43,6 +43,7 @@ pub(crate) fn napi_match_error(error: MatchError) -> napi::Error {
 pub(crate) fn napi_target_error(error: QueryTargetError) -> napi::Error {
     match error {
         QueryTargetError::Direct(error) => crate::napi_orm_error(error),
+        QueryTargetError::Commit(error) => napi_sdk_diagnostic(error.diagnostic()),
         QueryTargetError::Prepare(error) | QueryTargetError::Reply(error) => {
             crate::query_v2_model_remote_runtime::remote_model_error(error)
         }

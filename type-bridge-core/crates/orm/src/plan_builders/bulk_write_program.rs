@@ -138,6 +138,41 @@ impl WriteProgram {
             }
         }
     }
+    pub(crate) fn staged_entries(
+        &self,
+        authority: &PlanAuthority,
+    ) -> Result<Option<Vec<type_bridge_contract::query_remote_v3::StagedPlanV3>>, Diagnostic> {
+        use type_bridge_contract::query_remote_v3::StagedPlanV3;
+        let entry = |plan: &BuiltPlan| {
+            StagedPlanV3::new(
+                plan.local(),
+                plan.local().given_rows().unwrap_or_default().to_vec(),
+                authority.declared(),
+            )
+        };
+        match self {
+            Self::Compact(plans) => plans.iter().map(entry).collect::<Result<Vec<_>, _>>().map(Some),
+            Self::Sequential(plans) => plans.iter().map(|(plan, _)| entry(plan)).collect::<Result<Vec<_>, _>>().map(Some),
+            Self::Static(program) => Ok(Some(program.staged_entries())),
+            Self::Chain(programs) => {
+                let mut entries = Vec::with_capacity(programs.iter().map(Self::statement_count).sum());
+                for program in programs {
+                    let Some(group) = program.staged_entries(authority)? else { return Ok(None) };
+                    let offset = u32::try_from(entries.len()).map_err(|_| identity_error())?;
+                    for entry in group { entries.push(entry.rebase_result_refs(offset)?); }
+                }
+                Ok(Some(entries))
+            }
+            Self::Split(program) if program.steps.iter().all(|step| matches!(step, Step::Ready(step) if !step.reference_guard && step.reference_resolution.is_none() && !step.candidate_filter)) => {
+                program.steps.iter().map(|step| match step {
+                    Step::Ready(step) => entry(&step.plan),
+                    _ => unreachable!("fixed ready steps"),
+                }).collect::<Result<Vec<_>, _>>().map(Some)
+            }
+            Self::Split(_) | Self::MatchWide(_) | Self::References(_) => Ok(None),
+        }
+    }
+
     pub(crate) fn into_static(self) -> Result<Vec<BuiltPlan>, Diagnostic> {
         match self {
             Self::Compact(plans) => Ok(plans),

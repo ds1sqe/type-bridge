@@ -269,6 +269,12 @@ impl StaticProgram {
         Ok(program)
     }
 
+    pub(super) fn staged_entries(
+        &self,
+    ) -> Vec<type_bridge_contract::query_remote_v3::StagedPlanV3> {
+        self.entries.clone()
+    }
+
     pub(super) fn statement_count(&self) -> usize {
         self.entries.len()
     }
@@ -593,27 +599,30 @@ plays:
                         },
                     },
                 )];
-                let WriteProgram::Static(program) = super::super::match_put::wide_match(
-                    &authority,
-                    WriteShape {
-                        type_id: &relation,
-                        keys: &[],
-                        cleared_fields: &[],
-                        cleared_roles: &[],
-                        document_roles: vec![],
-                        include_subtypes: false,
-                        return_documents: true,
-                        references_see_prior_writes: true,
-                        single_input: true,
-                    },
-                    &WriteRow {
-                        iid: None,
-                        fields: &fields,
-                        players: &players,
-                    },
-                    0,
-                )
-                .unwrap() else {
+                let compile = || {
+                    super::super::match_put::wide_match(
+                        &authority,
+                        WriteShape {
+                            type_id: &relation,
+                            keys: &[],
+                            cleared_fields: &[],
+                            cleared_roles: &[],
+                            document_roles: vec![],
+                            include_subtypes: false,
+                            return_documents: true,
+                            references_see_prior_writes: true,
+                            single_input: true,
+                        },
+                        &WriteRow {
+                            iid: None,
+                            fields: &fields,
+                            players: &players,
+                        },
+                        0,
+                    )
+                    .unwrap()
+                };
+                let WriteProgram::Static(program) = compile() else {
                     panic!("scalar and role predicates must form one static proof")
                 };
                 let probe = &program.entries[0];
@@ -631,6 +640,32 @@ plays:
                 );
                 assert!(query.typeql.contains("300"));
                 assert!(!program.entries.last().unwrap().plan().writes());
+                let local = program.staged_entries();
+                let chain =
+                    WriteProgram::Chain(VecDeque::from([WriteProgram::Static(program), compile()]));
+                let exported = chain.staged_entries(&authority).unwrap().unwrap();
+                assert_eq!(exported.len(), 2 * local.len());
+                for (block, entries) in exported.chunks(local.len()).enumerate() {
+                    for (actual, expected) in entries.iter().zip(&local) {
+                        assert_eq!(
+                            *actual,
+                            expected
+                                .clone()
+                                .rebase_result_refs((block * local.len()) as u32)
+                                .unwrap()
+                        );
+                        for reference in actual.result_refs() {
+                            assert!(actual.rows().iter().all(|row| {
+                                row.values()[usize::from(reference.input.get())].is_none()
+                            }));
+                        }
+                    }
+                }
+                type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+                    &exported,
+                    authority.declared(),
+                )
+                .unwrap();
             }
         }
     }

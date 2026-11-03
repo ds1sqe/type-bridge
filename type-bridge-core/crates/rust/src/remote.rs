@@ -560,6 +560,7 @@ fn remote_not_bound() -> Error {
 pub(crate) fn target_error(error: QueryTargetError) -> Error {
     match error {
         QueryTargetError::Direct(error) => Error::from_orm_hydration(error),
+        QueryTargetError::Commit(error) => Error::from(*error),
         QueryTargetError::Prepare(error) => remote_model_input_error(error),
         QueryTargetError::Reply(error) => remote_model_hydration_error(error),
         QueryTargetError::Callback(error) => match error.downcast::<Error>() {

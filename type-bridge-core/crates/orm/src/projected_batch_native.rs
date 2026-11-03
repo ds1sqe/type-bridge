@@ -213,6 +213,113 @@ impl BatchPlan<'_> {
 }
 
 impl ProjectedBatchExecutor<'_> {
+    pub(crate) async fn execute_single_on_proxy_mapped<T, F>(
+        &self,
+        proxy: &crate::ProxyQueryConnection,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        mapper: F,
+    ) -> std::result::Result<T, crate::QueryTargetError>
+    where
+        F: FnOnce(
+            crate::WriteResult<ProjectedThing>,
+        ) -> std::result::Result<T, SdkExecutionDiagnostic>,
+    {
+        if !batch.is_single_write()
+            || batch.len() != 1
+            || batch.operation() == ProjectedBatchOperation::Delete
+        {
+            return Err(invalid_at_type(
+                "projected_crud_single_row_required",
+                "Single-write execution requires one create or update input",
+                batch.model(),
+            )
+            .into());
+        }
+        let prepared = PreparedProjectedBatchInvocation::try_new(
+            self.installed,
+            batch,
+            control.constrained_by(Some(proxy.answer_limits())),
+        )?;
+        let identity = proxy.execution_identity();
+        let query_limits = proxy
+            .manager_write_query_limits(prepared.deadline(), prepared.cancellation())
+            .await?;
+        let mut plan = BatchPlan::compile(
+            self.installed,
+            &prepared,
+            identity,
+            false,
+            query_limits.as_ref(),
+        )?;
+        let (mut program, mut ledger) = plan
+            .write_program
+            .take()
+            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+        let entries = program
+            .staged_entries(&plan.authority)
+            .map_err(diagnostic)?
+            .ok_or_else(|| {
+                SdkExecutionDiagnostic::unsupported_capability(
+                    SdkDiagnosticCode::new("manager_proxy_dynamic_dependencies")
+                        .expect("static code"),
+                    SdkDiagnosticMessage::new(
+                        "The effective proxy query limits require an unsupported write dependency graph",
+                    )
+                    .expect("static message"),
+                )
+            })?;
+        prepared.check_control()?;
+        proxy
+            .execute_write_stack_mapped(
+                entries,
+                prepared.limits(),
+                prepared.cancellation(),
+                prepared.deadline(),
+                |answers| {
+                    let mut consumer = HydrationConsumer::new(self, &plan, identity)?;
+                    for (_, row) in &plan.rows {
+                        consumer
+                            .targets
+                            .push(row_iid(row).unwrap_or_default().to_owned());
+                    }
+                    for answer in answers {
+                        let step = program
+                            .next()
+                            .map_err(diagnostic)?
+                            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+                        let records_answers = program.records_answers();
+                        program.record_answer(&step, &answer).map_err(diagnostic)?;
+                        if step.complete {
+                            accept_hydration_answer(step.plan.local(), answer, &mut consumer)?;
+                        } else if !records_answers {
+                            let iid = step.identity(&answer).map_err(diagnostic)?;
+                            program.accept_identity(&step, iid).map_err(diagnostic)?;
+                        }
+                    }
+                    if program.next().map_err(diagnostic)?.is_some() {
+                        return Err(SdkExecutionDiagnostic::internal_failure());
+                    }
+                    let snapshots = consumer.resolved_references.take();
+                    let things = consumer.finish()?;
+                    ledger.charge_projected(&things)?;
+                    for thing in &things {
+                        validate_written_role_identities(
+                            self.installed,
+                            &plan,
+                            thing,
+                            0,
+                            snapshots.as_ref().and_then(|snapshots| snapshots.get(&0)),
+                        )?;
+                    }
+                    prepared.check_control()?;
+                    mapper(crate::WriteResult::new(things))
+                },
+            )
+            .await
+            .map_err(|error| crate::QueryTargetError::Commit(Box::new(error)))
+    }
+
     pub(super) async fn run_native(
         &self,
         lease: &mut TransactionContextMutationLease,
@@ -893,6 +1000,29 @@ impl<R: FnMut(&AnswerItem) + Send> AnswerConsumer for Consumer<'_, R> {
             }
         }
     }
+}
+
+fn accept_hydration_answer(
+    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    answer: crate::query_plan_exec::PlanAnswer,
+    inner: &mut dyn AnswerConsumer,
+) -> std::result::Result<(), SdkExecutionDiagnostic> {
+    let crate::query_plan_exec::PlanAnswer::Documents(documents) = answer else {
+        return Err(SdkExecutionDiagnostic::internal_failure());
+    };
+    let mut consumer = Consumer {
+        record: &mut |_: &AnswerItem| {},
+        inner,
+        plan,
+        reply: Reply::Hydration,
+        deferred: None,
+    };
+    for document in documents {
+        consumer
+            .decode(AnswerItem::Document(document))
+            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

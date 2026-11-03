@@ -4384,6 +4384,7 @@ fn materialize_result(
 fn lower_target(error: type_bridge_orm::QueryTargetError) -> SdkExecutionDiagnostic {
     match error {
         type_bridge_orm::QueryTargetError::Direct(error) => lower(error),
+        type_bridge_orm::QueryTargetError::Commit(error) => error.diagnostic(),
         type_bridge_orm::QueryTargetError::Prepare(error)
         | type_bridge_orm::QueryTargetError::Reply(error) => lower_remote(error),
         type_bridge_orm::QueryTargetError::Interrupted(error) => error,

@@ -1914,6 +1914,7 @@ fn execute_and_materialize(
 pub(crate) fn py_query_target_error(error: QueryTargetError) -> PyErr {
     match error {
         QueryTargetError::Direct(error) => py_match_orm_error(error),
+        QueryTargetError::Commit(error) => py_sdk_diagnostic(error.diagnostic()),
         QueryTargetError::Prepare(error) | QueryTargetError::Reply(error) => {
             py_remote_model_error(error)
         }

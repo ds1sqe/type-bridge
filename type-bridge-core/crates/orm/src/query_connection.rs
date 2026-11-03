@@ -36,6 +36,9 @@ pub enum QueryTargetError {
     /// The direct executor refused or failed.
     #[error(transparent)]
     Direct(#[from] OrmError),
+    /// A staged write failed, retaining its atomic outcome and original cause.
+    #[error(transparent)]
+    Commit(#[from] Box<crate::session::staged::CommitError>),
     /// Preparing the proxy request failed.
     #[error(transparent)]
     Prepare(RemoteModelQueryV2Error),
@@ -55,6 +58,7 @@ impl std::fmt::Debug for QueryTargetError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Direct(error) => formatter.debug_tuple("Direct").field(error).finish(),
+            Self::Commit(error) => formatter.debug_tuple("Commit").field(error).finish(),
             Self::Prepare(error) => formatter.debug_tuple("Prepare").field(error).finish(),
             Self::Reply(error) => formatter.debug_tuple("Reply").field(error).finish(),
             Self::Interrupted(error) => formatter.debug_tuple("Interrupted").field(error).finish(),
@@ -70,6 +74,7 @@ impl QueryTargetError {
     pub fn into_diagnostic(self, operation: SdkProviderOperation) -> SdkExecutionDiagnostic {
         match self {
             Self::Direct(error) => crate::execution_diagnostic::lower_orm_error(&error, operation),
+            Self::Commit(error) => error.diagnostic(),
             Self::Prepare(error) | Self::Reply(error) => match error {
                 RemoteModelQueryV2Error::Diagnostic(error) => lower_remote_query_diagnostic(error),
                 RemoteModelQueryV2Error::Match(error) => {
@@ -598,6 +603,16 @@ impl ProxyQueryConnection {
             .check(cancellation)
             .map_err(CommitError::proxy_projection_failure)?;
         Ok(mapped)
+    }
+
+    pub(crate) async fn manager_write_query_limits(
+        &self,
+        deadline: QueryExecutionDeadline,
+        cancellation: &AnswerCancellation,
+    ) -> Result<Option<Arc<QueryLimits>>, QueryTargetError> {
+        self.ensure_staged_advertisement(deadline, cancellation)
+            .await?;
+        Ok(self.shared_query_limits())
     }
 
     pub(crate) async fn execute_read_plans(

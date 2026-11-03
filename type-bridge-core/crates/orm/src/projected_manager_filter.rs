@@ -1228,6 +1228,7 @@ fn lower_target_error(
 ) -> SdkExecutionDiagnostic {
     use crate::{QueryTargetError, RemoteModelQueryV2Error};
     match error {
+        QueryTargetError::Commit(error) => error.diagnostic(),
         QueryTargetError::Direct(error) => match first {
             Some(model) => lower_manager_first(error, model),
             None => lower_execution_error(error, SdkProviderOperation::Read),

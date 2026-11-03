@@ -38,6 +38,125 @@ impl ProjectedCrudExecutor<'_> {
         ProjectedBatch::try_single_write(self.installed, model.clone(), operation, row, control)
     }
 
+    /// Execute one single write on its connection-selected target.
+    #[doc(hidden)]
+    pub async fn execute_single_write_on_target<T, F>(
+        &self,
+        target: crate::QueryTarget<'_>,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        mapper: F,
+    ) -> Result<T, crate::QueryTargetError>
+    where
+        F: FnOnce(WriteResult<ProjectedThing>) -> Result<T, SdkExecutionDiagnostic>,
+    {
+        if !batch.is_single_write() || batch.len() != 1 {
+            return Err(single_batch_result_invalid(batch.model()).into());
+        }
+        match target {
+            crate::QueryTarget::Database(database) => self
+                .execute_controlled_single_write(
+                    WriteTarget::Database(database),
+                    batch,
+                    control,
+                    mapper,
+                )
+                .await
+                .map_err(Into::into),
+            crate::QueryTarget::Transaction(transaction) => self
+                .execute_controlled_single_write(
+                    WriteTarget::Transaction(transaction),
+                    batch,
+                    control,
+                    mapper,
+                )
+                .await
+                .map_err(Into::into),
+            crate::QueryTarget::Proxy(proxy) => {
+                self.execute_proxy_single_write(proxy, batch, control, mapper)
+                    .await
+            }
+        }
+    }
+
+    async fn execute_proxy_single_write<T, F>(
+        &self,
+        proxy: &crate::ProxyQueryConnection,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        mapper: F,
+    ) -> Result<T, crate::QueryTargetError>
+    where
+        F: FnOnce(WriteResult<ProjectedThing>) -> Result<T, SdkExecutionDiagnostic>,
+    {
+        let prepared = PreparedProjectedBatchInvocation::try_new(
+            self.installed,
+            batch,
+            control.constrained_by(Some(proxy.answer_limits())),
+        )?;
+        prepared.check_control()?;
+        let replacement = single_write_replacement(batch)?;
+        crate::projected_batch_executor::validate_provider_write_inputs(&[batch
+            .row_at(0)
+            .expect("one checked single write row")])?;
+        let identity = proxy.execution_identity();
+        let model = self.prepare_controlled_model(batch, replacement, identity)?;
+        let query_limits = proxy
+            .manager_write_query_limits(prepared.deadline(), prepared.cancellation())
+            .await?;
+        let authority = self
+            .installed
+            .plan_authority_with_query_limits(query_limits.as_ref())
+            .map_err(|error| plan_build_failure(&error, batch.model()))?;
+        let Some(single) = self.compile_controlled_write(batch, replacement, model, &authority)?
+        else {
+            return Box::pin(
+                ProjectedBatchExecutor::new(self.installed).execute_single_on_proxy_mapped(
+                    proxy,
+                    batch,
+                    prepared.into_control(),
+                    mapper,
+                ),
+            )
+            .await;
+        };
+        let entry = type_bridge_contract::query_remote_v3::StagedPlanV3::new(
+            single.plan.local(),
+            single
+                .plan
+                .local()
+                .given_rows()
+                .unwrap_or_default()
+                .to_vec(),
+            authority.declared(),
+        )
+        .map_err(|error| plan_build_failure(&error, batch.model()))?;
+        let mut ledger = ExecutionLedger::new(prepared.limits(), batch.resource_measure().bytes());
+        ledger.charge_preflight(0, 1)?;
+        proxy
+            .execute_write_stack_mapped(
+                vec![entry],
+                prepared.limits(),
+                prepared.cancellation(),
+                prepared.deadline(),
+                |mut answers| {
+                    if answers.len() != 1 {
+                        return Err(write_plan_invalid(batch.model()));
+                    }
+                    let Some(PlanAnswer::Documents(documents)) = answers.pop() else {
+                        return Err(write_plan_invalid(batch.model()));
+                    };
+                    let things =
+                        self.hydrate_controlled_documents(identity, batch, &single, &documents)?;
+                    ledger.charge_projected(things.items())?;
+                    prepared.check_control()?;
+                    mapper(things)
+                },
+            )
+            .await
+            .map_err(|error| crate::QueryTargetError::Commit(Box::new(error)))
+    }
+
     /// Execute one write and map its complete answer before committing.
     ///
     /// Binding compatibility adapters use this boundary to retain their result
@@ -218,18 +337,7 @@ impl ProjectedCrudExecutor<'_> {
         identity: &DatabaseExecutionIdentity,
         query_limits: Option<&Arc<type_bridge_contract::limits::QueryLimits>>,
     ) -> Result<Option<SingleWrite>, SdkExecutionDiagnostic> {
-        let replacement = match batch.row_at(0) {
-            Some((_, ProjectedBatchRow::Update { replacement, .. })) => replacement,
-            Some((_, ProjectedBatchRow::Create(create)))
-                if matches!(
-                    batch.operation(),
-                    ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put
-                ) =>
-            {
-                create
-            }
-            _ => return Err(single_batch_result_invalid(batch.model())),
-        };
+        let replacement = single_write_replacement(batch)?;
         crate::projected_batch_executor::validate_provider_write_inputs(&[batch
             .row_at(0)
             .expect("one validated write row")])?;
@@ -237,15 +345,34 @@ impl ProjectedCrudExecutor<'_> {
             .installed
             .plan_authority_with_query_limits(query_limits)
             .map_err(|error| plan_build_failure(&error, batch.model()))?;
-        let model = match batch.model().kind() {
-            TypeKind::Entity => WriteModel::Entity(self.prepare_entity_create(replacement)?),
+        let model = self.prepare_controlled_model(batch, replacement, identity)?;
+        self.compile_controlled_write(batch, replacement, model, &authority)
+    }
+
+    fn prepare_controlled_model(
+        &self,
+        batch: &ProjectedBatch,
+        replacement: &ProjectedCreate,
+        identity: &DatabaseExecutionIdentity,
+    ) -> Result<WriteModel, SdkExecutionDiagnostic> {
+        match batch.model().kind() {
+            TypeKind::Entity => Ok(WriteModel::Entity(self.prepare_entity_create(replacement)?)),
             TypeKind::Relation => {
                 let prepared = self.prepare_relation_create(replacement)?;
                 require_role_player_database_identity(&prepared, identity)?;
-                WriteModel::Relation(prepared)
+                Ok(WriteModel::Relation(prepared))
             }
-            _ => return Err(single_batch_result_invalid(batch.model())),
-        };
+            _ => Err(single_batch_result_invalid(batch.model())),
+        }
+    }
+
+    fn compile_controlled_write(
+        &self,
+        batch: &ProjectedBatch,
+        replacement: &ProjectedCreate,
+        model: WriteModel,
+        authority: &PlanAuthority,
+    ) -> Result<Option<SingleWrite>, SdkExecutionDiagnostic> {
         let (write, players, roles) = match &model {
             WriteModel::Entity(prepared) => (&prepared.plan_write, Vec::new(), Vec::new()),
             WriteModel::Relation(prepared) => (
@@ -263,7 +390,7 @@ impl ProjectedCrudExecutor<'_> {
         };
         let plan = if let Some((_, ProjectedBatchRow::Update { iid, .. })) = batch.row_at(0) {
             update_by_iid(
-                &authority,
+                authority,
                 ValueTransport::Given,
                 ThingUpdate {
                     type_id: batch.model(),
@@ -291,9 +418,9 @@ impl ProjectedCrudExecutor<'_> {
                 attached: &put.attached,
             };
             match &model {
-                WriteModel::Entity(_) => keyed_entity_put(&authority, ValueTransport::Given, &put),
+                WriteModel::Entity(_) => keyed_entity_put(authority, ValueTransport::Given, &put),
                 WriteModel::Relation(_) => keyed_relation_put(
-                    &authority,
+                    authority,
                     ValueTransport::Given,
                     &put,
                     RelationPut {
@@ -306,13 +433,13 @@ impl ProjectedCrudExecutor<'_> {
         } else {
             match &model {
                 WriteModel::Entity(_) => entity_insert(
-                    &authority,
+                    authority,
                     ValueTransport::Given,
                     batch.model(),
                     &write.created,
                 ),
                 WriteModel::Relation(prepared) => relation_insert(
-                    &authority,
+                    authority,
                     ValueTransport::Given,
                     batch.model(),
                     &prepared.plan_write.created,
@@ -329,6 +456,37 @@ impl ProjectedCrudExecutor<'_> {
             Err(error) => return Err(plan_build_failure(&error, batch.model())),
         };
         Ok(Some(SingleWrite { model, plan }))
+    }
+
+    fn hydrate_controlled_documents(
+        &self,
+        identity: &DatabaseExecutionIdentity,
+        batch: &ProjectedBatch,
+        single: &SingleWrite,
+        documents: &[serde_json::Value],
+    ) -> Result<WriteResult<ProjectedThing>, SdkExecutionDiagnostic> {
+        let thing = match &single.model {
+            WriteModel::Entity(model) => self.hydrate_entity_documents(
+                identity,
+                &model.type_id,
+                &model.descriptor,
+                documents,
+                ExecutionMode::default(),
+            )?,
+            WriteModel::Relation(model) => self.hydrate_relation_documents(
+                identity,
+                &model.type_id,
+                &model.descriptor,
+                documents,
+                ExecutionMode::default(),
+            )?,
+        };
+        if let Some((_, ProjectedBatchRow::Update { iid, .. })) = batch.row_at(0) {
+            for item in thing.items() {
+                require_update_iid(item.iid(), iid, batch.model())?;
+            }
+        }
+        Ok(thing)
     }
 
     async fn run_controlled_write<T, F>(
@@ -380,27 +538,12 @@ impl ProjectedCrudExecutor<'_> {
                 return Err(write_plan_invalid(type_id));
             };
 
-            let thing = match &single.model {
-                WriteModel::Entity(model) => self.hydrate_entity_documents(
-                    transaction.execution_identity(),
-                    &model.type_id,
-                    &model.descriptor,
-                    &documents,
-                    ExecutionMode::default(),
-                )?,
-                WriteModel::Relation(model) => self.hydrate_relation_documents(
-                    transaction.execution_identity(),
-                    &model.type_id,
-                    &model.descriptor,
-                    &documents,
-                    ExecutionMode::default(),
-                )?,
-            };
-            if let Some((_, ProjectedBatchRow::Update { iid, .. })) = prepared.batch().row_at(0) {
-                for item in thing.items() {
-                    require_update_iid(item.iid(), iid, type_id)?;
-                }
-            }
+            let thing = self.hydrate_controlled_documents(
+                transaction.execution_identity(),
+                prepared.batch(),
+                single,
+                &documents,
+            )?;
             ledger.charge_projected(thing.items())?;
             prepared.check_control()?;
             let mapped = mapper(thing)?;
@@ -564,6 +707,23 @@ impl ProjectedCrudExecutor<'_> {
     }
 }
 
+fn single_write_replacement(
+    batch: &ProjectedBatch,
+) -> Result<&ProjectedCreate, SdkExecutionDiagnostic> {
+    match batch.row_at(0) {
+        Some((_, ProjectedBatchRow::Update { replacement, .. })) => Ok(replacement),
+        Some((_, ProjectedBatchRow::Create(create)))
+            if matches!(
+                batch.operation(),
+                ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put,
+            ) =>
+        {
+            Ok(create)
+        }
+        _ => Err(single_batch_result_invalid(batch.model())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,9 +734,8 @@ mod tests {
     use type_bridge_contract::value::CanonicalString;
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
-    #[test]
-    fn canonical_single_cuts_keep_the_captured_control_and_leave_small_plans_inline() {
-        let source = "format: typebridge.schema/v2\nattributes:\n  item-key: { value: string }\n  item-tag: { value: string }\nentities:\n  wide-item:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\n";
+    fn wide_single_projection() -> InstalledRuntimeProjection {
+        let source = "format: typebridge.schema/v2\nattributes:\n  item-key: { value: string }\n  item-tag: { value: string }\nentities:\n  wide-item:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\nrelations:\n  wide-edge:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\n    relates:\n      member: { card: { min: 0, max: 4 } }\nplays:\n  wide-item:\n    wide-edge: [member]\n";
         let declared = normalize_documents(
             &SchemaDocumentSet::parse([(DocumentId::new("single-wide.yaml").unwrap(), source)])
                 .unwrap(),
@@ -587,7 +746,7 @@ mod tests {
             &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
         )
         .unwrap();
-        let installed = InstalledRuntimeProjection::try_new(
+        InstalledRuntimeProjection::try_new(
             project(
                 &resolved,
                 BindingTarget::Python,
@@ -597,7 +756,499 @@ mod tests {
             )
             .unwrap(),
         )
+        .unwrap()
+    }
+
+    struct SingleProxyTransport {
+        schema: type_bridge_contract::schema::DeclaredSchema,
+        advertisement: type_bridge_contract::query_remote::RemoteCapabilities,
+        signer: crate::query_v2_remote::RemoteReplySigningKey,
+        model: TypeId,
+        roots: usize,
+        tags: usize,
+        seen: std::sync::Mutex<Vec<type_bridge_contract::query_remote_v3::StagedRequestV3>>,
+    }
+    impl crate::session::staged_proxy::StagedTransport for SingleProxyTransport {
+        fn staged_capabilities(
+            &self,
+        ) -> crate::session::backend::BoxFuture<'_, Result<Vec<u8>, crate::QueryTargetError>>
+        {
+            panic!("the fixture pins its staged advertisement")
+        }
+        fn exchange_staged<'a>(
+            &'a self,
+            bytes: &'a [u8],
+        ) -> crate::session::backend::BoxFuture<'a, Result<Vec<u8>, crate::QueryTargetError>>
+        {
+            use type_bridge_contract::query_remote::RemoteValue;
+            use type_bridge_contract::query_remote_v3::{
+                StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+            };
+            Box::pin(async move {
+                let request = StagedRequestV3::decode_with_limits(
+                    bytes,
+                    &self.schema,
+                    &self.advertisement,
+                    self.advertisement.query_limits(),
+                )
+                .unwrap();
+                let mut answers = Vec::new();
+                for entry in request.plans() {
+                    let plan = entry.bind_results(&answers, &self.schema).unwrap();
+                    let answer = if let Some(fetch) =
+                        plan.pipeline().iter().find_map(|stage| match stage {
+                            type_bridge_contract::query_plan::v3::Stage::Fetch(fetch) => {
+                                Some(fetch)
+                            }
+                            _ => None,
+                        }) {
+                        let mut documents = Vec::new();
+                        for iid in ["0x20", "0x22"].iter().take(self.roots) {
+                            let mut document = serde_json::json!({
+                                "_iid": iid, "_type": self.model.label().as_str(),
+                                "attributes": {"item-key":"key", "item-tag": (0..self.tags).map(|index| format!("tag-{index}")).collect::<Vec<_>>()}
+                            });
+                            for scalar in &fetch.scalars {
+                                document[scalar.key.as_str()] = serde_json::json!(0);
+                            }
+                            for (index, role) in fetch.roles.iter().enumerate() {
+                                let player = serde_json::json!({"_iid":"0x10", "_type":"wide-item", "attributes":{"item-key":"player"}});
+                                if role.collect {
+                                    document[format!("_role_{index}_players")] =
+                                        serde_json::json!([player]);
+                                } else {
+                                    document[format!("_role_{index}_iid")] = player["_iid"].clone();
+                                    document[format!("_role_{index}_type")] =
+                                        player["_type"].clone();
+                                    document[format!("_role_{index}_attributes")] =
+                                        player["attributes"].clone();
+                                }
+                            }
+                            documents.push(
+                                crate::query_plan_exec::remote_document(&document, &plan).unwrap(),
+                            );
+                        }
+                        StagedAnswerV3::Documents { documents }
+                    } else {
+                        let type_bridge_contract::query_plan::QueryOutput::Rows { columns } =
+                            plan.output()
+                        else {
+                            panic!("identity output")
+                        };
+                        assert_eq!(columns.len(), 2);
+                        StagedAnswerV3::Rows {
+                            rows: ["0x20", "0x22"]
+                                .iter()
+                                .take(self.roots)
+                                .map(|iid| {
+                                    vec![
+                                        RemoteValue::Value {
+                                            value: CanonicalValue::Long(0),
+                                        },
+                                        RemoteValue::Thing {
+                                            iid: (*iid).into(),
+                                            type_id: self.model.clone(),
+                                        },
+                                    ]
+                                })
+                                .collect(),
+                        }
+                    };
+                    answers.push(answer);
+                }
+                let reply = StagedReplyV3::new(&request, StagedOutcomeV3::Committed, answers)
+                    .unwrap()
+                    .encode_signed(&request, &self.advertisement, &self.signer)
+                    .unwrap();
+                self.seen.lock().unwrap().push(request);
+                Ok(reply)
+            })
+        }
+    }
+    fn single_proxy_fixture(
+        model: TypeId,
+        roots: usize,
+        tags: usize,
+    ) -> (
+        InstalledRuntimeProjection,
+        crate::ProxyQueryConnection,
+        Arc<SingleProxyTransport>,
+    ) {
+        single_proxy_fixture_with_limits(
+            model,
+            roots,
+            tags,
+            type_bridge_contract::limits::QueryLimits::V3,
+        )
+    }
+
+    fn single_proxy_fixture_with_limits(
+        model: TypeId,
+        roots: usize,
+        tags: usize,
+        server_limits: type_bridge_contract::limits::QueryLimits,
+    ) -> (
+        InstalledRuntimeProjection,
+        crate::ProxyQueryConnection,
+        Arc<SingleProxyTransport>,
+    ) {
+        use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
+        let installed = wide_single_projection();
+        let schema = installed.plan_authority().unwrap().declared().clone();
+        let profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
+        let context = type_bridge_schema::ManagedDeltaContext::new(
+            type_bridge_contract::managed_scope::ManagedScopeId::new("single-proxy").unwrap(),
+            profile.clone(),
+            type_bridge_schema::schema_authority_capability_vocabulary(),
+        );
+        let verified = type_bridge_schema::build_schema_authority(
+            &schema,
+            schema.required_capabilities(),
+            &context,
+        )
         .unwrap();
+        let installed = installed.with_schema_authority(&verified);
+        let authority = crate::query_v2_prepared::QueryAuthority::from_declared_bytes(
+            &type_bridge_contract::schema::encode_declared_schema(&schema).unwrap(),
+            "single-proxy",
+            profile.as_str(),
+        )
+        .unwrap();
+        let signer = crate::query_v2_remote::RemoteReplySigningKey::from_secret_bytes([0x52; 32]);
+        let mut caps = type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        for name in [
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_WRITE_V3,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF,
+        ] {
+            caps.insert(type_bridge_contract::capability::CapabilityId::new(name).unwrap());
+        }
+        let advertisement = RemoteCapabilities::new(
+            caps,
+            RemoteExecutorBinding::new("single-proxy-executor", "epoch-single-proxy").unwrap(),
+            signer.public_key(),
+        )
+        .with_query_limits(server_limits)
+        .unwrap();
+        let proxy = crate::ProxyQueryConnection::with_exchange(
+            advertisement.encode().unwrap(),
+            Arc::new(authority),
+            Default::default(),
+        )
+        .unwrap();
+        let transport = Arc::new(SingleProxyTransport {
+            schema,
+            advertisement,
+            signer,
+            model,
+            roots,
+            tags,
+            seen: std::sync::Mutex::new(vec![]),
+        });
+        (
+            installed,
+            proxy.with_staged_transport(transport.clone()),
+            transport,
+        )
+    }
+
+    fn proxy_single_input(
+        installed: &InstalledRuntimeProjection,
+        model: &TypeId,
+        tags: usize,
+    ) -> ProjectedCreate {
+        let kind = model.kind();
+        let scalar = |attribute: &str, value: String| {
+            ProjectedAttributeValue::try_new(
+                installed,
+                TypeId::new(TypeKind::Attribute, attribute).unwrap(),
+                CanonicalValue::String(CanonicalString::new(value).unwrap()),
+            )
+            .unwrap()
+        };
+        ProjectedCreate::try_new(
+            installed,
+            model.clone(),
+            vec![
+                (
+                    OwnsFactId::new(model.clone(), AttributeId::new("item-key").unwrap()).unwrap(),
+                    vec![scalar("item-key", "key".into())],
+                ),
+                (
+                    OwnsFactId::new(model.clone(), AttributeId::new("item-tag").unwrap()).unwrap(),
+                    (0..tags)
+                        .map(|index| scalar("item-tag", format!("tag-{index}")))
+                        .collect(),
+                ),
+            ],
+            if kind == TypeKind::Relation {
+                vec![(
+                    RoleId::new("wide-edge", "member").unwrap(),
+                    vec![
+                        ProjectedReference::try_new(
+                            installed,
+                            TypeId::new(TypeKind::Entity, "wide-item").unwrap(),
+                            Some("0x10".into()),
+                            vec![],
+                        )
+                        .unwrap(),
+                    ],
+                )]
+            } else {
+                vec![]
+            },
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn single_proxy_writes_share_inline_bytes_and_materialize_all_roots_or_zero() {
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            for tags in [1, 300] {
+                for operation in [
+                    ProjectedBatchOperation::Insert,
+                    ProjectedBatchOperation::Put,
+                    ProjectedBatchOperation::Update,
+                ] {
+                    for roots in 0..=if tags == 300 || operation == ProjectedBatchOperation::Update
+                    {
+                        1
+                    } else {
+                        2
+                    } {
+                        let model = TypeId::new(
+                            kind,
+                            if kind == TypeKind::Entity {
+                                "wide-item"
+                            } else {
+                                "wide-edge"
+                            },
+                        )
+                        .unwrap();
+                        let (installed, proxy, transport) =
+                            single_proxy_fixture(model.clone(), roots, tags);
+                        let input = proxy_single_input(&installed, &model, tags);
+                        let control = ProjectedBatchInvocationControl::capture(
+                            Default::default(),
+                            AnswerCancellation::default(),
+                        );
+                        let executor = ProjectedCrudExecutor::new(&installed);
+                        let row = if operation == ProjectedBatchOperation::Update {
+                            ProjectedBatchRow::Update {
+                                iid: "0x20".into(),
+                                replacement: input,
+                            }
+                        } else {
+                            ProjectedBatchRow::Create(input)
+                        };
+                        let batch = executor
+                            .single_controlled_write_batch(&model, operation, row, &control)
+                            .unwrap();
+                        let inline = executor
+                            .prepare_controlled_write(&batch, proxy.execution_identity(), None)
+                            .unwrap()
+                            .map(|single| single.plan.local().canonical_bytes().unwrap());
+                        assert_eq!(inline.is_some(), tags == 1);
+                        let result = executor.execute_single_write_on_target(crate::QueryTarget::Proxy(&proxy), &batch, control, Ok).await
+                            .unwrap_or_else(|error| panic!("kind={kind:?} tags={tags} operation={operation:?} roots={roots}: {error:?}"));
+                        assert_eq!(result.count(), roots);
+                        assert_eq!(result.item().is_some(), roots == 1);
+                        let tag =
+                            OwnsFactId::new(model.clone(), AttributeId::new("item-tag").unwrap())
+                                .unwrap();
+                        assert!(
+                            result
+                                .items()
+                                .iter()
+                                .all(|thing| thing.fields()[&tag].len() == tags)
+                        );
+                        let seen = transport.seen.lock().unwrap();
+                        assert_eq!(seen.len(), 1);
+                        if let Some(bytes) = inline {
+                            assert_eq!(seen[0].plans().len(), 1);
+                            assert_eq!(
+                                seen[0].plans()[0]
+                                    .bound_plan(&transport.schema)
+                                    .unwrap()
+                                    .canonical_bytes()
+                                    .unwrap(),
+                                bytes
+                            );
+                        } else {
+                            assert!(seen[0].plans().len() > 1);
+                            assert!(
+                                seen[0]
+                                    .plans()
+                                    .iter()
+                                    .any(|entry| !entry.result_refs().is_empty())
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn single_proxy_write_negotiates_query_limits_before_selecting_pieces() {
+        let mut raised = type_bridge_contract::limits::QueryLimits::V3;
+        raised.structural.bindings = 1024;
+        raised.structural.boolean_terms = 512;
+        for client_raised in [false, true] {
+            for server_raised in [false, true] {
+                let model = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
+                let (installed, proxy, transport) = single_proxy_fixture_with_limits(
+                    model.clone(),
+                    1,
+                    300,
+                    if server_raised {
+                        raised
+                    } else {
+                        type_bridge_contract::limits::QueryLimits::V3
+                    },
+                );
+                let proxy = proxy
+                    .with_query_limits(if client_raised {
+                        raised
+                    } else {
+                        type_bridge_contract::limits::QueryLimits::V3
+                    })
+                    .unwrap();
+                let input = proxy_single_input(&installed, &model, 300);
+                let executor = ProjectedCrudExecutor::new(&installed);
+                let control = ProjectedBatchInvocationControl::capture(
+                    Default::default(),
+                    AnswerCancellation::default(),
+                );
+                let batch = executor
+                    .single_controlled_write_batch(
+                        &model,
+                        ProjectedBatchOperation::Insert,
+                        ProjectedBatchRow::Create(input),
+                        &control,
+                    )
+                    .unwrap();
+                let result = executor
+                    .execute_single_write_on_target(
+                        crate::QueryTarget::Proxy(&proxy),
+                        &batch,
+                        control,
+                        Ok,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(result.count(), 1);
+                let seen = transport.seen.lock().unwrap();
+                assert_eq!(seen.len(), 1);
+                assert_eq!(seen[0].plans().len() == 1, client_raised && server_raised);
+                assert_eq!(
+                    proxy.query_limits(),
+                    if client_raised && server_raised {
+                        raised
+                    } else {
+                        type_bridge_contract::limits::QueryLimits::V3
+                    }
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn single_proxy_update_keeps_the_exact_iid_fence_after_remote_commit() {
+        let model = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
+        let (installed, proxy, transport) = single_proxy_fixture(model.clone(), 2, 1);
+        let input = proxy_single_input(&installed, &model, 1);
+        let control = ProjectedBatchInvocationControl::capture(
+            Default::default(),
+            AnswerCancellation::default(),
+        );
+        let executor = ProjectedCrudExecutor::new(&installed);
+        let batch = executor
+            .single_controlled_write_batch(
+                &model,
+                ProjectedBatchOperation::Update,
+                ProjectedBatchRow::Update {
+                    iid: "0x20".into(),
+                    replacement: input,
+                },
+                &control,
+            )
+            .unwrap();
+        let error = executor
+            .execute_single_write_on_target(crate::QueryTarget::Proxy(&proxy), &batch, control, Ok)
+            .await
+            .unwrap_err();
+        let crate::QueryTargetError::Commit(error) = error else {
+            panic!("atomic proxy failure")
+        };
+        assert_eq!(error.diagnostic().code().as_str(), "commit_outcome_unknown");
+        let source = std::error::Error::source(error.as_ref()).unwrap();
+        let diagnostic = std::error::Error::source(source)
+            .unwrap()
+            .downcast_ref::<SdkExecutionDiagnostic>()
+            .unwrap();
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "projected_batch_update_identity_changed"
+        );
+        assert_eq!(transport.seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn single_proxy_write_refuses_foreign_player_origins_before_dispatch() {
+        let model = TypeId::new(TypeKind::Relation, "wide-edge").unwrap();
+        let (installed, proxy, transport) = single_proxy_fixture(model.clone(), 1, 1);
+        let input = proxy_single_input(&installed, &model, 1);
+        let foreign = ProjectedReference::try_new_for_database(
+            &installed,
+            TypeId::new(TypeKind::Entity, "wide-item").unwrap(),
+            Some("0x10".into()),
+            vec![],
+            DatabaseExecutionIdentity::isolated("another-proxy"),
+        )
+        .unwrap();
+        let input = ProjectedCreate::try_new(
+            &installed,
+            model.clone(),
+            input
+                .fields()
+                .iter()
+                .map(|(field, values)| (field.clone(), values.clone()))
+                .collect(),
+            vec![(RoleId::new("wide-edge", "member").unwrap(), vec![foreign])],
+        )
+        .unwrap();
+        let control = ProjectedBatchInvocationControl::capture(
+            Default::default(),
+            AnswerCancellation::default(),
+        );
+        let executor = ProjectedCrudExecutor::new(&installed);
+        let batch = executor
+            .single_controlled_write_batch(
+                &model,
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchRow::Create(input),
+                &control,
+            )
+            .unwrap();
+        let error = executor
+            .execute_single_write_on_target(crate::QueryTarget::Proxy(&proxy), &batch, control, Ok)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .into_diagnostic(SdkProviderOperation::Write)
+                .code()
+                .as_str(),
+            "reference_database_mismatch"
+        );
+        assert!(transport.seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn canonical_single_cuts_keep_the_captured_control_and_leave_small_plans_inline() {
+        let installed = wide_single_projection();
         let executor = ProjectedCrudExecutor::new(&installed);
         let model = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
         let key = AttributeId::new("item-key").unwrap();
