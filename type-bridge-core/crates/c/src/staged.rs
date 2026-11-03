@@ -555,11 +555,14 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
         }
         // SAFETY: a non-null database is a live handle by contract.
         let database = unsafe { &*database };
-        let (transaction, database) =
-            match database.staged_transaction(TransactionOptions::default().with_kind(kind)) {
-                Ok(value) => value,
-                Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-            };
+        let (transaction, database) = match database.staged_transaction(
+            TransactionOptions::default()
+                .with_timeout(type_bridge_orm::QueryTimeout::NONE)
+                .with_kind(kind),
+        ) {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
         let handle = Box::new(TypeBridgeStagedTransaction {
             transaction,
             poisoned: false,
@@ -609,11 +612,14 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
         }
         // SAFETY: a non-null connection is a live handle by contract.
         let proxy = unsafe { &*proxy };
-        let (transaction, guard) =
-            match proxy.staged_transaction(TransactionOptions::default().with_kind(kind)) {
-                Ok(value) => value,
-                Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-            };
+        let (transaction, guard) = match proxy.staged_transaction(
+            TransactionOptions::default()
+                .with_timeout(type_bridge_orm::QueryTimeout::NONE)
+                .with_kind(kind),
+        ) {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
         let handle = Box::new(TypeBridgeStagedTransaction {
             transaction,
             poisoned: false,

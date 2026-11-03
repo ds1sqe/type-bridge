@@ -57,6 +57,7 @@ pub struct TypeBridgeProxyConnectionOptionsV1 {
 
 /// Opaque connection to a TypeBridge server bound to one schema package.
 pub struct TypeBridgeProxyConnection {
+    expired_policy: crate::policy::ExpiredPolicy,
     package: Arc<SchemaPackageState>,
     connection: ProxyQueryConnection,
     // Shared with the staged transactions opened on this connection, which
@@ -107,6 +108,11 @@ impl TypeBridgeProxyConnection {
         ),
         SdkExecutionDiagnostic,
     > {
+        let options = if self.expired_policy.is_expired() {
+            options.with_answer_timeout(std::time::Duration::ZERO)
+        } else {
+            options
+        };
         let cancellation = type_bridge_orm::AnswerCancellation::default();
         let transaction = self
             .runtime
@@ -393,6 +399,11 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_open_v1(
             Ok(value) => value,
             Err(error) => return return_execution_error(error, out_diagnostics),
         };
+        if let Err(error) = crate::policy::capture_deadline(copied.connection_limits).check(&answer)
+        {
+            return return_execution_error(error, out_diagnostics);
+        }
+        let expired_policy = crate::policy::ExpiredPolicy::from_limits(copied.answer_limits);
         // SAFETY: caller retains the immutable package for the call.
         let package = unsafe { &*package }.state();
         let (authority, _registry) = match remote_authority(package) {
@@ -423,6 +434,7 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_open_v1(
             Err(_) => return TypeBridgeStatus::Panic,
         };
         let handle = reservation.initialize(TypeBridgeProxyConnection {
+            expired_policy,
             package: Arc::clone(package),
             connection,
             runtime: Arc::new(runtime),
@@ -487,10 +499,11 @@ pub unsafe extern "C" fn type_bridge_proxy_query_execute_v1(
         let proxy = unsafe { &*proxy };
         // SAFETY: caller retains the immutable terminal.
         let terminal = unsafe { &*terminal };
-        let parsed = match parsed {
+        let mut parsed = match parsed {
             Ok(value) => value,
             Err(error) => return return_execution_error(error, out_diagnostics),
         };
+        parsed.deadline = proxy.expired_policy.tighten(parsed.deadline);
         if let Err(error) = parsed.deadline.check(&answer) {
             return return_execution_error(error, out_diagnostics);
         }

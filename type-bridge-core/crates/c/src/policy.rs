@@ -61,6 +61,62 @@ pub(crate) struct ParsedLimits {
     pub(crate) deadline: QueryExecutionDeadline,
 }
 
+pub(crate) const C_DEFAULT_TIMEOUT_MILLISECONDS: u64 = 30_000;
+pub(crate) const C_MAX_TIMEOUT_MILLISECONDS: u64 = 86_400_000;
+
+/// Frozen C zero means expired, while the shared timeout type uses None for unbounded.
+/// Retain this marker before shared policy intersection can discard that distinction.
+#[derive(Clone, Copy)]
+pub(crate) struct ExpiredPolicy(bool);
+impl ExpiredPolicy {
+    pub(crate) fn from_limits(limits: QueryExecutionResourceLimits) -> Self {
+        Self(limits.timeout_milliseconds.milliseconds().is_none())
+    }
+    pub(crate) fn is_expired(self) -> bool {
+        self.0
+    }
+    pub(crate) fn check(self) -> Result<(), SdkExecutionDiagnostic> {
+        if self.0 {
+            Err(SdkExecutionDiagnostic::data_operation_deadline_exceeded())
+        } else {
+            Ok(())
+        }
+    }
+    pub(crate) fn tighten(self, deadline: QueryExecutionDeadline) -> QueryExecutionDeadline {
+        if self.0 {
+            QueryExecutionDeadline::expired()
+        } else {
+            deadline
+        }
+    }
+}
+
+pub(crate) fn default_limits(transport: AnswerTransport) -> QueryExecutionResourceLimits {
+    QueryExecutionResourceLimits {
+        timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
+            C_DEFAULT_TIMEOUT_MILLISECONDS,
+        ),
+        ..QueryExecutionResourceLimits::default_for(transport)
+    }
+}
+
+pub(crate) fn capture_deadline(limits: QueryExecutionResourceLimits) -> QueryExecutionDeadline {
+    ExpiredPolicy::from_limits(limits).tighten(QueryExecutionDeadline::for_limits(limits))
+}
+
+pub(crate) fn constrain_limits(
+    left: QueryExecutionResourceLimits,
+    right: QueryExecutionResourceLimits,
+) -> QueryExecutionResourceLimits {
+    let mut limits = left.constrained_by(right);
+    if left.timeout_milliseconds.milliseconds().is_none()
+        || right.timeout_milliseconds.milliseconds().is_none()
+    {
+        limits.timeout_milliseconds = type_bridge_orm::QueryTimeout::NONE;
+    }
+    limits
+}
+
 fn invalid_limits() -> SdkExecutionDiagnostic {
     SdkExecutionDiagnostic::invalid_input(
         SdkDiagnosticCode::new("c_query_execution_limits_invalid")
@@ -83,12 +139,13 @@ pub(crate) fn parse_common_limits(
     transport: AnswerTransport,
 ) -> Result<QueryExecutionResourceLimits, SdkExecutionDiagnostic> {
     let Some(value) = value else {
-        return Ok(QueryExecutionResourceLimits::default_for(transport));
+        return Ok(default_limits(transport));
     };
     if value.struct_size as usize != size_of::<TypeBridgeQueryExecutionLimitsV1>()
         || value.version != LIMITS_VERSION
         || value.reserved0 != 0
         || value.reserved != [0; 4]
+        || value.timeout_milliseconds > C_MAX_TIMEOUT_MILLISECONDS
     {
         return Err(invalid_limits());
     }
@@ -117,7 +174,7 @@ pub(crate) fn parse_limits(
     cancellation: &AnswerCancellation,
 ) -> Result<ParsedLimits, SdkExecutionDiagnostic> {
     let resources = parse_common_limits(value, AnswerTransport::Direct)?;
-    let deadline = QueryExecutionDeadline::for_limits(resources);
+    let deadline = capture_deadline(resources);
     deadline.check(cancellation)?;
     Ok(ParsedLimits {
         resources,
@@ -135,7 +192,8 @@ mod tests {
     fn a_missing_descriptor_takes_its_transports_defaults() {
         let direct = parse_common_limits(None, AnswerTransport::Direct).expect("direct defaults");
         let proxy = parse_common_limits(None, AnswerTransport::Proxy).expect("proxy defaults");
-        assert_eq!(direct, QueryExecutionResourceLimits::default());
+        assert_eq!(direct.timeout_milliseconds.milliseconds(), Some(30_000));
+        assert_eq!(proxy.timeout_milliseconds.milliseconds(), Some(30_000));
         assert_eq!(direct.items, type_bridge_orm::DEFAULT_DIRECT_QUERY_ITEMS);
         assert_eq!(direct.bytes, type_bridge_orm::DEFAULT_DIRECT_QUERY_BYTES);
         assert_eq!(proxy.items, type_bridge_orm::DEFAULT_PROXY_QUERY_ITEMS);

@@ -699,6 +699,9 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_open_v1_impl
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
         let cancellation = cancellation_owner(cancellation);
+        if let Err(diagnostic) = crate::policy::capture_deadline(limits).check(&cancellation) {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
         let control = match ProjectedBatchConstructionControl::try_new(
             &package.state.installed_projection,
             model.clone(),
@@ -949,9 +952,15 @@ unsafe fn execute_impl(
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
-        let effective_limits = call_limits
-            .constrained_by(batch.value.resource_ceiling())
-            .constrained_by(target.answer_ceiling());
+        let effective_limits = crate::policy::constrain_limits(
+            crate::policy::constrain_limits(call_limits, batch.value.resource_ceiling()),
+            target.answer_ceiling(),
+        );
+        if let Err(diagnostic) = crate::policy::capture_deadline(effective_limits)
+            .check(&cancellation_owner(cancellation))
+        {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
         let control = ProjectedBatchInvocationControl::capture(
             effective_limits,
             cancellation_owner(cancellation),
@@ -2172,7 +2181,7 @@ plays:
         assert_eq!(
             unsafe { &*batch }.value.resource_ceiling(),
             // An omitted C descriptor on a direct batch carries the direct defaults.
-            QueryExecutionResourceLimits::default().effective()
+            crate::policy::default_limits(type_bridge_orm::AnswerTransport::Direct).effective()
         );
         close_batch(&mut batch);
         assert_eq!(

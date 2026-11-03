@@ -1579,9 +1579,8 @@ mod tests {
 
         let deadline = fixture(vec![], COMMIT_SUCCESS);
         let mut deadline_limits = default_limits();
-        deadline_limits.timeout_milliseconds = 1;
-        crate::thing_crud::delay_next_controlled_crud_checkpoint(20);
-        // SAFETY: inputs remain live while the explicit deadline expires.
+        deadline_limits.timeout_milliseconds = 0;
+        // SAFETY: a zero timeout is a valid real ceiling.
         assert_eq!(
             unsafe {
                 type_bridge_database_entity_insert_v2_impl(
