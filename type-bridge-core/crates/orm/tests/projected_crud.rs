@@ -3885,3 +3885,65 @@ async fn handwritten_single_writes_materialize_all_roots_before_commit_and_attac
     assert_eq!(state.queries.len(), 1);
     assert_eq!((state.commits, state.rollbacks), (0, 1));
 }
+
+#[tokio::test]
+async fn controlled_single_mapper_cancellation_fails_before_releasing_atomicity() {
+    use type_bridge_orm::projected_crud::ProjectedWriteTarget as WriteTarget;
+    use type_bridge_orm::{
+        AnswerCancellation, ProjectedBatchInvocationControl, ProjectedBatchOperation,
+        ProjectedBatchRow, QueryExecutionResourceLimits, TransactionContextState,
+    };
+    let installed = installed_with_authority();
+    let executor = ProjectedCrudExecutor::new(&installed);
+    for borrowed in [false, true] {
+        let input = person_create(&installed);
+        let model = input.type_id().clone();
+        let cancellation = AnswerCancellation::default();
+        let control = ProjectedBatchInvocationControl::capture(
+            QueryExecutionResourceLimits::default(),
+            cancellation.clone(),
+        );
+        let batch = executor
+            .single_controlled_write_batch(
+                &model,
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchRow::Create(input),
+                &control,
+            )
+            .unwrap();
+        let (mut backend, state) = RecordingBackend::new(
+            vec![documents(vec![person_document("0x10")])],
+            CommitBehavior::Success,
+        );
+        backend.given_enabled = true;
+        let db = Database::with_backend(Box::new(backend), "mapper-cancellation");
+        let transaction = if borrowed {
+            Some(db.transaction_context(TxType::Write).await.unwrap())
+        } else {
+            None
+        };
+        let target = transaction
+            .as_ref()
+            .map_or(WriteTarget::Database(&db), WriteTarget::Transaction);
+        let error = executor
+            .execute_controlled_single_write(target, &batch, control, |result| {
+                assert_eq!(result.count(), 1);
+                cancellation.cancel();
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code().as_str(), "provider_cancelled");
+        assert_eq!(state.lock().unwrap().queries.len(), 1);
+        assert_eq!(state.lock().unwrap().commits, 0);
+        if let Some(transaction) = transaction {
+            assert_eq!(
+                transaction.lifecycle_state().await,
+                TransactionContextState::RollbackOnly
+            );
+            assert_eq!(state.lock().unwrap().rollbacks, 0);
+            transaction.rollback().await.unwrap();
+        }
+        assert_eq!(state.lock().unwrap().rollbacks, 1);
+    }
+}

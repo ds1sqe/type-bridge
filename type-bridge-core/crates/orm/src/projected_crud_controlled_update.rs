@@ -403,7 +403,9 @@ impl ProjectedCrudExecutor<'_> {
             }
             ledger.charge_projected(thing.items())?;
             prepared.check_control()?;
-            mapper(thing)
+            let mapped = mapper(thing)?;
+            prepared.check_control()?;
+            Ok(mapped)
         }
         .await;
         match result {
