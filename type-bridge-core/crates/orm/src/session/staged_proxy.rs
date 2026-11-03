@@ -491,13 +491,12 @@ mod transport_tests {
         let route = Route::Transport(Arc::new(CountCalls(Arc::clone(&calls))));
         for cancelled in [true, false] {
             let signal = AnswerCancellation::default();
-            let timeout = if cancelled {
+            let deadline = if cancelled {
                 signal.cancel();
-                30_000
+                QueryExecutionDeadline::from_timeout_milliseconds(30_000)
             } else {
-                0
+                QueryExecutionDeadline::expired()
             };
-            let deadline = QueryExecutionDeadline::from_timeout_milliseconds(timeout);
             let code = if cancelled {
                 "provider_cancelled"
             } else {

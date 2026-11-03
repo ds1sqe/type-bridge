@@ -93,9 +93,10 @@ impl TypeBridgeProxyConnection {
         package: Arc<SchemaPackageState>,
         connection: ProxyQueryConnection,
         runtime: Arc<tokio::runtime::Runtime>,
+        expired_policy: crate::policy::ExpiredPolicy,
     ) -> Self {
         Self {
-            expired_policy: crate::policy::ExpiredPolicy::from_limits(connection.answer_limits()),
+            expired_policy,
             package,
             connection,
             runtime,
@@ -517,12 +518,12 @@ unsafe fn proxy_connection_open_with_query_limits(
             },
             None => connection,
         };
-        let handle = reservation.initialize(TypeBridgeProxyConnection {
-            expired_policy,
-            package: Arc::clone(package),
+        let handle = reservation.initialize(TypeBridgeProxyConnection::new(
+            Arc::clone(package),
             connection,
-            runtime: Arc::new(runtime),
-        });
+            Arc::new(runtime),
+            expired_policy,
+        ));
         // SAFETY: the output slot was preflighted and initialized.
         unsafe { out_connection.write_unaligned(Box::into_raw(handle)) };
         TypeBridgeStatus::Ok

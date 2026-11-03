@@ -2373,7 +2373,8 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                             );
                         }
                     } else {
-                        let thing = result.unwrap();
+                        let result = result.unwrap();
+                        let thing = result.item().expect("one written root");
                         if relation {
                             assert_eq!(
                                 thing.roles()[&member]
@@ -2417,7 +2418,10 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                                 .await
                             }
                             .unwrap();
-                            assert_eq!(repeated.iid(), thing.iid());
+                            assert_eq!(
+                                repeated.item().expect("one written root").iid(),
+                                thing.iid()
+                            );
                             let observed = log.lock().unwrap();
                             assert_eq!(observed.statements.len(), if relation { 3 } else { 2 });
                             assert_eq!(observed.opened, [TxType::Write]);

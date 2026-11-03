@@ -3325,9 +3325,7 @@ mod tests {
                             kind: Some(request.kind()),
                             limits: request.limits(),
                             prepared_at_unix_ms: request.expires_at_unix_ms()
-                                - request.limits().deadline_ms.unwrap_or(
-                                    type_bridge_contract::query_remote::DEFAULT_REMOTE_DEADLINE_MS,
-                                ),
+                                - request.limits().admission_window_milliseconds,
                             plans: expected,
                         },
                         &schema,

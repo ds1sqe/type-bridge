@@ -15283,8 +15283,14 @@ mod tests {
                 .build()
                 .unwrap(),
         );
-        let proxy =
-            TypeBridgeProxyConnection::new(Arc::clone(package.state()), connection, runtime);
+        let proxy = TypeBridgeProxyConnection::new(
+            Arc::clone(package.state()),
+            connection,
+            runtime,
+            crate::policy::ExpiredPolicy::from_limits(crate::policy::default_limits(
+                type_bridge_orm::AnswerTransport::Proxy,
+            )),
+        );
         for operation in [
             ManagerTerminalKind::All,
             ManagerTerminalKind::First,
