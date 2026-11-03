@@ -578,22 +578,36 @@ fn map_result(
     result: ProjectedBatchResult,
 ) -> Result<TypeBridgeProjectedBatchResult, SdkExecutionDiagnostic> {
     let values = match (operation, result) {
-        (ProjectedBatchOperation::Delete, ProjectedBatchResult::Deleted) => Vec::new(),
+        (ProjectedBatchOperation::Delete, ProjectedBatchResult::Deleted) => Default::default(),
         (ProjectedBatchOperation::Delete, ProjectedBatchResult::Things(_))
         | (_, ProjectedBatchResult::Deleted) => return Err(result_shape_invalid()),
-        (_, ProjectedBatchResult::Things(values)) if values.len() == input_count => values,
+        (_, ProjectedBatchResult::Things(values)) if values.count() == input_count => values,
         (_, ProjectedBatchResult::Things(_)) => return Err(result_shape_invalid()),
         _ => return Err(result_shape_invalid()),
     };
-    if reserved_things.len() != values.len() || values.iter().any(|thing| thing.type_id() != &model)
-    {
+    if reserved_things.len() != values.count() {
         return Err(result_thing_model_mismatch());
     }
-    for (slot, thing) in reserved_things.iter_mut().zip(values) {
-        let Some(slot) = Arc::get_mut(slot) else {
+    for (ordinal, ((slot, thing), input_index)) in reserved_things
+        .iter_mut()
+        .zip(values.items())
+        .zip(values.input_indexes())
+        .enumerate()
+    {
+        if *input_index != ordinal {
+            return Err(result_shape_invalid());
+        }
+        if thing.type_id() != &model {
+            return Err(result_thing_model_mismatch());
+        }
+        if Arc::get_mut(slot).is_none() {
             return Err(SdkExecutionDiagnostic::internal_failure());
-        };
-        slot.write(thing);
+        }
+    }
+    for (slot, thing) in reserved_things.iter_mut().zip(values.into_items()) {
+        Arc::get_mut(slot)
+            .expect("reserved slots stayed uniquely owned after preflight")
+            .write(thing);
     }
     // SAFETY: the loop above initialized every uniquely owned reserved slot.
     let things = unsafe { assume_initialized_things(reserved_things) };

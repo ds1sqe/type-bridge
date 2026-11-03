@@ -962,7 +962,7 @@ async function sdkModelsCounterPlanLifecycle(generated: any, database: any): Pro
   modelPlanMark("insert");
   const values = manager.insertMany([1n, 2n].map((value) => generated.Counter.create({
     counterValue: generated.CounterValue.create(value),
-  })));
+  }))).items;
   modelPlanMark();
   assert.equal(values.length, 2);
   values.forEach((value: any, index: number) => {
@@ -994,21 +994,21 @@ async function sdkModelsCounterPlanLifecycle(generated: any, database: any): Pro
   assert.equal(manager.getByIid(values[0].iid)?.counterValue.value, 11n);
   modelPlanMark();
   modelPlanMark("entity_batch_update_delete_atomic.update");
-  const updatedMany = manager.updateMany(values.map((value: any, index: number) => [value.iid, generated.Counter.create({ counterValue: generated.CounterValue.create(index === 0 ? 11n : 2n) })]));
+  const updatedMany = manager.updateMany(values.map((value: any, index: number) => [value.iid, generated.Counter.create({ counterValue: generated.CounterValue.create(index === 0 ? 11n : 2n) })])).items;
   modelPlanMark();
   assert.deepEqual(updatedMany.map((value: any) => value.iid), values.map((value: any) => value.iid));
   modelPlanMark("delete");
   manager.deleteMany(values.map((value: any) => value.iid));
   modelPlanMark();
   assert.equal(manager.count(), before);
-  const returnedInputs = manager.insertMany([1n,2n].map((value) => generated.Counter.create({ counterValue: generated.CounterValue.create(value) })));
+  const returnedInputs = manager.insertMany([1n,2n].map((value) => generated.Counter.create({ counterValue: generated.CounterValue.create(value) }))).items;
   returnedInputs.forEach((value: any,index: number) => modelPlanIdentity(index === 0 ? "counter-left" : "counter-right",value.iid));
   modelPlanMark("manager_returning_delete.entity");
   const snapshot = manager.deleteReturning(returnedInputs[0].iid);
   modelPlanMark();
   assert.equal(snapshot.counterValue.value,1n);
   modelPlanMark("manager_returning_delete.entity_many");
-  const snapshots = manager.deleteManyReturning(returnedInputs.map((value: any) => value.iid));
+  const snapshots = manager.deleteManyReturning(returnedInputs.map((value: any) => value.iid)).items;
   modelPlanMark();
   assert.deepEqual(snapshots.map((value: any) => value.counterValue.value),[2n]);
   assert.equal(manager.count(),before);
@@ -1082,29 +1082,29 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
   links.delete(link.iid);
   modelPlanMark();
   modelPlanMark("entity_batch_insert_put.put");
-  const putPeople = people.putMany([person(), person(false, "data-dana")]);
+  const putPeople = people.putMany([person(), person(false, "data-dana")]).items;
   modelPlanMark();
   assert.equal(putPeople[0].iid, ada.iid);
   modelPlanIdentity("data-dana", putPeople[1].iid);
   people.delete(putPeople[1].iid);
   const inputs = ["data-link-forward", "data-link-return"].map((identifier) => g.NetworkLink.create({ identifier: g.Identifier.create(identifier), origin: ada, destination: ada }));
   modelPlanMark("relation_batch_insert_put.put");
-  const putLinks = links.putMany(inputs);
+  const putLinks = links.putMany(inputs).items;
   modelPlanMark();
   putLinks.forEach((value: any,index: number) => modelPlanIdentity(index === 0 ? "link-forward" : "link-return", value.iid));
   links.deleteMany(putLinks.map((value: any) => value.iid));
   modelPlanMark("relation_batch_insert_put.insert");
-  const batchLinks = links.insertMany(inputs);
+  const batchLinks = links.insertMany(inputs).items;
   modelPlanMark();
   batchLinks.forEach((value: any,index: number) => modelPlanIdentity(index === 0 ? "link-forward" : "link-return", value.iid));
   modelPlanMark("relation_batch_update_delete_atomic.update");
-  const updatedLinks = links.updateMany(batchLinks.map((value: any,index: number) => [value.iid,inputs[index]]));
+  const updatedLinks = links.updateMany(batchLinks.map((value: any,index: number) => [value.iid,inputs[index]])).items;
   modelPlanMark();
   assert.deepEqual(updatedLinks.map((value: any) => value.iid), batchLinks.map((value: any) => value.iid));
   modelPlanMark("relation_batch_update_delete_atomic.delete");
   links.deleteMany(batchLinks.map((value: any) => value.iid));
   modelPlanMark();
-  const returnedInputs = links.insertMany(inputs);
+  const returnedInputs = links.insertMany(inputs).items;
   returnedInputs.forEach((value: any,index: number) => modelPlanIdentity(index === 0 ? "link-forward" : "link-return",value.iid));
   modelPlanMark("manager_returning_delete.relation");
   const snapshot = links.deleteReturning(returnedInputs[0].iid);
@@ -1112,7 +1112,7 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
   assert.equal(snapshot.identifier.value,"data-link-forward");
   assert.equal(snapshot.origin.iid,ada.iid);
   modelPlanMark("manager_returning_delete.relation_many");
-  const snapshots = links.deleteManyReturning(returnedInputs.map((value: any) => value.iid));
+  const snapshots = links.deleteManyReturning(returnedInputs.map((value: any) => value.iid)).items;
   modelPlanMark();
   assert.equal(snapshots.length,1);
   assert.equal(snapshots[0].identifier.value,"data-link-return");
@@ -1656,7 +1656,7 @@ async function runSdkQueriesJourney(
   let network: any;
   let insertedCount = 0;
   try {
-    people = personManager.insertMany(personInputs);
+    people = personManager.insertMany(personInputs).items;
     assert.equal(people.length, personInputs.length);
     for (let index = 0; index < people.length; index += 1) {
       assert.equal(sdkQueriesKey(people[index]), sdkQueriesKey(personInputs[index]));
@@ -2099,8 +2099,8 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       valDouble: ValDouble.create(3.5),
       valDuration: ValDuration.create("PT3S"),
     });
-    assert.deepEqual(personManager.insertMany([]), []);
-    assert.deepEqual(personManager.putMany([]), []);
+    assert.deepEqual(personManager.insertMany([]).items, []);
+    assert.deepEqual(personManager.putMany([]).items, []);
     const insertedPerson = personManager.insert(personInput);
     assertIid(insertedPerson.iid);
     assert.equal(insertedPerson.__typebridgeModel, Person.typeKey);
@@ -2234,14 +2234,14 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       generatedPerson("person-2", 5n),
       generatedPerson("person-3", 7n),
     ] as const;
-    const insertedBatch = personManager.insertMany(batchPeople);
+    const insertedBatch = personManager.insertMany(batchPeople).items;
     assert.ok(insertedBatch.every((candidate) => candidate.iid !== null));
     const batchIids = insertedBatch.map((candidate) => candidate.iid);
     assert.deepEqual(
       personManager.filter({ aliases__isnull: true }).all().map((candidate) => candidate.iid),
       batchIids,
     );
-    assert.deepEqual(personManager.putMany(insertedBatch).map((candidate) => candidate.iid), batchIids);
+    assert.deepEqual(personManager.putMany(insertedBatch).items.map((candidate) => candidate.iid), batchIids);
 
     const insertedEmployee = Employee.manager(database).insert(Employee.create({
       identifier: Identifier.create("employee-1"),
@@ -2306,8 +2306,8 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.equal(personManager.count(), 4n);
 
     const membershipManager = Membership.manager(database);
-    assert.deepEqual(membershipManager.insertMany([]), []);
-    assert.deepEqual(membershipManager.putMany([]), []);
+    assert.deepEqual(membershipManager.insertMany([]).items, []);
+    assert.deepEqual(membershipManager.putMany([]).items, []);
     const insertedMembership = membershipManager.insert(Membership.create({ member: updatedPerson }));
     assertIid(insertedMembership.iid);
     const storedMembership = membershipManager.getByIid(insertedMembership.iid);
@@ -2493,7 +2493,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       ...(value === -42n ? { nickname: Nickname.create("actor-robot") } : {}),
       robotId: RobotId.create(value),
       valConstrained: ValConstrained.create(BigInt(index + 1)),
-    })));
+    }))).items;
     assert.equal(robotManager.count(), BigInt(integerKeyValues.length));
     for (const [index, value] of integerKeyValues.entries()) {
       const integerKeyMatch = robotManager.filter({ robotId: RobotId.create(value) });
@@ -2536,7 +2536,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         nickname: Nickname.create("read"),
         target: insertedBatch[0],
       }),
-    ]);
+    ]).items;
     const robotInteraction = insertedInteractions[0];
     const personInteraction = insertedInteractions[1];
     assert.notEqual(robotInteraction, undefined);
@@ -3195,15 +3195,15 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         origin: insertedBatch[1],
         participant: [insertedBatch[1], insertedPerson],
       }),
-    ]);
+    ]).items;
     assert.ok(relationBatch.every((candidate) => candidate.iid !== null));
     assert.deepEqual(
-      networkManager.putMany(relationBatch).map((candidate) => candidate.iid),
+      networkManager.putMany(relationBatch).items.map((candidate) => candidate.iid),
       relationBatch.map((candidate) => candidate.iid),
     );
     const deletedRelations = networkManager.deleteManyReturning(
       relationBatch.map((relation) => relation.iid).reverse(),
-    );
+    ).items;
     assert.deepEqual(
       deletedRelations.map((relation) => relation.iid),
       relationBatch.map((relation) => relation.iid).reverse(),
@@ -3240,10 +3240,10 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     const deletedPerson = personManager.deleteReturning(transactionPersonIid);
     assert.equal(deletedPerson?.iid, transactionPersonIid);
     assert.equal(personManager.getByIid(transactionPersonIid), null);
-    assert.deepEqual(personManager.deleteManyReturning([transactionPersonIid]), []);
+    assert.deepEqual(personManager.deleteManyReturning([transactionPersonIid]).items, []);
     const deletedPeople = personManager.deleteManyReturning([
       insertedBatch[1].iid, transactionPersonIid, insertedBatch[0].iid,
-    ]);
+    ]).items;
     assert.deepEqual(
       deletedPeople.map((person) => person.iid),
       [insertedBatch[1].iid, insertedBatch[0].iid],
@@ -3374,9 +3374,9 @@ test(
 
       const personManager = Person.manager(database);
       for (const empty of [
-        personManager.insertMany([]),
-        personManager.putMany([]),
-        personManager.updateMany([]),
+        personManager.insertMany([]).items,
+        personManager.putMany([]).items,
+        personManager.updateMany([]).items,
       ]) {
         assert.deepEqual(empty, []);
         frozenBatch(empty);
@@ -3388,7 +3388,7 @@ test(
       const insertedPeople = personManager.insertMany([
         personInput(personKeys[0], 1n),
         personInput(personKeys[1], 2n),
-      ]);
+      ]).items;
       frozenBatch(insertedPeople);
       assert.deepEqual(
         insertedPeople.map((person) => person.identifier.value),
@@ -3404,14 +3404,14 @@ test(
         () => personManager.insertMany([
           personInput(`duplicate-person-${nonce}`, 3n),
           personInput(`duplicate-person-${nonce}`, 4n),
-        ]),
+        ]).items,
       );
       assert.equal(
         personManager.filter({ identifier: Identifier.create(`duplicate-person-${nonce}`) }).count(),
         0n,
       );
       personManager.deleteMany([personIids[1]]);
-      const putPeople = personManager.putMany(insertedPeople);
+      const putPeople = personManager.putMany(insertedPeople).items;
       frozenBatch(putPeople);
       assert.equal(putPeople[0].iid, personIids[0]);
       assertIid(putPeople[1].iid);
@@ -3420,7 +3420,7 @@ test(
       const updatedPeople = personManager.updateMany([
         [personIids[1], personInput(personKeys[1], 12n)],
         [personIids[0], personInput(personKeys[0], 11n)],
-      ]);
+      ]).items;
       frozenBatch(updatedPeople);
       assert.deepEqual(
         updatedPeople.map((person) => person.identifier.value),
@@ -3437,14 +3437,14 @@ test(
         () => personManager.updateMany([
           [personIids[0], personInput(personKeys[0], 31n)],
           [personIids[0], personInput(personKeys[0], 32n)],
-        ]),
+        ]).items,
       );
 
       const counterManager = Counter.manager(database);
       const insertedCounters = counterManager.insertMany([
         Counter.create({ counterValue: CounterValue.create(1n) }),
         Counter.create({ counterValue: CounterValue.create(2n) }),
-      ]);
+      ]).items;
       const counterIids = insertedCounters.map((counter) => {
         assertIid(counter.iid);
         return counter.iid;
@@ -3453,18 +3453,18 @@ test(
       const updatedCounters = counterManager.updateMany([
         [counterIids[0], Counter.create({ counterValue: CounterValue.create(11n) })],
         [counterIids[1], Counter.create({ counterValue: CounterValue.create(12n) })],
-      ]);
+      ]).items;
       assert.deepEqual(updatedCounters.map((counter) => counter.iid), counterIids);
       assert.throws(() => counterManager.updateMany([
         [counterIids[0], Counter.create({ counterValue: CounterValue.create(13n) })],
         [counterIids[0], Counter.create({ counterValue: CounterValue.create(14n) })],
-      ]));
+      ]).items);
 
       const membershipManager = Membership.manager(database);
       const insertedMemberships = membershipManager.insertMany([
         Membership.create({ member: personA }),
         Membership.create({ member: personB }),
-      ]);
+      ]).items;
       const membershipIids = insertedMemberships.map((membership) => {
         assertIid(membership.iid);
         return membership.iid;
@@ -3473,19 +3473,19 @@ test(
       const updatedMemberships = membershipManager.updateMany([
         [membershipIids[0], Membership.create({ member: personB })],
         [membershipIids[1], Membership.create({ member: personA })],
-      ]);
+      ]).items;
       assert.deepEqual(updatedMemberships.map((membership) => membership.iid), membershipIids);
       assert.equal(membershipManager.getByIid(membershipIids[0])?.member.iid, personB.iid);
       assert.throws(() => membershipManager.updateMany([
         [membershipIids[0], Membership.create({ member: personA })],
         [membershipIids[0], Membership.create({ member: personB })],
-      ]));
+      ]).items);
 
       const networkManager = NetworkLink.manager(database);
       for (const empty of [
-        networkManager.insertMany([]),
-        networkManager.putMany([]),
-        networkManager.updateMany([]),
+        networkManager.insertMany([]).items,
+        networkManager.putMany([]).items,
+        networkManager.updateMany([]).items,
       ]) {
         assert.deepEqual(empty, []);
         frozenBatch(empty);
@@ -3502,7 +3502,7 @@ test(
           identifier: Identifier.create(networkKeys[1]),
           origin: personB,
         }),
-      ]);
+      ]).items;
       frozenBatch(insertedNetworks);
       assert.deepEqual(
         insertedNetworks.map((network) => network.identifier.value),
@@ -3515,9 +3515,9 @@ test(
       assert.throws(() => networkManager.insertMany([
         NetworkLink.create({ destination: personB, identifier: Identifier.create(`duplicate-network-${nonce}`), origin: personA }),
         NetworkLink.create({ destination: personA, identifier: Identifier.create(`duplicate-network-${nonce}`), origin: personB }),
-      ]));
+      ]).items);
       networkManager.deleteMany([networkIids[1]]);
-      const putNetworks = networkManager.putMany(insertedNetworks);
+      const putNetworks = networkManager.putMany(insertedNetworks).items;
       frozenBatch(putNetworks);
       assert.equal(putNetworks[0].iid, networkIids[0]);
       assertIid(putNetworks[1].iid);
@@ -3534,7 +3534,7 @@ test(
           identifier: Identifier.create(networkKeys[0]),
           origin: personB,
         })],
-      ]);
+      ]).items;
       frozenBatch(updatedNetworks);
       assert.deepEqual(
         updatedNetworks.map((network) => network.identifier.value),
@@ -3566,7 +3566,7 @@ test(
         transactionPeople = transactionPersonManager.insertMany([
           personInput(transactionPersonKeys[0], 21n),
           personInput(transactionPersonKeys[1], 22n),
-        ]);
+        ]).items;
         frozenBatch(transactionPeople);
         const transactionNetworkManager = NetworkLink.manager(transaction);
         transactionNetworks = transactionNetworkManager.insertMany([
@@ -3575,10 +3575,10 @@ test(
             identifier: Identifier.create(transactionNetworkKey),
             origin: transactionPeople[0],
           }),
-        ]);
+        ]).items;
         frozenBatch(transactionNetworks);
         assert.deepEqual(
-          transactionNetworkManager.putMany(transactionNetworks).map(
+          transactionNetworkManager.putMany(transactionNetworks).items.map(
             (network) => network.iid,
           ),
           transactionNetworks.map((network) => network.iid),

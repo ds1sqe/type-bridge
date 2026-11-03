@@ -1,4 +1,5 @@
 import {
+  type BatchWriteResult,
   Actor,
   Aliases,
   Container,
@@ -102,10 +103,10 @@ declare const database: Database;
 const personManager: ProjectedModelManager<Person> = Person.manager(database);
 personManager.insert(person);
 personManager.put(person);
-const insertedPeople: readonly Person[] = personManager.insertMany([person]);
-const putPeople: readonly Person[] = personManager.putMany([person]);
+const insertedPeople: BatchWriteResult<Person> = personManager.insertMany([person]);
+const putPeople: BatchWriteResult<Person> = personManager.putMany([person]);
 const nativePersonManager = Person.manager(database);
-const updatedPeople: readonly Person[] = nativePersonManager.updateMany([["0xa1", person]]);
+const updatedPeople: BatchWriteResult<Person> = nativePersonManager.updateMany([["0xa1", person]]);
 nativePersonManager.deleteMany(["0xa1"]);
 const ordinaryCanonicalFilter = nativePersonManager.where();
 void ordinaryCanonicalFilter;
@@ -381,3 +382,10 @@ const stagedGrouped: Promise<Pending<readonly (readonly [Score, readonly [bigint
 const stagedMinimum: IntegerInput = integerInput(stagedSession, Score.create(2n));
 const stagedFunction: IntegerCall = qualifyingScore(stagedSession, stagedRoot, stagedMinimum);
 void [stagedOne, stagedFirst, stagedRows, stagedPage, stagedCount, stagedExists, stagedAggregate, stagedGrouped, stagedFunction];
+
+const batchCount: number = insertedPeople.count;
+const batchIndexes: readonly number[] = insertedPeople.inputIndexes;
+const batchItems: readonly Person[] = insertedPeople.items;
+void batchCount;
+void batchIndexes;
+void batchItems;

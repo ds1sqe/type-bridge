@@ -2547,7 +2547,7 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
                 .collect(),
         )
         .await
-        .expect("queries people insert");
+        .expect("queries people insert").into_items();
     assert_eq!(people.len(), 2);
     sdk_queries_assert_person(&people[0], &people_records[0]);
     sdk_queries_assert_person(&people[1], &people_records[1]);
@@ -3121,21 +3121,21 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
         db.entities::<Person>()
             .insert_many(Vec::new())
             .await
-            .expect("empty person insert batch")
+            .expect("empty person insert batch").into_items()
             .is_empty()
     );
     assert!(
         db.entities::<Person>()
             .put_many(Vec::new())
             .await
-            .expect("empty person put batch")
+            .expect("empty person put batch").into_items()
             .is_empty()
     );
     assert!(
         db.entities::<Person>()
             .update_many(Vec::new())
             .await
-            .expect("empty person update batch")
+            .expect("empty person update batch").into_items()
             .is_empty()
     );
     db.entities::<Person>()
@@ -3432,7 +3432,7 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
             .unwrap(),
         ])
         .await
-        .expect("person insert_many");
+        .expect("person insert_many").into_items();
     assert_eq!(batch_people.len(), 2);
     assert_eq!(batch_people[0].identifier().value(), "p-101");
     assert_eq!(batch_people[1].identifier().value(), "p-102");
@@ -3645,7 +3645,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
             .unwrap(),
         ])
         .await
-        .expect("employee put_many");
+        .expect("employee put_many").into_items();
     assert_eq!(put_many.len(), 2);
     assert_eq!(put_many[0].iid(), employee_iid);
     assert_eq!(put_many[0].rank().value(), &4);
@@ -4089,21 +4089,21 @@ async fn generated_relation_query_and_remote_lifecycle() {
         db.relations::<Employment>()
             .insert_many(Vec::new())
             .await
-            .expect("empty relation insert batch")
+            .expect("empty relation insert batch").into_items()
             .is_empty()
     );
     assert!(
         db.relations::<Employment>()
             .put_many(Vec::new())
             .await
-            .expect("empty relation put batch")
+            .expect("empty relation put batch").into_items()
             .is_empty()
     );
     assert!(
         db.relations::<Employment>()
             .update_many(Vec::new())
             .await
-            .expect("empty relation update batch")
+            .expect("empty relation update batch").into_items()
             .is_empty()
     );
     db.relations::<Employment>()
@@ -4242,7 +4242,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .expect("new batch network create"),
         ])
         .await
-        .expect("network relation put_many");
+        .expect("network relation put_many").into_items();
     assert_eq!(keyed_batch.len(), 2);
     assert_eq!(keyed_batch[0].iid(), keyed_link_iid);
     let batch_link_iid = keyed_batch[1].iid().to_owned();
@@ -4408,7 +4408,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             EmploymentCreate::new(key_reference).expect("employment create by key"),
         ])
         .await
-        .expect("employment insert_many by typed key reference");
+        .expect("employment insert_many by typed key reference").into_items();
     assert_eq!(employment_batch.len(), 1);
     let employment_two_iid = employment_batch[0].iid().to_owned();
     assert_ne!(employment_two_iid, employment_one_iid);
@@ -5387,7 +5387,7 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
             .collect(),
         )
         .await
-        .expect("integer-key robot insert batch");
+        .expect("integer-key robot insert batch").into_items();
     assert_eq!(robots.len(), 4);
     let negative_robot = robots
         .iter()
@@ -5786,7 +5786,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
             relation_person_input("p-402", "removed-control"),
         ])
         .await
-        .expect("hook parity people insert");
+        .expect("hook parity people insert").into_items();
     let first_iid = people[0].iid().to_owned();
     let second_iid = people[1].iid().to_owned();
     let absent_iid = people[2].iid().to_owned();
@@ -5903,7 +5903,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
             ),
         ])
         .await
-        .expect("post-hook failure is non-fatal after atomic update");
+        .expect("post-hook failure is non-fatal after atomic update").into_items();
     assert_eq!(updated[0].aliases()[0].value(), "updated-a");
     assert_eq!(updated[1].aliases()[0].value(), "updated-b");
     assert_eq!(
@@ -5927,7 +5927,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
             EmploymentCreate::new(updated[1].reference()).expect("second employment create"),
         ])
         .await
-        .expect("hook parity employment insert batch");
+        .expect("hook parity employment insert batch").into_items();
     let first_employment_iid = employment[0].iid().to_owned();
     let second_employment_iid = employment[1].iid().to_owned();
 
@@ -5954,7 +5954,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
             ),
         ])
         .await
-        .expect("relation update batch commits despite post-hook failure");
+        .expect("relation update batch commits despite post-hook failure").into_items();
     assert_eq!(updated_relations[0].iid(), first_employment_iid);
     assert_eq!(updated_relations[1].iid(), second_employment_iid);
     assert!(
@@ -6298,7 +6298,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
             CounterCreate::new(CounterValue::new(2).unwrap()).unwrap(),
         ])
         .await
-        .unwrap();
+        .unwrap().into_items();
     model_plan_mark("");
     assert_eq!(values.len(), 2);
     let ids = values
@@ -6358,7 +6358,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
             ),
         ])
         .await
-        .unwrap();
+        .unwrap().into_items();
     model_plan_mark("");
     assert_eq!(
         updated_many
@@ -6377,7 +6377,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
             CounterCreate::new(CounterValue::new(2).unwrap()).unwrap(),
         ])
         .await
-        .unwrap();
+        .unwrap().into_items();
     for (name, value) in ["counter-left", "counter-right"].into_iter().zip(&returned) {
         model_plan_identity(name, value.iid());
     }
@@ -6398,7 +6398,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
                 .collect::<Vec<_>>(),
         )
         .await
-        .unwrap();
+        .unwrap().into_items();
     model_plan_mark("");
     assert_eq!(snapshots.len(), 1);
     assert_eq!(*snapshots[0].counter_value().value(), 2);
@@ -6523,7 +6523,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     let put_people = people
         .put_many(vec![person(false, "data-ada"), person(false, "data-dana")])
         .await
-        .unwrap();
+        .unwrap().into_items();
     model_plan_mark("");
     assert_eq!(put_people[0].iid(), ada.iid());
     model_plan_identity("data-dana", put_people[1].iid());
@@ -6545,7 +6545,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
             batch_input("data-link-return"),
         ])
         .await
-        .unwrap();
+        .unwrap().into_items();
     model_plan_mark("");
     for (name, value) in ["link-forward", "link-return"].into_iter().zip(&put_links) {
         model_plan_identity(name, value.iid());
@@ -6566,7 +6566,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
             batch_input("data-link-return"),
         ])
         .await
-        .unwrap();
+        .unwrap().into_items();
     model_plan_mark("");
     for (name, value) in ["link-forward", "link-return"]
         .into_iter()
@@ -6584,7 +6584,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
             (batch_links[1].iid().into(), batch_input("data-link-return")),
         ])
         .await
-        .unwrap();
+        .unwrap().into_items();
     model_plan_mark("");
     assert_eq!(
         updated.iter().map(|value| value.iid()).collect::<Vec<_>>(),
@@ -6610,7 +6610,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
             batch_input("data-link-return"),
         ])
         .await
-        .unwrap();
+        .unwrap().into_items();
     for (name, value) in ["link-forward", "link-return"].into_iter().zip(&returned) {
         model_plan_identity(name, value.iid());
     }
@@ -6632,7 +6632,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
                 .collect::<Vec<_>>(),
         )
         .await
-        .unwrap();
+        .unwrap().into_items();
     model_plan_mark("");
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].identifier().value(), "data-link-return");
@@ -6660,7 +6660,7 @@ async fn sdk_models_data_model_runtime_live() {
         .entities::<Person>()
         .insert_many(Vec::new())
         .await
-        .expect("empty entity insert batch");
+        .expect("empty entity insert batch").into_items();
     assert!(empty_people.is_empty());
     let inserted_people = db
         .entities::<Person>()
@@ -6669,7 +6669,7 @@ async fn sdk_models_data_model_runtime_live() {
             ownership_edge_person_input("data-dana", &[], None),
         ])
         .await
-        .expect("Models entity batch insert");
+        .expect("Models entity batch insert").into_items();
     let inserted_keys = inserted_people
         .iter()
         .map(|person| person.identifier().value().clone())
@@ -6717,7 +6717,7 @@ async fn sdk_models_data_model_runtime_live() {
             ownership_edge_person_input("data-dana", &[], None),
         ])
         .await
-        .expect("Models entity batch put");
+        .expect("Models entity batch put").into_items();
     let put_keys = put_people
         .iter()
         .map(|person| person.identifier().value().clone())
@@ -6806,7 +6806,7 @@ async fn sdk_models_data_model_runtime_live() {
                 .expect("right counter input"),
         ])
         .await
-        .expect("counter update batch seed");
+        .expect("counter update batch seed").into_items();
     let batch_left_iid = batch_counters[0].iid().to_owned();
     let batch_right_iid = batch_counters[1].iid().to_owned();
     let updated_counters = db
@@ -6824,7 +6824,7 @@ async fn sdk_models_data_model_runtime_live() {
             ),
         ])
         .await
-        .expect("counter update batch");
+        .expect("counter update batch").into_items();
     assert_eq!(updated_counters[0].iid(), batch_left_iid);
     assert_eq!(updated_counters[1].iid(), batch_right_iid);
     assert_eq!(updated_counters[0].counter_value().value(), &11);
@@ -6944,7 +6944,7 @@ async fn sdk_models_data_model_runtime_live() {
                 .expect("right counter input"),
         ])
         .await
-        .expect("Models counter batch insert");
+        .expect("Models counter batch insert").into_items();
     assert_eq!(inserted.len(), 2);
     assert_ne!(inserted[0].iid(), inserted[1].iid());
     let left_iid = inserted[0].iid().to_owned();
@@ -7056,7 +7056,7 @@ async fn sdk_models_data_model_runtime_live() {
             ownership_edge_person_input("data-dana", &[], None),
         ])
         .await
-        .expect("Models membership people");
+        .expect("Models membership people").into_items();
     let robot = db
         .entities::<Robot>()
         .insert(
@@ -7094,7 +7094,7 @@ async fn sdk_models_data_model_runtime_live() {
         .relations::<NetworkLink>()
         .insert_many(Vec::new())
         .await
-        .expect("empty relation insert batch");
+        .expect("empty relation insert batch").into_items();
     let inserted_networks = db
         .relations::<NetworkLink>()
         .insert_many(vec![
@@ -7102,7 +7102,7 @@ async fn sdk_models_data_model_runtime_live() {
             network_input("data-link-return", true),
         ])
         .await
-        .expect("network-link insert batch");
+        .expect("network-link insert batch").into_items();
     let inserted_network_keys = inserted_networks
         .iter()
         .map(|relation| relation.identifier().value().clone())
@@ -7134,7 +7134,7 @@ async fn sdk_models_data_model_runtime_live() {
             network_input("data-link-return", false),
         ])
         .await
-        .expect("network-link put batch");
+        .expect("network-link put batch").into_items();
     assert_eq!(put_networks[0].iid(), original_forward.iid());
     let put_network_keys = put_networks
         .iter()
@@ -7229,7 +7229,7 @@ async fn sdk_models_data_model_runtime_live() {
                 .expect("robot membership input"),
         ])
         .await
-        .expect("Models membership insert");
+        .expect("Models membership insert").into_items();
     let membership_ada_iid = memberships[0].iid().to_owned();
     let membership_robot_iid = memberships[1].iid().to_owned();
     let updated_memberships = db
@@ -7247,7 +7247,7 @@ async fn sdk_models_data_model_runtime_live() {
             ),
         ])
         .await
-        .expect("membership update batch");
+        .expect("membership update batch").into_items();
     let membership_identities_preserved = [
         updated_memberships[0].iid() == membership_ada_iid,
         updated_memberships[1].iid() == membership_robot_iid,
@@ -7356,7 +7356,7 @@ async fn sdk_models_data_model_runtime_live() {
                 .expect("robot lifecycle membership input"),
         ])
         .await
-        .expect("Models lifecycle membership insert");
+        .expect("Models lifecycle membership insert").into_items();
     let membership_ada_iid = memberships[0].iid().to_owned();
     let membership_robot_iid = memberships[1].iid().to_owned();
     let membership_count_after_insert = db

@@ -1153,4 +1153,4 @@ export function setDebugListener(listener: ((event: DebugEvent) => void) | null)
 }
 export { Expr, Value } from "./plan-values.js";
 
-export type { WriteResult } from "./runtime-projection.js";
+export type { BatchWriteResult, WriteResult } from "./runtime-projection.js";

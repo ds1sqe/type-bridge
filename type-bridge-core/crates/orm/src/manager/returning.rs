@@ -156,7 +156,7 @@ pub(crate) async fn delete_on_lease<T>(
     deadline: QueryExecutionDeadline,
     materialize: impl FnOnce(
         &DescriptorRegistry,
-        &[&HydratedThing],
+        &[(usize, &HydratedThing)],
         Vec<serde_json::Value>,
         QueryExecutionResourceLimits,
     ) -> Result<T>,
@@ -254,7 +254,7 @@ async fn delete_chunks_on_lease<T>(
     deadline: QueryExecutionDeadline,
     materialize: impl FnOnce(
         &DescriptorRegistry,
-        &[&HydratedThing],
+        &[(usize, &HydratedThing)],
         Vec<serde_json::Value>,
         QueryExecutionResourceLimits,
     ) -> Result<T>,
@@ -353,7 +353,7 @@ fn capture_rows(
 fn ordered_things<'row>(
     rows: impl IntoIterator<Item = &'row crate::match_request::MatchRow>,
     iids: &[String],
-) -> Result<Vec<&'row HydratedThing>> {
+) -> Result<Vec<(usize, &'row HydratedThing)>> {
     let rows = rows.into_iter();
     let mut by_iid = HashMap::with_capacity(rows.size_hint().0);
     for row in rows {
@@ -374,9 +374,9 @@ fn ordered_things<'row>(
         }
     }
     let mut ordered = Vec::with_capacity(by_iid.len());
-    for iid in iids {
+    for (index, iid) in iids.iter().enumerate() {
         if let Some(thing) = by_iid.remove(&iid.to_ascii_lowercase()) {
-            ordered.push(thing);
+            ordered.push((index, thing));
         }
     }
     if !by_iid.is_empty() {

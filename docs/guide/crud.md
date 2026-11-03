@@ -104,9 +104,8 @@ Person.manager(db).filter({ scoreGte__eq: ScoreGte.create(8n) }).all();
 
 For an exact generated-field contract, use the distinct immutable `where`
 filter. It accepts an issued field token, one of the closed six comparisons,
-and the field's exact generated attribute value. In TypeScript this surface is
-emitted by ordered successor packages; legacy unordered packages remain
-byte-exact.
+and the field's exact generated attribute value. Ordered and unordered packages
+expose the same native manager surface.
 
 ```python
 from app_models import ProjectedManagerComparison
@@ -161,13 +160,21 @@ people = [
     Person(person_id=PersonId("ada"), age=Age(36)),
     Person(person_id=PersonId("grace"), age=Age(45)),
 ]
-Person.manager(db).insert_many(people)
+result = Person.manager(db).insert_many(people)
+assert result.count == len(result.items) == len(result.input_indexes)
 Person.manager(db).put_many(people)
 ```
 
-A bulk call uses one transaction and returns values in input order. On supported
-TypeDB 3.12/band-9 connections, eligible homogeneous entity inserts may use the
-compiled `given`-stage fast path; fallback execution has the same result.
+Python, Rust, and Node batch writes return one `BatchWriteResult`. Its `items`
+contain every root in input order; `input_indexes` (`inputIndexes` in Node)
+identify their original input rows. A missing input contributes no item, and
+several roots from one input repeat that input's index. Rust exposes `items()`
+and `input_indexes()` and can consume the models with `into_items()`.
+
+A batch call compiles one plan and runs every statement in the same transaction.
+Python preserves an input model's identity only when that input produces exactly
+one root. Zero or multiple roots leave it unchanged. A failure during hydration
+or publication rolls back the owned write or makes a borrowed write rollback-only.
 
 ## Caller-owned transactions
 
@@ -181,7 +188,8 @@ with db.transaction("write") as transaction:
 
     person = person_manager.put(
         Person(person_id=PersonId("ada"), age=Age(36))
-    )
+    ).item
+    assert person is not None
     employment_manager.insert(Employment(employee=person, employer=acme))
 ```
 

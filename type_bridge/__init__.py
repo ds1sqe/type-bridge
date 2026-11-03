@@ -11,12 +11,13 @@ from type_bridge.session import (
     TransactionContext,
 )
 from type_bridge.typedb_driver import Credentials, TransactionType, TypeDB, create_driver_options
-from type_bridge.write_result import WriteResult
+from type_bridge.write_result import BatchWriteResult, WriteResult
 
 __version__ = "2.3.2"
 
 
 __all__ = [
+    "BatchWriteResult",
     "WriteResult",
     "Failure",
     "CommitConflict",

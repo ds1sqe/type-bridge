@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use napi::bindgen_prelude::{
     Array, BigInt, Buffer, Env, External, FromNapiRef, FromNapiValue, Function, FunctionRef,
-    JsValue, Unknown, type_tag_from_ident,
+    JsValue, Object, Unknown, type_tag_from_ident,
 };
 use napi::{Error, Status, sys};
 use napi_derive::napi;
@@ -1199,6 +1199,17 @@ impl fmt::Write for FallibleJsonWriter {
     }
 }
 
+enum BindingWriteAnswers {
+    Single(Vec<ProjectedThing>),
+    Batch(ProjectedBatchResult),
+}
+
+impl From<ProjectedBatchResult> for BindingWriteAnswers {
+    fn from(result: ProjectedBatchResult) -> Self {
+        Self::Batch(result)
+    }
+}
+
 struct PreparedProjectedBatchOutput {
     env: sys::napi_env,
     function: sys::napi_value,
@@ -1323,6 +1334,110 @@ fn prepare_projected_batch_output(
     })
 }
 
+fn projected_write_result_object(
+    env: sys::napi_env,
+    items: sys::napi_value,
+    count: usize,
+    input_indexes: Option<&[usize]>,
+    single: bool,
+) -> napi::Result<sys::napi_value> {
+    let (last_name, last_value) = if single {
+        let mut item = ptr::null_mut();
+        if count == 1 {
+            napi_status(
+                unsafe { sys::napi_get_element(env, items, 0, &mut item) },
+                "failed to retain projected single result item",
+            )?;
+        } else {
+            napi_status(
+                unsafe { sys::napi_get_null(env, &mut item) },
+                "failed to create projected single result sentinel",
+            )?;
+        }
+        (c"item", item)
+    } else {
+        let input_indexes =
+            input_indexes.ok_or_else(|| runtime_error("batch result omitted its input indexes"))?;
+        if input_indexes.len() != count {
+            return Err(runtime_error("batch result input index count changed"));
+        }
+        let mut indexes = ptr::null_mut();
+        napi_status(
+            unsafe { sys::napi_create_array_with_length(env, input_indexes.len(), &mut indexes) },
+            "failed to create projected batch input indexes",
+        )?;
+        for (ordinal, index) in input_indexes.iter().copied().enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+            let mut value = ptr::null_mut();
+            napi_status(
+                unsafe { sys::napi_create_uint32(env, index, &mut value) },
+                "failed to create projected batch input index",
+            )?;
+            let mut name = [0_u8; 11];
+            let ordinal = u32::try_from(ordinal)
+                .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+            let descriptor = sys::napi_property_descriptor {
+                utf8name: decimal_property_name(ordinal, &mut name),
+                name: ptr::null_mut(),
+                method: None,
+                getter: None,
+                setter: None,
+                value,
+                attributes: sys::PropertyAttributes::enumerable,
+                data: ptr::null_mut(),
+            };
+            napi_status(
+                unsafe { sys::napi_define_properties(env, indexes, 1, &descriptor) },
+                "failed to retain projected batch input index",
+            )?;
+        }
+        napi_status(
+            unsafe { sys::napi_object_freeze(env, indexes) },
+            "failed to freeze projected batch input indexes",
+        )?;
+        (c"inputIndexes", indexes)
+    };
+    let mut count_value = ptr::null_mut();
+    let length = u32::try_from(count)
+        .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+    napi_status(
+        unsafe { sys::napi_create_uint32(env, length, &mut count_value) },
+        "failed to create projected batch count",
+    )?;
+    let mut output = ptr::null_mut();
+    napi_status(
+        unsafe { sys::napi_create_object(env, &mut output) },
+        "failed to create projected batch result",
+    )?;
+    let descriptors = [
+        (c"count", count_value),
+        (c"items", items),
+        (last_name, last_value),
+    ]
+    .map(|(name, value)| sys::napi_property_descriptor {
+        utf8name: name.as_ptr(),
+        name: ptr::null_mut(),
+        method: None,
+        getter: None,
+        setter: None,
+        value,
+        attributes: sys::PropertyAttributes::enumerable,
+        data: ptr::null_mut(),
+    });
+    napi_status(
+        unsafe {
+            sys::napi_define_properties(env, output, descriptors.len(), descriptors.as_ptr())
+        },
+        "failed to retain projected batch result",
+    )?;
+    napi_status(
+        unsafe { sys::napi_object_freeze(env, output) },
+        "failed to freeze projected batch result",
+    )?;
+    Ok(output)
+}
+
 fn clear_pending_js_exception(env: sys::napi_env) {
     let mut pending = false;
     if unsafe { sys::napi_is_exception_pending(env, &mut pending) } == sys::Status::napi_ok
@@ -1383,10 +1498,16 @@ fn materialization_failure(ordinal: usize) -> SdkExecutionDiagnostic {
 impl PreparedProjectedBatchOutput {
     fn materialize(
         self,
-        result: ProjectedBatchResult,
+        result: BindingWriteAnswers,
+        single: bool,
     ) -> Result<sys::napi_value, SdkExecutionDiagnostic> {
-        let ProjectedBatchResult::Things(things) = result else {
-            return Err(SdkExecutionDiagnostic::internal_failure());
+        let (things, input_indexes) = match result {
+            BindingWriteAnswers::Single(things) => (things, None),
+            BindingWriteAnswers::Batch(ProjectedBatchResult::Things(result)) => {
+                let (things, indexes) = result.into_parts();
+                (things, Some(indexes))
+            }
+            _ => return Err(SdkExecutionDiagnostic::internal_failure()),
         };
         if things.len() != self.ordinals.len() {
             return Err(materialization_failure(0));
@@ -1405,14 +1526,15 @@ impl PreparedProjectedBatchOutput {
             .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
         let mut json = FallibleJsonWriter::default();
         for (ordinal, thing) in rows.iter().enumerate() {
+            let input_index = input_indexes.as_ref().map_or(0, |indexes| indexes[ordinal]);
             json.clear();
             write_projected_thing_json(&mut json, self.package.as_ref(), thing)
-                .map_err(|_| materialization_failure(ordinal))?;
-            let scope =
-                MapperHandleScope::open(self.env).map_err(|_| materialization_failure(ordinal))?;
+                .map_err(|_| materialization_failure(input_index))?;
+            let scope = MapperHandleScope::open(self.env)
+                .map_err(|_| materialization_failure(input_index))?;
             let mut json_value = ptr::null_mut();
             let json_length = isize::try_from(json.as_bytes().len())
-                .map_err(|_| materialization_failure(ordinal))?;
+                .map_err(|_| materialization_failure(input_index))?;
             mapper_status(self.env, unsafe {
                 sys::napi_create_string_utf8(
                     self.env,
@@ -1421,7 +1543,7 @@ impl PreparedProjectedBatchOutput {
                     &mut json_value,
                 )
             })
-            .map_err(|_| materialization_failure(ordinal))?;
+            .map_err(|_| materialization_failure(input_index))?;
             let arguments = [
                 self.type_key,
                 self.ordinals[ordinal],
@@ -1439,24 +1561,24 @@ impl PreparedProjectedBatchOutput {
                     &mut facade,
                 )
             })
-            .map_err(|_| materialization_failure(ordinal))?;
+            .map_err(|_| materialization_failure(input_index))?;
             let mut value_type = sys::ValueType::napi_undefined;
             mapper_status(self.env, unsafe {
                 sys::napi_typeof(self.env, facade, &mut value_type)
             })
-            .map_err(|_| materialization_failure(ordinal))?;
+            .map_err(|_| materialization_failure(input_index))?;
             let mut is_null = false;
             mapper_status(self.env, unsafe {
                 sys::napi_strict_equals(self.env, facade, self.null, &mut is_null)
             })
-            .map_err(|_| materialization_failure(ordinal))?;
+            .map_err(|_| materialization_failure(input_index))?;
             let mut is_array = false;
             mapper_status(self.env, unsafe {
                 sys::napi_is_array(self.env, facade, &mut is_array)
             })
-            .map_err(|_| materialization_failure(ordinal))?;
+            .map_err(|_| materialization_failure(input_index))?;
             if value_type != sys::ValueType::napi_object || is_null || is_array {
-                return Err(materialization_failure(ordinal));
+                return Err(materialization_failure(input_index));
             }
             mapper_status(self.env, unsafe {
                 sys::napi_set_element(
@@ -1466,16 +1588,26 @@ impl PreparedProjectedBatchOutput {
                     facade,
                 )
             })
-            .map_err(|_| materialization_failure(ordinal))?;
+            .map_err(|_| materialization_failure(input_index))?;
             scope
                 .close()
-                .map_err(|_| materialization_failure(ordinal))?;
+                .map_err(|_| materialization_failure(input_index))?;
         }
         mapper_status(self.env, unsafe {
             sys::napi_object_freeze(self.env, self.array)
         })
         .map_err(|_| materialization_failure(0))?;
-        Ok(self.array)
+        projected_write_result_object(
+            self.env,
+            self.array,
+            self.ordinals.len(),
+            input_indexes.as_deref(),
+            single,
+        )
+        .map_err(|_| {
+            clear_pending_js_exception(self.env);
+            materialization_failure(0)
+        })
     }
 }
 
@@ -3356,43 +3488,46 @@ impl NodeProjectedModelManager {
     #[napi(js_name = "insertProjected")]
     pub fn insert_projected<'env>(
         &self,
+        env: Env,
         instance_json: String,
         proofs: Unknown<'env>,
-    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+    ) -> napi::Result<Object<'env>> {
         let proofs =
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
-        self.write_single_projected(instance, ProjectedBatchOperation::Insert, None)
+        self.write_single_materialized(&env, instance, ProjectedBatchOperation::Insert, None)
     }
 
     /// Put one projected value through the common projected executor.
     #[napi(js_name = "putProjected")]
     pub fn put_projected<'env>(
         &self,
+        env: Env,
         instance_json: String,
         proofs: Unknown<'env>,
-    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+    ) -> napi::Result<Object<'env>> {
         let proofs =
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
-        self.write_single_projected(instance, ProjectedBatchOperation::Put, None)
+        self.write_single_materialized(&env, instance, ProjectedBatchOperation::Put, None)
     }
 
     /// Replace one projected value through the common projected executor.
     #[napi(js_name = "updateProjected")]
     pub fn update_projected<'env>(
         &self,
+        env: Env,
         iid: String,
         instance_json: String,
         proofs: Unknown<'env>,
-    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+    ) -> napi::Result<Object<'env>> {
         let proofs =
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
-        self.write_single_projected(instance, ProjectedBatchOperation::Update, Some(iid))
+        self.write_single_materialized(&env, instance, ProjectedBatchOperation::Update, Some(iid))
     }
 
     /// Insert projected values atomically through the common executor.
@@ -3402,7 +3537,7 @@ impl NodeProjectedModelManager {
         env: Env,
         row_count: u32,
         row_at: Function<'env, u32, Unknown<'env>>,
-    ) -> napi::Result<Array<'env>> {
+    ) -> napi::Result<Object<'env>> {
         self.write_many_projected(
             &env,
             row_count,
@@ -3418,7 +3553,7 @@ impl NodeProjectedModelManager {
         env: Env,
         row_count: u32,
         row_at: Function<'env, u32, Unknown<'env>>,
-    ) -> napi::Result<Array<'env>> {
+    ) -> napi::Result<Object<'env>> {
         self.write_many_projected(&env, row_count, row_at.raw(), ProjectedBatchOperation::Put)
     }
 
@@ -3429,7 +3564,7 @@ impl NodeProjectedModelManager {
         env: Env,
         row_count: u32,
         row_at: Function<'env, u32, Unknown<'env>>,
-    ) -> napi::Result<Array<'env>> {
+    ) -> napi::Result<Object<'env>> {
         self.write_many_projected(
             &env,
             row_count,
@@ -3489,61 +3624,24 @@ impl NodeProjectedModelManager {
 
     /// Delete one exact value and retain its stored pre-delete snapshot.
     #[napi(js_name = "deleteByIidReturning")]
-    pub fn delete_by_iid_returning(
+    pub fn delete_by_iid_returning<'env>(
         &self,
+        env: Env,
         iid: String,
-    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
-        self.delete_many_returning(vec![iid])
+    ) -> napi::Result<Object<'env>> {
+        let (batch, control) = self.prepare_returning_delete(vec![iid])?;
+        self.execute_materialized_batch(&env, &batch, control, true, true)
     }
 
     /// Delete exact values atomically and return existing snapshots in input order.
     #[napi(js_name = "deleteManyReturning")]
-    pub fn delete_many_returning(
+    pub fn delete_many_returning<'env>(
         &self,
+        env: Env,
         iids: Vec<String>,
-    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
-        ProjectedBatch::validate_binding_row_count(iids.len()).map_err(napi_sdk_diagnostic)?;
-        let control =
-            ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
-        let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
-            self.package.projection.as_ref(),
-            self.type_id.clone(),
-            ProjectedBatchOperation::Delete,
-            &control,
-        )
-        .map_err(napi_sdk_diagnostic)?;
-        let mut rows = reserved_projected_batch_rows(iids.len()).map_err(napi_sdk_diagnostic)?;
-        for iid in iids {
-            let row = ProjectedBatchRow::Delete { iid };
-            budget
-                .try_add_row(self.package.projection.as_ref(), &row)
-                .map_err(napi_sdk_diagnostic)?;
-            rows.push(row);
-        }
-        drop(budget);
-        let batch = ProjectedBatch::try_new_for_invocation(
-            self.package.projection.as_ref(),
-            self.type_id.clone(),
-            ProjectedBatchOperation::Delete,
-            rows,
-            &control,
-        )
-        .map_err(napi_sdk_diagnostic)?;
-        self.execute_projected_batch(&batch, control, true, Vec::new(), |result| {
-            let ProjectedBatchResult::Things(things) = result else {
-                return Err(SdkExecutionDiagnostic::internal_failure());
-            };
-            let mut values = reserved_projected_batch_rows(things.len())?;
-            for (ordinal, thing) in things.into_iter().enumerate() {
-                values.push(
-                    projected_envelope(Arc::clone(&self.package), thing).map_err(|_| {
-                        ProjectedBatchExecutor::binding_materialization_failure(ordinal as u64)
-                    })?,
-                );
-            }
-            Ok(values)
-        })
-        .map_err(napi_sdk_diagnostic)
+    ) -> napi::Result<Object<'env>> {
+        let (batch, control) = self.prepare_returning_delete(iids)?;
+        self.execute_materialized_batch(&env, &batch, control, true, false)
     }
 
     /// Delete one exact projected value by its canonical TypeDB IID.
@@ -3686,12 +3784,76 @@ impl NodeProjectedModelManager {
 }
 
 impl NodeProjectedModelManager {
-    fn write_single_projected(
+    fn prepare_returning_delete(
+        &self,
+        iids: Vec<String>,
+    ) -> napi::Result<(ProjectedBatch, ProjectedBatchInvocationControl)> {
+        ProjectedBatch::validate_binding_row_count(iids.len()).map_err(napi_sdk_diagnostic)?;
+        let control =
+            ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+        let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+            self.package.projection.as_ref(),
+            self.type_id.clone(),
+            ProjectedBatchOperation::Delete,
+            &control,
+        )
+        .map_err(napi_sdk_diagnostic)?;
+        let mut rows = reserved_projected_batch_rows(iids.len()).map_err(napi_sdk_diagnostic)?;
+        for iid in iids {
+            let row = ProjectedBatchRow::Delete { iid };
+            budget
+                .try_add_row(self.package.projection.as_ref(), &row)
+                .map_err(napi_sdk_diagnostic)?;
+            rows.push(row);
+        }
+        drop(budget);
+        let batch = ProjectedBatch::try_new_for_invocation(
+            self.package.projection.as_ref(),
+            self.type_id.clone(),
+            ProjectedBatchOperation::Delete,
+            rows,
+            &control,
+        )
+        .map_err(napi_sdk_diagnostic)?;
+        Ok((batch, control))
+    }
+
+    #[cfg(test)]
+    fn delete_returning_envelopes(
+        &self,
+        iids: Vec<String>,
+    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+        let (batch, control) = self.prepare_returning_delete(iids)?;
+        self.execute_projected_batch(&batch, control, true, Vec::new(), |result| {
+            let ProjectedBatchResult::Things(things) = result else {
+                return Err(SdkExecutionDiagnostic::internal_failure());
+            };
+            let (things, input_indexes) = things.into_parts();
+            let mut values = reserved_projected_batch_rows(things.len())?;
+            for (thing, ordinal) in things.into_iter().zip(input_indexes) {
+                values.push(
+                    projected_envelope(Arc::clone(&self.package), thing).map_err(|_| {
+                        ProjectedBatchExecutor::binding_materialization_failure(ordinal as u64)
+                    })?,
+                );
+            }
+            Ok(values)
+        })
+        .map_err(napi_sdk_diagnostic)
+    }
+
+    fn execute_single_projected<T, F>(
         &self,
         instance: ProjectedCreate,
         operation: ProjectedBatchOperation,
         iid: Option<String>,
-    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+        mapper: F,
+    ) -> napi::Result<T>
+    where
+        F: FnOnce(
+            type_bridge_orm::WriteResult<ProjectedThing>,
+        ) -> Result<T, SdkExecutionDiagnostic>,
+    {
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
         let control =
             ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
@@ -3716,28 +3878,56 @@ impl NodeProjectedModelManager {
             .ok_or_else(|| runtime_error("projected manager has no execution target"))?
             .as_target();
         self.runtime
-            .block_on(
-                executor.execute_single_write_on_target(target, &batch, control, |result| {
-                    result
-                        .into_items()
-                        .into_iter()
-                        .enumerate()
-                        .map(|(ordinal, thing)| {
-                            projected_envelope(Arc::clone(&self.package), thing).map_err(|_| {
-                                ProjectedBatchExecutor::binding_materialization_failure(
-                                    ordinal as u64,
-                                )
-                            })
-                        })
-                        .collect()
-                }),
-            )
+            .block_on(executor.execute_single_write_on_target(target, &batch, control, mapper))
             .map_err(|error| {
                 error.into_diagnostic(
                     type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
                 )
             })
             .map_err(napi_sdk_diagnostic)
+    }
+
+    fn write_single_materialized<'env>(
+        &self,
+        env: &Env,
+        instance: ProjectedCreate,
+        operation: ProjectedBatchOperation,
+        iid: Option<String>,
+    ) -> napi::Result<Object<'env>> {
+        if self.package.projected_batch_materializer.is_none() {
+            return Err(invalid_error(
+                "native projection has no installed batch materializer",
+            ));
+        }
+        let authority = NodeProjectedBatchAuthority::pending(Arc::clone(&self.package.projection));
+        let guard = PendingBatchAuthority::new(Arc::clone(&authority));
+        let output = self.execute_single_projected(instance, operation, iid, |result| {
+            let result = BindingWriteAnswers::Single(result.into_items());
+            self.materialize_projected_write_result(env, result, authority, true)
+        })?;
+        guard.finish();
+        Ok(output)
+    }
+
+    #[cfg(test)]
+    fn write_single_projected(
+        &self,
+        instance: ProjectedCreate,
+        operation: ProjectedBatchOperation,
+        iid: Option<String>,
+    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+        self.execute_single_projected(instance, operation, iid, |result| {
+            result
+                .into_items()
+                .into_iter()
+                .enumerate()
+                .map(|(ordinal, thing)| {
+                    projected_envelope(Arc::clone(&self.package), thing).map_err(|_| {
+                        ProjectedBatchExecutor::binding_materialization_failure(ordinal as u64)
+                    })
+                })
+                .collect()
+        })
     }
 
     #[inline]
@@ -3756,7 +3946,7 @@ impl NodeProjectedModelManager {
         row_count: u32,
         row_at: sys::napi_value,
         operation: ProjectedBatchOperation,
-    ) -> napi::Result<Array<'env>> {
+    ) -> napi::Result<Object<'env>> {
         let (batch, control) = capture_projected_batch(
             env.raw(),
             self.package.as_ref(),
@@ -3765,33 +3955,71 @@ impl NodeProjectedModelManager {
             row_count,
             row_at,
         )?;
+        self.execute_materialized_batch(env, &batch, control, false, false)
+    }
+
+    fn execute_materialized_batch<'env>(
+        &self,
+        env: &Env,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        returning_deleted: bool,
+        single: bool,
+    ) -> napi::Result<Object<'env>> {
         if batch.is_empty() {
-            self.execute_projected_batch(&batch, control, false, (), |_| {
+            let items = frozen_empty_array(env)?;
+            let output =
+                projected_write_result_object(env.raw(), items.raw(), 0, Some(&[]), single)?;
+            let output = unsafe { Object::from_napi_value(env.raw(), output) }?;
+            self.execute_projected_batch(batch, control, returning_deleted, (), |_| {
                 Err(SdkExecutionDiagnostic::internal_failure())
             })
             .map_err(napi_sdk_diagnostic)?;
-            return frozen_empty_array(env);
+            return Ok(output);
         }
-
+        if self.package.projected_batch_materializer.is_none() {
+            return Err(invalid_error(
+                "native projection has no installed batch materializer",
+            ));
+        }
         let authority = NodeProjectedBatchAuthority::pending(Arc::clone(&self.package.projection));
         let authority_guard = PendingBatchAuthority::new(Arc::clone(&authority));
+        let output = self
+            .execute_projected_batch(batch, control, returning_deleted, None, |result| {
+                self.materialize_projected_write_result(env, result.into(), authority, single)
+                    .map(Some)
+            })
+            .map_err(napi_sdk_diagnostic)?;
+        let output =
+            output.ok_or_else(|| runtime_error("nonempty projected batch omitted its result"))?;
+        authority_guard.finish();
+        Ok(output)
+    }
+
+    fn materialize_projected_write_result<'env>(
+        &self,
+        env: &Env,
+        result: BindingWriteAnswers,
+        authority: Arc<NodeProjectedBatchAuthority>,
+        single: bool,
+    ) -> Result<Object<'env>, SdkExecutionDiagnostic> {
+        let count = match &result {
+            BindingWriteAnswers::Single(things) => things.len(),
+            BindingWriteAnswers::Batch(ProjectedBatchResult::Things(things)) => things.count(),
+            _ => return Err(SdkExecutionDiagnostic::internal_failure()),
+        };
         let output = prepare_projected_batch_output(
             env,
             Arc::clone(&self.package),
             &self.type_id,
-            batch.len(),
+            count,
             authority,
-        )?;
-        // Convert and cache the typed wrapper before provider dispatch. napi-rs
-        // reads the array length during this conversion; no fallible N-API work
-        // may follow authority activation.
-        let array = unsafe { Array::from_napi_value(env.raw(), output.array) }?;
-        self.execute_projected_batch(&batch, control, false, ptr::null_mut(), |result| {
-            output.materialize(result)
-        })
-        .map_err(napi_sdk_diagnostic)?;
-        authority_guard.finish();
-        Ok(array)
+        )
+        .map_err(|_| materialization_failure(0))?;
+        let output = output.materialize(result, single)?;
+        let output = unsafe { Object::from_napi_value(env.raw(), output) }
+            .map_err(|_| materialization_failure(0))?;
+        Ok(output)
     }
 
     fn execute_projected_batch<T, F>(
@@ -7829,7 +8057,7 @@ entities:
                     filters: Vec::new(),
                 };
                 let mut snapshots = manager
-                    .delete_by_iid_returning("0xa1".into())
+                    .delete_returning_envelopes(vec!["0xa1".into()])
                     .unwrap_or_else(|error| {
                         panic!("{error:?}; queries={:?}", state.lock().unwrap().queries)
                     });

@@ -559,9 +559,11 @@ class FakeExplicitIidBatchNative:
         self.inputs: list[OrderedPerson] = []
         self.deleted_iids: list[str] = []
 
-    def update_many(self, instances: list[OrderedPerson]) -> list[OrderedPerson]:
+    def update_many(
+        self, instances: list[OrderedPerson]
+    ) -> type_bridge_core.BatchWriteResult[OrderedPerson]:
         self.inputs = instances
-        return instances[1:]
+        return type_bridge_core.BatchWriteResult(instances[1:], [1])
 
     def delete_many(self, iids: list[str]) -> None:
         self.deleted_iids = iids
@@ -577,7 +579,10 @@ object.__setattr__(explicit_manager, "_model", OrderedPerson)
 object.__setattr__(explicit_manager, "_native", explicit_native)
 object.__setattr__(explicit_manager, "_hooks", [])
 object.__setattr__(explicit_manager, "_filtered", True)
-assert explicit_manager.update_many([explicit_first, explicit_second]) == [explicit_second]
+explicit_result = explicit_manager.update_many([explicit_first, explicit_second])
+assert explicit_result.count == 1
+assert explicit_result.items == [explicit_second]
+assert explicit_result.input_indexes == [1]
 assert explicit_native.inputs == [explicit_first, explicit_second]
 assert explicit_manager.delete_many([explicit_first, explicit_second]) == [
     explicit_first,
@@ -585,6 +590,8 @@ assert explicit_manager.delete_many([explicit_first, explicit_second]) == [
 ]
 assert explicit_native.deleted_iids == ["0x10", "0x20"]
 assert not hasattr(explicit_manager, "update_with")
+assert not hasattr(OrderedProjectedModelManager, "_resolve_instance_iid")
+assert not hasattr(type_bridge_core.PyProjectedModelManager, "resolve_iid")
 try:
     getattr(explicit_manager, "delete")()
 except TypeError:

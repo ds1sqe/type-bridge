@@ -1,5 +1,5 @@
 import {
-  writeResult,
+  type BatchWriteResult,
   type WriteResult,
   installGeneratedSchemaAuthority,
   installRuntimeProjection,
@@ -33,6 +33,7 @@ import {
   projectedBatchDeleted,
 } from "@type-bridge/node/runtime-projection";
 export {
+  type BatchWriteResult,
   type WriteResult,
   ProxyConnection,
   QueryCancellation,
@@ -101,13 +102,13 @@ export type ProjectedManagerFilterValue =
 
 export interface ProjectedModelManager<Complete> {
   insert(instance: Complete): WriteResult<Complete>;
-  insertMany(instances: readonly Complete[]): readonly Complete[];
+  insertMany(instances: readonly Complete[]): BatchWriteResult<Complete>;
   put(instance: Complete): WriteResult<Complete>;
-  putMany(instances: readonly Complete[]): readonly Complete[];
+  putMany(instances: readonly Complete[]): BatchWriteResult<Complete>;
   update(iid: string, replacement: Complete): WriteResult<Complete>;
   delete(instanceOrIid: Complete | string): void;
   deleteReturning(iid: string): WriteResult<Complete>;
-  deleteManyReturning(iids: readonly string[]): readonly Complete[];
+  deleteManyReturning(iids: readonly string[]): BatchWriteResult<Complete>;
   filter(
     filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
   ): ProjectedModelManager<Complete>;
@@ -4313,7 +4314,7 @@ export interface OrderedProjectedModelManager<
   extends ProjectedModelManager<Complete> {
   updateMany(
     updates: readonly ProjectedBatchUpdate<Complete>[],
-  ): readonly Complete[];
+  ): BatchWriteResult<Complete>;
   deleteMany(iids: readonly string[]): void;
   filter(
     filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
@@ -4343,9 +4344,7 @@ export type OrderedModelToken<
   ) => OrderedProjectedModelManager<Complete, Id>;
 };
 
-type OrderedProjectedEnvelope = ReturnType<
-  NativeProjectedManager["insertProjected"]
->[number];
+type OrderedProjectedEnvelope = NativeProjectedValueEnvelope;
 retainDecodedSnapshot = <Complete>(
   projection: InstalledRuntimeProjection,
   value: Complete,
@@ -4640,12 +4639,12 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
   return Object.freeze({
     insert(instance: Complete): WriteResult<Complete> {
       const wire = exactWire(instance, "insert");
-      return writeResult(native.insertProjected(
+      return native.insertProjected<Complete>(
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, instance),
-        ).map((envelope) => hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey)));
+        );
     },
-    insertMany(instances: readonly Complete[]): readonly Complete[] {
+    insertMany(instances: readonly Complete[]): BatchWriteResult<Complete> {
       if (!Array.isArray(instances)) {
         throw new TypeError("projected manager insertMany requires an array");
       }
@@ -4660,12 +4659,12 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
     },
     put(instance: Complete): WriteResult<Complete> {
       const wire = exactWire(instance, "put");
-      return writeResult(native.putProjected(
+      return native.putProjected<Complete>(
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, instance),
-        ).map((envelope) => hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey)));
+        );
     },
-    putMany(instances: readonly Complete[]): readonly Complete[] {
+    putMany(instances: readonly Complete[]): BatchWriteResult<Complete> {
       if (!Array.isArray(instances)) {
         throw new TypeError("projected manager putMany requires an array");
       }
@@ -4685,15 +4684,15 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
         );
       }
       const wire = exactWire(replacement, "update");
-      return writeResult(native.updateProjected(
+      return native.updateProjected<Complete>(
           iid,
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, replacement),
-        ).map((envelope) => hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey)));
+        );
     },
     updateMany(
       updates: readonly ProjectedBatchUpdate<Complete>[],
-    ): readonly Complete[] {
+    ): BatchWriteResult<Complete> {
       if (!Array.isArray(updates)) {
         throw new TypeError("projected manager updateMany requires an array");
       }
@@ -4727,14 +4726,10 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       native.deleteByIid(iid);
     },
     deleteReturning(iid: string): WriteResult<Complete> {
-      return writeResult(native.deleteByIidReturning(iid).map((envelope) => retainDeletedSnapshot(
-        hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey), envelope,
-      )));
+      return native.deleteByIidReturning<Complete>(iid);
     },
-    deleteManyReturning(iids: readonly string[]): readonly Complete[] {
-      return native.deleteManyReturning([...iids]).map((envelope) => retainDeletedSnapshot(
-        hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey), envelope,
-      ));
+    deleteManyReturning(iids: readonly string[]): BatchWriteResult<Complete> {
+      return native.deleteManyReturning<Complete>([...iids]);
     },
     deleteMany(iids: readonly string[]): void {
       if (!Array.isArray(iids)) {

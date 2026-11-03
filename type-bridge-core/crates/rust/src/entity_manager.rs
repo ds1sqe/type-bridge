@@ -355,7 +355,7 @@ where
     }
     /// Inserts each item and returns complete freshly hydrated models in input order, or one
     /// error for the whole call with no partial result vector.
-    pub async fn insert_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
+    pub async fn insert_many(&self, inputs: Vec<M::Create>) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         if !self.hooks.has_hooks() {
             return self.write_many(inputs, false).await;
@@ -366,7 +366,7 @@ where
     /// Applies the per-item [`Self::put`] key-or-insert rule, including complete replacement of
     /// non-key ownership for existing exact rows, returning complete freshly hydrated models
     /// in input order, or one error for the whole call with no partial vector.
-    pub async fn put_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
+    pub async fn put_many(&self, inputs: Vec<M::Create>) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         if !self.hooks.has_hooks() {
             return self.write_many(inputs, true).await;
@@ -416,12 +416,15 @@ where
     pub async fn delete_returning(&self, iid: &str) -> Result<WriteResult<M>> {
         self.delete_many_returning(&[iid.to_owned()])
             .await
-            .map(WriteResult::new)
+            .map(|result| WriteResult::new(result.into_items()))
     }
 
     /// Atomically delete exact models and return existing snapshots in input order.
     /// Pre-hooks run before provider work; post-hooks run after commit.
-    pub async fn delete_many_returning(&self, iids: &[String]) -> Result<Vec<M>> {
+    pub async fn delete_many_returning(
+        &self,
+        iids: &[String],
+    ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(iids.len())?;
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
         let (id, _) = resolve_entity_authority(
@@ -515,7 +518,10 @@ where
     /// Atomically replaces each exact entity identified by its canonical IID and returns
     /// complete freshly hydrated models in input order. Every input and pre-hook completes
     /// before database work begins; any write or hydration failure rolls back the whole batch.
-    pub async fn update_many(&self, inputs: Vec<(String, M::Create)>) -> Result<Vec<M>> {
+    pub async fn update_many(
+        &self,
+        inputs: Vec<(String, M::Create)>,
+    ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
@@ -561,18 +567,16 @@ where
         }
 
         let outputs = execute_owned_things::<M>(self.db.inner_orm(), installed, &batch).await?;
-        for (((_, encoded), output), state) in hook_inputs.iter().zip(&outputs).zip(states) {
-            self.hooks
-                .run_post(
-                    M::TYPE_ID_JSON,
-                    ModelKind::Entity,
-                    CrudOperation::Update,
-                    Some(output.iid()),
-                    Some(encoded),
-                    state,
-                )
-                .await;
-        }
+        self.hooks
+            .run_post_batch(
+                M::TYPE_ID_JSON,
+                ModelKind::Entity,
+                CrudOperation::Update,
+                |index| &hook_inputs[index].1,
+                states,
+                &outputs,
+            )
+            .await;
         Ok(outputs)
     }
 
@@ -710,7 +714,7 @@ where
         &self,
         inputs: Vec<M::Create>,
         crud_operation: CrudOperation,
-    ) -> Result<Vec<M>> {
+    ) -> Result<crate::BatchWriteResult<M>> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
@@ -750,22 +754,24 @@ where
         }
 
         let outputs = execute_owned_things::<M>(self.db.inner_orm(), installed, &batch).await?;
-        for ((input, output), metadata) in encoded.iter().zip(&outputs).zip(metadata) {
-            self.hooks
-                .run_post(
-                    M::TYPE_ID_JSON,
-                    ModelKind::Entity,
-                    crud_operation,
-                    Some(output.iid()),
-                    Some(input),
-                    metadata,
-                )
-                .await;
-        }
+        self.hooks
+            .run_post_batch(
+                M::TYPE_ID_JSON,
+                ModelKind::Entity,
+                crud_operation,
+                |index| &encoded[index],
+                metadata,
+                &outputs,
+            )
+            .await;
         Ok(outputs)
     }
 
-    async fn write_many(&self, inputs: Vec<M::Create>, put: bool) -> Result<Vec<M>> {
+    async fn write_many(
+        &self,
+        inputs: Vec<M::Create>,
+        put: bool,
+    ) -> Result<crate::BatchWriteResult<M>> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,

@@ -302,8 +302,8 @@ impl ProjectedBatchExecutor<'_> {
                     }
                     let snapshots = consumer.resolved_references.take();
                     let things = consumer.finish()?;
-                    ledger.charge_projected(&things)?;
-                    for thing in &things {
+                    ledger.charge_projected(things.items())?;
+                    for thing in things.items() {
                         validate_written_role_identities(
                             self.installed,
                             &plan,
@@ -313,7 +313,7 @@ impl ProjectedBatchExecutor<'_> {
                         )?;
                     }
                     prepared.check_control()?;
-                    mapper(crate::WriteResult::new(things))
+                    mapper(crate::WriteResult::new(things.into_items()))
                 },
             )
             .await
@@ -364,14 +364,14 @@ impl ProjectedBatchExecutor<'_> {
                 |registry, things, _, remaining| {
                     let rows = things
                         .iter()
-                        .map(|thing| match plan.model.id().kind() {
+                        .map(|(index, thing)| match plan.model.id().kind() {
                             TypeKind::Entity => {
                                 crate::_manager::dynamic::plan_entity_row(registry, thing)
-                                    .map(DeletedRow::Entity)
+                                    .map(|row| (*index, DeletedRow::Entity(row)))
                             }
                             TypeKind::Relation => {
                                 crate::_manager::dynamic::plan_relation_row(registry, thing)
-                                    .map(DeletedRow::Relation)
+                                    .map(|row| (*index, DeletedRow::Relation(row)))
                             }
                             _ => Err(crate::plan_builders::manager::invalid(
                                 "manager_result_shape",
@@ -390,8 +390,9 @@ impl ProjectedBatchExecutor<'_> {
                 )
             })?;
             let (rows, remaining) = rows;
-            let mut things = Vec::with_capacity(rows.len());
-            for row in rows {
+            let mut things = crate::BatchWriteResult::try_with_capacity(rows.len())
+                .map_err(|_| allocation_failure())?;
+            for (index, row) in rows {
                 let mut thing = match row {
                     DeletedRow::Entity(row) => {
                         let iid = row
@@ -409,10 +410,12 @@ impl ProjectedBatchExecutor<'_> {
                     }
                 };
                 thing.mark_deleted()?;
-                things.push(thing);
+                things
+                    .try_push(index, thing)
+                    .map_err(|_| allocation_failure())?;
             }
             let mut ledger = ExecutionLedger::new(remaining, 0);
-            ledger.charge_projected(&things)?;
+            ledger.charge_projected(things.items())?;
             prepared.check_control()?;
             return Ok(ProjectedBatchResult::Things(things));
         }
@@ -593,9 +596,7 @@ impl ProjectedBatchExecutor<'_> {
                                     OrmError::ExecutionDiagnostic(Box::new(error))
                                 })?)
                             };
-                        if ordinal != step.ordinal
-                            || (returned.is_some() && !(plan.single_input && records_answers))
-                        {
+                        if ordinal != step.ordinal || (returned.is_some() && !records_answers) {
                             return Err(OrmError::ExecutionDiagnostic(Box::new(integrity_at_row(
                                 "provider_identity_mismatch",
                                 "A write piece repeated or changed its input ordinal",
@@ -625,7 +626,7 @@ impl ProjectedBatchExecutor<'_> {
                         },
                     )
                     .await?;
-                    if plan.single_input && records_answers {
+                    if records_answers {
                         record_static_answer(&mut program, &step, recorded, true)?;
                         continue;
                     }
@@ -662,20 +663,8 @@ impl ProjectedBatchExecutor<'_> {
             }
             let reference_snapshots = consumer.resolved_references.take();
             let things = consumer.finish()?;
-            let mut identities = BTreeSet::new();
-            for (ordinal, thing) in things.iter().enumerate() {
-                if !identities.insert(thing.iid()) {
-                    return Err(integrity_at_row(
-                        "projected_batch_mutation_identity_duplicate",
-                        "A projected batch returned one identity for multiple input rows",
-                        plan.model.id(),
-                        ordinal,
-                    ));
-                }
-            }
-            ledger.charge_projected(&things)?;
-            for (ordinal, thing) in things.iter().enumerate() {
-                let ordinal = if plan.single_input { 0 } else { ordinal };
+            ledger.charge_projected(things.items())?;
+            for (thing, &ordinal) in things.items().iter().zip(things.input_indexes()) {
                 validate_written_role_identities(
                     self.installed,
                     plan,

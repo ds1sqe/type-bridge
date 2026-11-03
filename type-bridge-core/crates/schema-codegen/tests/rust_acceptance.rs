@@ -866,7 +866,7 @@ fn generated_external_manager_contract_compiles_exact_matrix() {
         "manager-consumer",
         r#"
 use generated::{AppSchema, Contract, ContractCreate, ContractType, Empty, Employment, EmploymentFamily, EmploymentType, Helper, Model, Name, Never, Party, PartyFamily, PartyType, Person, PersonCreate, PersonType, Placement, Root, RootChild, RootFamily};
-use type_bridge::{Database, EntityManager, EntitySubtypeManager, Predicate, RelationManager, RelationSubtypeManager, WriteTransaction, WriteResult};
+use type_bridge::{Database, EntityManager, EntitySubtypeManager, Predicate, RelationManager, RelationSubtypeManager, WriteTransaction, WriteResult, BatchWriteResult};
 use type_bridge::value::Text;
 async fn positive(db: &Database<AppSchema>, create: PersonCreate) {
     let exact = db.entities::<Person>();
@@ -874,12 +874,12 @@ async fn positive(db: &Database<AppSchema>, create: PersonCreate) {
     let _: WriteResult<Person> = exact.insert(create.clone()).await.unwrap();
     let _: WriteResult<Person> = exact.put(create.clone()).await.unwrap();
     let _: WriteResult<Person> = exact.update("0x1", create.clone()).await.unwrap();
-    let _: Vec<Person> = exact.insert_many(vec![create.clone()]).await.unwrap();
-    let _: Vec<Person> = exact.put_many(vec![create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Person> = exact.insert_many(vec![create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Person> = exact.put_many(vec![create.clone()]).await.unwrap();
     let _: () = exact.delete("0x1").await.unwrap();
     let snapshot: WriteResult<Person> = exact.delete_returning("0x1").await.unwrap();
     if let Some(snapshot) = snapshot.item() { let _: bool = snapshot.deleted(); }
-    let _: Vec<Person> = exact.delete_many_returning(&["0x1".into()]).await.unwrap();
+    let _: BatchWriteResult<Person> = exact.delete_many_returning(&["0x1".into()]).await.unwrap();
     let _: Option<Person> = exact.get_by_iid("0x1").await.unwrap();
     let _: Vec<Person> = exact.all().await.unwrap();
     let _: u64 = exact.count().await.unwrap();
@@ -910,12 +910,12 @@ async fn relation_positive(db: &Database<AppSchema>, create: ContractCreate) {
     let _: WriteResult<Contract> = exact.insert(create.clone()).await.unwrap();
     let _: WriteResult<Contract> = exact.put(create.clone()).await.unwrap();
     let _: WriteResult<Contract> = exact.update("0x1", create.clone()).await.unwrap();
-    let _: Vec<Contract> = exact.insert_many(vec![create.clone()]).await.unwrap();
-    let _: Vec<Contract> = exact.put_many(vec![create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Contract> = exact.insert_many(vec![create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Contract> = exact.put_many(vec![create.clone()]).await.unwrap();
     let _: () = exact.delete("0x1").await.unwrap();
     let snapshot: WriteResult<Contract> = exact.delete_returning("0x1").await.unwrap();
     if let Some(snapshot) = snapshot.item() { let _: bool = snapshot.deleted(); }
-    let _: Vec<Contract> = exact.delete_many_returning(&["0x1".into()]).await.unwrap();
+    let _: BatchWriteResult<Contract> = exact.delete_many_returning(&["0x1".into()]).await.unwrap();
     let _: Option<Contract> = exact.get_by_iid("0x1").await.unwrap();
     let _: Vec<Contract> = exact.all().await.unwrap();
     let _: u64 = exact.count().await.unwrap();
@@ -934,8 +934,8 @@ async fn transaction_positive(db: &Database<AppSchema>, create: PersonCreate, re
     let _: WriteResult<Person> = tx.entities::<Person>().insert(create.clone()).await.unwrap();
     let _: WriteResult<Person> = tx.entities::<Person>().put(create.clone()).await.unwrap();
     let _: WriteResult<Person> = tx.entities::<Person>().update("0x1", create.clone()).await.unwrap();
-    let _: Vec<Person> = tx.entities::<Person>().insert_many(vec![create.clone()]).await.unwrap();
-    let _: Vec<Person> = tx.entities::<Person>().put_many(vec![create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Person> = tx.entities::<Person>().insert_many(vec![create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Person> = tx.entities::<Person>().put_many(vec![create.clone()]).await.unwrap();
     let _: () = tx.entities::<Person>().delete("0x1").await.unwrap();
     let _: WriteResult<Person> = tx.entities::<Person>().delete_returning("0x1").await.unwrap();
     let _: Option<Person> = tx.entities::<Person>().get_by_iid("0x1").await.unwrap();
@@ -944,8 +944,8 @@ async fn transaction_positive(db: &Database<AppSchema>, create: PersonCreate, re
     let _: WriteResult<Contract> = tx.relations::<Contract>().insert(relation_create.clone()).await.unwrap();
     let _: WriteResult<Contract> = tx.relations::<Contract>().put(relation_create.clone()).await.unwrap();
     let _: WriteResult<Contract> = tx.relations::<Contract>().update("0x1", relation_create.clone()).await.unwrap();
-    let _: Vec<Contract> = tx.relations::<Contract>().insert_many(vec![relation_create.clone()]).await.unwrap();
-    let _: Vec<Contract> = tx.relations::<Contract>().put_many(vec![relation_create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Contract> = tx.relations::<Contract>().insert_many(vec![relation_create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Contract> = tx.relations::<Contract>().put_many(vec![relation_create.clone()]).await.unwrap();
     let _: () = tx.relations::<Contract>().delete("0x1").await.unwrap();
     let _: WriteResult<Contract> = tx.relations::<Contract>().delete_returning("0x1").await.unwrap();
     let _: Option<Contract> = tx.relations::<Contract>().get_by_iid("0x1").await.unwrap();

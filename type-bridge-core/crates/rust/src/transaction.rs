@@ -321,7 +321,7 @@ where
     /// complete freshly hydrated models or one error, without committing.
     /// A batch failure after mutation dispatch makes the
     /// transaction rollback-only; a pre-dispatch failure leaves it active.
-    pub async fn insert_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
+    pub async fn insert_many(&self, inputs: Vec<M::Create>) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         self.write_many(inputs, false).await
     }
@@ -330,12 +330,16 @@ where
     /// returning complete freshly hydrated models or one error, without
     /// committing. A batch failure after mutation dispatch makes
     /// the transaction rollback-only; a pre-dispatch failure leaves it active.
-    pub async fn put_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
+    pub async fn put_many(&self, inputs: Vec<M::Create>) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         self.write_many(inputs, true).await
     }
 
-    async fn write_many(&self, inputs: Vec<M::Create>, put: bool) -> Result<Vec<M>> {
+    async fn write_many(
+        &self,
+        inputs: Vec<M::Create>,
+        put: bool,
+    ) -> Result<crate::BatchWriteResult<M>> {
         let installed = self.transaction.installed()?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
@@ -379,11 +383,14 @@ where
     pub async fn delete_returning(&self, iid: &str) -> Result<WriteResult<M>> {
         self.delete_many_returning(&[iid.to_owned()])
             .await
-            .map(WriteResult::new)
+            .map(|result| WriteResult::new(result.into_items()))
     }
 
     /// Delete exact models and return existing snapshots in input order without committing.
-    pub async fn delete_many_returning(&self, iids: &[String]) -> Result<Vec<M>> {
+    pub async fn delete_many_returning(
+        &self,
+        iids: &[String],
+    ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(iids.len())?;
         let installed = self.transaction.installed()?;
         let (id, _descriptor) = resolve_entity_authority(
@@ -430,7 +437,10 @@ where
     /// Replaces each exact entity identified by its canonical IID in input
     /// order without committing. Batch failures after mutation
     /// dispatch make the transaction rollback-only.
-    pub async fn update_many(&self, inputs: Vec<(String, M::Create)>) -> Result<Vec<M>> {
+    pub async fn update_many(
+        &self,
+        inputs: Vec<(String, M::Create)>,
+    ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         let installed = self.transaction.installed()?;
         let (id, _descriptor) = resolve_entity_authority(
@@ -614,7 +624,7 @@ where
     /// complete freshly hydrated models or one error, without committing.
     /// A batch failure after mutation dispatch makes the
     /// transaction rollback-only; a pre-dispatch failure leaves it active.
-    pub async fn insert_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
+    pub async fn insert_many(&self, inputs: Vec<M::Create>) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         self.write_many(inputs, false).await
     }
@@ -623,12 +633,16 @@ where
     /// returning complete freshly hydrated models or one error, without
     /// committing. A batch failure after mutation dispatch makes
     /// the transaction rollback-only; a pre-dispatch failure leaves it active.
-    pub async fn put_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
+    pub async fn put_many(&self, inputs: Vec<M::Create>) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         self.write_many(inputs, true).await
     }
 
-    async fn write_many(&self, inputs: Vec<M::Create>, put: bool) -> Result<Vec<M>> {
+    async fn write_many(
+        &self,
+        inputs: Vec<M::Create>,
+        put: bool,
+    ) -> Result<crate::BatchWriteResult<M>> {
         let installed = self.transaction.installed()?;
         let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
@@ -673,11 +687,14 @@ where
     pub async fn delete_returning(&self, iid: &str) -> Result<WriteResult<M>> {
         self.delete_many_returning(&[iid.to_owned()])
             .await
-            .map(WriteResult::new)
+            .map(|result| WriteResult::new(result.into_items()))
     }
 
     /// Delete exact models and return existing snapshots in input order without committing.
-    pub async fn delete_many_returning(&self, iids: &[String]) -> Result<Vec<M>> {
+    pub async fn delete_many_returning(
+        &self,
+        iids: &[String],
+    ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(iids.len())?;
         let installed = self.transaction.installed()?;
         let (id, _descriptor) = resolve_relation_authority(
@@ -728,7 +745,10 @@ where
     /// Replaces each exact relation identified by its canonical IID in input
     /// order without committing. Batch failures after mutation
     /// dispatch make the transaction rollback-only.
-    pub async fn update_many(&self, inputs: Vec<(String, M::Create)>) -> Result<Vec<M>> {
+    pub async fn update_many(
+        &self,
+        inputs: Vec<(String, M::Create)>,
+    ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         let installed = self.transaction.installed()?;
         let (id, _descriptor) = resolve_relation_authority(

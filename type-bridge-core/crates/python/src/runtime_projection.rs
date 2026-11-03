@@ -316,7 +316,8 @@ struct PendingFacadeOrigin {
 struct StagedBatchHydration {
     projected: Arc<ProjectedThing>,
     _instance: Py<PyAny>,
-    replacement: ProjectedFacadeSnapshot,
+    input_index: usize,
+    replacement: Option<ProjectedFacadeSnapshot>,
 }
 
 struct PendingActivationGuard {
@@ -474,27 +475,61 @@ impl Drop for PendingActivationGuard {
     }
 }
 
-struct PreparedSingleWriteResult {
-    output: Py<PyAny>,
-    items: Py<PyList>,
+enum BindingWriteAnswers {
+    Single(Vec<ProjectedThing>),
+    Batch(ProjectedBatchResult),
 }
 
-impl PreparedSingleWriteResult {
-    fn new(py: Python<'_>) -> PyResult<Self> {
+impl From<ProjectedBatchResult> for BindingWriteAnswers {
+    fn from(result: ProjectedBatchResult) -> Self {
+        Self::Batch(result)
+    }
+}
+
+struct PreparedWriteResult {
+    output: Py<PyAny>,
+    items: Py<PyList>,
+    input_indexes: Option<Py<PyList>>,
+}
+
+impl PreparedWriteResult {
+    fn single(py: Python<'_>) -> PyResult<Self> {
+        Self::new(py, false)
+    }
+
+    fn batch(py: Python<'_>) -> PyResult<Self> {
+        Self::new(py, true)
+    }
+
+    fn new(py: Python<'_>, batch: bool) -> PyResult<Self> {
         let items = PyList::empty(py);
-        let output = py
+        let input_indexes = batch.then(|| PyList::empty(py));
+        let class = py
             .import("type_bridge_core.write_result")?
-            .getattr("WriteResult")?
-            .call1((&items,))?
-            .unbind();
-        if !output.bind(py).getattr("items")?.is(&items) {
+            .getattr(if batch {
+                "BatchWriteResult"
+            } else {
+                "WriteResult"
+            })?;
+        let output = match &input_indexes {
+            Some(indexes) => class.call1((&items, indexes))?,
+            None => class.call1((&items,))?,
+        };
+        if !output.getattr("items")?.is(&items)
+            || input_indexes.as_ref().is_some_and(|indexes| {
+                output
+                    .getattr("input_indexes")
+                    .map_or(true, |retained| !retained.is(indexes))
+            })
+        {
             return Err(py_runtime_error(
-                "single-write result did not retain its item list",
+                "write result did not retain its result lists",
             ));
         }
         Ok(Self {
-            output,
+            output: output.unbind(),
             items: items.unbind(),
+            input_indexes: input_indexes.map(Bound::unbind),
         })
     }
 
@@ -502,9 +537,26 @@ impl PreparedSingleWriteResult {
         self,
         py: Python<'_>,
         values: impl IntoIterator<Item = &'a Py<PyAny>>,
+        input_indexes: Option<&[usize]>,
     ) -> PyResult<Py<PyAny>> {
-        for value in values {
+        if self.input_indexes.is_some() && input_indexes.is_none() {
+            return Err(py_runtime_error(
+                "batch write result omitted its input indexes",
+            ));
+        }
+        for (ordinal, value) in values.into_iter().enumerate() {
             self.items.bind(py).append(value.bind(py))?;
+            if let Some(indexes) = &self.input_indexes {
+                let index = input_indexes
+                    .and_then(|indexes| indexes.get(ordinal))
+                    .ok_or_else(|| py_runtime_error("write result omitted an input index"))?;
+                indexes.bind(py).append(*index)?;
+            }
+        }
+        if input_indexes.is_some_and(|indexes| self.items.bind(py).len() != indexes.len()) {
+            return Err(py_runtime_error(
+                "write result returned an unexpected input index count",
+            ));
         }
         Ok(self.output)
     }
@@ -599,7 +651,6 @@ impl Drop for SuccessorBatchGcGuard<'_> {
 enum BatchMappedOutput<'py> {
     Empty(Py<PyAny>),
     Publication(BatchPublicationGuard<'py>),
-    Fresh(DeletedBatchOutput),
 }
 
 impl BatchMappedOutput<'_> {
@@ -607,7 +658,6 @@ impl BatchMappedOutput<'_> {
         match self {
             Self::Empty(output) => output,
             Self::Publication(guard) => guard.finish(),
-            Self::Fresh(output) => output.finish(),
         }
     }
 }
@@ -627,9 +677,15 @@ impl Drop for BatchPublicationGuard<'_> {
         if !self.armed {
             return;
         }
-        for facade in self.facades.iter().take(self.published) {
-            self.slots
-                .replace_infallible(self.py, facade.instance.bind(self.py), &facade.snapshot);
+        for hydrated in self._hydrated.iter().take(self.published) {
+            if hydrated.replacement.is_some() {
+                let facade = &self.facades[hydrated.input_index];
+                self.slots.replace_infallible(
+                    self.py,
+                    facade.instance.bind(self.py),
+                    &facade.snapshot,
+                );
+            }
         }
         self.package.facade_origins.abort(&self.activations);
     }
@@ -2881,16 +2937,12 @@ impl PyProjectedModelManager {
 
     /// Delete one exact model and return its stored pre-delete snapshot.
     fn delete_by_iid_returning(&self, py: Python<'_>, iid: String) -> PyResult<Py<PyAny>> {
-        let output = self.delete_many_returning_projected(py, vec![iid])?;
-        py.import("type_bridge_core.write_result")?
-            .getattr("WriteResult")?
-            .call1((output,))
-            .map(Bound::unbind)
+        self.delete_many_returning_projected(py, vec![iid], true)
     }
 
     /// Delete exact models and return existing snapshots in input order.
     fn delete_many_returning(&self, py: Python<'_>, iids: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        self.delete_many_returning_projected(py, bounded_projected_iids(&iids)?)
+        self.delete_many_returning_projected(py, bounded_projected_iids(&iids)?, false)
     }
 
     /// Delete exact generated models atomically by canonical IID.
@@ -3167,7 +3219,7 @@ impl PyProjectedModelManager {
                     QueryExecutionResourceLimits::default(),
                     AnswerCancellation::default(),
                 );
-                let output = PreparedSingleWriteResult::new(py)?;
+                let output = PreparedWriteResult::single(py)?;
                 let _gc_guard = SuccessorBatchGcGuard::disable(py);
                 package.validate_batch_hydration_layouts(py)?;
                 validate_staged_batch_facades_after_lowering(py, slots.as_ref(), &staged_facades)?;
@@ -3202,32 +3254,19 @@ impl PyProjectedModelManager {
                         if let Some(marker) = &marker {
                             marker.store(true, Ordering::Release);
                         }
-                        let count = result.count();
-                        let result = ProjectedBatchResult::Things(result.into_items());
-                        if count == 1 {
-                            materialize_projected_batch_with_output(
-                                py,
-                                Arc::clone(&package),
-                                slots,
-                                vec![facade],
-                                result,
-                                &binding_error,
-                                &pool,
-                                probe,
-                                Some(output),
-                            )
-                            .map(BatchMappedOutput::Publication)
-                        } else {
-                            materialize_deleted_batch_with_output(
-                                py,
-                                Arc::clone(&package),
-                                result,
-                                &binding_error,
-                                &pool,
-                                Some(output),
-                            )
-                            .map(BatchMappedOutput::Fresh)
-                        }
+                        let result = BindingWriteAnswers::Single(result.into_items());
+                        materialize_projected_batch_with_output(
+                            py,
+                            Arc::clone(&package),
+                            slots,
+                            vec![facade],
+                            result,
+                            &binding_error,
+                            &pool,
+                            probe,
+                            Some(output),
+                        )
+                        .map(BatchMappedOutput::Publication)
                     })
                     .await;
                 let result = match result {
@@ -3407,8 +3446,9 @@ impl PyProjectedModelManager {
                 // Common duplicate-key/target precedence is authoritative.
                 // Only aliases that survive it are binding-unrepresentable.
                 reject_duplicate_batch_facades(&mut identities)?;
+                let output = PreparedWriteResult::batch(py)?;
                 if batch.is_empty() {
-                    let empty = fallible_python_empty_list(py)?;
+                    let empty = output.output;
                     let executor = ProjectedBatchExecutor::new(package.projection.as_ref());
                     let result = match (&database, &transaction) {
                         (Some(database), None) => {
@@ -3458,7 +3498,7 @@ impl PyProjectedModelManager {
                     });
                 }
 
-                let empty = BatchMappedOutput::Empty(fallible_python_empty_list(py)?);
+                let empty = BatchMappedOutput::Empty(output.output.clone_ref(py));
                 let binding_error = Mutex::new(None);
                 let mapper_package = Arc::clone(&package);
                 let mapper_slots = Arc::clone(&slots);
@@ -3472,7 +3512,7 @@ impl PyProjectedModelManager {
                     if let Some(marker) = &mapper_marker {
                         marker.store(true, Ordering::Release);
                     }
-                    materialize_projected_batch(
+                    materialize_projected_batch_with_output(
                         py,
                         mapper_package,
                         mapper_slots,
@@ -3480,6 +3520,8 @@ impl PyProjectedModelManager {
                         result,
                         mapper_error,
                         mapper_pool,
+                        BatchMaterializationProbe::default(),
+                        Some(output),
                     )
                     .map(BatchMappedOutput::Publication)
                 };
@@ -3584,8 +3626,10 @@ impl PyProjectedModelManager {
         &self,
         py: Python<'_>,
         iids: Vec<String>,
+        single: bool,
     ) -> PyResult<Py<PyAny>> {
         let (batch, control) = self.prepare_delete_batch(iids)?;
+        let output = PreparedWriteResult::new(py, !single)?;
         let package = Arc::clone(&self.package);
         let database = self.database().cloned();
         let transaction = self.transaction().cloned();
@@ -3597,17 +3641,18 @@ impl PyProjectedModelManager {
                 let pool = BatchHydrationPool::try_new(&[]).map_err(py_sdk_diagnostic)?;
                 let binding_error = Mutex::new(None);
                 let empty = DeletedBatchOutput {
-                    output: fallible_python_empty_list(py)?,
+                    output: output.output.clone_ref(py),
                     origins: PendingActivationGuard::new(package.facade_origins.clone(), 0)
                         .map_err(py_sdk_diagnostic)?,
                 };
                 let mapper = |result| {
-                    materialize_deleted_batch(
+                    materialize_deleted_batch_with_output(
                         py,
                         Arc::clone(&package),
                         result,
                         &binding_error,
                         &pool,
+                        Some(output),
                     )
                 };
                 let executor =
@@ -4122,27 +4167,18 @@ fn projected_batch_hydration_pool_capacity(
     Ok(total)
 }
 
-fn materialize_deleted_batch(
-    py: Python<'_>,
-    package: Arc<InstalledPackage>,
-    result: ProjectedBatchResult,
-    binding_error: &Mutex<Option<PyErr>>,
-    pool: &BatchHydrationPool,
-) -> Result<DeletedBatchOutput, SdkExecutionDiagnostic> {
-    materialize_deleted_batch_with_output(py, package, result, binding_error, pool, None)
-}
-
 fn materialize_deleted_batch_with_output(
     py: Python<'_>,
     package: Arc<InstalledPackage>,
     result: ProjectedBatchResult,
     binding_error: &Mutex<Option<PyErr>>,
     pool: &BatchHydrationPool,
-    single_output: Option<PreparedSingleWriteResult>,
+    single_output: Option<PreparedWriteResult>,
 ) -> Result<DeletedBatchOutput, SdkExecutionDiagnostic> {
     let ProjectedBatchResult::Things(things) = result else {
         return Err(SdkExecutionDiagnostic::internal_failure());
     };
+    let (things, input_indexes) = things.into_parts();
     pool.reserve_exact(projected_batch_hydration_pool_capacity(&things)?)?;
     let mut values = reserved_binding_rows(things.len())?;
     let capacity = things
@@ -4155,7 +4191,7 @@ fn materialize_deleted_batch_with_output(
         })
         .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
     let mut origins = reserved_binding_rows(capacity)?;
-    for (ordinal, thing) in things.into_iter().enumerate() {
+    for (thing, input_index) in things.into_iter().zip(input_indexes.iter().copied()) {
         let thing = Arc::new(thing);
         let value = hydrate_projected_thing_value_staged(
             py,
@@ -4176,13 +4212,13 @@ fn materialize_deleted_batch_with_output(
         })
         .map_err(|error| {
             record_binding_materialization_error(binding_error, error);
-            ProjectedBatchExecutor::binding_materialization_failure(projected_index(ordinal))
+            ProjectedBatchExecutor::binding_materialization_failure(projected_index(input_index))
         })?;
         values.push(value);
     }
     pool.verify_fully_consumed()?;
     let output = match single_output {
-        Some(output) => output.populate(py, &values),
+        Some(output) => output.populate(py, &values, Some(&input_indexes)),
         None => PyList::new(py, values.iter().map(|value| value.bind(py)))
             .map(|values| values.into_any().unbind()),
     }
@@ -4206,6 +4242,7 @@ fn materialize_deleted_batch_with_output(
     })
 }
 
+#[cfg(test)]
 fn materialize_projected_batch<'py>(
     py: Python<'py>,
     package: Arc<InstalledPackage>,
@@ -4235,6 +4272,7 @@ struct BatchMaterializationProbe {
     panic_publication_at: Option<usize>,
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn materialize_projected_batch_with_probe<'py>(
     py: Python<'py>,
@@ -4265,32 +4303,60 @@ fn materialize_projected_batch_with_output<'py>(
     package: Arc<InstalledPackage>,
     slots: Arc<ProjectedFacadeSlots>,
     facades: Vec<PreparedBatchFacade>,
-    result: ProjectedBatchResult,
+    result: impl Into<BindingWriteAnswers>,
     binding_error: &Mutex<Option<PyErr>>,
     pool: &BatchHydrationPool,
     probe: BatchMaterializationProbe,
-    single_output: Option<PreparedSingleWriteResult>,
+    single_output: Option<PreparedWriteResult>,
 ) -> Result<BatchPublicationGuard<'py>, SdkExecutionDiagnostic> {
-    let ProjectedBatchResult::Things(things) = result else {
-        return Err(SdkExecutionDiagnostic::internal_failure());
+    let (things, input_indexes) = match result.into() {
+        BindingWriteAnswers::Single(things) => (things, None),
+        BindingWriteAnswers::Batch(ProjectedBatchResult::Things(result)) => {
+            let (things, indexes) = result.into_parts();
+            (things, Some(indexes))
+        }
+        _ => return Err(SdkExecutionDiagnostic::internal_failure()),
     };
-    if things.len() != facades.len() {
-        return Err(ProjectedBatchExecutor::binding_materialization_failure(0));
-    }
+    let root_count = things.len();
+    let input_index_at =
+        |ordinal: usize| input_indexes.as_ref().map_or(0, |indexes| indexes[ordinal]);
     pool.reserve_exact(projected_batch_hydration_pool_capacity(&things)?)?;
 
+    let is_single_root = |ordinal: usize| {
+        let Some(indexes) = &input_indexes else {
+            return root_count == 1;
+        };
+        let index = indexes[ordinal];
+        ordinal
+            .checked_sub(1)
+            .and_then(|previous| indexes.get(previous))
+            != Some(&index)
+            && indexes.get(ordinal + 1) != Some(&index)
+    };
+    let mut fresh_roots = 0_usize;
     let nested_origin_capacity = things
         .iter()
-        .try_fold(0_usize, |count, thing| {
+        .enumerate()
+        .try_fold(0_usize, |count, (ordinal, thing)| {
+            fresh_roots += usize::from(!is_single_root(ordinal));
             thing
                 .roles()
                 .values()
                 .try_fold(count, |count, players| count.checked_add(players.len()))
         })
         .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
-    let mut pending_origins = reserved_binding_rows(nested_origin_capacity)?;
+    let pending_capacity = nested_origin_capacity
+        .checked_add(fresh_roots)
+        .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
+    let mut pending_origins = reserved_binding_rows(pending_capacity)?;
     let mut hydrated = reserved_binding_rows(things.len())?;
     for (ordinal, projected) in things.into_iter().enumerate() {
+        let input_index = input_index_at(ordinal);
+        if facades.get(input_index).is_none() {
+            return Err(ProjectedBatchExecutor::binding_materialization_failure(
+                projected_index(input_index),
+            ));
+        }
         let projected = Arc::new(projected);
         let value = hydrate_projected_thing_value_staged(
             py,
@@ -4303,15 +4369,37 @@ fn materialize_projected_batch_with_output<'py>(
         )
         .map_err(|error| {
             record_binding_materialization_error(binding_error, error);
-            ProjectedBatchExecutor::binding_materialization_failure(projected_index(ordinal))
+            ProjectedBatchExecutor::binding_materialization_failure(projected_index(input_index))
         })?;
-        let replacement = slots
-            .snapshot_after_fence(py, value.bind(py))
-            .map_err(|error| {
-                record_binding_materialization_error(binding_error, error);
-                ProjectedBatchExecutor::binding_materialization_failure(projected_index(ordinal))
-            })?;
+        let replacement = if is_single_root(ordinal) {
+            Some(
+                slots
+                    .snapshot_after_fence(py, value.bind(py))
+                    .map_err(|error| {
+                        record_binding_materialization_error(binding_error, error);
+                        ProjectedBatchExecutor::binding_materialization_failure(projected_index(
+                            input_index,
+                        ))
+                    })?,
+            )
+        } else {
+            let origin = package
+                .facade_origins
+                .prepare(value.bind(py))
+                .map_err(|error| {
+                    record_binding_materialization_error(binding_error, error);
+                    ProjectedBatchExecutor::binding_materialization_failure(projected_index(
+                        input_index,
+                    ))
+                })?;
+            pending_origins.push(PendingFacadeOrigin {
+                origin,
+                proof: FacadeProjectionProof::Thing(Arc::clone(&projected)),
+            });
+            None
+        };
         hydrated.push(StagedBatchHydration {
+            input_index,
             projected,
             _instance: value,
             replacement,
@@ -4322,9 +4410,16 @@ fn materialize_projected_batch_with_output<'py>(
     if probe.fail_output_allocation {
         return Err(ProjectedBatch::binding_allocation_failure());
     }
+    let output_values = hydrated.iter().map(|root| {
+        if root.replacement.is_some() {
+            &facades[root.input_index].instance
+        } else {
+            &root._instance
+        }
+    });
     let output = match single_output {
-        Some(output) => output.populate(py, facades.iter().map(|facade| &facade.instance)),
-        None => PyList::new(py, facades.iter().map(|facade| facade.instance.bind(py)))
+        Some(output) => output.populate(py, output_values, input_indexes.as_deref()),
+        None => PyList::new(py, output_values.map(|value| value.bind(py)))
             .map(|values| values.into_any().unbind()),
     }
     .map_err(|error| {
@@ -4360,7 +4455,7 @@ fn materialize_projected_batch_with_output<'py>(
         }
     }
     let activation_capacity = nested_origin_capacity
-        .checked_add(facades.len())
+        .checked_add(hydrated.len())
         .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
     let mut activation_guard =
         PendingActivationGuard::new(package.facade_origins.clone(), activation_capacity)?;
@@ -4370,7 +4465,8 @@ fn materialize_projected_batch_with_output<'py>(
             return Err(ProjectedBatchExecutor::binding_materialization_failure(0));
         }
     }
-    for (facade, hydrated) in facades.iter().zip(hydrated.iter()) {
+    for hydrated in hydrated.iter().filter(|root| root.replacement.is_some()) {
+        let facade = &facades[hydrated.input_index];
         if let Err(error) = activation_guard.stage(
             py,
             facade.origin.clone_ref(py),
@@ -4394,7 +4490,9 @@ fn materialize_projected_batch_with_output<'py>(
         published: 0,
         armed: true,
     };
-    for ordinal in 0..guard.facades.len() {
+    for ordinal in 0..guard._hydrated.len() {
+        let hydrated = &guard._hydrated[ordinal];
+        let input_index = hydrated.input_index;
         #[cfg(test)]
         if probe.panic_publication_at == Some(ordinal) {
             panic!("injected projected batch mapper panic at row {ordinal}");
@@ -4405,11 +4503,14 @@ fn materialize_projected_batch_with_output<'py>(
                 py_runtime_error("injected projected batch publication failure"),
             );
             return Err(ProjectedBatchExecutor::binding_materialization_failure(
-                projected_index(ordinal),
+                projected_index(input_index),
             ));
         }
-        let facade = &guard.facades[ordinal];
-        let replacement = &guard._hydrated[ordinal].replacement;
+        let Some(replacement) = &hydrated.replacement else {
+            guard.published = ordinal.saturating_add(1);
+            continue;
+        };
+        let facade = &guard.facades[input_index];
         let instance = facade.instance.bind(py);
         if let Err(error) = guard
             .slots
@@ -4418,7 +4519,7 @@ fn materialize_projected_batch_with_output<'py>(
         {
             record_binding_materialization_error(binding_error, error);
             return Err(ProjectedBatchExecutor::binding_materialization_failure(
-                projected_index(ordinal),
+                projected_index(input_index),
             ));
         }
         if let Err(error) = guard.slots.iid.set(py, instance, replacement.iid.bind(py)) {
@@ -4428,7 +4529,7 @@ fn materialize_projected_batch_with_output<'py>(
                 .set_infallible(py, instance, facade.snapshot.values.bind(py));
             record_binding_materialization_error(binding_error, error);
             return Err(ProjectedBatchExecutor::binding_materialization_failure(
-                projected_index(ordinal),
+                projected_index(input_index),
             ));
         }
         guard.published = ordinal.saturating_add(1);
@@ -5712,6 +5813,7 @@ fn fallible_python_dict(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         .map_err(Into::into)
 }
 
+#[cfg(test)]
 fn fallible_python_empty_list(py: Python<'_>) -> PyResult<Py<PyAny>> {
     // SAFETY: Stable-ABI exact-list constructor under the GIL.
     let value = unsafe { pyo3::ffi::PyList_New(0) };
@@ -10455,6 +10557,33 @@ class StructBase:
         relation.unbind()
     }
 
+    fn assert_python_batch_result<'py>(
+        py: Python<'py>,
+        output: &Py<PyAny>,
+        expected_indexes: &[usize],
+    ) -> Bound<'py, PyList> {
+        let output = output.bind(py);
+        assert_eq!(
+            output.getattr("count").unwrap().extract::<usize>().unwrap(),
+            expected_indexes.len()
+        );
+        assert_eq!(
+            output
+                .getattr("input_indexes")
+                .unwrap()
+                .extract::<Vec<usize>>()
+                .unwrap(),
+            expected_indexes
+        );
+        let items = output
+            .getattr("items")
+            .unwrap()
+            .cast_into::<PyList>()
+            .unwrap();
+        assert_eq!(items.len(), expected_indexes.len());
+        items
+    }
+
     fn batch_person_document(
         ordinal: usize,
         iid: &str,
@@ -14389,6 +14518,242 @@ def public_state(value):
     }
 
     #[test]
+    fn batch_results_keep_zero_plural_and_single_inputs_correlated_without_publication_drift() {
+        Python::initialize();
+        Python::attach(|py| {
+            for schema in [
+                BATCH_SCHEMA.to_owned(),
+                BATCH_SCHEMA
+                    .replace("        ordered: true\n", "")
+                    .replace("        distinct: true\n", ""),
+            ] {
+                for kind in [TypeKind::Entity, TypeKind::Relation] {
+                    for borrowed in [false, true] {
+                        for operation in [
+                            ProjectedBatchOperation::Insert,
+                            ProjectedBatchOperation::Put,
+                        ] {
+                            let (_, package) = install_ordered_schema(py, &schema);
+                            let documents = [(1, "0x31"), (1, "0x32"), (2, "0x33")]
+                                .into_iter()
+                                .map(|(index, iid)| {
+                                    if kind == TypeKind::Entity {
+                                        batch_person_document(
+                                            index,
+                                            iid,
+                                            &format!("input-{index}"),
+                                            "stored",
+                                        )
+                                    } else {
+                                        batch_membership_document(
+                                            index,
+                                            iid,
+                                            &format!("input-{index}"),
+                                            &format!("0x1{index}"),
+                                            &format!("player-{index}"),
+                                        )
+                                    }
+                                })
+                                .collect();
+                            let (database, state) = BatchRecordingBackend::fixture(
+                                vec![BatchResponse::Documents(documents)],
+                                false,
+                            );
+                            let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                            let transaction = borrowed.then(|| {
+                                runtime
+                                    .block_on(database.transaction_context(TxType::Write))
+                                    .unwrap()
+                            });
+                            let label = if kind == TypeKind::Entity {
+                                "person"
+                            } else {
+                                "membership"
+                            };
+                            let manager = origin_manager(
+                                Arc::clone(&package),
+                                package.type_by_label(label, kind).unwrap().clone(),
+                                (!borrowed).then(|| Arc::clone(&database)),
+                                transaction.clone(),
+                                Arc::clone(&runtime),
+                            );
+                            let instances = (0..3)
+                                .map(|index| {
+                                    if kind == TypeKind::Entity {
+                                        batch_person(
+                                            py,
+                                            package.as_ref(),
+                                            &format!("input-{index}"),
+                                            "authored",
+                                            None,
+                                        )
+                                    } else {
+                                        let player = batch_person(
+                                            py,
+                                            package.as_ref(),
+                                            &format!("player-{index}"),
+                                            "player-tag",
+                                            None,
+                                        );
+                                        batch_membership(
+                                            py,
+                                            package.as_ref(),
+                                            &format!("input-{index}"),
+                                            &player,
+                                            None,
+                                        )
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+                            let snapshots = instances
+                                .iter()
+                                .map(|value| {
+                                    (
+                                        value.bind(py).getattr("_values").unwrap().unbind(),
+                                        value.bind(py).getattr("_iid").unwrap().unbind(),
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            let rows =
+                                PyList::new(py, instances.iter().map(|value| value.bind(py)))
+                                    .unwrap()
+                                    .into_any();
+                            let output = match operation {
+                                ProjectedBatchOperation::Insert => manager.insert_many(py, rows),
+                                ProjectedBatchOperation::Put => manager.put_many(py, rows),
+                                _ => unreachable!(),
+                            }
+                            .unwrap();
+                            let items = assert_python_batch_result(py, &output, &[1, 1, 2]);
+                            for (position, iid) in ["0x31", "0x32", "0x33"].into_iter().enumerate()
+                            {
+                                let value = items.get_item(position).unwrap();
+                                assert_eq!(
+                                    value.getattr("iid").unwrap().extract::<String>().unwrap(),
+                                    iid
+                                );
+                                assert!(package.facade_origins.proof(&value).is_some());
+                                assert_eq!(value.is(instances[2].bind(py)), position == 2);
+                            }
+                            for index in 0..2 {
+                                let value = instances[index].bind(py);
+                                assert!(
+                                    value
+                                        .getattr("_values")
+                                        .unwrap()
+                                        .is(snapshots[index].0.bind(py))
+                                );
+                                assert!(
+                                    value
+                                        .getattr("_iid")
+                                        .unwrap()
+                                        .is(snapshots[index].1.bind(py))
+                                );
+                                assert!(value.getattr("iid").unwrap().is_none());
+                                assert!(package.facade_origins.proof(value).is_none());
+                            }
+                            if let Some(transaction) = transaction {
+                                assert_eq!(
+                                    runtime.block_on(transaction.lifecycle_state()),
+                                    TransactionContextState::Active
+                                );
+                            }
+                            let state = state.lock().unwrap();
+                            assert!(state.responses.is_empty());
+                            assert_eq!(state.opens, [TxType::Write]);
+                            assert_eq!(state.calls.len(), 1);
+                            assert_eq!(state.commits, usize::from(!borrowed));
+                            assert_eq!(state.rollbacks, 0);
+                            assert_eq!(state.legacy_commits, 0);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn correlated_batch_mapper_restores_unique_prefixes_and_reports_original_input_indexes() {
+        Python::initialize();
+        Python::attach(|py| {
+            for failing_output in 0..4 {
+                let (_, package) = install_batch(py);
+                let originals = (0..6)
+                    .map(|index| {
+                        batch_person(
+                            py,
+                            package.as_ref(),
+                            &format!("input-{index}"),
+                            "authored",
+                            None,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let snapshots = originals
+                    .iter()
+                    .map(|value| value.bind(py).getattr("_values").unwrap().unbind())
+                    .collect::<Vec<_>>();
+                let facades = prepared_batch_facades(
+                    py,
+                    package.as_ref(),
+                    originals.iter().map(|value| value.clone_ref(py)).collect(),
+                );
+                let projected = type_bridge_orm::BatchWriteResult::from_indexed(
+                    [1, 1, 3, 5]
+                        .into_iter()
+                        .zip(projected_batch_people(py, package.as_ref(), 4)),
+                );
+                let pool = hydration_pool_for_prepared(py, &facades);
+                let binding_error = Mutex::new(None);
+                let slots = package
+                    .batch_slots(package.type_by_label("person", TypeKind::Entity).unwrap())
+                    .unwrap();
+                let error = match materialize_projected_batch_with_probe(
+                    py,
+                    Arc::clone(&package),
+                    slots,
+                    facades,
+                    ProjectedBatchResult::Things(projected),
+                    &binding_error,
+                    &pool,
+                    BatchMaterializationProbe {
+                        fail_publication_at: Some(failing_output),
+                        ..Default::default()
+                    },
+                ) {
+                    Err(error) => error,
+                    Ok(_) => panic!("injected failure succeeded"),
+                };
+                assert_eq!(
+                    error.code().as_str(),
+                    "generated_model_materialization_failed"
+                );
+                assert!(
+                    matches!(error.path(), [SdkDiagnosticPathSegment::Argument(argument), SdkDiagnosticPathSegment::Index(index)] if argument.as_str() == "rows" && *index == [1, 1, 3, 5][failing_output])
+                );
+                assert!(
+                    take_binding_materialization_error(&binding_error)
+                        .unwrap()
+                        .to_string()
+                        .contains("injected projected batch publication failure")
+                );
+                for (value, snapshot) in originals.iter().zip(&snapshots) {
+                    assert!(
+                        value
+                            .bind(py)
+                            .getattr("_values")
+                            .unwrap()
+                            .is(snapshot.bind(py))
+                    );
+                    assert!(value.bind(py).getattr("iid").unwrap().is_none());
+                    assert!(package.facade_origins.proof(value.bind(py)).is_none());
+                }
+                assert_eq!(package.facade_origins.len(), 0);
+            }
+        });
+    }
+
+    #[test]
     fn successor_entity_batches_route_all_operations_for_owned_and_borrowed_targets() {
         Python::initialize();
         Python::attach(|py| {
@@ -14459,7 +14824,7 @@ def public_state(value):
                                 ProjectedBatchOperation::Delete => unreachable!(),
                             }
                             .unwrap();
-                            let output = output.bind(py).cast::<PyList>().unwrap();
+                            let output = assert_python_batch_result(py, &output, &[0, 1]);
                             assert_eq!(output.len(), 2);
                             for (ordinal, pointer) in pointers.iter().enumerate() {
                                 assert_eq!(output.get_item(ordinal).unwrap().as_ptr(), *pointer);
@@ -14583,7 +14948,7 @@ def public_state(value):
                                 ProjectedBatchOperation::Delete => unreachable!(),
                             }
                             .unwrap();
-                            let output = output.bind(py).cast::<PyList>().unwrap();
+                            let output = assert_python_batch_result(py, &output, &[0, 1]);
                             assert_eq!(output.len(), 2);
                             for (ordinal, pointer) in pointers.iter().enumerate() {
                                 let value = output.get_item(ordinal).unwrap();
@@ -14652,13 +15017,14 @@ def public_state(value):
                 let result = manager.delete_many_returning_projected(
                     py,
                     vec!["0x20".into(), "0x21".into(), "0x22".into()],
+                    false,
                 );
                 if fail_commit {
                     assert!(result.is_err());
                     assert_eq!(package.facade_origins.len(), 0);
                 } else {
                     let output = result.unwrap();
-                    let values = output.bind(py).cast_exact::<PyList>().unwrap();
+                    let values = assert_python_batch_result(py, &output, &[0, 2]);
                     assert_eq!(values.len(), 2);
                     for (ordinal, iid) in ["0x20", "0x22"].into_iter().enumerate() {
                         let value = values.get_item(ordinal).unwrap();
@@ -14751,7 +15117,7 @@ def public_state(value):
                                 ProjectedBatchOperation::Delete => unreachable!(),
                             }
                             .unwrap();
-                            assert_eq!(output.bind(py).cast::<PyList>().unwrap().len(), 0);
+                            assert_eq!(assert_python_batch_result(py, &output, &[]).len(), 0);
                         }
                         if let Some(transaction) = transaction {
                             assert_eq!(
@@ -14957,7 +15323,7 @@ def public_state(value):
                 let rows =
                     PyList::new(py, instances.iter().map(|instance| instance.bind(py))).unwrap();
                 let output = filtered.insert_many(py, rows.into_any()).unwrap();
-                assert_eq!(output.bind(py).cast::<PyList>().unwrap().len(), 2);
+                assert_eq!(assert_python_batch_result(py, &output, &[0, 1]).len(), 2);
                 assert!(marker.load(Ordering::Acquire));
 
                 let context = Py::new(py, context).unwrap();
@@ -15077,7 +15443,7 @@ def public_state(value):
                             PyList::new(py, instances.iter().map(|instance| instance.bind(py)))
                                 .unwrap();
                         let output = manager.insert_many(py, rows.into_any()).unwrap();
-                        assert_eq!(output.bind(py).cast::<PyList>().unwrap().len(), 2);
+                        assert_eq!(assert_python_batch_result(py, &output, &[0, 1]).len(), 2);
                     }
                     ProjectedBatchOperation::Delete => manager
                         .delete_many(py, PyList::new(py, ["0x20", "0x21"]).unwrap().into_any())
@@ -15823,7 +16189,9 @@ class BoundaryIterator:
                 Arc::clone(&package),
                 slots,
                 facades,
-                ProjectedBatchResult::Things(projected),
+                ProjectedBatchResult::Things(type_bridge_orm::BatchWriteResult::from_indexed(
+                    projected.into_iter().enumerate(),
+                )),
                 &binding_error,
                 &pool,
             )
@@ -15910,7 +16278,9 @@ class BoundaryIterator:
                     Arc::clone(&package),
                     slots,
                     facades,
-                    ProjectedBatchResult::Things(projected),
+                    ProjectedBatchResult::Things(type_bridge_orm::BatchWriteResult::from_indexed(
+                        projected.into_iter().enumerate(),
+                    )),
                     &binding_error,
                     &pool,
                     BatchMaterializationProbe {
@@ -15986,7 +16356,9 @@ class BoundaryIterator:
                 Arc::clone(&package),
                 slots,
                 facades,
-                ProjectedBatchResult::Things(projected),
+                ProjectedBatchResult::Things(type_bridge_orm::BatchWriteResult::from_indexed(
+                    projected.into_iter().enumerate(),
+                )),
                 &binding_error,
                 &pool,
                 BatchMaterializationProbe {

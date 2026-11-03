@@ -10,7 +10,8 @@
   "statuses": [
     "accepted_live",
     "accepted_offline",
-    "uniform_unsupported"
+    "uniform_unsupported",
+    "removed_in_3_0"
   ],
   "operations": [
     {
@@ -237,8 +238,8 @@
               "anchors": [
                 "person_manager.insert_many(batch_people)",
                 "person_manager.put_many(batch_people)",
-                "batch_manager.insert_many([]) == []",
-                "batch_manager.put_many([]) == []"
+                "batch_manager.insert_many([]).items == []",
+                "batch_manager.put_many([]).items == []"
               ]
             }
           ]
@@ -346,8 +347,8 @@
               "anchors": [
                 "network_manager.insert_many(relation_batch)",
                 "network_manager.put_many(relation_batch)",
-                "network_batch_manager.insert_many([]) == []",
-                "network_batch_manager.put_many([]) == []"
+                "network_batch_manager.insert_many([]).items == []",
+                "network_batch_manager.put_many([]).items == []"
               ]
             }
           ]
@@ -404,7 +405,7 @@
                 "person_manager.delete_many([batch_people[0], strict_missing], strict=True)",
                 "network_batch_manager.update_many(networks)",
                 "network_batch_manager.delete_many(relation_delete_batch)",
-                "batch_manager.update_many([]) == []",
+                "batch_manager.update_many([]).items == []",
                 "network_batch_manager.delete_many([]) == []",
                 "second update cancelled"
               ]
@@ -477,7 +478,7 @@
     },
     {
       "id": "python_filtered_callback_update_and_filtered_delete",
-      "status": "accepted_live",
+      "status": "removed_in_3_0",
       "required_bindings": [
         "python"
       ],
@@ -486,19 +487,20 @@
           "surface": "generated_filtered_manager",
           "evidence": [
             {
-              "mode": "live",
-              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
               "anchors": [
-                ").update_with(lambda value:",
-                "callback failure sentinel",
-                "filtered-relation",
-                ").delete()",
-                "second delete cancelled"
+                "assert not hasattr(explicit_manager, \"update_with\")",
+                "getattr(explicit_manager, \"delete\")()"
               ]
             }
           ]
         }
-      }
+      },
+      "replacements": [
+        "Explicit-IID update/update_many and delete/delete_many operations",
+        "filter(...).update(...) and filter(...).delete() terminals (06.10)"
+      ]
     },
     {
       "id": "python_cross_type_attribute_owner_lookup",
@@ -526,7 +528,7 @@
     },
     {
       "id": "python_key_fallback_update_delete_without_iid",
-      "status": "accepted_live",
+      "status": "removed_in_3_0",
       "required_bindings": [
         "python"
       ],
@@ -535,22 +537,20 @@
           "surface": "generated_entity_and_relation_managers",
           "evidence": [
             {
-              "mode": "live",
-              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
               "anchors": [
-                "assert person_manager.update(detached_update) is detached_update",
-                "assert person_manager.delete(detached_delete) is detached_delete",
-                "assert person_manager.delete(missing_delete) is missing_delete",
-                "assert person_manager.delete_many([missing_delete]) == []",
-                "assert membership_manager.update(detached_membership_update)",
-                "assert membership_manager.delete(detached_membership_delete)",
-                "assert membership_manager.delete(missing_membership) is missing_membership",
-                "assert network_manager.update(detached_network)"
+                "assert not hasattr(OrderedProjectedModelManager, \"_resolve_instance_iid\")",
+                "assert not hasattr(type_bridge_core.PyProjectedModelManager, \"resolve_iid\")"
               ]
             }
           ]
         }
-      }
+      },
+      "replacements": [
+        "Explicit-IID update/update_many and delete/delete_many operations",
+        "filter(...).update(...) and filter(...).delete() terminals (06.10)"
+      ]
     },
     {
       "id": "borrowed_write_commit_rollback_and_reusable_read",

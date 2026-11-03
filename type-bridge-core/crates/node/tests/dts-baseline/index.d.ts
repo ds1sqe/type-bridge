@@ -454,4 +454,4 @@ export interface DebugEvent {
 /** Forward Rust debug records to the host logger; null disables forwarding. */
 export declare function setDebugListener(listener: ((event: DebugEvent) => void) | null): void;
 export { Expr, Value } from "./plan-values.js";
-export type { WriteResult } from "./runtime-projection.js";
+export type { BatchWriteResult, WriteResult } from "./runtime-projection.js";

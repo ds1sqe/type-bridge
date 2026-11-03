@@ -1129,15 +1129,15 @@ def _run_sdk_queries_journey(
     network_manager = generated.NetworkLink.manager(clean_db)
     inserted: list[tuple[Any, Any]] = []
     try:
-        assert person_manager.insert_many(people) == people
+        assert person_manager.insert_many(people).items == people
         inserted.extend((person_manager, value) for value in people)
-        assert employee_manager.insert(employee) is employee
+        assert employee_manager.insert(employee).item is employee
         inserted.append((employee_manager, employee))
-        assert manager_manager.insert(manager) is manager
+        assert manager_manager.insert(manager).item is manager
         inserted.append((manager_manager, manager))
-        assert membership_manager.insert(membership) is membership
+        assert membership_manager.insert(membership).item is membership
         inserted.append((membership_manager, membership))
-        assert network_manager.insert(network) is network
+        assert network_manager.insert(network).item is network
         inserted.append((network_manager, network))
 
         assert all(isinstance(value.iid, str) and value.iid for _, value in inserted)
@@ -2317,7 +2317,7 @@ def _sdk_models_counter_plan_lifecycle(generated: ModuleType, database: Database
     before = manager.count()
     values = [generated.Counter(counter_value=generated.CounterValue(value)) for value in (1, 2)]
     _model_plan_mark("insert")
-    assert manager.insert_many(values) == values
+    assert manager.insert_many(values).items == values
     _model_plan_mark()
     for name, value in zip(("counter-left", "counter-right"), values, strict=True):
         assert isinstance(value.iid, str)
@@ -2359,11 +2359,11 @@ def _sdk_models_counter_plan_lifecycle(generated: ModuleType, database: Database
     for name, value in zip(("counter-left", "counter-right"), returned_inputs, strict=True):
         _model_plan_identity(name, value.iid)
     _model_plan_mark("manager_returning_delete.entity")
-    snapshot = manager.delete_returning(returned_inputs[0])
+    snapshot = manager.delete_returning(returned_inputs[0]).item
     _model_plan_mark()
     assert snapshot.counter_value.value == 1
     _model_plan_mark("manager_returning_delete.entity_many")
-    snapshots = manager.delete_many_returning(returned_inputs)
+    snapshots = manager.delete_many_returning(returned_inputs).items
     _model_plan_mark()
     assert [value.counter_value.value for value in snapshots] == [2]
     assert manager.count() == before
@@ -2387,12 +2387,12 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
 
     people = generated.Person.manager(database)
     _model_plan_mark("ordered_distinct_collections.entity_insert")
-    ada = people.insert(person())
+    ada = people.insert(person()).item
     _model_plan_mark()
     _model_plan_identity("data-ada", ada.iid)
     assert ada.aliases == ()
     _model_plan_mark("ordered_distinct_collections.entity_put")
-    assert people.put(person()).iid == ada.iid
+    assert people.put(person()).item.iid == ada.iid
     _model_plan_mark()
     _model_plan_mark("ordered_distinct_collections.entity_count")
     assert people.count() == 1
@@ -2411,7 +2411,7 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
             origin=ada,
             destination=ada,
         )
-    )
+    ).item
     _model_plan_mark()
     _model_plan_identity("link-forward", link.iid)
     assert link.participant == ()
@@ -2421,7 +2421,7 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
             generated.NetworkLink(
                 identifier=generated.Identifier("data-link-forward"), origin=ada, destination=ada
             )
-        ).iid
+        ).item.iid
         == link.iid
     )
     _model_plan_mark()
@@ -2459,7 +2459,7 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
     links.delete(link)
     _model_plan_mark()
     _model_plan_mark("entity_batch_insert_put.put")
-    put_people = people.put_many([person(), person(identifier="data-dana")])
+    put_people = people.put_many([person(), person(identifier="data-dana")]).items
     _model_plan_mark()
     assert put_people[0].iid == ada.iid
     _model_plan_identity("data-dana", put_people[1].iid)
@@ -2471,7 +2471,7 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
         for identifier in ("data-link-forward", "data-link-return")
     ]
     _model_plan_mark("relation_batch_insert_put.put")
-    put_links = links.put_many(inputs)
+    put_links = links.put_many(inputs).items
     _model_plan_mark()
     for name, value in zip(("link-forward", "link-return"), put_links, strict=True):
         _model_plan_identity(name, value.iid)
@@ -2483,7 +2483,7 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
         for identifier in ("data-link-forward", "data-link-return")
     ]
     _model_plan_mark("relation_batch_insert_put.insert")
-    batch_links = links.insert_many(inputs)
+    batch_links = links.insert_many(inputs).items
     _model_plan_mark()
     for name, value in zip(("link-forward", "link-return"), batch_links, strict=True):
         _model_plan_identity(name, value.iid)
@@ -2503,11 +2503,11 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
     for name, value in zip(("link-forward", "link-return"), returned_inputs, strict=True):
         _model_plan_identity(name, value.iid)
     _model_plan_mark("manager_returning_delete.relation")
-    snapshot = links.delete_returning(returned_inputs[0])
+    snapshot = links.delete_returning(returned_inputs[0]).item
     _model_plan_mark()
     assert snapshot.identifier.value == "data-link-forward" and snapshot.origin.iid == ada.iid
     _model_plan_mark("manager_returning_delete.relation_many")
-    snapshots = links.delete_many_returning(returned_inputs)
+    snapshots = links.delete_many_returning(returned_inputs).items
     _model_plan_mark()
     assert (
         len(snapshots) == 1
@@ -2538,10 +2538,10 @@ def sdk_models_data_model_runtime_live(
         return _make_generated_person(generated, identifier, score)
 
     person_manager = generated.Person.manager(clean_db)
-    assert person_manager.insert_many([]) == []
-    assert person_manager.put_many([]) == []
+    assert person_manager.insert_many([]).items == []
+    assert person_manager.put_many([]).items == []
     ada, dana = person("data-ada", 10), person("data-dana", 20)
-    inserted_people = person_manager.insert_many([ada, dana])
+    inserted_people = person_manager.insert_many([ada, dana]).items
     assert inserted_people == [ada, dana]
     assert all(value.iid for value in inserted_people)
     persisted_person_keys = [
@@ -2552,7 +2552,7 @@ def sdk_models_data_model_runtime_live(
     ]
     assert set(persisted_person_keys) == {"data-ada", "data-dana"}
     person_manager.delete(dana)
-    put_people = person_manager.put_many([person("data-ada", 11), person("data-dana", 21)])
+    put_people = person_manager.put_many([person("data-ada", 11), person("data-dana", 21)]).items
     assert [value.identifier.value for value in put_people] == ["data-ada", "data-dana"]
     ada = person_manager.filter(identifier=generated.Identifier("data-ada")).first()
     dana = person_manager.filter(identifier=generated.Identifier("data-dana")).first()
@@ -2566,15 +2566,15 @@ def sdk_models_data_model_runtime_live(
     assert person_manager.filter(identifier=generated.Identifier("duplicate-person")).count() == 0
 
     network_manager = generated.NetworkLink.manager(clean_db)
-    assert network_manager.insert_many([]) == []
-    assert network_manager.put_many([]) == []
+    assert network_manager.insert_many([]).items == []
+    assert network_manager.put_many([]).items == []
     forward = generated.NetworkLink(
         identifier=generated.Identifier("data-link-forward"), origin=ada, destination=dana
     )
     returning = generated.NetworkLink(
         identifier=generated.Identifier("data-link-return"), origin=dana, destination=ada
     )
-    inserted_links = network_manager.insert_many([forward, returning])
+    inserted_links = network_manager.insert_many([forward, returning]).items
     assert inserted_links == [forward, returning]
     network_manager.delete(returning)
     put_links = network_manager.put_many(
@@ -2590,7 +2590,7 @@ def sdk_models_data_model_runtime_live(
                 destination=ada,
             ),
         ]
-    )
+    ).items
     assert [value.identifier.value for value in put_links] == [
         "data-link-forward",
         "data-link-return",
@@ -2620,7 +2620,7 @@ def sdk_models_data_model_runtime_live(
         generated.Counter(counter_value=generated.CounterValue(1)),
         generated.Counter(counter_value=generated.CounterValue(2)),
     ]
-    assert counter_manager.insert_many(counters) == counters
+    assert counter_manager.insert_many(counters).items == counters
     counter_iids = [value.iid for value in counters]
     assert all(counter_iids) and len(set(counter_iids)) == 2
     counter_left = counter_manager.get_by_iid(counter_iids[0])
@@ -2645,7 +2645,7 @@ def sdk_models_data_model_runtime_live(
 
     membership_manager = generated.Membership.manager(clean_db)
     memberships = [generated.Membership(member=ada), generated.Membership(member=dana)]
-    assert membership_manager.insert_many(memberships) == memberships
+    assert membership_manager.insert_many(memberships).items == memberships
     membership_iids = [value.iid for value in memberships]
     assert all(membership_iids) and len(set(membership_iids)) == 2
     membership_ada = membership_manager.get_by_iid(membership_iids[0])
@@ -3178,7 +3178,7 @@ def test_generated_delete_returning_preserves_stored_values_and_players_live(
     relation = generated.Membership(member=person)
     memberships.insert(relation)
 
-    deleted_relation = memberships.delete_returning(relation)
+    deleted_relation = memberships.delete_returning(relation).item
     assert type(deleted_relation) is generated.Membership
     assert deleted_relation is not relation
     assert deleted_relation.deleted is True
@@ -3189,13 +3189,13 @@ def test_generated_delete_returning_preserves_stored_values_and_players_live(
     assert memberships.delete(relation) is relation
 
     person.score = generated.Score(99)
-    deleted_person = people.delete_returning(person)
+    deleted_person = people.delete_returning(person).item
     assert type(deleted_person) is generated.Person
     assert deleted_person is not person
     assert deleted_person.deleted is True
     assert deleted_person.score.value == 17
     assert people.get_by_iid(person.iid) is None
-    assert people.delete_many_returning([person]) == []
+    assert people.delete_many_returning([person]).items == []
     with pytest.raises(ValueError, match="thing_deleted"):
         deleted_person.score = generated.Score(30)
     with pytest.raises(ValueError, match="thing_deleted"):
@@ -3210,7 +3210,7 @@ def test_generated_delete_returning_preserves_stored_values_and_players_live(
     people.insert_many(batch_people)
     for batch_person in batch_people:
         batch_person.score = generated.Score(99)
-    deleted_batch = people.delete_many_returning([batch_people[1], person, batch_people[0]])
+    deleted_batch = people.delete_many_returning([batch_people[1], person, batch_people[0]]).items
     assert [snapshot.iid for snapshot in deleted_batch] == [
         batch_people[1].iid,
         batch_people[0].iid,
@@ -3254,7 +3254,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     second_hook = TraceHook("second")
     hooked_manager = generated.Person.manager(clean_db).add_hook(first_hook).add_hook(second_hook)
     hooked_person = _make_generated_person(generated, "parity-hooked", 10)
-    assert hooked_manager.put(hooked_person) is hooked_person
+    assert hooked_manager.put(hooked_person).item is hooked_person
     assert hook_events == [
         ("first", "pre_put", "parity-hooked"),
         ("second", "pre_put", "parity-hooked"),
@@ -3280,9 +3280,9 @@ def test_generated_package_preserves_application_operation_outcomes_live(
             filtered_hook_events.append("unexpected_pre_update")
 
     put_only_manager = generated.Person.manager(clean_db).add_hook(PutOnlyTraceHook())
-    assert put_only_manager.put(hooked_person) is hooked_person
+    assert put_only_manager.put(hooked_person).item is hooked_person
     assert filtered_hook_events == ["pre_put", "post_put"]
-    assert put_only_manager.update(hooked_person) is hooked_person
+    assert put_only_manager.update(hooked_person).item is hooked_person
     assert filtered_hook_events == ["pre_put", "post_put"]
 
     class FailingPostHook(generated.CrudHook):
@@ -3295,6 +3295,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
             generated.Person.manager(clean_db)
             .add_hook(FailingPostHook())
             .insert(post_failure_person)
+            .item
             is post_failure_person
         )
     assert "generated CRUD post-hook failed for post_insert" in caplog.text
@@ -3334,12 +3335,12 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         _make_generated_person(generated, "parity-batch-b", 21),
     ]
     batch_manager = generated.Person.manager(clean_db).add_hook(BatchTraceHook())
-    assert batch_manager.insert_many([]) == []
-    assert batch_manager.put_many([]) == []
-    assert batch_manager.update_many([]) == []
+    assert batch_manager.insert_many([]).items == []
+    assert batch_manager.put_many([]).items == []
+    assert batch_manager.update_many([]).items == []
     assert batch_manager.delete_many([]) == []
     assert batch_events == []
-    assert batch_manager.insert_many(batch_people) == batch_people
+    assert batch_manager.insert_many(batch_people).items == batch_people
     assert batch_events == [
         ("pre_insert", "parity-batch-a"),
         ("pre_insert", "parity-batch-b"),
@@ -3349,7 +3350,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     batch_events.clear()
     batch_people[0].score = generated.Score(30)
     batch_people[1].score = generated.Score(31)
-    assert batch_manager.update_many(batch_people) == batch_people
+    assert batch_manager.update_many(batch_people).items == batch_people
     assert batch_events == [
         ("pre_update", "parity-batch-a"),
         ("pre_update", "parity-batch-b"),
@@ -3360,7 +3361,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     key_mutation = _make_generated_person(generated, "parity-key-preserved", 32)
     person_manager.insert(key_mutation)
     key_mutation.identifier = generated.Identifier("parity-key-mutated")
-    assert person_manager.update(key_mutation) is key_mutation
+    assert person_manager.update(key_mutation).item is key_mutation
     assert key_mutation.identifier.value == "parity-key-preserved"
     assert person_manager.get_by_iid(key_mutation.iid).identifier.value == "parity-key-preserved"
 
@@ -3368,8 +3369,10 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     person_manager.insert(stale_update)
     person_manager.delete(stale_update)
     stale_update.score = generated.Score(34)
-    with pytest.raises(RuntimeError, match="not found after update"):
-        person_manager.update(stale_update)
+    stale_result = person_manager.update(stale_update)
+    assert stale_result.count == 0
+    assert stale_result.items == []
+    assert stale_result.item is None
 
     detached_update = _make_generated_person(
         generated,
@@ -3377,14 +3380,19 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         40,
         nickname="detached-update",
     )
-    assert person_manager.update(detached_update) is detached_update
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        person_manager.update(detached_update)
+    assert detached_update.iid is None
+    detached_update.attach_runtime_iid(batch_people[0].iid)
+    assert person_manager.update(detached_update).item is detached_update
     assert detached_update.iid == batch_people[0].iid
     detached_stored = person_manager.get_by_iid(batch_people[0].iid)
     assert detached_stored.score.value == 40
     assert detached_stored.nickname.value == "detached-update"
 
     missing_update = _make_generated_person(generated, "parity-missing-update", 99)
-    assert person_manager.update(missing_update) is missing_update
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        person_manager.update(missing_update)
     assert missing_update.iid is None
     assert (
         person_manager.filter(identifier=generated.Identifier("parity-missing-update")).exists()
@@ -3392,9 +3400,12 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     )
 
     missing_delete = _make_generated_person(generated, "parity-missing-delete", 99)
-    assert person_manager.delete(missing_delete) is missing_delete
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        person_manager.delete(missing_delete)
     assert missing_delete.iid is None
-    assert person_manager.delete_many([missing_delete]) == []
+    with pytest.raises(MatchRequestError) as missing_batch:
+        person_manager.delete_many([missing_delete])
+    assert missing_batch.value.code == "batch_iid_type_mismatch"
 
     mutation_edge = _make_generated_person(
         generated,
@@ -3403,32 +3414,36 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         nickname="remove-me",
     )
     mutation_edge.aliases = [generated.Aliases("initial-a"), generated.Aliases("initial-b")]
-    assert person_manager.insert(mutation_edge) is mutation_edge
+    assert person_manager.insert(mutation_edge).item is mutation_edge
     mutation_edge.nickname = None
     special_alias = "quote'\"\\line\nunicode-λ"
     mutation_edge.aliases = [generated.Aliases(special_alias)]
-    assert person_manager.update(mutation_edge) is mutation_edge
+    assert person_manager.update(mutation_edge).item is mutation_edge
     replaced_ownerships = person_manager.get_by_iid(mutation_edge.iid)
     assert replaced_ownerships.nickname is None
     assert [alias.value for alias in replaced_ownerships.aliases] == [special_alias]
     mutation_edge.aliases = []
-    assert person_manager.update(mutation_edge) is mutation_edge
+    assert person_manager.update(mutation_edge).item is mutation_edge
     cleared_ownerships = person_manager.get_by_iid(mutation_edge.iid)
     assert cleared_ownerships.nickname is None
     assert cleared_ownerships.aliases == ()
 
     strict_missing = _make_generated_person(generated, "parity-strict-missing", 99)
-    with pytest.raises(generated.ProjectedModelNotFoundError, match="not found"):
+    with pytest.raises(MatchRequestError) as strict_batch:
         person_manager.delete_many([batch_people[0], strict_missing], strict=True)
+    assert strict_batch.value.code == "batch_iid_type_mismatch"
+    assert strict_batch.value.path[1] == {"kind": "index", "value": 1}
     assert person_manager.get_by_iid(batch_people[0].iid) is not None
 
-    with pytest.warns(DeprecationWarning, match="let_\\(\\) in an update plan"):
-        updated = person_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-batch-a"),
-                generated.Identifier("parity-batch-b"),
-            ]
-        ).update_with(lambda value: setattr(value, "nickname", generated.Nickname("filtered")))
+    updated = person_manager.filter(
+        identifier__in=[
+            generated.Identifier("parity-batch-a"),
+            generated.Identifier("parity-batch-b"),
+        ]
+    ).all()
+    for value in updated:
+        value.nickname = generated.Nickname("filtered")
+    updated = person_manager.update_many(updated).items
     assert {value.iid for value in updated} == {value.iid for value in batch_people}
     assert {
         value.nickname.value
@@ -3439,41 +3454,6 @@ def test_generated_package_preserves_application_operation_outcomes_live(
             ]
         ).all()
     } == {"filtered"}
-
-    scores_before_callback_failure = {
-        value.identifier.value: value.score.value
-        for value in person_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-batch-a"),
-                generated.Identifier("parity-batch-b"),
-            ]
-        ).all()
-    }
-
-    def fail_callback(value) -> None:
-        value.score = generated.Score(value.score.value + 100)
-        if value.identifier.value == "parity-batch-b":
-            raise RuntimeError("callback failure sentinel")
-
-    with (
-        pytest.raises(RuntimeError, match="callback failure sentinel"),
-        pytest.warns(DeprecationWarning, match="let_\\(\\) in an update plan"),
-    ):
-        person_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-batch-a"),
-                generated.Identifier("parity-batch-b"),
-            ]
-        ).update_with(fail_callback)
-    assert {
-        value.identifier.value: value.score.value
-        for value in person_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-batch-a"),
-                generated.Identifier("parity-batch-b"),
-            ]
-        ).all()
-    } == scores_before_callback_failure
 
     transaction_people = [
         _make_generated_person(generated, "parity-transaction-a", 50),
@@ -3515,9 +3495,11 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     person_manager.delete(atomic_people[1])
     atomic_people[0].score = generated.Score(62)
     atomic_people[1].score = generated.Score(63)
-    with pytest.raises(RuntimeError, match="not found after update"):
-        person_manager.update_many(atomic_people)
-    assert person_manager.get_by_iid(atomic_people[0].iid).score.value == 52
+    matched = person_manager.update_many(atomic_people)
+    assert matched.count == 1
+    assert matched.input_indexes == [0]
+    assert matched.items == [atomic_people[0]]
+    assert person_manager.get_by_iid(atomic_people[0].iid).score.value == 62
     assert person_manager.get_by_iid(stale_atomic_iid) is None
     person_manager.delete(atomic_people[0])
 
@@ -3531,12 +3513,9 @@ def test_generated_package_preserves_application_operation_outcomes_live(
                 raise generated.HookCancelled("second delete cancelled")
 
     with pytest.raises(generated.HookCancelled, match="second delete cancelled"):
-        generated.Person.manager(clean_db).add_hook(CancelSecondDelete()).filter(
-            identifier__in=[
-                generated.Identifier("parity-transaction-a"),
-                generated.Identifier("parity-transaction-b"),
-            ]
-        ).delete()
+        generated.Person.manager(clean_db).add_hook(CancelSecondDelete()).delete_many(
+            transaction_people
+        )
     assert (
         person_manager.filter(
             identifier__in=[
@@ -3546,19 +3525,15 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         ).count()
         == 2
     )
-    assert (
-        person_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-transaction-a"),
-                generated.Identifier("parity-transaction-b"),
-            ]
-        ).delete()
-        == 2
-    )
+    assert person_manager.delete_many(transaction_people) == transaction_people
 
     detached_delete_source = _make_generated_person(generated, "parity-detached-delete", 70)
     person_manager.insert(detached_delete_source)
     detached_delete = _make_generated_person(generated, "parity-detached-delete", 70)
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        person_manager.delete(detached_delete)
+    assert detached_delete.iid is None
+    detached_delete.attach_runtime_iid(detached_delete_source.iid)
     assert person_manager.delete(detached_delete) is detached_delete
     assert detached_delete.iid == detached_delete_source.iid
     assert person_manager.get_by_iid(detached_delete_source.iid) is None
@@ -3568,18 +3543,27 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     membership = generated.Membership(member=role_player)
     membership_manager.insert(membership)
     detached_membership_update = generated.Membership(member=role_player)
-    assert membership_manager.update(detached_membership_update) is detached_membership_update
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        membership_manager.update(detached_membership_update)
+    assert detached_membership_update.iid is None
+    detached_membership_update.attach_runtime_iid(membership.iid)
+    assert membership_manager.update(detached_membership_update).item is detached_membership_update
     assert detached_membership_update.iid == membership.iid
     detached_membership_delete = generated.Membership(member=role_player)
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        membership_manager.delete(detached_membership_delete)
+    assert detached_membership_delete.iid is None
+    detached_membership_delete.attach_runtime_iid(membership.iid)
     assert membership_manager.delete(detached_membership_delete) is detached_membership_delete
     assert detached_membership_delete.iid == membership.iid
     assert membership_manager.get_by_iid(membership.iid) is None
     missing_membership = generated.Membership(member=role_player)
-    assert membership_manager.delete(missing_membership) is missing_membership
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        membership_manager.delete(missing_membership)
     assert missing_membership.iid is None
-    assert membership_manager.insert_many([]) == []
-    assert membership_manager.put_many([]) == []
-    assert membership_manager.update_many([]) == []
+    assert membership_manager.insert_many([]).items == []
+    assert membership_manager.put_many([]).items == []
+    assert membership_manager.update_many([]).items == []
     assert membership_manager.delete_many([]) == []
 
     relation_batch_events: list[tuple[str, str]] = []
@@ -3601,9 +3585,9 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     network_batch_manager = generated.NetworkLink.manager(clean_db).add_hook(
         RelationBatchTraceHook()
     )
-    assert network_batch_manager.insert_many([]) == []
-    assert network_batch_manager.put_many([]) == []
-    assert network_batch_manager.update_many([]) == []
+    assert network_batch_manager.insert_many([]).items == []
+    assert network_batch_manager.put_many([]).items == []
+    assert network_batch_manager.update_many([]).items == []
     assert network_batch_manager.delete_many([]) == []
     assert relation_batch_events == []
     networks = [
@@ -3621,7 +3605,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     network_manager.insert_many(networks)
     networks[0].nickname = generated.Nickname("batch-updated-a")
     networks[1].nickname = generated.Nickname("batch-updated-b")
-    assert network_batch_manager.update_many(networks) == networks
+    assert network_batch_manager.update_many(networks).items == networks
     assert relation_batch_events == [
         ("pre_update", "parity-network-a"),
         ("pre_update", "parity-network-b"),
@@ -3634,19 +3618,23 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         origin=hooked_person,
         destination=batch_people[0],
     )
-    assert network_manager.update(detached_network) is detached_network
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        network_manager.update(detached_network)
+    assert detached_network.iid is None
+    detached_network.attach_runtime_iid(networks[0].iid)
+    assert network_manager.update(detached_network).item is detached_network
     assert detached_network.iid == networks[0].iid
     assert network_manager.get_by_iid(networks[0].iid).nickname.value == "detached-relation"
 
-    with pytest.warns(DeprecationWarning, match="let_\\(\\) in an update plan"):
-        updated_networks = network_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-network-a"),
-                generated.Identifier("parity-network-b"),
-            ]
-        ).update_with(
-            lambda value: setattr(value, "nickname", generated.Nickname("filtered-relation"))
-        )
+    updated_networks = network_manager.filter(
+        identifier__in=[
+            generated.Identifier("parity-network-a"),
+            generated.Identifier("parity-network-b"),
+        ]
+    ).all()
+    for value in updated_networks:
+        value.nickname = generated.Nickname("filtered-relation")
+    updated_networks = network_manager.update_many(updated_networks).items
     assert {value.iid for value in updated_networks} == {value.iid for value in networks}
     assert {
         value.nickname.value
@@ -3657,15 +3645,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
             ]
         ).all()
     } == {"filtered-relation"}
-    assert (
-        network_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-network-a"),
-                generated.Identifier("parity-network-b"),
-            ]
-        ).delete()
-        == 2
-    )
+    assert network_manager.delete_many(networks) == networks
 
     relation_delete_batch = [
         generated.NetworkLink(
@@ -3831,7 +3811,7 @@ def test_generated_projection_round_trips_live_models(
         val_double=generated.ValDouble(3.5),
         val_duration=generated.ValDuration(timedelta(seconds=3)),
     )
-    assert person_manager.put(person) is person
+    assert person_manager.put(person).item is person
     # The core checks the member count at assignment, with its own code.
     with pytest.raises(ProjectedCardinalityError) as too_many_aliases:
         person.aliases = [generated.Aliases(name) for name in ("a", "b", "c", "d")]
@@ -3918,7 +3898,7 @@ def test_generated_projection_round_trips_live_models(
     detached_counter = generated.Counter(counter_value=generated.CounterValue(42))
     with pytest.raises(ValueError, match="attached IID or projected key"):
         counter_manager.delete(detached_counter)
-    assert counter_manager.insert(detached_counter) is detached_counter
+    assert counter_manager.insert(detached_counter).item is detached_counter
     assert detached_counter.iid
     stored_counter = counter_manager.get_by_iid(detached_counter.iid)
     assert type(stored_counter) is generated.Counter
@@ -3944,7 +3924,7 @@ def test_generated_projection_round_trips_live_models(
 
     plain_activity_manager = generated.PlainActivity.manager(clean_db)
     plain_activity = generated.PlainActivity(participant=person)
-    assert plain_activity_manager.insert(plain_activity) is plain_activity
+    assert plain_activity_manager.insert(plain_activity).item is plain_activity
     assert plain_activity.iid
     stored_plain_activity = plain_activity_manager.get_by_iid(plain_activity.iid)
     assert type(stored_plain_activity) is generated.PlainActivity
@@ -4056,7 +4036,7 @@ def test_generated_projection_round_trips_live_models(
     assert all(type(alias) is generated.Aliases for alias in stored_person.aliases)
 
     person.nickname = generated.Nickname("ada")
-    assert person_manager.update(person) is person
+    assert person_manager.update(person).item is person
     updated_person = person_manager.get_by_iid(person.iid)
     assert type(updated_person) is generated.Person
     assert updated_person.nickname.value == "ada"
@@ -4065,7 +4045,7 @@ def test_generated_projection_round_trips_live_models(
         _make_generated_person(generated, "person-2", 5),
         _make_generated_person(generated, "person-3", 7),
     ]
-    assert person_manager.insert_many(batch_people) == batch_people
+    assert person_manager.insert_many(batch_people).items == batch_people
     assert all(candidate.iid for candidate in batch_people)
     batch_iids = [candidate.iid for candidate in batch_people]
     assert {
@@ -4075,18 +4055,20 @@ def test_generated_projection_round_trips_live_models(
         person_var.field(generated.Person.aliases).is_missing()
     )
     assert {candidate.iid for candidate in missing_aliases.rows(limit=10)} == set(batch_iids)
-    assert [candidate.iid for candidate in person_manager.put_many(batch_people)] == batch_iids
+    assert [
+        candidate.iid for candidate in person_manager.put_many(batch_people).items
+    ] == batch_iids
 
     with clean_db.transaction("write") as transaction:
         transaction_person = _make_generated_person(generated, "person-4", 9)
         transaction_manager = generated.Person.manager(transaction)
-        assert transaction_manager.insert(transaction_person) is transaction_person
+        assert transaction_manager.insert(transaction_person).item is transaction_person
 
     rolled_back_person = _make_generated_person(generated, "person-rollback", 11)
     with pytest.raises(RuntimeError, match="generated rollback sentinel"):
         with clean_db.transaction("write") as transaction:
             rollback_manager = generated.Person.manager(transaction)
-            assert rollback_manager.insert(rolled_back_person) is rolled_back_person
+            assert rollback_manager.insert(rolled_back_person).item is rolled_back_person
             assert rollback_manager.get_by_iid(rolled_back_person.iid).iid == rolled_back_person.iid
             raise RuntimeError("generated rollback sentinel")
     assert (
@@ -4242,7 +4224,7 @@ def test_generated_projection_round_trips_live_models(
 
     membership_manager = generated.Membership.manager(clean_db)
     membership = generated.Membership(member=person)
-    assert membership_manager.insert(membership) is membership
+    assert membership_manager.insert(membership).item is membership
     assert membership.iid
 
     stored_membership = membership_manager.get_by_iid(membership.iid)
@@ -4271,7 +4253,7 @@ def test_generated_projection_round_trips_live_models(
         )
         for index, value in enumerate(integer_key_values)
     ]
-    assert robot_manager.insert_many(robots) == robots
+    assert robot_manager.insert_many(robots).items == robots
     assert robot_manager.count() == len(integer_key_values)
     for expected, value in zip(robots, integer_key_values, strict=True):
         integer_key_match = robot_manager.filter(robot_id=generated.RobotId(value))
@@ -4287,7 +4269,7 @@ def test_generated_projection_round_trips_live_models(
 
     robot = robots[0]
     robot_membership = generated.Membership(member=robot)
-    assert membership_manager.insert(robot_membership) is robot_membership
+    assert membership_manager.insert(robot_membership).item is robot_membership
     stored_robot_membership = membership_manager.get_by_iid(robot_membership.iid)
     assert type(stored_robot_membership) is generated.Membership
     assert type(stored_robot_membership.member) is generated.Robot
@@ -4307,7 +4289,7 @@ def test_generated_projection_round_trips_live_models(
         actor=person,
         target=batch_people[0],
     )
-    assert interaction_manager.insert_many([robot_interaction, person_interaction]) == [
+    assert interaction_manager.insert_many([robot_interaction, person_interaction]).items == [
         robot_interaction,
         person_interaction,
     ]
@@ -4386,7 +4368,7 @@ def test_generated_projection_round_trips_live_models(
 
     employment_manager = generated.Employment.manager(clean_db)
     employment = generated.Employment(employee=person)
-    assert employment_manager.insert(employment) is employment
+    assert employment_manager.insert(employment).item is employment
     assert employment.iid
 
     stored_employment = employment_manager.get_by_iid(employment.iid)
@@ -4444,13 +4426,13 @@ def test_generated_projection_round_trips_live_models(
         destination=batch_people[0],
         participant=[person, batch_people[0]],
     )
-    assert network_manager.insert(network) is network
+    assert network_manager.insert(network).item is network
     assert network.iid
     network_iid = network.iid
-    assert network_manager.put(network) is network
+    assert network_manager.put(network).item is network
     assert network.iid == network_iid
     network.nickname = generated.Nickname("updated")
-    assert network_manager.update(network) is network
+    assert network_manager.update(network).item is network
     stored_network = network_manager.get_by_iid(network_iid)
     assert type(stored_network) is generated.NetworkLink
     assert stored_network.nickname.value == "updated"
@@ -4599,13 +4581,13 @@ def test_generated_projection_round_trips_live_models(
 
     event_manager = generated.Event.manager(clean_db)
     event = generated.Event(subject=person)
-    assert event_manager.insert(event) is event
+    assert event_manager.insert(event).item is event
     assert event.iid
     assert type(event_manager.get_by_iid(event.iid)) is generated.Event
 
     container_manager = generated.Container.manager(clean_db)
     container = generated.Container(item=[generated.EventRef(event.iid)])
-    assert container_manager.insert(container) is container
+    assert container_manager.insert(container).item is container
     assert container.iid
 
     stored_container = container_manager.get_by_iid(container.iid)
@@ -5107,10 +5089,10 @@ def test_generated_projection_round_trips_live_models(
             participant=[batch_people[1], person],
         ),
     ]
-    assert network_manager.insert_many(relation_batch) == relation_batch
+    assert network_manager.insert_many(relation_batch).items == relation_batch
     relation_batch_iids = [candidate.iid for candidate in relation_batch]
     assert all(relation_batch_iids)
-    assert [candidate.iid for candidate in network_manager.put_many(relation_batch)] == (
+    assert [candidate.iid for candidate in network_manager.put_many(relation_batch).items] == (
         relation_batch_iids
     )
     for relation in relation_batch:

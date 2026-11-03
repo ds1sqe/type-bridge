@@ -5402,7 +5402,7 @@ fn single_batch_write_result(
     type_id: &TypeId,
 ) -> Result<WriteResult<ProjectedThing>, SdkExecutionDiagnostic> {
     match result {
-        ProjectedBatchResult::Things(things) => Ok(WriteResult::new(things)),
+        ProjectedBatchResult::Things(things) => Ok(WriteResult::new(things.into_items())),
         _ => Err(single_batch_result_invalid(type_id)),
     }
 }
@@ -7550,10 +7550,13 @@ plays:
             "projected_crud_batch_result_invalid"
         );
         assert!(
-            single_batch_write_result(ProjectedBatchResult::Things(Vec::new()), &type_id)
-                .unwrap()
-                .items()
-                .is_empty()
+            single_batch_write_result(
+                ProjectedBatchResult::Things(crate::BatchWriteResult::default()),
+                &type_id
+            )
+            .unwrap()
+            .items()
+            .is_empty()
         );
     }
 }

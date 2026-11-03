@@ -136,7 +136,7 @@ impl<'db> DynamicEntityManager<'db> {
                 |registry, things, _, _| {
                     things
                         .iter()
-                        .map(|thing| plan_entity_row(registry, thing))
+                        .map(|(_, thing)| plan_entity_row(registry, thing))
                         .collect::<Result<Vec<_>>>()
                         .and_then(materialize)
                 },
@@ -186,7 +186,7 @@ impl<'db> DynamicEntityManager<'db> {
                 |registry, things, _, _| {
                     things
                         .iter()
-                        .map(|thing| plan_entity_row(registry, thing))
+                        .map(|(_, thing)| plan_entity_row(registry, thing))
                         .collect::<Result<Vec<_>>>()
                         .and_then(materialize)
                 },
@@ -1277,7 +1277,7 @@ impl<'db> DynamicRelationManager<'db> {
                 |registry, things, _, _| {
                     things
                         .iter()
-                        .map(|thing| plan_relation_row(registry, thing))
+                        .map(|(_, thing)| plan_relation_row(registry, thing))
                         .collect::<Result<Vec<_>>>()
                         .and_then(materialize)
                 },
@@ -1327,7 +1327,7 @@ impl<'db> DynamicRelationManager<'db> {
                 |registry, things, _, _| {
                     things
                         .iter()
-                        .map(|thing| plan_relation_row(registry, thing))
+                        .map(|(_, thing)| plan_relation_row(registry, thing))
                         .collect::<Result<Vec<_>>>()
                         .and_then(materialize)
                 },
@@ -1977,7 +1977,7 @@ impl<'db> DynamicRelationManager<'db> {
             validate_delete_iids(iids)?;
             return self.target.returning(plans, &self.descriptor.type_name, super::returning::DeleteSelection::Iids(iids), true, |registry, things, documents, _| {
                 let mut documents = snapshot_documents(things, documents)?;
-                for (document, thing) in documents.iter_mut().zip(things) {
+                for (document, (_, thing)) in documents.iter_mut().zip(things) {
                     let row = plan_relation_row(registry, thing)?;
                     let object = document.as_object_mut().ok_or_else(|| snapshot_error(&self.descriptor.type_name))?;
                     object.retain(|key, _| !key.starts_with("_role_"));
@@ -2635,7 +2635,7 @@ impl DynamicExecutionTarget<'_> {
         exact: bool,
         materialize: impl FnOnce(
             &DescriptorRegistry,
-            &[&HydratedThing],
+            &[(usize, &HydratedThing)],
             Vec<serde_json::Value>,
             QueryExecutionResourceLimits,
         ) -> Result<T>,
@@ -3570,7 +3570,7 @@ fn relation_snapshot_document(
 }
 
 fn snapshot_documents(
-    things: &[&HydratedThing],
+    things: &[(usize, &HydratedThing)],
     documents: Vec<serde_json::Value>,
 ) -> Result<Vec<serde_json::Value>> {
     let mut by_iid = std::collections::HashMap::new();
@@ -3584,7 +3584,7 @@ fn snapshot_documents(
     }
     things
         .iter()
-        .map(|thing| {
+        .map(|(_, thing)| {
             by_iid
                 .remove(thing.concept_id().as_str())
                 .ok_or_else(|| snapshot_error("snapshot"))

@@ -87,7 +87,6 @@ pub use transaction::{
 pub use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 #[cfg(feature = "typedb")]
 pub use type_bridge_orm::DirectConnectionPolicy;
-pub use type_bridge_orm::WriteResult;
 pub use type_bridge_orm::{
     AnswerCancellation, AnswerTransport, DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES,
     DEFAULT_DIRECT_QUERY_BYTES, DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
@@ -100,6 +99,7 @@ pub use type_bridge_orm::{
     ProjectedManagerComparison, QueryExecutionDeadline, QueryExecutionLimitOutOfRange,
     QueryExecutionLimitsError, QueryExecutionResourceLimits, QueryTimeout,
 };
+pub use type_bridge_orm::{BatchWriteResult, WriteResult};
 #[allow(deprecated)]
 pub use type_bridge_orm::{
     DirectTls, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,

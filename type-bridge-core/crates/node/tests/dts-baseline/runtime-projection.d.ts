@@ -182,18 +182,24 @@ export interface WriteResult<T> {
     readonly items: readonly T[];
     readonly item: T | null;
 }
+/** Complete batch roots with their original input row indexes. */
+export interface BatchWriteResult<T> {
+    readonly count: number;
+    readonly items: readonly T[];
+    readonly inputIndexes: readonly number[];
+}
 /** Build the public write result from all roots already returned by the engine. */
 export declare function writeResult<T>(items: readonly T[]): WriteResult<T>;
 export interface NativeProjectedManager {
-    insertProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope[];
-    insertManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): readonly Complete[];
-    putProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope[];
-    putManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): readonly Complete[];
-    updateProjected(iid: string, instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope[];
-    updateManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow): readonly Complete[];
+    insertProjected<Complete>(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): WriteResult<Complete>;
+    insertManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): BatchWriteResult<Complete>;
+    putProjected<Complete>(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): WriteResult<Complete>;
+    putManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): BatchWriteResult<Complete>;
+    updateProjected<Complete>(iid: string, instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): WriteResult<Complete>;
+    updateManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow): BatchWriteResult<Complete>;
     deleteByIid(iid: string): void;
-    deleteByIidReturning(iid: string): NativeProjectedValueEnvelope[];
-    deleteManyReturning(iids: string[]): NativeProjectedValueEnvelope[];
+    deleteByIidReturning<Complete>(iid: string): WriteResult<Complete>;
+    deleteManyReturning<Complete>(iids: string[]): BatchWriteResult<Complete>;
     deleteManyProjected(rowCount: number, rowAt: (ordinal: number) => string): void;
     managerFilter(): NativeProjectedManagerFilter;
     filterEntriesJson(filtersJson: string): NativeProjectedManager;

@@ -388,6 +388,13 @@ export interface WriteResult<T> {
   readonly item: T | null;
 }
 
+/** Complete batch roots with their original input row indexes. */
+export interface BatchWriteResult<T> {
+  readonly count: number;
+  readonly items: readonly T[];
+  readonly inputIndexes: readonly number[];
+}
+
 /** Build the public write result from all roots already returned by the engine. */
 export function writeResult<T>(items: readonly T[]): WriteResult<T> {
   const retained = Object.freeze(items);
@@ -395,34 +402,34 @@ export function writeResult<T>(items: readonly T[]): WriteResult<T> {
 }
 
 export interface NativeProjectedManager {
-  insertProjected(
+  insertProjected<Complete>(
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
-  ): NativeProjectedValueEnvelope[];
+  ): WriteResult<Complete>;
   insertManyProjected<Complete>(
     rowCount: number,
     rowAt: (ordinal: number) => NativeProjectedCreateBatchRow,
-  ): readonly Complete[];
-  putProjected(
+  ): BatchWriteResult<Complete>;
+  putProjected<Complete>(
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
-  ): NativeProjectedValueEnvelope[];
+  ): WriteResult<Complete>;
   putManyProjected<Complete>(
     rowCount: number,
     rowAt: (ordinal: number) => NativeProjectedCreateBatchRow,
-  ): readonly Complete[];
-  updateProjected(
+  ): BatchWriteResult<Complete>;
+  updateProjected<Complete>(
     iid: string,
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
-  ): NativeProjectedValueEnvelope[];
+  ): WriteResult<Complete>;
   updateManyProjected<Complete>(
     rowCount: number,
     rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow,
-  ): readonly Complete[];
+  ): BatchWriteResult<Complete>;
   deleteByIid(iid: string): void;
-  deleteByIidReturning(iid: string): NativeProjectedValueEnvelope[];
-  deleteManyReturning(iids: string[]): NativeProjectedValueEnvelope[];
+  deleteByIidReturning<Complete>(iid: string): WriteResult<Complete>;
+  deleteManyReturning<Complete>(iids: string[]): BatchWriteResult<Complete>;
   deleteManyProjected(
     rowCount: number,
     rowAt: (ordinal: number) => string,

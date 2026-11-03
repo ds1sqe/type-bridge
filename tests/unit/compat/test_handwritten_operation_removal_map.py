@@ -46,6 +46,9 @@ def test_every_handwritten_family_has_an_exact_retained_disposition() -> None:
                 operation = generated_operations[operation_id]
                 required = set(operation.get("required_bindings", BINDINGS))
                 assert binding in required, (family["id"], operation_id, binding)
+                if operation["status"] == "removed_in_3_0":
+                    assert operation["replacements"], operation_id
+                    continue
                 assert operation["status"] in {
                     "accepted_live",
                     "accepted_offline",

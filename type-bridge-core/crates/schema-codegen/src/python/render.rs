@@ -32,6 +32,7 @@ const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "ProjectedModelManager",
     "ProjectedModelNotFoundError",
     "RoleToken",
+    "BatchWriteResult",
     "WriteResult",
     "connect",
 ];
@@ -182,6 +183,7 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
          from ._runtime import ProjectedModelManager as ProjectedModelManager\n\
          from ._runtime import ProjectedModelNotFoundError as ProjectedModelNotFoundError\n\
          from ._runtime import RoleToken as RoleToken\n\
+         from ._runtime import BatchWriteResult as BatchWriteResult\n\
          from ._runtime import WriteResult as WriteResult\n\
          from ._runtime import decode_archive as decode_archive\n\
          from ._runtime import decode_archive_controlled as decode_archive_controlled\n\

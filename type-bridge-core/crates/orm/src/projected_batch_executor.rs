@@ -64,7 +64,7 @@ impl From<SdkExecutionDiagnostic> for MappedExecutionFailure {
 #[non_exhaustive]
 pub enum ProjectedBatchResult {
     /// Complete post-mutation projected things in input ordinal order.
-    Things(Vec<ProjectedThing>),
+    Things(crate::BatchWriteResult<ProjectedThing>),
     /// Every requested delete was applied as an idempotent present-or-absent operation.
     Deleted,
 }
@@ -139,7 +139,7 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
             batch,
             control,
             if self.return_deleted {
-                ProjectedBatchResult::Things(Vec::new())
+                ProjectedBatchResult::Things(crate::BatchWriteResult::default())
             } else {
                 empty_result(batch.operation())
             },
@@ -251,7 +251,7 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
             batch,
             control,
             if self.return_deleted {
-                ProjectedBatchResult::Things(Vec::new())
+                ProjectedBatchResult::Things(crate::BatchWriteResult::default())
             } else {
                 empty_result(batch.operation())
             },
@@ -377,7 +377,7 @@ fn empty_result(operation: ProjectedBatchOperation) -> ProjectedBatchResult {
     if operation == ProjectedBatchOperation::Delete {
         ProjectedBatchResult::Deleted
     } else {
-        ProjectedBatchResult::Things(Vec::new())
+        ProjectedBatchResult::Things(crate::BatchWriteResult::default())
     }
 }
 
@@ -1338,7 +1338,8 @@ struct HydrationConsumer<'executor, 'projection, 'plan> {
     targets: Vec<String>,
     resolved_references: Option<Box<crate::plan_builders::bulk_write::ReferenceSnapshots>>,
     slots: Vec<Option<ProjectedThing>>,
-    ordered: Vec<ProjectedThing>,
+    ordered: crate::BatchWriteResult<ProjectedThing>,
+    additional: Option<BTreeMap<usize, Vec<ProjectedThing>>>,
     single_documents: Vec<Value>,
     deferred: Option<SdkExecutionDiagnostic>,
 }
@@ -1358,9 +1359,7 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
             .try_reserve_exact(plan.row_count)
             .map_err(|_| allocation_failure())?;
         slots.resize_with(plan.row_count, || None);
-        let mut ordered = Vec::new();
-        ordered
-            .try_reserve_exact(plan.row_count)
+        let ordered = crate::BatchWriteResult::try_with_capacity(plan.row_count)
             .map_err(|_| allocation_failure())?;
         Ok(Self {
             executor,
@@ -1370,6 +1369,7 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
             resolved_references: None,
             slots,
             ordered,
+            additional: None,
             single_documents: Vec::new(),
             deferred: None,
         })
@@ -1400,42 +1400,54 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
             self.single_documents.push(document);
             return Ok(());
         }
-        if self.slots[ordinal].is_some() {
+        let returned_iid = document
+            .get("_iid")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                integrity_at_row(
+                    "projected_batch_hydration_target_missing",
+                    "Provider hydration omitted its mutation identity",
+                    self.plan.model.id(),
+                    ordinal,
+                )
+            })?
+            .to_owned();
+        if self.slots[ordinal]
+            .as_ref()
+            .is_some_and(|thing| thing.iid().eq_ignore_ascii_case(&returned_iid))
+            || self
+                .additional
+                .as_ref()
+                .and_then(|rows| rows.get(&ordinal))
+                .is_some_and(|rows| {
+                    rows.iter()
+                        .any(|thing| thing.iid().eq_ignore_ascii_case(&returned_iid))
+                })
+        {
             return Err(integrity_at_row(
                 "projected_batch_hydration_duplicate",
-                "Provider hydration repeated one projected batch ordinal",
+                "Provider hydration repeated one root within its input row",
                 self.plan.model.id(),
                 ordinal,
             ));
         }
-        let expected = self.targets.get_mut(ordinal).ok_or_else(|| {
-            integrity_at_row(
-                "projected_batch_hydration_target_missing",
-                "Provider hydration arrived before its mutation identity",
-                self.plan.model.id(),
-                ordinal,
-            )
-        })?;
-        if expected.is_empty() {
-            expected.push_str(
-                document
-                    .get("_iid")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        integrity_at_row(
-                            "projected_batch_hydration_target_missing",
-                            "Provider hydration omitted its mutation identity",
-                            self.plan.model.id(),
-                            ordinal,
-                        )
-                    })?,
-            );
-        }
+        let expected = if self.plan.operation == ProjectedBatchOperation::Update {
+            self.targets
+                .get(ordinal)
+                .map(String::as_str)
+                .ok_or_else(|| {
+                    integrity_at_row(
+                        "projected_batch_hydration_target_missing",
+                        "Provider hydration arrived before its mutation identity",
+                        self.plan.model.id(),
+                        ordinal,
+                    )
+                })?
+        } else {
+            returned_iid.as_str()
+        };
         if self.plan.operation == ProjectedBatchOperation::Update
-            && document
-                .get("_iid")
-                .and_then(Value::as_str)
-                .is_some_and(|iid| !iid.eq_ignore_ascii_case(expected))
+            && !returned_iid.eq_ignore_ascii_case(expected)
         {
             return Err(integrity_at_row(
                 "projected_batch_update_identity_changed",
@@ -1483,7 +1495,19 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
             _ => return Err(SdkExecutionDiagnostic::internal_failure()),
         };
         self.capture_reference_snapshot(&document, ordinal)?;
-        self.slots[ordinal] = Some(thing);
+        if self.slots[ordinal].is_none() {
+            self.slots[ordinal] = Some(thing);
+        } else {
+            let additional = self
+                .additional
+                .get_or_insert_default()
+                .entry(ordinal)
+                .or_default();
+            additional
+                .try_reserve(1)
+                .map_err(|_| allocation_failure())?;
+            additional.push(thing);
+        }
         Ok(())
     }
 
@@ -1515,7 +1539,9 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
         self.deferred.take()
     }
 
-    fn finish(mut self) -> std::result::Result<Vec<ProjectedThing>, SdkExecutionDiagnostic> {
+    fn finish(
+        mut self,
+    ) -> std::result::Result<crate::BatchWriteResult<ProjectedThing>, SdkExecutionDiagnostic> {
         if let Some(error) = self.deferred {
             return Err(error);
         }
@@ -1562,17 +1588,25 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
                     }
                 }
             }
-            return Ok(result.into_items());
+            return crate::BatchWriteResult::try_from_input(result.into_items(), 0);
         }
         for (ordinal, value) in self.slots.into_iter().enumerate() {
-            self.ordered.push(value.ok_or_else(|| {
-                integrity_at_row(
-                    "projected_batch_hydration_missing",
-                    "Provider hydration omitted one projected batch ordinal",
-                    self.plan.model.id(),
-                    ordinal,
-                )
-            })?);
+            if let Some(thing) = value {
+                self.ordered
+                    .try_push(ordinal, thing)
+                    .map_err(|_| allocation_failure())?;
+            }
+            if let Some(additional) = self
+                .additional
+                .as_mut()
+                .and_then(|rows| rows.remove(&ordinal))
+            {
+                for thing in additional {
+                    self.ordered
+                        .try_push(ordinal, thing)
+                        .map_err(|_| allocation_failure())?;
+                }
+            }
         }
         Ok(self.ordered)
     }
@@ -3292,11 +3326,119 @@ plays:
                 }
                 let roots = consumer.finish().unwrap();
                 assert_eq!(
-                    roots.iter().map(ProjectedThing::iid).collect::<Vec<_>>(),
+                    roots
+                        .items()
+                        .iter()
+                        .map(ProjectedThing::iid)
+                        .collect::<Vec<_>>(),
                     expected[..count]
                 );
-                for thing in &roots {
+                for thing in roots.items() {
                     validate_written_role_identities(&installed, &plan, thing, 0, None).unwrap();
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn batch_writes_keep_zero_and_plural_input_roots_and_commit_once() {
+        let installed = allocation_installed();
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            for operation in [
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchOperation::Put,
+            ] {
+                for borrowed in [false, true] {
+                    let template = allocation_create(&installed, kind);
+                    let model = template.type_id().clone();
+                    let rows = ["absent", "present"].map(|key| {
+                        ProjectedBatchRow::Create(
+                            ProjectedCreate::try_new(
+                                &installed,
+                                model.clone(),
+                                vec![(
+                                    OwnsFactId::new(
+                                        model.clone(),
+                                        AttributeId::new("identifier").unwrap(),
+                                    )
+                                    .unwrap(),
+                                    vec![allocation_value(&installed, key)],
+                                )],
+                                template
+                                    .roles()
+                                    .iter()
+                                    .map(|(role, players)| (role.clone(), players.clone()))
+                                    .collect(),
+                            )
+                            .unwrap(),
+                        )
+                    });
+                    let batch =
+                        ProjectedBatch::try_new(&installed, model.clone(), operation, rows.into())
+                            .unwrap();
+                    let documents = ["0x22", "0x21"].map(|iid| {
+                        let mut document = json!({
+                            "ordinal":1, "_iid":iid, "_type":model.label().as_str(),
+                            "attributes":{"identifier":"present"},
+                        });
+                        if kind == TypeKind::Relation {
+                            document["_role_0_players"] = json!([{
+                                "_iid":"0x10", "_type":"person", "attributes":{"identifier":"player"}
+                            }]);
+                        }
+                        document
+                    });
+                    let state = Arc::new(Mutex::new(AllocationState {
+                        answers: VecDeque::from([documents.into()]),
+                        ..AllocationState::default()
+                    }));
+                    let database = Database::with_backend(
+                        Box::new(AllocationBackend {
+                            state: Arc::clone(&state),
+                        }),
+                        "batch-zero-plural",
+                    );
+                    let executor = ProjectedBatchExecutor::new(&installed);
+                    let control = ProjectedBatchInvocationControl::capture(
+                        Default::default(),
+                        Default::default(),
+                    );
+                    let transaction = if borrowed {
+                        Some(database.transaction_context(TxType::Write).await.unwrap())
+                    } else {
+                        None
+                    };
+                    let result = match &transaction {
+                        Some(transaction) => {
+                            executor
+                                .execute_in_transaction(transaction, &batch, control)
+                                .await
+                        }
+                        None => executor.execute(&database, &batch, control).await,
+                    }
+                    .unwrap_or_else(|error| panic!("{kind:?}/{operation:?}/{borrowed}: {error:?}"));
+                    let ProjectedBatchResult::Things(result) = result else {
+                        panic!("expected roots")
+                    };
+                    assert_eq!(result.count(), 2);
+                    assert_eq!(result.items().len(), result.input_indexes().len());
+                    assert_eq!(result.input_indexes(), &[1, 1]);
+                    assert_eq!(
+                        result
+                            .items()
+                            .iter()
+                            .map(ProjectedThing::iid)
+                            .collect::<Vec<_>>(),
+                        ["0x22", "0x21"]
+                    );
+                    if let Some(transaction) = transaction {
+                        assert_eq!(state.lock().unwrap().commits, 0);
+                        transaction.commit_sdk().await.unwrap();
+                    }
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.calls, 1);
+                    assert_eq!((state.commits, state.rollbacks), (1, 0));
+                    assert!(state.answers.is_empty());
                 }
             }
         }
@@ -3344,7 +3486,8 @@ plays:
                 let ProjectedBatchResult::Things(things) = result else {
                     panic!("expected things")
                 };
-                assert!(things.is_empty());
+                assert_eq!(things.count(), 0);
+                assert!(things.input_indexes().is_empty());
                 let state = state.lock().unwrap();
                 assert_eq!(state.calls, 1);
                 assert_eq!((state.commits, state.rollbacks), (1, 0));
@@ -3407,9 +3550,11 @@ plays:
             let ProjectedBatchResult::Things(things) = result else {
                 panic!("expected snapshots")
             };
-            assert!(things.iter().all(ProjectedThing::is_deleted));
+            assert!(things.items().iter().all(ProjectedThing::is_deleted));
+            assert_eq!(things.input_indexes(), &[0, 2]);
+            assert_eq!(things.count(), 2);
             assert_eq!(
-                things[0]
+                things.items()[0]
                     .try_to_reference(&installed)
                     .unwrap_err()
                     .code()
@@ -3417,7 +3562,11 @@ plays:
                 "thing_deleted"
             );
             assert_eq!(
-                things.iter().map(ProjectedThing::iid).collect::<Vec<_>>(),
+                things
+                    .items()
+                    .iter()
+                    .map(ProjectedThing::iid)
+                    .collect::<Vec<_>>(),
                 vec!["0x20", "0x22"]
             );
             let state = state.lock().unwrap();

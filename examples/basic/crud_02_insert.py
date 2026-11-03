@@ -12,7 +12,7 @@ def main() -> None:
         Person(person_id=PersonId("grace"), display_name=DisplayName("Grace Hopper"), age=Age(85)),
         Person(person_id=PersonId("alan"), display_name=DisplayName("Alan Turing"), age=Age(41)),
     ]
-    inserted = Person.manager(db).insert_many(people)
+    inserted = Person.manager(db).insert_many(people).items
     print([person.iid for person in inserted])
 
 

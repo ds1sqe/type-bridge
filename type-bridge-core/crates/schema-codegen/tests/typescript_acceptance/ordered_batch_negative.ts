@@ -41,9 +41,12 @@ canonicalFilter.delete(person);
 // @ts-expect-error canonical filters are immutable and expose no object filter escape
 canonicalFilter.filter({ score: Score.create(1n) });
 // @ts-expect-error batch results are immutable
-const mutablePeople: Person[] = personManager.updateMany([["0xa1", person]] as const);
+const mutablePeople: Person[] = personManager.updateMany([["0xa1", person]] as const).items;
 // @ts-expect-error the replacement retains its exact generated complete type
 const wrongUpdate: ProjectedBatchUpdate<Person> = ["0xa1", membership];
 
 void mutablePeople;
 void wrongUpdate;
+
+// @ts-expect-error original input indexes are immutable
+personManager.insertMany([person]).inputIndexes.push(0);

@@ -883,7 +883,7 @@ fn split_with_guards(
             complete: false,
             ordinal: output_ordinal,
             expected_iid: row.iid,
-            missing_iid_noop: shape.single_input || kind == WriteKind::PartialUpdate,
+            missing_iid_noop: true,
             candidate_filter: false,
             reference_guard: false,
             reference_resolution: None,
@@ -891,8 +891,7 @@ fn split_with_guards(
         let mut attach_shape = shape.clone();
         // Proven single-IID allocations keep the compact event matrix. Only
         // potentially plural sources require fixed-row dependency pieces.
-        let single_allocation = !attach_shape.single_input
-            || shape.type_id.kind() == TypeKind::Entity
+        let single_allocation = shape.type_id.kind() == TypeKind::Entity
             || seed.iid.is_some()
             || (kind != WriteKind::MatchPut
                 && seed
@@ -903,7 +902,7 @@ fn split_with_guards(
                 .players
                 .first()
                 .is_some_and(|player| unique_player_identity(authority, player));
-        attach_shape.single_input &= !single_allocation;
+        attach_shape.single_input = !single_allocation;
         attach_shape.cleared_fields = &[];
         attach_shape.cleared_roles = &[];
         // A maximal canonical IID makes the cut independent of provider output.

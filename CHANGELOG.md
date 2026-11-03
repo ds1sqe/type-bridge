@@ -200,6 +200,18 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Python and Rust `insert_many`, `put_many`, `update_many`, and
+  `delete_many_returning`, and Node `insertMany`, `putMany`, `updateMany`,
+  and `deleteManyReturning`, now return `BatchWriteResult`. Read `items`
+  (`items()` or `into_items()` in Rust) for models and `input_indexes`
+  (`inputIndexes` in Node) for each model's original input row. Missing
+  inputs contribute no item; multiple roots repeat their input index.
+- Native Node `insertProjected`, `putProjected`, `updateProjected`, and
+  `deleteByIidReturning` now return fully hydrated `WriteResult` objects;
+  `insertManyProjected`, `putManyProjected`, `updateManyProjected`, and
+  `deleteManyReturning` return fully hydrated `BatchWriteResult` objects.
+  Regenerate model packages instead of decoding native write envelopes.
+
 - Removed generated Python manager `update_with`; use an authored update
   plan staged in a transaction, or read models and call `update_many` with
   attached IIDs after application-side changes.

@@ -603,6 +603,7 @@ async fn public_relation_preflight_failures_are_zero_io() {
             .insert_many(vec![])
             .await
             .unwrap()
+            .items()
             .is_empty()
     );
     assert!(
@@ -610,6 +611,7 @@ async fn public_relation_preflight_failures_are_zero_io() {
             .put_many(vec![])
             .await
             .unwrap()
+            .items()
             .is_empty()
     );
     assert_eq!(state.lock().unwrap().events.as_slice(), &[] as &[Event]);
@@ -911,9 +913,9 @@ async fn public_relation_batch_correlates_in_input_order() {
         .insert_many(vec![create("first", "0x9"), create("second", "0x9")])
         .await
         .unwrap();
-    assert_eq!(values.len(), 2);
-    assert_assignment(&values[0], "0x1", "first", "0x9");
-    assert_assignment(&values[1], "0x2", "second", "0x9");
+    assert_eq!(values.count(), 2);
+    assert_assignment(&values.items()[0], "0x1", "first", "0x9");
+    assert_assignment(&values.items()[1], "0x2", "second", "0x9");
     let guard = state.lock().unwrap();
     assert_eq!(guard.query_modes, ["canonical"]);
     assert!(matches!(guard.events.last(), Some(Event::Commit)));

@@ -72,6 +72,44 @@ impl<T> BatchWriteResult<T> {
         }
     }
 
+    pub(crate) fn try_with_capacity(
+        capacity: usize,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        let mut result = Self::default();
+        result.items.try_reserve_exact(capacity)?;
+        result.input_indexes.try_reserve_exact(capacity)?;
+        Ok(result)
+    }
+
+    pub(crate) fn try_push(
+        &mut self,
+        index: usize,
+        value: T,
+    ) -> Result<(), std::collections::TryReserveError> {
+        self.items.try_reserve(1)?;
+        self.input_indexes.try_reserve(1)?;
+        self.items.push(value);
+        self.input_indexes.push(index);
+        Ok(())
+    }
+
+    /// Retain all roots from one input without copying their storage.
+    #[doc(hidden)]
+    pub fn try_from_input(
+        items: Vec<T>,
+        index: usize,
+    ) -> Result<Self, type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic> {
+        let mut input_indexes = Vec::new();
+        input_indexes
+            .try_reserve_exact(items.len())
+            .map_err(|_| crate::ProjectedBatch::binding_allocation_failure())?;
+        input_indexes.resize(items.len(), index);
+        Ok(Self {
+            items,
+            input_indexes,
+        })
+    }
+
     /// Exact total number of roots written by all inputs.
     #[must_use]
     pub fn count(&self) -> usize {
@@ -102,19 +140,33 @@ impl<T> BatchWriteResult<T> {
         self.items
     }
 
-    /// Map every root while retaining its input correlation without copying it.
+    /// Map roots under their original input indexes without copying correlation.
     ///
     /// # Errors
-    /// Returns the first mapping failure without publishing a partial result.
-    pub fn try_map<U, E>(
+    /// Returns a typed allocation refusal or the first binding mapping failure.
+    #[doc(hidden)]
+    pub fn try_map<U>(
         self,
-        mapper: impl FnMut(T) -> Result<U, E>,
-    ) -> Result<BatchWriteResult<U>, E> {
-        let items = self
+        mut mapper: impl FnMut(
+            usize,
+            T,
+        ) -> Result<
+            U,
+            type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic,
+        >,
+    ) -> Result<BatchWriteResult<U>, type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic>
+    {
+        let mut items = Vec::new();
+        items
+            .try_reserve_exact(self.items.len())
+            .map_err(|_| crate::ProjectedBatch::binding_allocation_failure())?;
+        for (item, index) in self
             .items
             .into_iter()
-            .map(mapper)
-            .collect::<Result<Vec<_>, _>>()?;
+            .zip(self.input_indexes.iter().copied())
+        {
+            items.push(mapper(index, item)?);
+        }
         Ok(BatchWriteResult {
             items,
             input_indexes: self.input_indexes,
@@ -159,21 +211,21 @@ mod tests {
         assert_eq!(result.items(), &[9, 3, 7]);
         assert_eq!(result.input_indexes(), &[1, 1, 4]);
         let mapped = result
-            .try_map(|value| Ok::<_, ()>(value.to_string()))
+            .try_map(|index, value| Ok(format!("{index}:{value}")))
             .unwrap();
         assert_eq!(mapped.count(), mapped.items().len());
         assert_eq!(mapped.count(), mapped.input_indexes().len());
         assert_eq!(
             mapped.into_parts(),
             (
-                vec!["9".to_owned(), "3".to_owned(), "7".to_owned()],
+                vec!["1:9".to_owned(), "1:3".to_owned(), "4:7".to_owned()],
                 vec![1, 1, 4]
             )
         );
         let result = BatchWriteResult::from_indexed([(1, 9), (1, 3)]);
         assert_eq!(
-            result.try_map(|value| if value == 3 { Err("stop") } else { Ok(value) }),
-            Err("stop")
+            result.try_map(|_, value| if value == 3 { Err(type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::data_operation_cancelled()) } else { Ok(value) }),
+            Err(type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::data_operation_cancelled())
         );
         assert_eq!(BatchWriteResult::<u8>::default().count(), 0);
     }

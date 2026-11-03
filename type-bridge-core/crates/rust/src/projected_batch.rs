@@ -186,13 +186,13 @@ pub(crate) async fn execute_owned_things<M: CompleteModel>(
     database: &Database,
     installed: &InstalledRuntimeProjection,
     batch: &ProjectedBatch,
-) -> Result<Vec<M>> {
+) -> Result<crate::BatchWriteResult<M>> {
     ProjectedBatchExecutor::new(installed)
         .execute_mapped(
             database,
             batch,
             database_control(database),
-            Vec::new(),
+            crate::BatchWriteResult::default(),
             |result| materialize_result(result, installed),
         )
         .await
@@ -203,14 +203,14 @@ pub(crate) async fn execute_owned_deleted_things<M: CompleteModel>(
     database: &Database,
     installed: &InstalledRuntimeProjection,
     batch: &ProjectedBatch,
-) -> Result<Vec<M>> {
+) -> Result<crate::BatchWriteResult<M>> {
     ProjectedBatchExecutor::new(installed)
         .returning_deleted()
         .execute_mapped(
             database,
             batch,
             database_control(database),
-            Vec::new(),
+            crate::BatchWriteResult::default(),
             |result| materialize_result(result, installed),
         )
         .await
@@ -221,13 +221,13 @@ pub(crate) async fn execute_borrowed_things<M: CompleteModel>(
     transaction: &TransactionContext,
     installed: &InstalledRuntimeProjection,
     batch: &ProjectedBatch,
-) -> Result<Vec<M>> {
+) -> Result<crate::BatchWriteResult<M>> {
     ProjectedBatchExecutor::new(installed)
         .execute_in_transaction_mapped(
             transaction,
             batch,
             transaction_control(transaction),
-            Vec::new(),
+            crate::BatchWriteResult::default(),
             |result| materialize_result(result, installed),
         )
         .await
@@ -238,14 +238,14 @@ pub(crate) async fn execute_borrowed_deleted_things<M: CompleteModel>(
     transaction: &TransactionContext,
     installed: &InstalledRuntimeProjection,
     batch: &ProjectedBatch,
-) -> Result<Vec<M>> {
+) -> Result<crate::BatchWriteResult<M>> {
     ProjectedBatchExecutor::new(installed)
         .returning_deleted()
         .execute_in_transaction_mapped(
             transaction,
             batch,
             transaction_control(transaction),
-            Vec::new(),
+            crate::BatchWriteResult::default(),
             |result| materialize_result(result, installed),
         )
         .await
@@ -299,7 +299,7 @@ pub(crate) fn prepare_batch(
 fn materialize_result<M: CompleteModel>(
     result: ProjectedBatchResult,
     installed: &InstalledRuntimeProjection,
-) -> std::result::Result<Vec<M>, SdkExecutionDiagnostic> {
+) -> std::result::Result<crate::BatchWriteResult<M>, SdkExecutionDiagnostic> {
     materialize_result_inner(result, installed, false)
 }
 
@@ -307,26 +307,18 @@ fn materialize_result_inner<M: CompleteModel>(
     result: ProjectedBatchResult,
     installed: &InstalledRuntimeProjection,
     fail_reservation: bool,
-) -> std::result::Result<Vec<M>, SdkExecutionDiagnostic> {
+) -> std::result::Result<crate::BatchWriteResult<M>, SdkExecutionDiagnostic> {
     let ProjectedBatchResult::Things(things) = result else {
         return Err(SdkExecutionDiagnostic::internal_failure());
     };
-    let mut output = Vec::new();
-    if fail_reservation || output.try_reserve_exact(things.len()).is_err() {
+    if fail_reservation {
         return Err(ProjectedBatch::binding_allocation_failure());
     }
-    for (ordinal, thing) in things.into_iter().enumerate() {
-        match materialize_projected(thing, installed) {
-            Ok(model) => output.push(model),
-            Err(_) => {
-                let ordinal = checked_batch_ordinal(ordinal);
-                return Err(ProjectedBatchExecutor::binding_materialization_failure(
-                    ordinal,
-                ));
-            }
-        }
-    }
-    Ok(output)
+    things.try_map(|ordinal, thing| {
+        materialize_projected(thing, installed).map_err(|_| {
+            ProjectedBatchExecutor::binding_materialization_failure(checked_batch_ordinal(ordinal))
+        })
+    })
 }
 
 fn reserved_binding_vec_inner<T>(capacity: usize, fail_reservation: bool) -> Result<Vec<T>> {

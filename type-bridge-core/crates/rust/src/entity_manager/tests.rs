@@ -1333,6 +1333,7 @@ async fn public_empty_batches_perform_no_provider_operations() {
             .insert_many(Vec::new())
             .await
             .unwrap()
+            .items()
             .is_empty()
     );
     assert!(
@@ -1340,6 +1341,7 @@ async fn public_empty_batches_perform_no_provider_operations() {
             .put_many(Vec::new())
             .await
             .unwrap()
+            .items()
             .is_empty()
     );
     let s = state.lock().unwrap();
@@ -1436,7 +1438,8 @@ async fn public_insert_many_and_put_many_preserve_order() {
         .await
         .unwrap();
     assert_eq!(
-        out.iter()
+        out.items()
+            .iter()
             .map(|r| (r.iid.as_str(), r.name.as_str(), r.value.as_str()))
             .collect::<Vec<_>>(),
         vec![("0x1", "n1", "a"), ("0x2", "n2", "b")]
@@ -1473,7 +1476,8 @@ async fn public_insert_many_and_put_many_preserve_order() {
         &[&["put", "record", "name", "n1", "n2", "a", "b", "fetch"]],
     );
     assert_eq!(
-        out.iter()
+        out.items()
+            .iter()
             .map(|r| (r.iid.as_str(), r.name.as_str(), r.value.as_str()))
             .collect::<Vec<_>>(),
         vec![("0x1", "n1", "a"), ("0x2", "n2", "b")]

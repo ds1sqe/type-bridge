@@ -63,6 +63,7 @@ pub(super) const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "StructFactory",
     "StructValue",
     "TypeToken",
+    "BatchWriteResult",
     "WriteResult",
     "aggregate",
     "connect",

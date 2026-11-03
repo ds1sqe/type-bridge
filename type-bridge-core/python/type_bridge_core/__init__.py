@@ -3,6 +3,7 @@
 from . import type_bridge_core
 from ._blocking import blocking as blocking
 from .type_bridge_core import *  # noqa: F403  (re-export the compiled extension's public API)
+from .write_result import BatchWriteResult as BatchWriteResult
 from .write_result import WriteResult as WriteResult
 
 # Private native schema, query, and plan seams used by retained bindings.
@@ -25,4 +26,4 @@ if hasattr(type_bridge_core, "_perf_stages"):
 
 __doc__ = type_bridge_core.__doc__
 if hasattr(type_bridge_core, "__all__"):
-    __all__ = [*type_bridge_core.__all__, "blocking", "WriteResult"]
+    __all__ = [*type_bridge_core.__all__, "blocking", "BatchWriteResult", "WriteResult"]

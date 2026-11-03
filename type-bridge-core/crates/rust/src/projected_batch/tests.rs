@@ -699,7 +699,7 @@ async fn run_owned(kind: Kind, operation: Operation, rust_v2: bool) {
                 .insert_many(vec![PersonCreate::named("person")])
                 .await
                 .unwrap();
-            assert_eq!(output[0].iid, "0x10");
+            assert_eq!(output.items()[0].iid, "0x10");
         }
         (Kind::Entity, Operation::Put) => {
             let output = database
@@ -707,7 +707,7 @@ async fn run_owned(kind: Kind, operation: Operation, rust_v2: bool) {
                 .put_many(vec![PersonCreate::named("person")])
                 .await
                 .unwrap();
-            assert_eq!(output[0].iid, "0x10");
+            assert_eq!(output.items()[0].iid, "0x10");
         }
         (Kind::Entity, Operation::Update) => {
             let output = database
@@ -715,7 +715,7 @@ async fn run_owned(kind: Kind, operation: Operation, rust_v2: bool) {
                 .update_many(vec![("0x10".to_owned(), PersonCreate::named("person"))])
                 .await
                 .unwrap();
-            assert_eq!(output[0].iid, "0x10");
+            assert_eq!(output.items()[0].iid, "0x10");
         }
         (Kind::Entity, Operation::Delete) => database
             .entities::<Person>()
@@ -728,8 +728,8 @@ async fn run_owned(kind: Kind, operation: Operation, rust_v2: bool) {
                 .insert_many(vec![AssignmentCreate::named("position")])
                 .await
                 .unwrap();
-            assert_eq!(output[0].iid, "0x30");
-            assert_eq!(output[0].position, "position");
+            assert_eq!(output.items()[0].iid, "0x30");
+            assert_eq!(output.items()[0].position, "position");
         }
         (Kind::Relation, Operation::Put) => {
             let output = database
@@ -737,8 +737,8 @@ async fn run_owned(kind: Kind, operation: Operation, rust_v2: bool) {
                 .put_many(vec![AssignmentCreate::named("position")])
                 .await
                 .unwrap();
-            assert_eq!(output[0].iid, "0x30");
-            assert_eq!(output[0].position, "position");
+            assert_eq!(output.items()[0].iid, "0x30");
+            assert_eq!(output.items()[0].position, "position");
         }
         (Kind::Relation, Operation::Update) => {
             let output = database
@@ -749,8 +749,8 @@ async fn run_owned(kind: Kind, operation: Operation, rust_v2: bool) {
                 )])
                 .await
                 .unwrap();
-            assert_eq!(output[0].iid, "0x30");
-            assert_eq!(output[0].position, "position");
+            assert_eq!(output.items()[0].iid, "0x30");
+            assert_eq!(output.items()[0].position, "position");
         }
         (Kind::Relation, Operation::Delete) => database
             .relations::<Assignment>()
@@ -869,13 +869,14 @@ async fn returning_delete_models_keep_snapshot_origin_and_input_order() {
         .unwrap();
     assert_eq!(
         snapshots
+            .items()
             .iter()
             .map(|thing| thing.iid.as_str())
             .collect::<Vec<_>>(),
         ["0x10", "0x12"]
     );
-    assert!(snapshots.iter().all(|thing| thing.origin.deleted()));
-    assert_eq!(snapshots[0].tags, ["old"]);
+    assert!(snapshots.items().iter().all(|thing| thing.origin.deleted()));
+    assert_eq!(snapshots.items()[0].tags, ["old"]);
     assert_eq!(state.lock().unwrap().commits, 1);
 
     let (database, state) = fixture(
@@ -932,6 +933,7 @@ async fn both_rust_handlers_validate_empty_batches_without_provider_work_on_ever
                 .insert_many(vec![])
                 .await
                 .unwrap()
+                .items()
                 .is_empty()
         );
         assert!(
@@ -940,6 +942,7 @@ async fn both_rust_handlers_validate_empty_batches_without_provider_work_on_ever
                 .put_many(vec![])
                 .await
                 .unwrap()
+                .items()
                 .is_empty()
         );
         assert!(
@@ -948,6 +951,7 @@ async fn both_rust_handlers_validate_empty_batches_without_provider_work_on_ever
                 .update_many(vec![])
                 .await
                 .unwrap()
+                .items()
                 .is_empty()
         );
         database
@@ -961,6 +965,7 @@ async fn both_rust_handlers_validate_empty_batches_without_provider_work_on_ever
                 .insert_many(vec![])
                 .await
                 .unwrap()
+                .items()
                 .is_empty()
         );
         assert!(
@@ -969,6 +974,7 @@ async fn both_rust_handlers_validate_empty_batches_without_provider_work_on_ever
                 .put_many(vec![])
                 .await
                 .unwrap()
+                .items()
                 .is_empty()
         );
         assert!(
@@ -977,6 +983,7 @@ async fn both_rust_handlers_validate_empty_batches_without_provider_work_on_ever
                 .update_many(vec![])
                 .await
                 .unwrap()
+                .items()
                 .is_empty()
         );
         database
@@ -1104,13 +1111,14 @@ async fn owned_entity_results_preserve_row_and_materialized_collection_order() {
         .unwrap();
     assert_eq!(
         output
+            .items()
             .iter()
             .map(|person| person.name.as_str())
             .collect::<Vec<_>>(),
         ["first", "second"]
     );
-    assert_eq!(output[0].tags, ["z", "y"]);
-    assert_eq!(output[1].tags, ["b", "a"]);
+    assert_eq!(output.items()[0].tags, ["z", "y"]);
+    assert_eq!(output.items()[1].tags, ["b", "a"]);
     let state = state.lock().unwrap();
     assert_eq!(state.commits, 1);
     assert_eq!(state.rollbacks, 0);
@@ -1395,6 +1403,7 @@ async fn rust_v1_handler_public_commit_uses_shared_classified_terminal() {
             .insert_many(vec![])
             .await
             .unwrap()
+            .items()
             .is_empty()
     );
     transaction.commit().await.unwrap();
@@ -1706,6 +1715,7 @@ async fn foreign_origin_package_and_model_fences_precede_provider_io() {
         .insert_many(vec![PersonCreate::named("person")])
         .await
         .unwrap()
+        .into_items()
         .remove(0);
     let (target, state) = fixture_named(
         "target",
@@ -1855,7 +1865,9 @@ fn adapter_allocation_failures_are_shared_rows_resource_diagnostics() {
     )
     .unwrap();
     let diagnostic = materialize_result_inner::<Person>(
-        ProjectedBatchResult::Things(vec![thing]),
+        ProjectedBatchResult::Things(type_bridge_orm::BatchWriteResult::from_indexed([(
+            0, thing,
+        )])),
         &installed,
         true,
     )
@@ -2019,6 +2031,7 @@ async fn keyless_manager_put_many_inserts_once_and_returns_complete_models_for_b
                         ])
                         .await
                         .unwrap()
+                        .into_items()
                         .into_iter()
                         .map(|value| (value.iid, value.name))
                         .collect(),
@@ -2030,6 +2043,7 @@ async fn keyless_manager_put_many_inserts_once_and_returns_complete_models_for_b
                         ])
                         .await
                         .unwrap()
+                        .into_items()
                         .into_iter()
                         .map(|value| (value.iid, value.name))
                         .collect(),
@@ -2041,6 +2055,7 @@ async fn keyless_manager_put_many_inserts_once_and_returns_complete_models_for_b
                         ])
                         .await
                         .unwrap()
+                        .into_items()
                         .into_iter()
                         .map(|value| (value.iid, value.position))
                         .collect(),
@@ -2052,6 +2067,7 @@ async fn keyless_manager_put_many_inserts_once_and_returns_complete_models_for_b
                         ])
                         .await
                         .unwrap()
+                        .into_items()
                         .into_iter()
                         .map(|value| (value.iid, value.position))
                         .collect(),
@@ -2087,5 +2103,135 @@ async fn keyless_manager_put_many_inserts_once_and_returns_complete_models_for_b
                 assert_eq!(observed.legacy_commits, 0);
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct CorrelatedPostHook {
+    before: AtomicUsize,
+    seen: Mutex<Vec<(usize, Option<String>)>>,
+}
+
+impl LifecycleHook for CorrelatedPostHook {
+    fn name(&self) -> &str {
+        "correlated-post"
+    }
+
+    fn before_operation<'a>(
+        &'a self,
+        context: &'a mut HookContext<'_>,
+    ) -> HookFuture<'a, Result<PreHookResult, HookError>> {
+        let index = self.before.fetch_add(1, Ordering::SeqCst);
+        context.set_metadata("input_index", index);
+        Box::pin(async { Ok(PreHookResult::Continue) })
+    }
+
+    fn after_operation<'a>(
+        &'a self,
+        context: &'a HookContext<'_>,
+    ) -> HookFuture<'a, Result<(), HookError>> {
+        let index = context.metadata()["input_index"].as_u64().unwrap() as usize;
+        self.seen
+            .lock()
+            .unwrap()
+            .push((index, context.iid().map(str::to_owned)));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn mixed_cardinality_batch_correlates_roots_and_keeps_hooks_on_their_original_input() {
+    for rust_v2 in [false, true] {
+        for operation in [Operation::Insert, Operation::Put] {
+            let (database, state) = fixture_named(
+                "correlated-native",
+                vec![Response::Documents(vec![
+                    person_document(2, "0x33", "single", &[]),
+                    person_document(1, "0x31", "plural", &[]),
+                    person_document(1, "0x32", "plural", &[]),
+                ])],
+                CommitBehavior::Success,
+                installed_from(SUCCESSOR_SCHEMA, rust_v2),
+            );
+            let hook = Arc::new(CorrelatedPostHook::default());
+            let mut manager = database.entities::<Person>();
+            manager.add_hook(hook.clone());
+            let inputs = vec![
+                PersonCreate::named("missing"),
+                PersonCreate::named("plural"),
+                PersonCreate::named("single"),
+            ];
+            let output = match operation {
+                Operation::Insert => manager.insert_many(inputs).await.unwrap(),
+                Operation::Put => manager.put_many(inputs).await.unwrap(),
+                _ => unreachable!(),
+            };
+            assert_eq!(output.count(), 3);
+            assert_eq!(output.input_indexes(), &[1, 1, 2]);
+            assert_eq!(
+                output
+                    .items()
+                    .iter()
+                    .map(|item| item.iid.as_str())
+                    .collect::<Vec<_>>(),
+                ["0x31", "0x32", "0x33"]
+            );
+            assert_eq!(hook.before.load(Ordering::SeqCst), 3);
+            assert_eq!(
+                *hook.seen.lock().unwrap(),
+                [(0, None), (1, None), (2, Some("0x33".to_owned()))]
+            );
+            let state = state.lock().unwrap();
+            assert!(state.responses.is_empty());
+            assert_eq!(state.calls.len(), 1);
+            assert_eq!(state.commits, 1);
+            assert_eq!(state.rollbacks, 0);
+            assert_eq!(state.legacy_commits, 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn missing_inputs_do_not_shift_later_model_materialization_failures() {
+    for borrowed in [false, true] {
+        let (database, state) = fixture(
+            vec![Response::Documents(vec![person_document(
+                2,
+                "0x32",
+                "reject-materialize",
+                &[],
+            )])],
+            CommitBehavior::Success,
+        );
+        let inputs = vec![
+            PersonCreate::named("missing-first"),
+            PersonCreate::named("missing-second"),
+            PersonCreate::named("reject-materialize"),
+        ];
+        let error = if borrowed {
+            let transaction = database.write().await.unwrap();
+            let error = transaction
+                .entities::<Person>()
+                .insert_many(inputs)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                transaction.commit().await.unwrap_err().code(),
+                Some("transaction_rollback_only")
+            );
+            error
+        } else {
+            database
+                .entities::<Person>()
+                .insert_many(inputs)
+                .await
+                .unwrap_err()
+        };
+        assert_eq!(error.code(), Some("generated_model_materialization_failed"));
+        assert_row_prefix(&error, 2);
+        let state = state.lock().unwrap();
+        assert_eq!(state.calls.len(), 1);
+        assert_eq!(state.commits, 0);
+        assert_eq!(state.rollbacks, usize::from(!borrowed));
     }
 }

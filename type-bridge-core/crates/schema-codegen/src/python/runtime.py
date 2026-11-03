@@ -33,7 +33,7 @@ from type_bridge_core import (
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 from type_bridge.plan import FieldToken as _AuthoringFieldToken
-from type_bridge.write_result import WriteResult
+from type_bridge.write_result import BatchWriteResult, WriteResult
 
 if TYPE_CHECKING:
     from type_bridge_core import (
@@ -462,11 +462,11 @@ class ProjectedModelManager[ModelT: ModelBase]:
         self._run_post_many(CrudEvent.POST_INSERT, result.items)
         return result
 
-    def insert_many(self, instances: Sequence[ModelT]) -> list[ModelT]:
+    def insert_many(self, instances: Sequence[ModelT]) -> BatchWriteResult[ModelT]:
         values = list(instances)
         self._run_pre_many(CrudEvent.PRE_INSERT, values)
         result = self._native.insert_many(values)
-        self._run_post_many(CrudEvent.POST_INSERT, result)
+        self._run_post_many(CrudEvent.POST_INSERT, result.items)
         return result
 
     def put(self, instance: ModelT) -> WriteResult[ModelT]:
@@ -475,11 +475,11 @@ class ProjectedModelManager[ModelT: ModelBase]:
         self._run_post_many(CrudEvent.POST_PUT, result.items)
         return result
 
-    def put_many(self, instances: Sequence[ModelT]) -> list[ModelT]:
+    def put_many(self, instances: Sequence[ModelT]) -> BatchWriteResult[ModelT]:
         values = list(instances)
         self._run_pre_many(CrudEvent.PRE_PUT, values)
         result = self._native.put_many(values)
-        self._run_post_many(CrudEvent.POST_PUT, result)
+        self._run_post_many(CrudEvent.POST_PUT, result.items)
         return result
 
     def update(self, instance: ModelT) -> WriteResult[ModelT]:
@@ -490,11 +490,11 @@ class ProjectedModelManager[ModelT: ModelBase]:
         self._run_post_many(CrudEvent.POST_UPDATE, result.items)
         return result
 
-    def update_many(self, instances: Sequence[ModelT]) -> list[ModelT]:
+    def update_many(self, instances: Sequence[ModelT]) -> BatchWriteResult[ModelT]:
         values = list(instances)
         self._run_pre_many(CrudEvent.PRE_UPDATE, values)
         result = self._native.update_many(values)
-        self._run_post_many(CrudEvent.POST_UPDATE, result)
+        self._run_post_many(CrudEvent.POST_UPDATE, result.items)
         return result
 
     @overload
@@ -521,15 +521,15 @@ class ProjectedModelManager[ModelT: ModelBase]:
         self._run_post_many(CrudEvent.POST_DELETE, result.items)
         return result
 
-    def delete_many_returning(self, instances: Sequence[ModelT]) -> list[ModelT]:
+    def delete_many_returning(self, instances: Sequence[ModelT]) -> BatchWriteResult[ModelT]:
         """Return existing deletion snapshots in input order."""
         values = list(instances)
         self._run_pre_many(CrudEvent.PRE_DELETE, values)
         snapshots = cast(
-            list[ModelT],
+            BatchWriteResult[ModelT],
             self._native.delete_many_returning([cast(str, value.iid) for value in values]),
         )
-        self._run_post_many(CrudEvent.POST_DELETE, snapshots)
+        self._run_post_many(CrudEvent.POST_DELETE, snapshots.items)
         return snapshots
 
     def delete_many(

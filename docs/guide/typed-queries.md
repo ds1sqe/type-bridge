@@ -298,28 +298,30 @@ These exact-type manager calls return a fresh model hydrated from the database,
 rather than the object passed by the application:
 
 ```python
-people = Person.manager(db)                       # ProjectedModelManager[Person]
-deleted = people.delete_returning(person)         # Person; raises if absent
-snapshots = people.delete_many_returning(others)  # list[Person]; omits absent things
-assert deleted.deleted
+people = Person.manager(db)
+deleted = people.delete_returning(person)         # WriteResult[Person]
+snapshots = people.delete_many_returning(others)  # BatchWriteResult[Person]
+if deleted.item is not None:
+    assert deleted.item.deleted
 ```
 
 ```typescript
-const people = Person.manager(database);                // ProjectedModelManager<Person>
-const deleted: Person | null = people.deleteReturning(iid);
-const snapshots: readonly Person[] = people.deleteManyReturning(iids);
+const people = Person.manager(database);
+const deleted = people.deleteReturning(iid);         // WriteResult<Person>
+const snapshots = people.deleteManyReturning(iids); // BatchWriteResult<Person>
 ```
 
 ```rust
 let people = database.entities::<Person>();
-let deleted: Option<Person> = people.delete_returning(iid).await?;
-let snapshots: Vec<Person> = people.delete_many_returning(&iids).await?;
-assert!(deleted.as_ref().is_none_or(Person::deleted));
+let deleted: type_bridge::WriteResult<Person> = people.delete_returning(iid).await?;
+let snapshots: type_bridge::BatchWriteResult<Person> =
+    people.delete_many_returning(&iids).await?;
+assert!(deleted.item().is_none_or(Person::deleted));
 ```
 
-Batch snapshots preserve input order and omit missing things. Rust and the
-native single-IID interfaces return an optional value for absence; the Python
-instance manager raises `ProjectedModelNotFoundError`. A returned deleted root
+Batch snapshots preserve input order and omit missing things; their parallel
+input indexes retain each snapshot's original row. A missing single target
+returns `count: 0`, empty `items`, and absent `item`. A returned deleted root
 cannot be submitted for another mutation: it is refused with `thing_deleted`.
 A surviving relation player remains usable. Python exposes `deleted`; generated
 Rust models and their subtype-family enums expose `deleted()`.
