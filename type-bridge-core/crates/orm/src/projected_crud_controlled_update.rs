@@ -409,14 +409,14 @@ impl ProjectedCrudExecutor<'_> {
             }
             let thing = match &single.model {
                 WriteModel::Entity(model) => self.hydrate_entity_documents(
-                    transaction,
+                    transaction.execution_identity(),
                     &model.type_id,
                     &model.descriptor,
                     &documents,
                     ExecutionMode::default(),
                 )?,
                 WriteModel::Relation(model) => self.hydrate_relation_documents(
-                    transaction,
+                    transaction.execution_identity(),
                     &model.type_id,
                     &model.descriptor,
                     &documents,

@@ -3983,7 +3983,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| plan_build_failure(&error, type_id))?;
         let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
         let hydrated = self.hydrate_entity_documents(
-            transaction,
+            transaction.execution_identity(),
             &prepared.type_id,
             &prepared.descriptor,
             &documents,
@@ -4077,7 +4077,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         }
         let hydrated = self
             .hydrate_entity_documents(
-                transaction,
+                transaction.execution_identity(),
                 &prepared.type_id,
                 &prepared.descriptor,
                 &documents,
@@ -4165,7 +4165,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let hydrate = || {
             let mut items = self
                 .hydrate_entity_documents(
-                    transaction,
+                    transaction.execution_identity(),
                     &prepared.type_id,
                     &prepared.descriptor,
                     &documents,
@@ -4244,7 +4244,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             return Err(identity_cardinality(type_id));
         }
         let hydrated = self.hydrate_relation_documents(
-            transaction,
+            transaction.execution_identity(),
             &prepared.type_id,
             &prepared.descriptor,
             &documents,
@@ -4316,7 +4316,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let plan = plan.map_err(|error| plan_build_failure(&error, type_id))?;
         let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
         let hydrated = self.hydrate_entity_documents(
-            transaction,
+            transaction.execution_identity(),
             &prepared.type_id,
             &prepared.descriptor,
             &documents,
@@ -4327,7 +4327,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
 
     fn hydrate_entity_documents(
         &self,
-        transaction: &TransactionContext,
+        identity: &DatabaseExecutionIdentity,
         type_id: &TypeId,
         descriptor: &EntityDescriptor,
         documents: &[serde_json::Value],
@@ -4347,13 +4347,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 let row = hydrate_dynamic_entity(descriptor, document).map_err(|error| {
                     mode.orm_at_type(error, SdkProviderOperation::Read, type_id)
                 })?;
-                items.push(self.hydrate_entity(
-                    row,
-                    type_id,
-                    &iid,
-                    transaction.execution_identity(),
-                    mode,
-                )?);
+                items.push(self.hydrate_entity(row, type_id, &iid, identity, mode)?);
             }
         }
         Ok(WriteResult::new(items))
@@ -4361,7 +4355,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
 
     fn hydrate_relation_documents(
         &self,
-        transaction: &TransactionContext,
+        identity: &DatabaseExecutionIdentity,
         type_id: &TypeId,
         descriptor: &RelationDescriptor,
         documents: &[serde_json::Value],
@@ -4375,7 +4369,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                     .iid
                     .clone()
                     .ok_or_else(|| mutation_rehydration_missing(type_id))?;
-                self.hydrate_relation(row, type_id, &iid, transaction.execution_identity(), mode)
+                self.hydrate_relation(row, type_id, &iid, identity, mode)
             })
             .collect::<Result<Vec<_>, _>>()
             .map(WriteResult::new)
@@ -4444,7 +4438,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         }
         let hydrated = self
             .hydrate_relation_documents(
-                transaction,
+                transaction.execution_identity(),
                 &prepared.type_id,
                 &prepared.descriptor,
                 &documents,
@@ -4501,7 +4495,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             return Err(identity_cardinality(type_id));
         }
         let hydrated = self.hydrate_relation_documents(
-            transaction,
+            transaction.execution_identity(),
             &prepared.type_id,
             &prepared.descriptor,
             &documents,
@@ -4645,7 +4639,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let hydrate = || {
             let mut items = self
                 .hydrate_relation_documents(
-                    transaction,
+                    transaction.execution_identity(),
                     &prepared.type_id,
                     &prepared.descriptor,
                     &documents,
