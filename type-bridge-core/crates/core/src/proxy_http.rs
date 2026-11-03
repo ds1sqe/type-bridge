@@ -11,8 +11,11 @@ use std::io::Read as _;
 use std::time::Duration;
 
 use crate::version::{
-    RetainedCustomRootCa, TlsConfigurationError, native_root_store, plaintext_agent, tls_agent,
+    RetainedCustomRootCa, TlsConfigurationError, native_root_store, plaintext_agent,
+    tls_agent_with_handshake_timeout,
 };
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 const MAX_ENDPOINT_BYTES: usize = 4 * 1024;
 const MAX_HEADERS: usize = 32;
@@ -148,8 +151,12 @@ impl ProxyHttpClient {
         validate_headers(headers)?;
         let agent = match trust {
             ProxyTrust::Plaintext => plaintext_agent(),
-            ProxyTrust::NativeRoots => tls_agent(native_root_store()?)?,
-            ProxyTrust::CustomRoot(roots) => tls_agent(roots.root_store())?,
+            ProxyTrust::NativeRoots => {
+                tls_agent_with_handshake_timeout(native_root_store()?, Some(CONNECT_TIMEOUT))?
+            }
+            ProxyTrust::CustomRoot(roots) => {
+                tls_agent_with_handshake_timeout(roots.root_store(), Some(CONNECT_TIMEOUT))?
+            }
         };
         Ok(Self {
             agent,
@@ -170,7 +177,11 @@ impl ProxyHttpClient {
         max_bytes: usize,
     ) -> Result<Vec<u8>, ProxyHttpError> {
         const ROUTE: &str = "/v2/capabilities";
-        let request = self.request("GET", ROUTE, timeout);
+        let request = self.request(
+            "GET",
+            ROUTE,
+            Some(timeout.map_or(CONNECT_TIMEOUT, |timeout| timeout.min(CONNECT_TIMEOUT))),
+        );
         read_response(ROUTE, request.call(), max_bytes)
     }
 
@@ -205,7 +216,11 @@ impl ProxyHttpClient {
         max_bytes: usize,
     ) -> Result<Vec<u8>, ProxyHttpError> {
         const ROUTE: &str = "/v3/capabilities";
-        let request = self.request("GET", ROUTE, timeout);
+        let request = self.request(
+            "GET",
+            ROUTE,
+            Some(timeout.map_or(CONNECT_TIMEOUT, |timeout| timeout.min(CONNECT_TIMEOUT))),
+        );
         read_response(ROUTE, request.call(), max_bytes)
     }
 
@@ -497,5 +512,38 @@ mod tests {
             assert_eq!(error.code(), "proxy_http_status");
             server.join().unwrap();
         }
+    }
+    #[test]
+    fn unbounded_execution_still_times_out_a_stalled_tls_handshake() {
+        let listener = (41690..41700)
+            .find_map(|port| TcpListener::bind(("127.0.0.1", port)).ok())
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, stopped) = std::sync::mpsc::channel();
+        let peer = thread::spawn(move || {
+            let (_socket, _) = listener.accept().unwrap();
+            let _ = stopped.recv_timeout(Duration::from_secs(5));
+        });
+        let mut roots = rustls::RootCertStore::empty();
+        let pem = include_bytes!("../../../../tests/fixtures/tls/root-ca.pem");
+        for certificate in rustls_pemfile::certs(&mut &pem[..]) {
+            roots.add(certificate.unwrap()).unwrap();
+        }
+        let client = ProxyHttpClient {
+            agent: tls_agent_with_handshake_timeout(roots, Some(Duration::from_millis(50)))
+                .unwrap(),
+            base: format!("https://{address}"),
+            headers: Vec::new(),
+        };
+        let started = std::time::Instant::now();
+        let result = client.exchange_staged(b"{}", None, 1024);
+        let elapsed = started.elapsed();
+        stop.send(()).unwrap();
+        peer.join().unwrap();
+        assert!(matches!(result, Err(ProxyHttpError::Transport(_))));
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "stalled TLS took {elapsed:?}"
+        );
     }
 }

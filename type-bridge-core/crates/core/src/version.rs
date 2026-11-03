@@ -1340,6 +1340,13 @@ pub(crate) fn native_root_store() -> Result<rustls::RootCertStore, TlsConfigurat
 pub(crate) fn tls_agent(
     roots: rustls::RootCertStore,
 ) -> Result<ureq::Agent, TlsConfigurationError> {
+    tls_agent_with_handshake_timeout(roots, None)
+}
+
+pub(crate) fn tls_agent_with_handshake_timeout(
+    roots: rustls::RootCertStore,
+    handshake_timeout: Option<std::time::Duration>,
+) -> Result<ureq::Agent, TlsConfigurationError> {
     // ureq's default rustls feature uses webpki roots.  Build the client
     // explicitly so `NativeRoots` means the operating-system store and a
     // custom mode trusts only the supplied PEM bundle.
@@ -1351,7 +1358,10 @@ pub(crate) fn tls_agent(
     .with_root_certificates(roots)
     .with_no_client_auth();
     Ok(ureq::builder()
-        .tls_connector(Arc::new(RustlsConnector(Arc::new(config))))
+        .tls_connector(Arc::new(RustlsConnector(
+            Arc::new(config),
+            handshake_timeout,
+        )))
         .redirects(0)
         .try_proxy_from_env(false)
         .build())
@@ -1361,7 +1371,7 @@ pub(crate) fn tls_agent(
 ///
 /// ureq's own rustls support is its `tls` feature, which also links
 /// webpki-roots; this connector keeps the root store the caller chose.
-struct RustlsConnector(Arc<rustls::ClientConfig>);
+struct RustlsConnector(Arc<rustls::ClientConfig>, Option<std::time::Duration>);
 
 impl ureq::TlsConnector for RustlsConnector {
     fn connect(
@@ -1379,10 +1389,77 @@ impl ureq::TlsConnector for RustlsConnector {
             .to_owned();
         let mut connection = rustls::ClientConnection::new(Arc::clone(&self.0), name)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        connection.complete_io(&mut io)?;
+        if let Some(timeout) = self.1 {
+            let socket = io
+                .socket()
+                .ok_or_else(|| std::io::Error::other("TLS handshake requires a bounded socket"))?;
+            let read_timeout = socket.read_timeout()?;
+            let write_timeout = socket.write_timeout()?;
+            let result = connection.complete_io(&mut HandshakeIo {
+                io: &mut io,
+                deadline: std::time::Instant::now() + timeout,
+                read_timeout,
+                write_timeout,
+            });
+            if let Some(socket) = io.socket() {
+                socket.set_read_timeout(read_timeout)?;
+                socket.set_write_timeout(write_timeout)?;
+            }
+            result?;
+        } else {
+            connection.complete_io(&mut io)?;
+        }
         Ok(Box::new(RustlsStream(rustls::StreamOwned::new(
             connection, io,
         ))))
+    }
+}
+
+// Apply the remaining absolute handshake budget to each read/write, so a
+// peer that trickles TLS records cannot restart the connection timeout.
+struct HandshakeIo<'a> {
+    io: &'a mut Box<dyn ureq::ReadWrite>,
+    deadline: std::time::Instant,
+    read_timeout: Option<std::time::Duration>,
+    write_timeout: Option<std::time::Duration>,
+}
+impl HandshakeIo<'_> {
+    fn remaining(
+        &self,
+        previous: Option<std::time::Duration>,
+    ) -> std::io::Result<std::time::Duration> {
+        let remaining = self
+            .deadline
+            .checked_duration_since(std::time::Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "TLS handshake deadline exceeded",
+                )
+            })?;
+        Ok(previous.map_or(remaining, |previous| previous.min(remaining)))
+    }
+}
+impl std::io::Read for HandshakeIo<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let timeout = self.remaining(self.read_timeout)?;
+        if let Some(socket) = self.io.socket() {
+            socket.set_read_timeout(Some(timeout))?;
+        }
+        self.io.read(buffer)
+    }
+}
+impl std::io::Write for HandshakeIo<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let timeout = self.remaining(self.write_timeout)?;
+        if let Some(socket) = self.io.socket() {
+            socket.set_write_timeout(Some(timeout))?;
+        }
+        self.io.write(buffer)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.io.flush()
     }
 }
 
