@@ -3520,33 +3520,21 @@ impl NodeProjectedModelManager {
                 "common projected execution is reserved for the ordered successor runtime",
             ));
         }
+        let target = self
+            .target
+            .as_ref()
+            .ok_or_else(|| runtime_error("projected manager has no execution target"))?
+            .as_target();
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let projected = match (self.type_id.kind(), self.database(), self.transaction()) {
-            (TypeKind::Entity, Some(database), None) => self
-                .runtime
-                .block_on(executor.get_entity_by_iid(database, &self.type_id, &iid)),
-            (TypeKind::Entity, None, Some(transaction)) => {
-                self.runtime
-                    .block_on(executor.get_entity_by_iid_in_transaction(
-                        transaction,
-                        &self.type_id,
-                        &iid,
-                    ))
-            }
-            (TypeKind::Relation, Some(database), None) => self
-                .runtime
-                .block_on(executor.get_relation_by_iid(database, &self.type_id, &iid)),
-            (TypeKind::Relation, None, Some(transaction)) => {
-                self.runtime
-                    .block_on(executor.get_relation_by_iid_in_transaction(
-                        transaction,
-                        &self.type_id,
-                        &iid,
-                    ))
-            }
-            _ => return Err(runtime_error("projected manager has no execution target")),
-        }
-        .map_err(napi_sdk_diagnostic)?;
+        let projected = self
+            .runtime
+            .block_on(executor.get_by_iid_on_target(target, &self.type_id, &iid, None))
+            .map_err(|error| {
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                )
+            })
+            .map_err(napi_sdk_diagnostic)?;
         projected
             .map(|projected| projected_envelope(Arc::clone(&self.package), projected))
             .transpose()

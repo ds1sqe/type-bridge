@@ -238,15 +238,53 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         Self { installed }
     }
 
-    /// Run one policy-aware exact IID read on the connection target.
+    /// Run one exact IID read on the connection target. An omitted invocation
+    /// control preserves the direct default path; proxy reads retain the
+    /// connection's bounded transport policy.
     #[doc(hidden)]
     pub async fn get_by_iid_on_target(
         &self,
         target: crate::QueryTarget<'_>,
         type_id: &TypeId,
         iid: &str,
-        control: ProjectedCrudInvocationControl,
+        control: impl Into<Option<ProjectedCrudInvocationControl>>,
     ) -> Result<Option<ProjectedThing>, crate::QueryTargetError> {
+        let control = control.into();
+        if control.is_none() {
+            match (type_id.kind(), target) {
+                (TypeKind::Entity, crate::QueryTarget::Database(database)) => {
+                    return self
+                        .get_entity_by_iid(database, type_id, iid)
+                        .await
+                        .map_err(Into::into);
+                }
+                (TypeKind::Relation, crate::QueryTarget::Database(database)) => {
+                    return self
+                        .get_relation_by_iid(database, type_id, iid)
+                        .await
+                        .map_err(Into::into);
+                }
+                (TypeKind::Entity, crate::QueryTarget::Transaction(transaction)) => {
+                    return self
+                        .get_entity_by_iid_in_transaction(transaction, type_id, iid)
+                        .await
+                        .map_err(Into::into);
+                }
+                (TypeKind::Relation, crate::QueryTarget::Transaction(transaction)) => {
+                    return self
+                        .get_relation_by_iid_in_transaction(transaction, type_id, iid)
+                        .await
+                        .map_err(Into::into);
+                }
+                _ => {}
+            }
+        }
+        let control = control.unwrap_or_else(|| {
+            ProjectedCrudInvocationControl::capture(
+                target.answer_limits().unwrap_or_default(),
+                AnswerCancellation::default(),
+            )
+        });
         let control = control.constrained_by(target.answer_limits());
         match (type_id.kind(), target) {
             (TypeKind::Entity, crate::QueryTarget::Database(database)) => self
@@ -7342,6 +7380,17 @@ plays:
                 expected.push_back(program.plans()[0].canonical_bytes().unwrap());
             }
         }
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            let (_, program) = executor
+                .manager_read_program(
+                    &controlled_type(kind),
+                    Some("0xffff"),
+                    ReadTerminal::Fetch,
+                    None,
+                )
+                .unwrap();
+            expected.push_back(program.plans()[0].canonical_bytes().unwrap());
+        }
         let bytes = advertisement.encode().unwrap();
         let transport = Arc::new(Transport {
             schema,
@@ -7386,10 +7435,24 @@ plays:
                     .is_none()
             );
         }
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            assert!(
+                executor
+                    .get_by_iid_on_target(
+                        QueryTarget::Proxy(&connection),
+                        &controlled_type(kind),
+                        "0xffff",
+                        None
+                    )
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
         assert!(transport.expected.lock().unwrap().is_empty());
         assert_eq!(
             transport.calls.load(std::sync::atomic::Ordering::Relaxed),
-            4
+            6
         );
         let cancellation = AnswerCancellation::default();
         cancellation.cancel();
@@ -7413,7 +7476,7 @@ plays:
         );
         assert_eq!(
             transport.calls.load(std::sync::atomic::Ordering::Relaxed),
-            4
+            6
         );
         let error = ProjectedCrudExecutor::new(&unverified)
             .count_on_target(
@@ -7432,7 +7495,7 @@ plays:
         );
         assert_eq!(
             transport.calls.load(std::sync::atomic::Ordering::Relaxed),
-            4
+            6
         );
         transport
             .fail

@@ -1230,7 +1230,12 @@ async fn borrowed_origin_is_preserved_and_a_value_equal_lookalike_remains_unboun
         .await
         .unwrap();
     let hydrated = ProjectedCrudExecutor::new(&installed)
-        .get_entity_by_iid_in_transaction(&transaction, &person, "0x10")
+        .get_by_iid_on_target(
+            type_bridge_orm::QueryTarget::Transaction(&transaction),
+            &person,
+            "0x10",
+            None,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -1415,55 +1420,70 @@ async fn owned_relation_put_and_update_rehydrate_before_commit() {
 
 #[tokio::test]
 async fn relation_get_count_and_blind_delete_preserve_exact_behavior() {
-    let installed = installed();
-    let membership = type_id(TypeKind::Relation, "membership");
-    let (backend, state) = RecordingBackend::new(
-        vec![
-            documents(vec![membership_document("0x20")]),
-            RecordingResponse::Result(QueryResult::Rows(vec![
-                serde_json::json!({"count1": {"kind":"value", "value":CanonicalValue::Long(2)}}),
-            ])),
-            RecordingResponse::Result(QueryResult::Rows(vec![])),
-        ],
-        CommitBehavior::Success,
-    );
-    let database = Database::with_backend(Box::new(backend), "test");
-    let executor = ProjectedCrudExecutor::new(&installed);
+    for target_route in [false, true] {
+        let installed = installed();
+        let membership = type_id(TypeKind::Relation, "membership");
+        let (backend, state) = RecordingBackend::new(
+            vec![
+                documents(vec![membership_document("0x20")]),
+                RecordingResponse::Result(QueryResult::Rows(vec![
+                    serde_json::json!({"count1": {"kind":"value", "value":CanonicalValue::Long(2)}}),
+                ])),
+                RecordingResponse::Result(QueryResult::Rows(vec![])),
+            ],
+            CommitBehavior::Success,
+        );
+        let database = Database::with_backend(Box::new(backend), "test");
+        let executor = ProjectedCrudExecutor::new(&installed);
 
-    assert_eq!(
-        executor
-            .get_relation_by_iid(&database, &membership, "0x20")
-            .await
-            .unwrap()
-            .unwrap()
+        assert_eq!(
+            if target_route {
+                executor
+                    .get_by_iid_on_target(
+                        type_bridge_orm::QueryTarget::Database(&database),
+                        &membership,
+                        "0x20",
+                        None,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap()
+            } else {
+                executor
+                    .get_relation_by_iid(&database, &membership, "0x20")
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
             .iid(),
-        "0x20"
-    );
-    assert_eq!(
+            "0x20"
+        );
+        assert_eq!(
+            executor
+                .count_relations(&database, &membership)
+                .await
+                .unwrap(),
+            2
+        );
         executor
-            .count_relations(&database, &membership)
+            .delete_relation_by_iid(&database, &membership, "0x20")
             .await
-            .unwrap(),
-        2
-    );
-    executor
-        .delete_relation_by_iid(&database, &membership, "0x20")
-        .await
-        .unwrap();
+            .unwrap();
 
-    let state = state.lock().unwrap();
-    assert_eq!(state.opens, [TxType::Read, TxType::Read, TxType::Write]);
-    assert_eq!(state.queries.len(), 3);
-    assert!(
-        state
-            .queries
-            .iter()
-            .all(|query| query.contains("isa! membership"))
-    );
-    assert_eq!(state.query_modes, ["canonical"; 3]);
-    assert_eq!(state.closes, 2);
-    assert_eq!(state.commits, 1);
-    assert_eq!(state.rollbacks, 0);
+        let state = state.lock().unwrap();
+        assert_eq!(state.opens, [TxType::Read, TxType::Read, TxType::Write]);
+        assert_eq!(state.queries.len(), 3);
+        assert!(
+            state
+                .queries
+                .iter()
+                .all(|query| query.contains("isa! membership"))
+        );
+        assert_eq!(state.query_modes, ["canonical"; 3]);
+        assert_eq!(state.closes, 2);
+        assert_eq!(state.commits, 1);
+        assert_eq!(state.rollbacks, 0);
+    }
 }
 
 #[tokio::test]
@@ -1955,43 +1975,58 @@ async fn delete_is_one_blind_exact_mutation_and_absent_is_success() {
 
 #[tokio::test]
 async fn owned_reads_close_and_preserve_exact_get_and_count_behavior() {
-    let installed = installed();
-    let person = type_id(TypeKind::Entity, "person");
-    let (backend, state) = RecordingBackend::new(
-        vec![
-            documents(vec![person_document("0x10")]),
-            RecordingResponse::Result(QueryResult::Rows(vec![
-                serde_json::json!({"count1": {"kind":"value", "value":CanonicalValue::Long(3)}}),
-            ])),
-        ],
-        CommitBehavior::Success,
-    );
-    let database = Database::with_backend(Box::new(backend), "test");
-    let executor = ProjectedCrudExecutor::new(&installed);
+    for target_route in [false, true] {
+        let installed = installed();
+        let person = type_id(TypeKind::Entity, "person");
+        let (backend, state) = RecordingBackend::new(
+            vec![
+                documents(vec![person_document("0x10")]),
+                RecordingResponse::Result(QueryResult::Rows(vec![
+                    serde_json::json!({"count1": {"kind":"value", "value":CanonicalValue::Long(3)}}),
+                ])),
+            ],
+            CommitBehavior::Success,
+        );
+        let database = Database::with_backend(Box::new(backend), "test");
+        let executor = ProjectedCrudExecutor::new(&installed);
 
-    let thing = executor
-        .get_entity_by_iid(&database, &person, "0x10")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(thing.iid(), "0x10");
-    assert_eq!(
-        executor.count_entities(&database, &person).await.unwrap(),
-        3
-    );
+        let thing = if target_route {
+            executor
+                .get_by_iid_on_target(
+                    type_bridge_orm::QueryTarget::Database(&database),
+                    &person,
+                    "0x10",
+                    None,
+                )
+                .await
+                .unwrap()
+                .unwrap()
+        } else {
+            executor
+                .get_entity_by_iid(&database, &person, "0x10")
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(thing.iid(), "0x10");
+        assert_eq!(
+            executor.count_entities(&database, &person).await.unwrap(),
+            3
+        );
 
-    let state = state.lock().unwrap();
-    assert_eq!(state.opens, [TxType::Read, TxType::Read]);
-    assert_eq!(state.closes, 2);
-    assert_eq!(state.commits, 0);
-    assert_eq!(state.rollbacks, 0);
-    assert_eq!(state.query_modes, ["canonical", "canonical"]);
-    assert!(
-        state
-            .queries
-            .iter()
-            .all(|query| query.contains("isa! person"))
-    );
+        let state = state.lock().unwrap();
+        assert_eq!(state.opens, [TxType::Read, TxType::Read]);
+        assert_eq!(state.closes, 2);
+        assert_eq!(state.commits, 0);
+        assert_eq!(state.rollbacks, 0);
+        assert_eq!(state.query_modes, ["canonical", "canonical"]);
+        assert!(
+            state
+                .queries
+                .iter()
+                .all(|query| query.contains("isa! person"))
+        );
+    }
 }
 
 #[tokio::test]
@@ -2823,23 +2858,41 @@ fn native_manager_future_sizes_stay_bounded() {
 
 #[tokio::test]
 async fn default_manager_read_does_not_allocate_an_authored_bulk_payload() {
-    let installed = installed_with_authority();
-    let (backend, state) = RecordingBackend::new(
-        vec![documents(vec![person_document("0x10")])],
-        CommitBehavior::Success,
-    );
-    let db = Database::with_backend(Box::new(backend), "read-allocation");
-    let crud = ProjectedCrudExecutor::new(&installed);
-    let person = type_id(TypeKind::Entity, "person");
-    let bytes = std::mem::size_of::<type_bridge_contract::query_plan::v3::BuiltPlans>();
-    let (result, count) =
-        allocations::count(bytes, crud.get_entity_by_iid(&db, &person, "0x10")).await;
-    assert_eq!(result.unwrap().unwrap().iid(), "0x10");
-    assert_eq!(
-        count, 0,
-        "default manager read allocated a {bytes}-byte bulk payload"
-    );
-    assert_eq!(state.lock().unwrap().opens, vec![TxType::Read]);
+    for target_route in [false, true] {
+        let installed = installed_with_authority();
+        let (backend, state) = RecordingBackend::new(
+            vec![documents(vec![person_document("0x10")])],
+            CommitBehavior::Success,
+        );
+        let db = Database::with_backend(Box::new(backend), "read-allocation");
+        let crud = ProjectedCrudExecutor::new(&installed);
+        let person = type_id(TypeKind::Entity, "person");
+        let bytes = std::mem::size_of::<type_bridge_contract::query_plan::v3::BuiltPlans>();
+        let count = if target_route {
+            let (result, count) = allocations::count(
+                bytes,
+                crud.get_by_iid_on_target(
+                    type_bridge_orm::QueryTarget::Database(&db),
+                    &person,
+                    "0x10",
+                    None,
+                ),
+            )
+            .await;
+            assert_eq!(result.unwrap().unwrap().iid(), "0x10");
+            count
+        } else {
+            let (result, count) =
+                allocations::count(bytes, crud.get_entity_by_iid(&db, &person, "0x10")).await;
+            assert_eq!(result.unwrap().unwrap().iid(), "0x10");
+            count
+        };
+        assert_eq!(
+            count, 0,
+            "default manager read allocated a {bytes}-byte bulk payload"
+        );
+        assert_eq!(state.lock().unwrap().opens, vec![TxType::Read]);
+    }
 }
 
 #[tokio::test]

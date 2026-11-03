@@ -3606,35 +3606,21 @@ impl PyProjectedModelManager {
     }
 
     fn get_projected(&self, py: Python<'_>, iid: &str) -> PyResult<Option<ProjectedThing>> {
+        let target = self
+            .target
+            .as_ref()
+            .ok_or_else(|| py_runtime_error("projected manager has no execution target"))?
+            .as_target();
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let result = match (self.type_id.kind(), self.database(), self.transaction()) {
-            (TypeKind::Entity, Some(database), None) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.get_entity_by_iid(database.as_ref(), &self.type_id, iid),
-            ),
-            (TypeKind::Entity, None, Some(transaction)) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.get_entity_by_iid_in_transaction(transaction, &self.type_id, iid),
-            ),
-            (TypeKind::Relation, Some(database), None) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.get_relation_by_iid(database.as_ref(), &self.type_id, iid),
-            ),
-            (TypeKind::Relation, None, Some(transaction)) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.get_relation_by_iid_in_transaction(transaction, &self.type_id, iid),
-            ),
-            _ => {
-                return Err(py_runtime_error(
-                    "projected manager has no execution target",
-                ));
-            }
-        };
-        result.map_err(py_sdk_diagnostic)
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            executor.get_by_iid_on_target(target, &self.type_id, iid, None),
+        )
+        .map_err(|error| {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+        })
+        .map_err(py_sdk_diagnostic)
     }
 
     fn publish_projected_write(

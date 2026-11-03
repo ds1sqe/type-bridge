@@ -2137,6 +2137,46 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
         );
     }
     assert_eq!(proxy.commits.lock().unwrap().len(), 12);
+    for expected in [&direct, &edges[0]] {
+        let remote = crud
+            .get_by_iid_on_target(
+                QueryTarget::Proxy(&default_connection),
+                expected.type_id(),
+                expected.iid(),
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(remote.iid(), expected.iid());
+        assert_eq!(remote.fields(), expected.fields());
+        assert_eq!(
+            remote
+                .roles()
+                .values()
+                .flatten()
+                .map(|player| player.iid())
+                .collect::<Vec<_>>(),
+            expected
+                .roles()
+                .values()
+                .flatten()
+                .map(|player| player.iid())
+                .collect::<Vec<_>>()
+        );
+        assert!(remote.origin_carrier().is_some());
+    }
+    {
+        let captured = requests.lock().unwrap();
+        assert_eq!(captured.len(), 14);
+        for bytes in &captured[12..] {
+            let request = StagedRequestV3::decode(bytes, &declared, &proxy.advertisement).unwrap();
+            assert_eq!(request.kind(), StagedKindV3::Read);
+            assert_eq!(request.plans().len(), 1);
+            assert_eq!(request.limits().max_items, 65_536);
+        }
+    }
+    assert_eq!(proxy.commits.lock().unwrap().len(), 14);
     let mut bounded = staged_live::proxy_with(
         &name,
         LivePolicy {
