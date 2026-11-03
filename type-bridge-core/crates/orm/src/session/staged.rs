@@ -458,7 +458,7 @@ impl std::error::Error for CommitError {
 impl CommitError {
     /// Attach a binding's original materialization error while retaining the
     /// classified commit outcome and diagnostic.
-    #[doc(hidden)]
+    /// The source occupies the caller-owned callback slot in the error's source chain.
     #[must_use]
     pub fn with_binding_source(mut self, source: Box<dyn std::error::Error + Send + Sync>) -> Self {
         self.source_error = Some(Box::new(crate::QueryTargetError::Callback(source)));
