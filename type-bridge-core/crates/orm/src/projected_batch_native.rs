@@ -151,6 +151,7 @@ impl BatchPlan<'_> {
             kind,
             WriteShape {
                 references_see_prior_writes: false,
+                single_input: false,
                 include_subtypes: false,
                 return_documents: true,
                 type_id: self.model.id(),
@@ -1221,60 +1222,100 @@ mod native_input_tests {
             )
             .unwrap(),
         );
-        for actual_type in ["account", "wrong-provider-type"] {
-            let mut program = write_many(
-                &authority,
-                WriteKind::Insert,
-                WriteShape {
-                    type_id: &account,
-                    keys: &[],
-                    cleared_fields: &[],
-                    cleared_roles: &[],
-                    document_roles: vec![],
-                    include_subtypes: false,
-                    return_documents: false,
-                    references_see_prior_writes: false,
-                },
-                &[WriteRow {
-                    iid: None,
-                    fields: &fields,
-                    players: &[],
-                }],
-            )
-            .unwrap()
-            .prepare_static()
-            .unwrap();
-            assert!(program.records_answers());
-            let step = program.next().unwrap().unwrap();
-            let type_bridge_contract::query_plan::QueryOutput::Rows { columns } =
-                step.plan.local().output()
-            else {
-                panic!("allocation answers ordinal and root")
-            };
-            let mut row = serde_json::Map::new();
-            row.insert(
-                step.plan.local().bindings()[usize::from(columns[0].get())]
-                    .variable()
-                    .as_str()
-                    .into(),
-                serde_json::json!({"kind":"value", "value":CanonicalValue::Long(0)}),
-            );
-            row.insert(step.plan.local().bindings()[usize::from(columns[1].get())].variable().as_str().into(), serde_json::json!({"kind":"thing", "iid":"0x10", "type_id":{"kind":"entity", "label":actual_type}}));
-            record_static_answer(&mut program, &step, vec![AnswerItem::Row(row.into())], true)
+        for (single_input, roots) in [(false, 1), (true, 1), (true, 2)] {
+            for actual_type in ["account", "wrong-provider-type"] {
+                let mut program = write_many(
+                    &authority,
+                    WriteKind::Insert,
+                    WriteShape {
+                        type_id: &account,
+                        keys: &[],
+                        cleared_fields: &[],
+                        cleared_roles: &[],
+                        document_roles: vec![],
+                        include_subtypes: false,
+                        return_documents: false,
+                        references_see_prior_writes: false,
+                        single_input,
+                    },
+                    &[WriteRow {
+                        iid: None,
+                        fields: &fields,
+                        players: &[],
+                    }],
+                )
+                .unwrap()
+                .prepare_static()
                 .unwrap();
-            program.accept_identity(&step, Some("0x10".into())).unwrap();
-            let next = program.next();
-            if actual_type == "account" {
-                let next = next.unwrap().unwrap();
-                next.check_identity("0x10").unwrap();
-                assert!(next.check_identity("0xff").is_err());
-            } else {
-                assert_eq!(
-                    next.err().unwrap().code().as_str(),
-                    "query_stage_result_ref_answer"
+                assert!(program.records_answers());
+                let step = program.next().unwrap().unwrap();
+                let type_bridge_contract::query_plan::QueryOutput::Rows { columns } =
+                    step.plan.local().output()
+                else {
+                    panic!("allocation answers ordinal and root")
+                };
+                let mut row = serde_json::Map::new();
+                row.insert(
+                    step.plan.local().bindings()[usize::from(columns[0].get())]
+                        .variable()
+                        .as_str()
+                        .into(),
+                    serde_json::json!({"kind":"value", "value":CanonicalValue::Long(0)}),
                 );
+                row.insert(step.plan.local().bindings()[usize::from(columns[1].get())].variable().as_str().into(), serde_json::json!({"kind":"thing", "iid":"0x10", "type_id":{"kind":"entity", "label":actual_type}}));
+                let mut answers = vec![AnswerItem::Row(row.clone().into())];
+                if roots == 2 {
+                    row.insert(step.plan.local().bindings()[usize::from(columns[1].get())].variable().as_str().into(), serde_json::json!({"kind":"thing", "iid":"0x20", "type_id":{"kind":"entity", "label":actual_type}}));
+                    answers.push(AnswerItem::Row(row.into()));
+                }
+                record_static_answer(&mut program, &step, answers, true).unwrap();
+                program.accept_identity(&step, Some("0x10".into())).unwrap();
+                let next = program.next();
+                if roots == 2 {
+                    assert_eq!(
+                        next.err().unwrap().code().as_str(),
+                        "query_stage_result_ref_rows"
+                    );
+                } else if actual_type == "account" {
+                    let next = next.unwrap().unwrap();
+                    next.check_identity("0x10").unwrap();
+                    assert!(next.check_identity("0xff").is_err());
+                } else {
+                    assert_eq!(
+                        next.err().unwrap().code().as_str(),
+                        "query_stage_result_ref_answer"
+                    );
+                }
             }
         }
+        let mut targets = write_many(
+            &authority,
+            WriteKind::Attach,
+            WriteShape {
+                type_id: &account,
+                keys: &[],
+                cleared_fields: &[],
+                cleared_roles: &[],
+                document_roles: vec![],
+                include_subtypes: false,
+                return_documents: false,
+                references_see_prior_writes: false,
+                single_input: false,
+            },
+            &["0x10", "0x20"].map(|iid| WriteRow {
+                iid: Some(iid),
+                fields: &[],
+                players: &[],
+            }),
+        )
+        .unwrap();
+        let step = targets.next().unwrap().unwrap();
+        step.check_identity("0x10").unwrap();
+        step.check_identity("0x20").unwrap();
+        assert_eq!(
+            step.check_identity("0xff").unwrap_err().code().as_str(),
+            "provider_identity_mismatch"
+        );
     }
 
     #[test]

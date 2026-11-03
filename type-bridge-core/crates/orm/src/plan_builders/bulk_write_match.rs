@@ -5,7 +5,7 @@ use type_bridge_contract::migration_assertion::AssertionRolePlayer;
 
 pub(crate) struct MatchProgram {
     probes: VecDeque<BuiltPlan>,
-    candidates: Option<std::collections::BTreeSet<String>>,
+    candidates: Option<Vec<String>>,
     on_miss: Option<WriteProgram>,
     on_hit: Option<BuiltPlan>,
     selected: Option<WriteProgram>,
@@ -13,6 +13,21 @@ pub(crate) struct MatchProgram {
     ordinal: usize,
 }
 impl MatchProgram {
+    pub(super) fn records_answers(&self) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(WriteProgram::records_answers)
+    }
+    pub(super) fn record_answer(
+        &mut self,
+        step: &WriteStep,
+        answer: &PlanAnswer,
+    ) -> Result<(), Diagnostic> {
+        if let Some(selected) = &mut self.selected {
+            selected.record_answer(step, answer)?;
+        }
+        Ok(())
+    }
     pub(super) fn statement_count(&self) -> usize {
         self.probes.len()
             + self
@@ -37,19 +52,20 @@ impl MatchProgram {
         if self.selected.is_none() {
             let candidates = self.candidates.take().ok_or_else(identity_error)?;
             self.selected = Some(if candidates.is_empty() {
-                self.on_miss.take().ok_or_else(identity_error)?
+                self.on_miss
+                    .take()
+                    .ok_or_else(identity_error)?
+                    .prepare_static()?
             } else {
-                // The ordinary one-row API refuses ambiguous full matches too.
-                if candidates.len() != 1 {
-                    return Err(identity_error());
-                }
-                let iid = candidates.into_iter().next().ok_or_else(identity_error)?;
+                let rows = candidates
+                    .into_iter()
+                    .map(|iid| Ok(InputRow::new(vec![Some(super::iid(&iid)?)])))
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
                 let plan = self.on_hit.take().ok_or_else(identity_error)?;
                 WriteProgram::Compact(vec![BuiltPlan {
-                    plan: plan.local().with_given_rows(
-                        vec![InputRow::new(vec![Some(super::iid(&iid)?)])],
-                        self.authority.declared(),
-                    )?,
+                    plan: plan
+                        .local()
+                        .with_given_rows(rows, self.authority.declared())?,
                     verified: plan.verified,
                 }])
             });
@@ -75,17 +91,20 @@ impl MatchProgram {
             return Err(identity_error());
         };
         let mut matched = std::collections::BTreeSet::new();
+        let mut ordered = Vec::new();
         for row in rows {
             let [RemoteValue::Thing { iid, .. }] = row.as_slice() else {
                 return Err(identity_error());
             };
             step.check_identity(iid)?;
-            matched.insert(iid.clone());
+            if matched.insert(iid.clone()) {
+                ordered.push(iid.clone());
+            }
         }
         if let Some(candidates) = &mut self.candidates {
             candidates.retain(|iid| matched.contains(iid));
         } else {
-            self.candidates = Some(matched);
+            self.candidates = Some(ordered);
         }
         Ok(())
     }
@@ -256,41 +275,53 @@ pub(in crate::plan_builders::bulk_write) fn wide_match(
     let root = draft.bind("root")?;
     let ordinal_binding = draft.bind("ordinal")?;
     let target = draft.value(super::iid("0x00")?)?;
+    let mut pipeline = vec![
+        Stage::Match {
+            patterns: vec![
+                QueryPattern::Isa {
+                    binding: root,
+                    type_id: shape.type_id.clone(),
+                    include_subtypes: true,
+                }
+                .into(),
+                QueryPattern::Iid {
+                    binding: root,
+                    iid: target,
+                }
+                .into(),
+                Pattern::Let {
+                    binding: ordinal_binding,
+                    expr: Expr::Operand(QueryOperand::Literal {
+                        value: CanonicalValue::Long(
+                            i64::try_from(ordinal).map_err(|_| identity_error())?,
+                        ),
+                    }),
+                },
+            ],
+        },
+        Stage::Select {
+            bindings: vec![root, ordinal_binding],
+        },
+        Stage::Distinct,
+    ];
+    let columns = if shape.return_documents {
+        let mut document = ThingDocument::new(root, shape.document_roles.clone());
+        document
+            .scalars
+            .push(type_bridge_contract::query_plan::v3::DocumentScalar {
+                key: type_bridge_contract::migration_assertion::QueryVariable::new("ordinal")?,
+                binding: ordinal_binding,
+            });
+        pipeline.push(Stage::Fetch(document));
+        Vec::new()
+    } else {
+        vec![ordinal_binding, root]
+    };
     let on_hit = draft.finish(
         authority,
-        vec![
-            Stage::Match {
-                patterns: vec![
-                    QueryPattern::Isa {
-                        binding: root,
-                        type_id: shape.type_id.clone(),
-                        include_subtypes: true,
-                    }
-                    .into(),
-                    QueryPattern::Iid {
-                        binding: root,
-                        iid: target,
-                    }
-                    .into(),
-                    Pattern::Let {
-                        binding: ordinal_binding,
-                        expr: Expr::Operand(QueryOperand::Literal {
-                            value: CanonicalValue::Long(
-                                i64::try_from(ordinal).map_err(|_| identity_error())?,
-                            ),
-                        }),
-                    },
-                ],
-            },
-            Stage::Select {
-                bindings: vec![root, ordinal_binding],
-            },
-            Stage::Distinct,
-        ],
+        pipeline,
         Operation::Rows,
-        QueryOutput::Rows {
-            columns: vec![ordinal_binding, root],
-        },
+        QueryOutput::Rows { columns },
     )?;
     let on_miss = split_at(
         authority,

@@ -24,7 +24,7 @@ mod program;
 #[path = "bulk_write_sequence.rs"]
 mod sequence;
 pub(crate) use program::{
-    IdentityLayout, ReferenceSnapshots, WriteProgram, WriteStep, forces_pieces,
+    IdentityLayout, ReferenceSnapshots, WriteProgram, WriteStep, forces_pieces, forces_pieces_code,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -57,6 +57,8 @@ pub(crate) struct WriteShape<'a> {
     pub(crate) return_documents: bool,
     /// Generic managers resolve players after earlier rows; explicit batches resolve at call start.
     pub(crate) references_see_prior_writes: bool,
+    /// A single input retains every root through fixed-row dependency pieces.
+    pub(crate) single_input: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -213,6 +215,7 @@ pub(crate) fn build_many(
             "A write plan requires at least one row",
         ));
     }
+    let returning_single = shape.single_input && shape.return_documents && complete;
     let mut field_widths = BTreeMap::new();
     let mut player_widths = BTreeMap::new();
     let mut matrices = Vec::with_capacity(rows.len());
@@ -770,7 +773,9 @@ pub(crate) fn build_many(
                 }),
         );
     }
-    if kind == WriteKind::Delete || (kind == WriteKind::PartialUpdate && complete) {
+    if kind == WriteKind::Delete
+        || (kind == WriteKind::PartialUpdate && complete && !returning_single)
+    {
         // Matched consumes the pipeline without fetching models for a void manager API.
     } else if kind == WriteKind::Attach && rows.len() > 1 {
         let events = draft.bind("events")?;
@@ -787,10 +792,11 @@ pub(crate) fn build_many(
     }
     if complete
         && shape.return_documents
-        && !matches!(
-            kind,
-            WriteKind::PartialUpdate | WriteKind::Delete | WriteKind::MatchPut
-        )
+        && (returning_single
+            || !matches!(
+                kind,
+                WriteKind::PartialUpdate | WriteKind::Delete | WriteKind::MatchPut
+            ))
     {
         let mut document = ThingDocument::new(root, shape.document_roles);
         document
@@ -875,14 +881,15 @@ pub(crate) fn build_many(
     }
     let operation = if pipeline.iter().any(Stage::is_write) {
         Operation::Write {
-            returns: if kind == WriteKind::Delete || (kind == WriteKind::PartialUpdate && complete)
+            returns: if kind == WriteKind::Delete
+                || (kind == WriteKind::PartialUpdate && complete && !returning_single)
             {
                 WriteReturns::Matched
             } else {
                 WriteReturns::Rows
             },
         }
-    } else if kind == WriteKind::PartialUpdate {
+    } else if kind == WriteKind::PartialUpdate && !returning_single {
         Operation::Count
     } else {
         Operation::Rows
@@ -906,9 +913,10 @@ pub(crate) fn build_many(
         pipeline,
         operation,
         QueryOutput::Rows {
-            columns: if complete
-                && (matches!(kind, WriteKind::PartialUpdate | WriteKind::Delete)
-                    || (shape.return_documents && kind != WriteKind::MatchPut))
+            columns: if returning_single
+                || complete
+                    && (matches!(kind, WriteKind::PartialUpdate | WriteKind::Delete)
+                        || (shape.return_documents && kind != WriteKind::MatchPut))
             {
                 Vec::new()
             } else {

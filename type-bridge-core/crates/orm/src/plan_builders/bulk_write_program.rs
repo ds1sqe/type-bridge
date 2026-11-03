@@ -65,6 +65,8 @@ impl WriteProgram {
     pub(crate) fn records_answers(&self) -> bool {
         match self {
             Self::Static(program) => program.records_answers(),
+            Self::MatchWide(program) => program.records_answers(),
+            Self::References(program) => program.records_answers(),
             Self::Chain(programs) => programs.front().is_some_and(Self::records_answers),
             _ => false,
         }
@@ -77,6 +79,8 @@ impl WriteProgram {
     ) -> Result<(), Diagnostic> {
         match self {
             Self::Static(program) => program.record_answer(step, answer)?,
+            Self::MatchWide(program) => program.record_answer(step, answer)?,
+            Self::References(program) => program.record_answer(step, answer)?,
             Self::Chain(programs) => programs
                 .front_mut()
                 .ok_or_else(identity_error)?
@@ -269,8 +273,12 @@ impl WriteProgram {
 }
 
 pub(crate) fn forces_pieces(error: &Diagnostic) -> bool {
+    forces_pieces_code(error.code().as_str())
+}
+
+pub(crate) fn forces_pieces_code(code: &str) -> bool {
     matches!(
-        error.code().as_str(),
+        code,
         "query_plan_binding_limit"
             | "query_plan_write_term_limit"
             | "query_plan_pattern_limit"
@@ -363,7 +371,35 @@ impl WriteStep {
     }
 
     pub(crate) fn check_identity(&self, iid: &str) -> Result<(), Diagnostic> {
-        if !type_bridge_contract::id::is_canonical_thing_iid(iid)
+        let target_column = self
+            .expected_iid
+            .is_none()
+            .then(|| {
+                self.plan
+                    .local()
+                    .inputs()
+                    .iter()
+                    .position(|input| input.public_name().as_str() == "target_iid")
+            })
+            .flatten();
+        let outside_targets = target_column.is_some_and(|column| {
+            let mut targets = self
+                .plan
+                .local()
+                .given_rows()
+                .into_iter()
+                .flatten()
+                .filter_map(|row| match row.values()[column].as_ref() {
+                    Some(CanonicalValue::String(expected)) => Some(expected.as_str()),
+                    _ => None,
+                });
+            targets.next().is_some_and(|first| {
+                !first.eq_ignore_ascii_case(iid)
+                    && !targets.any(|target| target.eq_ignore_ascii_case(iid))
+            })
+        });
+        if outside_targets
+            || !type_bridge_contract::id::is_canonical_thing_iid(iid)
             || self
                 .expected_iid
                 .as_deref()
@@ -556,7 +592,7 @@ fn one(
         })
         .collect::<Vec<_>>();
     let mut events = Vec::new();
-    if kind == WriteKind::Attach {
+    if kind == WriteKind::Attach && !shape.single_input {
         for field in &row.fields {
             events.push(WriteRow {
                 iid: row.iid.as_deref(),
@@ -588,6 +624,68 @@ fn one(
     }
     Ok(plans.remove(0))
 }
+fn unique_player_identity(authority: &PlanAuthority, player: &Player) -> bool {
+    use type_bridge_contract::schema::{
+        AnnotationFactId, AnnotationKindId, AnnotationSubjectId, SchemaFact, SchemaFactId,
+    };
+    if player.iid.is_some() {
+        return true;
+    }
+    let (Some((attribute, _)), Some(first)) = (&player.key, player.candidates.first()) else {
+        return false;
+    };
+    let parents = authority
+        .declared()
+        .facts()
+        .filter_map(|fact| match fact {
+            SchemaFact::Sub(fact) => Some((fact.id().subtype(), fact.id().supertype())),
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let under = |candidate: &TypeId, owner: &TypeId| {
+        let mut current = candidate;
+        for _ in 0..=parents.len() {
+            if current == owner {
+                return true;
+            }
+            let Some(parent) = parents.get(current) else {
+                return false;
+            };
+            current = parent;
+        }
+        false
+    };
+    let mut owner = first;
+    for _ in 0..=parents.len() {
+        let Ok(field) = OwnsFactId::new(owner.clone(), attribute.clone()) else {
+            return false;
+        };
+        if [AnnotationKindId::Key, AnnotationKindId::Unique]
+            .into_iter()
+            .any(|kind| {
+                authority
+                    .declared()
+                    .fact(&SchemaFactId::Annotation(AnnotationFactId::new(
+                        AnnotationSubjectId::Owns(field.clone()),
+                        kind,
+                    )))
+                    .is_some()
+            })
+            && player
+                .candidates
+                .iter()
+                .all(|candidate| under(candidate, owner))
+        {
+            return true;
+        }
+        let Some(parent) = parents.get(owner) else {
+            break;
+        };
+        owner = parent;
+    }
+    false
+}
+
 // Binary search is used only after a fixed canonical limit forces pieces.
 fn largest(
     authority: &PlanAuthority,
@@ -756,6 +854,21 @@ fn split_with_guards(
             reference_resolution: None,
         }));
         let mut attach_shape = shape.clone();
+        // Proven single-IID allocations keep the compact event matrix. Only
+        // potentially plural sources require fixed-row dependency pieces.
+        let single_allocation = !attach_shape.single_input
+            || shape.type_id.kind() == TypeKind::Entity
+            || seed.iid.is_some()
+            || (kind != WriteKind::MatchPut
+                && seed
+                    .fields
+                    .iter()
+                    .any(|(field, _)| shape.keys.contains(field)))
+            || seed
+                .players
+                .first()
+                .is_some_and(|player| unique_player_identity(authority, player));
+        attach_shape.single_input &= !single_allocation;
         attach_shape.cleared_fields = &[];
         attach_shape.cleared_roles = &[];
         // A maximal canonical IID makes the cut independent of provider output.

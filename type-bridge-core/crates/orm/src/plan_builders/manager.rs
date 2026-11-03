@@ -769,6 +769,26 @@ impl ManagerPlans {
         }
     }
 
+    pub(crate) fn single_write_program(
+        &self,
+        name: &str,
+        kind: super::bulk_write::WriteKind,
+        iid: Option<&str>,
+        attributes: &DynamicAttributeMap,
+        players: &[DynamicRolePlayerInput],
+    ) -> Result<ManagerWrite> {
+        match self.single_write(name, kind, iid, attributes, players) {
+            Ok(plan) => Ok(ManagerWrite::One(plan)),
+            Err(OrmError::Match(error))
+                if super::bulk_write::forces_pieces_code(error.code().as_str()) =>
+            {
+                self.write_rows(name, kind, &[(iid, attributes, players)], true)
+                    .map(ManagerWrite::Pieces)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn keyed_put(
         &self,
         name: &str,
@@ -1351,12 +1371,26 @@ impl ManagerPlans {
     pub(crate) fn write_many(
         &self,
         name: &str,
+        kind: super::bulk_write::WriteKind,
+        items: &[(
+            Option<&str>,
+            &DynamicAttributeMap,
+            &[DynamicRolePlayerInput],
+        )],
+    ) -> Result<super::bulk_write::WriteProgram> {
+        self.write_rows(name, kind, items, false)
+    }
+
+    fn write_rows(
+        &self,
+        name: &str,
         mut kind: super::bulk_write::WriteKind,
         items: &[(
             Option<&str>,
             &DynamicAttributeMap,
             &[DynamicRolePlayerInput],
         )],
+        single: bool,
     ) -> Result<super::bulk_write::WriteProgram> {
         use super::bulk_write::{WriteRow, WriteShape};
         let type_id = self.type_id(name)?;
@@ -1536,8 +1570,14 @@ impl ManagerPlans {
             .filter(|field| !field.is_key() && !field.is_ordered)
             .map(|field| self.ownership(&type_id, &field.attr_name))
             .collect::<Result<Vec<_>>>()?;
-        let document_roles = if kind == super::bulk_write::WriteKind::DeleteReturning {
-            self.returning_roles(&type_id, false)?
+        let document_roles = if single || kind == super::bulk_write::WriteKind::DeleteReturning {
+            self.returning_roles(
+                &type_id,
+                matches!(
+                    kind,
+                    super::bulk_write::WriteKind::Put | super::bulk_write::WriteKind::Update
+                ),
+            )?
         } else {
             self.document_roles(&type_id)?
         };
@@ -1549,7 +1589,8 @@ impl ManagerPlans {
             self.authority()?,
             kind,
             WriteShape {
-                references_see_prior_writes: true,
+                references_see_prior_writes: !single,
+                single_input: single,
                 type_id: &type_id,
                 keys: &keys,
                 cleared_fields: &cleared_fields,
@@ -1560,13 +1601,14 @@ impl ManagerPlans {
                     super::bulk_write::WriteKind::PartialPut
                         | super::bulk_write::WriteKind::PartialUpdate
                 ),
-                return_documents: !matches!(
-                    kind,
-                    super::bulk_write::WriteKind::PartialPut
-                        | super::bulk_write::WriteKind::MatchPut
-                        | super::bulk_write::WriteKind::PartialUpdate
-                        | super::bulk_write::WriteKind::Delete
-                ),
+                return_documents: single
+                    || !matches!(
+                        kind,
+                        super::bulk_write::WriteKind::PartialPut
+                            | super::bulk_write::WriteKind::MatchPut
+                            | super::bulk_write::WriteKind::PartialUpdate
+                            | super::bulk_write::WriteKind::Delete
+                    ),
             },
             &rows,
         )
@@ -1710,6 +1752,15 @@ pub(crate) enum ReadTerminal {
     Identity,
     Count,
     Exists,
+}
+
+#[allow(
+    clippy::large_enum_variant,
+    reason = "small single writes retain their allocation-free plan path"
+)]
+pub(crate) enum ManagerWrite {
+    One(BuiltPlan),
+    Pieces(super::bulk_write::WriteProgram),
 }
 
 pub(crate) enum ManagerRead {

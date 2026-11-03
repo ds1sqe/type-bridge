@@ -5804,6 +5804,7 @@ async fn dynamic_nonkey_single_write_results_follow_typeql_fanout_and_role_cardi
 attributes:
   fanout-key: { value: string }
   fanout-selector: { value: string }
+  fanout-tag: { value: string }
 entities:
   fanout-person:
     owns:
@@ -5811,6 +5812,8 @@ entities:
       fanout-selector: { card: { min: 0, max: 1 } }
 relations:
   fanout-edge:
+    owns:
+      fanout-tag: { card: { min: 0 } }
     relates:
       member: { card: 1 }
 plays:
@@ -5846,7 +5849,7 @@ plays:
         .unwrap()
         .with_schema_authority(&authority);
     let registry = installed.manager_registry().unwrap();
-    database.execute_raw("define attribute fanout-key, value string; attribute fanout-selector, value string; entity fanout-person, owns fanout-key @key, owns fanout-selector @card(0..1), plays fanout-edge:member; relation fanout-edge, relates member @card(1);", TxType::Schema).await.unwrap();
+    database.execute_raw("define attribute fanout-key, value string; attribute fanout-selector, value string; attribute fanout-tag, value string; entity fanout-person, owns fanout-key @key, owns fanout-selector @card(0..1), plays fanout-edge:member; relation fanout-edge, owns fanout-tag @card(0..), relates member @card(1);", TxType::Schema).await.unwrap();
     let people = DynamicEntityManager::from_registry(
         &database,
         Arc::clone(&registry),
@@ -6026,6 +6029,81 @@ plays:
         let observed = log.lock().unwrap();
         assert_eq!(observed.statements.len(), 1);
         assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+    }
+    for literal in [false, true] {
+        let (counted, log) = counted_connection(&database, literal).await;
+        let manager = DynamicRelationManager::from_registry(
+            &counted,
+            Arc::clone(&registry),
+            registry.relation("fanout-edge").unwrap(),
+        );
+        let manager = if literal {
+            manager.literal_values()
+        } else {
+            manager
+        };
+        for operation in ["insert", "put_miss", "put_hit"] {
+            let suffix = if operation == "insert" {
+                "insert"
+            } else {
+                "put"
+            };
+            let attributes = (0..300)
+                .map(|index| {
+                    (
+                        "fanout-tag".into(),
+                        AttributeValue::String(format!("wide-{literal}-{suffix}-{index}")),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let expected = attributes
+                .iter()
+                .map(|(_, value)| match value {
+                    AttributeValue::String(value) => value.clone(),
+                    other => panic!("expected string tag, got {other:?}"),
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            let before = all_edges.count().await.unwrap();
+            *log.lock().unwrap() = DispatchLog::default();
+            let players = [player(None, Some(("fanout-selector", "shared")))];
+            let result = if operation == "insert" {
+                manager.insert(&attributes, &players).await
+            } else {
+                manager.put(&attributes, &players).await
+            }
+            .unwrap();
+            assert_eq!(result.count(), 2);
+            for row in result.items() {
+                assert_eq!(row.role_players.len(), 1);
+                assert_eq!(row.attributes.len(), 300);
+                let values = row
+                    .attributes
+                    .iter()
+                    .map(|(name, value)| {
+                        assert_eq!(name, "fanout-tag");
+                        match value {
+                            AttributeValue::String(value) => value.clone(),
+                            other => panic!("expected string tag, got {other:?}"),
+                        }
+                    })
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(values, expected);
+            }
+            {
+                let observed = log.lock().unwrap();
+                assert!(observed.statements.len() > 1);
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+                eprintln!(
+                    "DYNAMIC_WIDE_NONKEY_FANOUT literal={literal} operation={operation} count=2 values=300 statements={} transactions=1",
+                    observed.statements.len()
+                );
+            }
+            assert_eq!(
+                all_edges.count().await.unwrap(),
+                before + if operation == "put_hit" { 0 } else { 2 }
+            );
+        }
     }
     database.delete_database().await.unwrap();
     database.close().unwrap();

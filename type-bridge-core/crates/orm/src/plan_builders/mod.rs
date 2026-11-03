@@ -289,6 +289,7 @@ mod tests {
                 WriteKind::MatchPut,
                 WriteShape {
                     references_see_prior_writes: true,
+                    single_input: false,
                     type_id: &account,
                     keys: &[],
                     cleared_fields: &[],
@@ -355,6 +356,7 @@ mod tests {
             WriteKind::PartialUpdate,
             WriteShape {
                 references_see_prior_writes: true,
+                single_input: false,
                 type_id: &account,
                 keys: &[],
                 cleared_fields: std::slice::from_ref(&balance),
@@ -438,6 +440,7 @@ mod tests {
                 kind,
                 WriteShape {
                     references_see_prior_writes: true,
+                    single_input: false,
                     type_id: &account,
                     keys: std::slice::from_ref(&key),
                     cleared_fields: std::slice::from_ref(&balance),
@@ -492,6 +495,7 @@ mod tests {
                 WriteKind::MatchPut,
                 WriteShape {
                     references_see_prior_writes: true,
+                    single_input: false,
                     type_id: &account,
                     keys: &[],
                     cleared_fields: &[],
@@ -618,6 +622,7 @@ mod tests {
             WriteKind::MatchPut,
             WriteShape {
                 references_see_prior_writes: true,
+                single_input: false,
                 type_id: &purchase,
                 keys: &[],
                 cleared_fields: &[],
@@ -679,6 +684,7 @@ mod tests {
                     WriteKind::Update,
                     WriteShape {
                         references_see_prior_writes: prior_writes,
+                        single_input: false,
                         type_id: &purchase,
                         keys: &[],
                         cleared_fields: std::slice::from_ref(&field),
@@ -745,6 +751,7 @@ mod tests {
                     kind,
                     WriteShape {
                         references_see_prior_writes: true,
+                        single_input: false,
                         type_id: &purchase,
                         keys: &[],
                         cleared_fields: std::slice::from_ref(&field),
@@ -911,6 +918,7 @@ mod tests {
                     kind,
                     WriteShape {
                         references_see_prior_writes: earlier_writes,
+                        single_input: false,
                         type_id: &relation,
                         keys: std::slice::from_ref(&key),
                         cleared_fields: std::slice::from_ref(&key),
@@ -988,6 +996,7 @@ mod tests {
                 WriteKind::PartialPut,
                 WriteShape {
                     references_see_prior_writes: true,
+                    single_input: false,
                     type_id: &account,
                     keys: std::slice::from_ref(&key),
                     cleared_fields: std::slice::from_ref(&balance),
@@ -1037,6 +1046,7 @@ mod tests {
             WriteKind::PartialPut,
             WriteShape {
                 references_see_prior_writes: true,
+                single_input: false,
                 type_id: &account,
                 keys: std::slice::from_ref(&key),
                 cleared_fields: &[],
@@ -1092,6 +1102,7 @@ mod tests {
             WriteKind::Insert,
             WriteShape {
                 references_see_prior_writes: true,
+                single_input: false,
                 include_subtypes: false,
                 return_documents: true,
                 type_id: &account,
@@ -1133,6 +1144,7 @@ mod tests {
             WriteKind::Insert,
             WriteShape {
                 references_see_prior_writes: true,
+                single_input: false,
                 include_subtypes: false,
                 return_documents: true,
                 type_id: &relation,

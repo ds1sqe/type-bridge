@@ -503,7 +503,7 @@ fn dynamic_relation_update_exact_preflight_accounts_by_descriptor_index() {
     .unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn native_write_holds_the_borrowed_mutation_lease_through_materialization() {
     use crate::session::backend::{BoxFuture, DriverBackend, TransactionOps};
     use std::future::Future;
@@ -525,10 +525,15 @@ async fn native_write_holds_the_borrowed_mutation_lease_through_materialization(
         }
     }
     impl TransactionOps for Tx {
-        fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult>> {
-            Box::pin(async {
+        fn query(&mut self, query: &str) -> BoxFuture<'_, Result<QueryResult>> {
+            let (iid, name) = if query.contains("Bob") {
+                ("0x12", "Bob")
+            } else {
+                ("0x11", "Alice")
+            };
+            Box::pin(async move {
                 Ok(QueryResult::Documents(vec![
-                    serde_json::json!({"_iid":"0x11","_type":"person","attributes":{"name":"Alice"}}),
+                    serde_json::json!({"_iid":iid,"_type":"person","attributes":{"name":name}}),
                 ]))
             })
         }
@@ -568,38 +573,93 @@ async fn native_write_holds_the_borrowed_mutation_lease_through_materialization(
     let registry = installed.manager_registry().unwrap();
     let commits = Arc::new(AtomicUsize::new(0));
     let db = Database::with_backend(Box::new(Backend(Arc::clone(&commits))), "mapped-write");
-    let tx = db.transaction_context(TxType::Write).await.unwrap();
-    let manager = DynamicEntityManager::with_registry_transaction(
-        tx.clone(),
-        Arc::clone(&registry),
-        registry.entity("person").unwrap(),
-    )
-    .literal_values();
-    let error = manager
-        .write_mapped(
-            WriteKind::Insert,
-            None,
-            &vec![("name".into(), AttributeValue::String("Alice".into()))],
-            |rows| {
-                assert_eq!(rows.count(), 1);
-                let mut commit = Box::pin(tx.commit_sdk());
-                assert!(matches!(
-                    commit
-                        .as_mut()
-                        .poll(&mut Context::from_waker(Waker::noop())),
-                    Poll::Pending
-                ));
-                assert_eq!(commits.load(Ordering::SeqCst), 0);
-                Err::<(), _>(OrmError::Hydration {
+    for (group, expires) in [(false, false), (false, true), (true, false), (true, true)] {
+        let tx = db.transaction_context(TxType::Write).await.unwrap();
+        let manager = DynamicEntityManager::with_registry_transaction(
+            tx.clone(),
+            Arc::clone(&registry),
+            registry.entity("person").unwrap(),
+        )
+        .literal_values();
+        let map = || {
+            let mut commit = Box::pin(tx.commit_sdk());
+            assert!(matches!(
+                commit
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Pending
+            ));
+            assert_eq!(commits.load(Ordering::SeqCst), 0);
+            if expires {
+                let mut advance = Box::pin(tokio::time::advance(std::time::Duration::from_millis(
+                    crate::query_execution_limits::DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS + 1,
+                )));
+                let _ = advance
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()));
+                Ok(())
+            } else {
+                Err(OrmError::Hydration {
                     type_name: "person".into(),
                     message: "materializer refused".into(),
                 })
-            },
-        )
-        .await
+            }
+        };
+        let error = if group {
+            let plans = manager.plans.as_ref().unwrap();
+            let build = |name: &str| {
+                plans
+                    .single_write(
+                        "person",
+                        WriteKind::Insert,
+                        None,
+                        &vec![("name".into(), AttributeValue::String(name.into()))],
+                        &[],
+                    )
+                    .unwrap()
+            };
+            manager
+                .target
+                .write_plan_group_mapped(
+                    crate::plan_builders::bulk_write::WriteProgram::compact(vec![
+                        build("Alice"),
+                        build("Bob"),
+                    ]),
+                    |_, _| Ok(()),
+                    |rows| {
+                        assert_eq!(rows.len(), 2);
+                        map()
+                    },
+                )
+                .await
+        } else {
+            manager
+                .write_mapped(
+                    WriteKind::Insert,
+                    None,
+                    &vec![("name".into(), AttributeValue::String("Alice".into()))],
+                    |rows| {
+                        assert_eq!(rows.count(), 1);
+                        map()
+                    },
+                )
+                .await
+        }
         .unwrap_err();
-    assert!(matches!(error, OrmError::Hydration { .. }));
-    assert!(tx.commit_sdk().await.is_err());
-    assert_eq!(commits.load(Ordering::SeqCst), 0);
-    tx.rollback().await.unwrap();
+        if expires {
+            assert!(
+                matches!(&error, OrmError::ExecutionDiagnostic(diagnostic) if diagnostic.code().as_str() == "transaction_deadline_exceeded"),
+                "{error:?}"
+            );
+        } else {
+            assert!(matches!(error, OrmError::Hydration { .. }));
+        }
+        assert_eq!(
+            tx.lifecycle_state().await,
+            crate::session::context::TransactionContextState::RollbackOnly
+        );
+        assert!(tx.commit_sdk().await.is_err());
+        assert_eq!(commits.load(Ordering::SeqCst), 0);
+        tx.rollback().await.unwrap();
+    }
 }

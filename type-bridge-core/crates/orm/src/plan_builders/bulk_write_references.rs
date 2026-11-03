@@ -162,6 +162,7 @@ struct OwnedShape {
     document_roles: Vec<DocumentRole>,
     include_subtypes: bool,
     return_documents: bool,
+    single_input: bool,
 }
 impl OwnedShape {
     fn of(shape: &WriteShape<'_>) -> Self {
@@ -173,6 +174,7 @@ impl OwnedShape {
             document_roles: shape.document_roles.clone(),
             include_subtypes: shape.include_subtypes,
             return_documents: shape.return_documents,
+            single_input: shape.single_input,
         }
     }
     fn borrowed(&self) -> WriteShape<'_> {
@@ -185,6 +187,7 @@ impl OwnedShape {
             include_subtypes: self.include_subtypes,
             return_documents: self.return_documents,
             references_see_prior_writes: false,
+            single_input: self.single_input,
         }
     }
 }
@@ -209,6 +212,21 @@ pub(crate) struct ReferenceProgram {
     body_ceiling: usize,
 }
 impl ReferenceProgram {
+    pub(super) fn records_answers(&self) -> bool {
+        self.body
+            .as_ref()
+            .is_some_and(WriteProgram::records_answers)
+    }
+    pub(super) fn record_answer(
+        &mut self,
+        step: &WriteStep,
+        answer: &PlanAnswer,
+    ) -> Result<(), Diagnostic> {
+        if let Some(body) = &mut self.body {
+            body.record_answer(step, answer)?;
+        }
+        Ok(())
+    }
     pub(super) fn statement_count(&self) -> usize {
         self.statements
     }
@@ -253,7 +271,8 @@ impl ReferenceProgram {
                 player.iid = Some(iid);
                 player.key = None;
             }
-            let body = body(&self.authority, self.kind, &self.shape, &self.rows, None)?;
+            let body = body(&self.authority, self.kind, &self.shape, &self.rows, None)?
+                .prepare_static()?;
             if body.statement_count() > self.body_ceiling {
                 return Err(identity_error());
             }
@@ -550,6 +569,7 @@ mod tests {
             WriteKind::Update,
             WriteShape {
                 references_see_prior_writes: false,
+                single_input: false,
                 type_id: &relation,
                 keys: std::slice::from_ref(&key),
                 cleared_fields: &[key.clone(), tag],

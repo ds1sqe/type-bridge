@@ -287,7 +287,35 @@ impl StaticProgram {
         answer: &PlanAnswer,
     ) -> Result<(), Diagnostic> {
         if self.records_answers() {
-            self.answers.push(answer.to_staged_v3(step.plan.local())?);
+            let answer = answer.to_staged_v3(step.plan.local())?;
+            if !step.complete {
+                let StagedAnswerV3::Rows { rows } = &answer else {
+                    return Err(identity_error());
+                };
+                if rows.is_empty() && !step.missing_iid_noop {
+                    return Err(identity_error());
+                }
+                for row in rows {
+                    let [
+                        RemoteValue::Value {
+                            value: CanonicalValue::Long(ordinal),
+                        },
+                        identity,
+                    ] = row.as_slice()
+                    else {
+                        return Err(identity_error());
+                    };
+                    if usize::try_from(*ordinal).ok() != Some(step.ordinal) {
+                        return Err(identity_error());
+                    }
+                    match identity {
+                        RemoteValue::Thing { iid, .. } => step.check_identity(iid)?,
+                        RemoteValue::Absent if step.missing_iid_noop => {}
+                        _ => return Err(identity_error()),
+                    }
+                }
+            }
+            self.answers.push(answer);
         }
         Ok(())
     }
@@ -302,16 +330,16 @@ impl StaticProgram {
             step.expected_iid
         } else {
             let column = usize::from(entry.result_refs()[0].input.get());
-            plan.given_rows()
-                .and_then(|rows| rows.first())
-                .and_then(|row| row.values()[column].as_ref())
-                .and_then(|value| {
-                    if let CanonicalValue::String(iid) = value {
-                        Some(iid.as_str().to_owned())
-                    } else {
-                        None
-                    }
-                })
+            let mut iids = plan.given_rows().into_iter().flatten().filter_map(|row| {
+                match row.values()[column].as_ref() {
+                    Some(CanonicalValue::String(iid)) => Some(iid.as_str()),
+                    _ => None,
+                }
+            });
+            iids.next().and_then(|first| {
+                iids.all(|iid| iid.eq_ignore_ascii_case(first))
+                    .then(|| first.to_owned())
+            })
         };
         Ok(Some(WriteStep {
             plan: BuiltPlan {
@@ -334,6 +362,86 @@ mod static_tests {
     use super::*;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
+
+    #[test]
+    fn compact_source_layout_requires_iid_or_common_inherited_uniqueness() {
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
+        let yaml = r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  email: { value: string }
+  tag: { value: string }
+entities:
+  party:
+    abstract: true
+    owns:
+      identifier: { key: true }
+      email: { unique: true, card: { min: 0, max: 1 } }
+      tag: { card: { min: 0, max: 1 } }
+  person:
+    sub: party
+  employee:
+    sub: person
+  other:
+    owns:
+      identifier: { key: true }
+relations:
+  edge:
+    relates:
+      member: { card: { min: 0 } }
+plays:
+  party:
+    edge: [member]
+  other:
+    edge: [member]
+"#;
+        let declared = normalize_documents(
+            &SchemaDocumentSet::parse([(DocumentId::new("source-uniqueness.yaml").unwrap(), yaml)])
+                .unwrap(),
+        )
+        .unwrap();
+        let authority = PlanAuthority::new(
+            declared,
+            ManagedSemanticSchemaFingerprint::compute(
+                SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                b"source-uniqueness",
+            )
+            .unwrap(),
+        );
+        for (types, attribute, iid, expected) in [
+            (&["person", "employee"][..], "identifier", false, true),
+            (&["employee"][..], "identifier", false, true),
+            (&["person", "other"][..], "identifier", false, false),
+            (&["person"][..], "tag", false, false),
+            (&["person"][..], "email", false, true),
+            (&["person"][..], "tag", true, true),
+            (&[][..], "identifier", false, false),
+            (&["other"][..], "email", false, false),
+        ] {
+            let player = Player {
+                role: RoleId::new("edge", "member").unwrap(),
+                candidates: types
+                    .iter()
+                    .map(|name| TypeId::new(TypeKind::Entity, *name).unwrap())
+                    .collect(),
+                iid: iid.then(|| "0x10".into()),
+                key: (!iid).then(|| {
+                    (
+                        AttributeId::new(attribute).unwrap(),
+                        CanonicalValue::String(
+                            type_bridge_contract::value::CanonicalString::new("shared").unwrap(),
+                        ),
+                    )
+                }),
+            };
+            assert_eq!(
+                super::super::unique_player_identity(&authority, &player),
+                expected,
+                "types={types:?}, attribute={attribute}, iid={iid}"
+            );
+        }
+    }
 
     #[test]
     fn mixed_scalar_full_match_keeps_field_value_pairs_and_bounds_boolean_branches() {
@@ -396,6 +504,7 @@ mod static_tests {
                     include_subtypes: false,
                     return_documents: true,
                     references_see_prior_writes: true,
+                    single_input: false,
                 },
                 &WriteRow {
                     iid: None,
@@ -462,6 +571,7 @@ mod static_tests {
                     include_subtypes: false,
                     return_documents: false,
                     references_see_prior_writes: true,
+                    single_input: false,
                 },
                 &WriteRow {
                     iid: None,
@@ -540,18 +650,23 @@ mod static_tests {
                     present
                 );
             }
+            let inherited = program.entries[1]
+                .bind_source_result(
+                    &StagedAnswerV3::Rows {
+                        rows: vec![root("0x10"), root("0x20")],
+                    },
+                    authority.declared(),
+                )
+                .unwrap();
+            assert_eq!(inherited.given_rows().unwrap().len(), 2);
+            let inherited_column = usize::from(program.entries[1].result_refs()[0].input.get());
             assert_eq!(
-                program.entries[1]
-                    .bind_source_result(
-                        &StagedAnswerV3::Rows {
-                            rows: vec![root("0x10"), root("0x20")]
-                        },
-                        authority.declared()
-                    )
-                    .unwrap_err()
-                    .code()
-                    .as_str(),
-                "query_stage_result_ref_rows"
+                inherited.given_rows().unwrap()[0].values()[inherited_column],
+                Some(super::super::iid("0x10").unwrap())
+            );
+            assert_eq!(
+                inherited.given_rows().unwrap()[1].values()[inherited_column],
+                Some(super::super::iid("0x20").unwrap())
             );
             let absent = program.entries[2]
                 .bind_source_result(&StagedAnswerV3::Rows { rows: vec![] }, authority.declared())
@@ -593,6 +708,7 @@ mod static_tests {
             WriteKind::Insert,
             WriteShape {
                 references_see_prior_writes: true,
+                single_input: false,
                 type_id: &account,
                 keys: &[key],
                 cleared_fields: &[],
@@ -694,6 +810,7 @@ mod static_tests {
             WriteKind::PartialUpdate,
             WriteShape {
                 references_see_prior_writes: true,
+                single_input: false,
                 type_id: &account,
                 keys: &[],
                 cleared_fields: &[],
@@ -780,6 +897,7 @@ mod static_tests {
                 WriteKind::Insert,
                 WriteShape {
                     references_see_prior_writes: true,
+                    single_input: false,
                     type_id: &account,
                     keys: std::slice::from_ref(&key),
                     cleared_fields: &[],

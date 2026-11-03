@@ -504,14 +504,29 @@ fn one(
         },
         Stage::Distinct,
     ]);
+    let returning_single = shape.single_input && shape.return_documents;
+    if returning_single {
+        let [root] = outputs.as_slice() else {
+            return Err(invalid(
+                "manager_result_shape",
+                "A single write must retain one root binding",
+            ));
+        };
+        pipeline.push(Stage::Fetch(ThingDocument::new(
+            *root,
+            shape.document_roles.clone(),
+        )));
+    }
     let operation = if pipeline.iter().any(Stage::is_write) {
         Operation::Write {
-            returns: if kind == WriteKind::PartialUpdate {
+            returns: if kind == WriteKind::PartialUpdate && !returning_single {
                 WriteReturns::Matched
             } else {
                 WriteReturns::Rows
             },
         }
+    } else if returning_single {
+        Operation::Rows
     } else {
         Operation::Count
     };
@@ -520,7 +535,7 @@ fn one(
         pipeline,
         operation,
         QueryOutput::Rows {
-            columns: if kind == WriteKind::PartialUpdate {
+            columns: if kind == WriteKind::PartialUpdate || returning_single {
                 vec![]
             } else {
                 outputs
@@ -554,7 +569,9 @@ pub(super) fn build(
                 programs.push_back(WriteProgram::Sequential(std::mem::take(&mut plans)));
             }
             let mut piece_shape = shape.clone();
-            piece_shape.return_documents = false;
+            if !piece_shape.single_input {
+                piece_shape.return_documents = false;
+            }
             programs.push_back(
                 if kind == WriteKind::MatchPut
                     || (kind == WriteKind::PartialPut

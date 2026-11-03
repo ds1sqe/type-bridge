@@ -14,7 +14,7 @@ use crate::filter::Filter;
 use crate::match_request::{HydratedThing, MatchResult, SlotValue};
 use crate::plan_builders::BuiltPlan;
 use crate::plan_builders::bulk_write::WriteKind;
-use crate::plan_builders::manager::{ManagerPlans, ManagerRead, ReadTerminal};
+use crate::plan_builders::manager::{ManagerPlans, ManagerRead, ManagerWrite, ReadTerminal};
 use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
 use crate::query_plan_exec::PlanAnswer;
 use crate::session::backend::AnswerCancellation;
@@ -1082,26 +1082,42 @@ impl<'db> DynamicEntityManager<'db> {
         materialize: impl FnOnce(WriteResult<DynamicEntityRow>) -> Result<T>,
     ) -> Result<T> {
         let plans = self.plans.as_ref().expect("registry-backed manager");
-        let plan = plans.single_write(&self.descriptor.type_name, kind, iid, attributes, &[])?;
+        let program =
+            plans.single_write_program(&self.descriptor.type_name, kind, iid, attributes, &[])?;
         let require_row = matches!(
             kind,
             WriteKind::Insert | WriteKind::Put | WriteKind::PartialPut
         );
-        self.target
-            .write_plan(&plan, |answer| {
-                hydrate_write_rows(
-                    plans,
-                    &plan,
-                    &self.descriptor.type_name,
-                    answer,
-                    self.target.answer_limits(),
-                    iid,
-                    require_row,
-                    plan_entity_row,
-                )
-                .and_then(materialize)
-            })
-            .await
+        let hydrate = |plan: &BuiltPlan, answer| {
+            hydrate_write_rows(
+                plans,
+                plan,
+                &self.descriptor.type_name,
+                answer,
+                self.target.answer_limits(),
+                iid,
+                require_row,
+                plan_entity_row,
+            )
+        };
+        match program {
+            ManagerWrite::One(plan) => {
+                self.target
+                    .write_plan(&plan, |answer| hydrate(&plan, answer).and_then(materialize))
+                    .await
+            }
+            ManagerWrite::Pieces(program) => {
+                self.target
+                    .write_plan_group_mapped(
+                        program,
+                        |plan, answer| hydrate(plan, answer).map(WriteResult::into_items),
+                        |groups| {
+                            materialize(WriteResult::new(groups.into_iter().flatten().collect()))
+                        },
+                    )
+                    .await
+            }
+        }
     }
 
     fn hydrate_documents(&self, result: QueryResult) -> Result<Vec<DynamicEntityRow>> {
@@ -2319,7 +2335,7 @@ impl<'db> DynamicRelationManager<'db> {
         materialize: impl FnOnce(WriteResult<DynamicRelationRow>) -> Result<T>,
     ) -> Result<T> {
         let plans = self.plans.as_ref().expect("registry-backed manager");
-        let plan = plans.single_write(
+        let program = plans.single_write_program(
             &self.descriptor.type_name,
             kind,
             iid,
@@ -2330,21 +2346,36 @@ impl<'db> DynamicRelationManager<'db> {
             kind,
             WriteKind::Insert | WriteKind::Put | WriteKind::PartialPut
         ) || !role_players.is_empty();
-        self.target
-            .write_plan(&plan, |answer| {
-                hydrate_write_rows(
-                    plans,
-                    &plan,
-                    &self.descriptor.type_name,
-                    answer,
-                    self.target.answer_limits(),
-                    iid,
-                    require_row,
-                    plan_relation_row,
-                )
-                .and_then(materialize)
-            })
-            .await
+        let hydrate = |plan: &BuiltPlan, answer| {
+            hydrate_write_rows(
+                plans,
+                plan,
+                &self.descriptor.type_name,
+                answer,
+                self.target.answer_limits(),
+                iid,
+                require_row,
+                plan_relation_row,
+            )
+        };
+        match program {
+            ManagerWrite::One(plan) => {
+                self.target
+                    .write_plan(&plan, |answer| hydrate(&plan, answer).and_then(materialize))
+                    .await
+            }
+            ManagerWrite::Pieces(program) => {
+                self.target
+                    .write_plan_group_mapped(
+                        program,
+                        |plan, answer| hydrate(plan, answer).map(WriteResult::into_items),
+                        |groups| {
+                            materialize(WriteResult::new(groups.into_iter().flatten().collect()))
+                        },
+                    )
+                    .await
+            }
+        }
     }
 
     fn hydrate_documents(&self, result: QueryResult) -> Result<Vec<DynamicRelationRow>> {
@@ -2724,13 +2755,27 @@ impl DynamicExecutionTarget<'_> {
 
     async fn write_plan_group<T>(
         &self,
-        mut program: crate::plan_builders::bulk_write::WriteProgram,
+        program: crate::plan_builders::bulk_write::WriteProgram,
         map: impl FnOnce(Vec<PlanAnswer>) -> Result<T>,
+    ) -> Result<T> {
+        self.write_plan_group_mapped(program, |_, answer| Ok(answer), map)
+            .await
+    }
+
+    async fn write_plan_group_mapped<T, U>(
+        &self,
+        mut program: crate::plan_builders::bulk_write::WriteProgram,
+        mut map_step: impl FnMut(&BuiltPlan, PlanAnswer) -> Result<U>,
+        map: impl FnOnce(Vec<U>) -> Result<T>,
     ) -> Result<T> {
         if let crate::plan_builders::bulk_write::WriteProgram::Compact(plans) = &program
             && let [plan] = plans.as_slice()
         {
-            return self.write_plan(plan, |answer| map(vec![answer])).await;
+            return self
+                .write_plan(plan, |answer| {
+                    map_step(plan, answer).and_then(|answer| map(vec![answer]))
+                })
+                .await;
         }
         program = program
             .prepare_static()
@@ -2763,6 +2808,7 @@ impl DynamicExecutionTarget<'_> {
                 .next()
                 .map_err(crate::plan_builders::manager::diagnostic)?
             {
+                let records_answers = program.records_answers();
                 let plan = &step.plan;
                 lease.check_plan_provider(plan.local())?;
                 let query = if given {
@@ -2820,8 +2866,8 @@ impl DynamicExecutionTarget<'_> {
                         .accept_candidates(&step, &answer)
                         .map_err(crate::plan_builders::manager::diagnostic)?;
                 } else if step.complete {
-                    answers.push(answer);
-                } else {
+                    answers.push(map_step(plan, answer)?);
+                } else if !records_answers {
                     let iid = step
                         .identity(&answer)
                         .map_err(crate::plan_builders::manager::diagnostic)?;
@@ -2832,7 +2878,11 @@ impl DynamicExecutionTarget<'_> {
                 remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
                 remaining.items = remaining.items.saturating_sub(stats.processed_items);
             }
-            map(answers)
+            let value = map(answers)?;
+            deadline
+                .check(&cancellation)
+                .map_err(|diagnostic| OrmError::ExecutionDiagnostic(Box::new(diagnostic)))?;
+            Ok(value)
         }
         .await;
         match result {
