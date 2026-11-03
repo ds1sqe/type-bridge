@@ -43,14 +43,11 @@ use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
 };
 use type_bridge_contract::value::{CanonicalValue, DecimalValue, ValueTypeTag};
-use type_bridge_orm::_descriptor::{
-    EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor,
-};
+use type_bridge_orm::_descriptor::{OwnedAttributeDescriptor, RoleDescriptor, TypeDescriptor};
 use type_bridge_orm::_dynamic::{
     DynamicAttributeMap, DynamicComparisonOp, DynamicEntityRow, DynamicExpr, DynamicRelationRow,
     DynamicRolePlayer,
 };
-use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
 use type_bridge_orm::{
     AnswerCancellation, AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection,
@@ -60,9 +57,9 @@ use type_bridge_orm::{
     ProjectedCrudExecutor, ProjectedManagerComparison, ProjectedManagerFilter,
     ProjectedManagerFilterExecutor, ProjectedManagerFilterInvocationControl, ProjectedReference,
     ProjectedRolePlayer, ProjectedStructValue, ProjectedThing, ProviderRuntimeOwner,
-    QueryExecutionResourceLimits, QueryTarget, ThingKind, TransactionContext,
-    TransactionContextState, ValueType, resolve_generated_manager_lookup,
-    validate_projected_create_member_count, validate_projected_hydrated_member_count,
+    QueryExecutionResourceLimits, QueryTarget, ThingKind, TransactionContextState, ValueType,
+    resolve_generated_manager_lookup, validate_projected_create_member_count,
+    validate_projected_hydrated_member_count,
 };
 use type_bridge_schema::VerifiedSchemaAuthority;
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
@@ -2387,7 +2384,6 @@ impl NodeRuntimeProjection {
         let type_id = manageable_type(self.package.as_ref(), &type_key)?;
         let (database, runtime) = database.handles();
         Ok(NodeProjectedModelManager {
-            transaction_supports_given_stage: false,
             package: Arc::clone(&self.package),
             type_id,
             target: Some(OwnedQueryTarget::Database(database)),
@@ -2407,7 +2403,6 @@ impl NodeRuntimeProjection {
         let type_id = manageable_type(self.package.as_ref(), &type_key)?;
         let (connection, runtime) = connection.handles();
         Ok(NodeProjectedModelManager {
-            transaction_supports_given_stage: false,
             package: Arc::clone(&self.package),
             type_id,
             target: Some(OwnedQueryTarget::Proxy(connection)),
@@ -2426,10 +2421,8 @@ impl NodeRuntimeProjection {
     ) -> napi::Result<NodeProjectedModelManager> {
         let type_id = manageable_type(self.package.as_ref(), &type_key)?;
         let successor_batch_marker = transaction.successor_batch_marker();
-        let transaction_supports_given_stage = transaction.supports_given_stage();
         let (transaction, runtime) = transaction.handles();
         Ok(NodeProjectedModelManager {
-            transaction_supports_given_stage,
             package: Arc::clone(&self.package),
             type_id,
             target: Some(OwnedQueryTarget::Transaction(transaction)),
@@ -3327,7 +3320,6 @@ impl NodeRuntimeProjection {
 /// Exact CRUD manager backed only by verified projection descriptors.
 #[napi]
 pub struct NodeProjectedModelManager {
-    transaction_supports_given_stage: bool,
     package: Arc<InstalledPackage>,
     type_id: TypeId,
     target: Option<OwnedQueryTarget>,
@@ -3678,6 +3670,20 @@ impl NodeProjectedModelManager {
         })
     }
 
+    /// Preserve keyword reads on write contexts without relaxing canonical filters.
+    #[napi(js_name = "compatibilityFilter")]
+    pub fn compatibility_filter(&self) -> napi::Result<Option<NodeProjectedManagerFilter>> {
+        if self
+            .target
+            .as_ref()
+            .and_then(OwnedQueryTarget::transaction)
+            .is_some_and(|transaction| transaction.tx_type() != type_bridge_orm::TxType::Read)
+        {
+            return Ok(None);
+        }
+        self.manager_filter().map(Some)
+    }
+
     /// Preserve authored object-entry order for successor compatibility filters.
     #[napi(js_name = "filterEntriesJson")]
     pub fn filter_entries_json(&self, filters_json: String) -> napi::Result<Self> {
@@ -3704,7 +3710,6 @@ impl NodeProjectedModelManager {
             package: Arc::clone(&self.package),
             type_id: self.type_id.clone(),
             target: self.target.clone(),
-            transaction_supports_given_stage: self.transaction_supports_given_stage,
             successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filters: combined,
@@ -3720,66 +3725,67 @@ impl NodeProjectedModelManager {
     /// Fetch the first exact filtered value, or `null` when no value matches.
     #[napi(js_name = "firstJson")]
     pub fn first_json(&self) -> napi::Result<String> {
-        let value = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.first_exact_with_query(&self.filters))
-                    .map_err(orm_error)?
-                    .as_ref()
-                    .map(|row| hydrate_entity(self.package.as_ref(), &self.type_id, row))
-                    .transpose()?
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.first_exact_with_query(&self.filters))
-                    .map_err(orm_error)?
-                    .as_ref()
-                    .map(|row| hydrate_relation(self.package.as_ref(), &self.type_id, row))
-                    .transpose()?
-            }
-        };
+        let value = self
+            .read_first_projected()?
+            .map(|thing| projected_thing_wire(self.package.as_ref(), thing.as_ref()))
+            .transpose()?;
         serde_json::to_string(&value).map_err(json_error)
+    }
+
+    /// Read keyword-filter matches with opaque native origin retention.
+    #[napi(js_name = "allProjected")]
+    pub fn all_projected(&self) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+        self.read_all_projected()?
+            .into_iter()
+            .map(|thing| projected_envelope_arc(Arc::clone(&self.package), thing))
+            .collect()
+    }
+
+    /// Read the arbitrary first keyword-filter match with native origin retention.
+    #[napi(js_name = "firstProjected")]
+    pub fn first_projected(&self) -> napi::Result<Option<NodeProjectedValueEnvelope>> {
+        self.read_first_projected()?
+            .map(|thing| projected_envelope_arc(Arc::clone(&self.package), thing))
+            .transpose()
     }
 
     /// Count exact filtered values.
     #[napi]
     pub fn count(&self) -> napi::Result<BigInt> {
-        let count = match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.count_exact_with_query(&self.filters))
-                    .map_err(orm_error)?
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.count_exact_with_query(&self.filters))
-                    .map_err(orm_error)?
-            }
-        };
-        Ok(BigInt::from(count))
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        self.runtime
+            .block_on(executor.compatibility_count_on_target(
+                self.execution_target()?,
+                &self.type_id,
+                &self.filters,
+                self.read_control(),
+            ))
+            .map(BigInt::from)
+            .map_err(|error| {
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                )
+            })
+            .map_err(napi_sdk_diagnostic)
     }
 
     /// Return whether at least one exact filtered value exists.
     #[napi]
     pub fn exists(&self) -> napi::Result<bool> {
-        match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.exists_exact_with_query(&self.filters))
-                    .map_err(orm_error)
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.exists_exact_with_query(&self.filters))
-                    .map_err(orm_error)
-            }
-        }
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        self.runtime
+            .block_on(executor.compatibility_exists_on_target(
+                self.execution_target()?,
+                &self.type_id,
+                &self.filters,
+                self.read_control(),
+            ))
+            .map_err(|error| {
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                )
+            })
+            .map_err(napi_sdk_diagnostic)
     }
 }
 
@@ -3928,16 +3934,6 @@ impl NodeProjectedModelManager {
                 })
                 .collect()
         })
-    }
-
-    #[inline]
-    fn database(&self) -> Option<&Arc<Database>> {
-        self.target.as_ref().and_then(OwnedQueryTarget::database)
-    }
-
-    #[inline]
-    fn transaction(&self) -> Option<&TransactionContext> {
-        self.target.as_ref().and_then(OwnedQueryTarget::transaction)
     }
 
     fn write_many_projected<'env>(
@@ -4100,27 +4096,56 @@ impl NodeProjectedModelManager {
         Ok(input)
     }
 
+    fn execution_target(&self) -> napi::Result<type_bridge_orm::QueryTarget<'_>> {
+        self.target
+            .as_ref()
+            .map(OwnedQueryTarget::as_target)
+            .ok_or_else(|| runtime_error("projected manager has no execution target"))
+    }
+
+    fn read_control(&self) -> ProjectedManagerFilterInvocationControl {
+        ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default())
+    }
+
+    fn read_all_projected(&self) -> napi::Result<Vec<Arc<ProjectedThing>>> {
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        self.runtime
+            .block_on(executor.compatibility_all_on_target(
+                self.execution_target()?,
+                &self.type_id,
+                &self.filters,
+                self.read_control(),
+            ))
+            .map_err(|error| {
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                )
+            })
+            .map_err(napi_sdk_diagnostic)
+    }
+
+    fn read_first_projected(&self) -> napi::Result<Option<Arc<ProjectedThing>>> {
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        self.runtime
+            .block_on(executor.compatibility_first_on_target(
+                self.execution_target()?,
+                &self.type_id,
+                &self.filters,
+                self.read_control(),
+            ))
+            .map_err(|error| {
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                )
+            })
+            .map_err(napi_sdk_diagnostic)
+    }
+
     fn read_all_values(&self) -> napi::Result<Vec<ProjectedWire>> {
-        match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.get_exact_with_query(&self.filters, &[], None, None))
-                    .map_err(orm_error)?
-                    .iter()
-                    .map(|row| hydrate_entity(self.package.as_ref(), &self.type_id, row))
-                    .collect()
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                self.runtime
-                    .block_on(manager.get_exact_with_query(&self.filters, &[], None, None))
-                    .map_err(orm_error)?
-                    .iter()
-                    .map(|row| hydrate_relation(self.package.as_ref(), &self.type_id, row))
-                    .collect()
-            }
-        }
+        self.read_all_projected()?
+            .iter()
+            .map(|thing| projected_thing_wire(self.package.as_ref(), thing.as_ref()))
+            .collect()
     }
 
     fn descriptor(&self) -> napi::Result<TypeDescriptor> {
@@ -4129,70 +4154,6 @@ impl NodeProjectedModelManager {
             .descriptor(&self.type_id)
             .cloned()
             .map_err(orm_error)
-    }
-
-    fn entity_manager(
-        &self,
-        descriptor: Arc<EntityDescriptor>,
-    ) -> napi::Result<DynamicEntityManager<'_>> {
-        if let Some(transaction) = self.transaction() {
-            let manager = DynamicEntityManager::with_registry_transaction(
-                transaction.clone(),
-                self.package
-                    .projection
-                    .manager_registry()
-                    .map_err(orm_error)?,
-                descriptor,
-            );
-            return Ok(if self.transaction_supports_given_stage {
-                manager
-            } else {
-                manager.literal_values()
-            });
-        }
-        let database = self
-            .database()
-            .ok_or_else(|| runtime_error("projected manager has no execution target"))?;
-        Ok(DynamicEntityManager::from_registry(
-            database.as_ref(),
-            self.package
-                .projection
-                .manager_registry()
-                .map_err(orm_error)?,
-            descriptor,
-        ))
-    }
-
-    fn relation_manager(
-        &self,
-        descriptor: Arc<RelationDescriptor>,
-    ) -> napi::Result<DynamicRelationManager<'_>> {
-        if let Some(transaction) = self.transaction() {
-            let manager = DynamicRelationManager::with_registry_transaction(
-                transaction.clone(),
-                self.package
-                    .projection
-                    .manager_registry()
-                    .map_err(orm_error)?,
-                descriptor,
-            );
-            return Ok(if self.transaction_supports_given_stage {
-                manager
-            } else {
-                manager.literal_values()
-            });
-        }
-        let database = self
-            .database()
-            .ok_or_else(|| runtime_error("projected manager has no execution target"))?;
-        Ok(DynamicRelationManager::from_registry(
-            database.as_ref(),
-            self.package
-                .projection
-                .manager_registry()
-                .map_err(orm_error)?,
-            descriptor,
-        ))
     }
 }
 
@@ -7287,7 +7248,6 @@ entities:
         type_id: TypeId,
     ) -> NodeProjectedModelManager {
         NodeProjectedModelManager {
-            transaction_supports_given_stage: false,
             package: Arc::clone(&runtime.package),
             type_id,
             target: None,
@@ -7385,6 +7345,76 @@ entities:
                 })
                 .unwrap_err();
             assert_eq!(error.code().as_str(), "proxy_exchange_caller_owned");
+        }
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn keyword_reads_keep_native_origins_for_direct_and_borrowed_transactions() {
+        use type_bridge_orm::TxType;
+        use type_bridge_orm::session::backend::QueryResult;
+        for borrowed in [None, Some(TxType::Read), Some(TxType::Write)] {
+            let projection = ordered_runtime();
+            let doc = serde_json::json!({"_iid":"0xa1","_type":"person","attributes":{
+                "identifier":"person-1","score":3,"tag":[]
+            }});
+            let (database, state) = projection_recording_database_for_test(vec![
+                ProjectionRecordingResponse::Query(QueryResult::Documents(vec![doc.clone()])),
+                ProjectionRecordingResponse::Query(QueryResult::Documents(vec![doc])),
+                ProjectionRecordingResponse::Query(QueryResult::Rows(vec![
+                    serde_json::json!({"count2":{"kind":"value","value":type_bridge_contract::value::CanonicalValue::Long(1)}}),
+                ])),
+                ProjectionRecordingResponse::Query(QueryResult::Rows(vec![
+                    serde_json::json!({"root0":{"kind":"thing","iid":"0xa1","type_id":{"kind":"entity","label":"person"}}}),
+                ])),
+                ProjectionRecordingResponse::Query(QueryResult::Documents(vec![])),
+            ]);
+            let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+            let transaction = borrowed.map(|kind| {
+                runtime
+                    .block_on(database.transaction_context(kind))
+                    .unwrap()
+            });
+            let manager = NodeProjectedModelManager {
+                package: Arc::clone(&projection.package),
+                type_id: TypeId::new(TypeKind::Entity, "person").unwrap(),
+                target: Some(transaction.as_ref().map_or_else(
+                    || OwnedQueryTarget::Database(Arc::clone(&database)),
+                    |tx| OwnedQueryTarget::Transaction(tx.clone()),
+                )),
+                successor_batch_marker: None,
+                runtime: Arc::clone(&runtime),
+                filters: vec![],
+            };
+            let manager = manager.filter_entries_json(serde_json::json!([{
+                "name":"identifier__in", "value":[attribute_wire("identifier", ValueTypeTag::String, Value::String("person-1".into()))]
+            }]).to_string()).unwrap();
+            let all = manager.all_projected().unwrap();
+            assert_eq!(all.len(), 1);
+            let first = manager.first_projected().unwrap().unwrap();
+            for envelope in [&all[0], &first] {
+                assert_eq!(envelope.thing.iid(), "0xa1");
+                assert!(
+                    envelope
+                        .thing
+                        .try_to_reference(projection.package.projection.as_ref())
+                        .unwrap()
+                        .origin_carrier()
+                        .is_some()
+                );
+            }
+            assert_eq!(manager.count().unwrap().words, [1]);
+            assert!(manager.exists().unwrap());
+            assert!(manager.first_projected().unwrap().is_none());
+            if let Some(tx) = transaction {
+                assert_eq!(
+                    runtime.block_on(tx.lifecycle_state()),
+                    TransactionContextState::Active
+                );
+            }
+            let state = state.lock().unwrap();
+            assert_eq!(state.queries.len(), 5);
+            assert_eq!((state.commits, state.rollbacks), (0, 0));
         }
     }
 
@@ -7919,7 +7949,6 @@ entities:
                                     .unwrap()
                             });
                             let manager = NodeProjectedModelManager {
-                                transaction_supports_given_stage: false,
                                 package: Arc::clone(&projection.package),
                                 type_id: TypeId::new(kind, label).unwrap(),
                                 target: Some(match &transaction {
@@ -8026,7 +8055,6 @@ entities:
                         });
                         let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
                         let manager = NodeProjectedModelManager {
-                            transaction_supports_given_stage: false,
                             package: Arc::clone(&projection.package),
                             type_id: TypeId::new(
                                 kind,
@@ -8104,7 +8132,6 @@ entities:
                 });
                 let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
                 let manager = NodeProjectedModelManager {
-                    transaction_supports_given_stage: false,
                     package: Arc::clone(&projection.package),
                     type_id: TypeId::new(TypeKind::Entity, "group").unwrap(),
                     target: Some(match &transaction {
@@ -8246,7 +8273,6 @@ entities:
                         }
                         let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
                         let manager = NodeProjectedModelManager {
-                            transaction_supports_given_stage: false,
                             package: Arc::clone(&runtime_projection.package),
                             type_id: type_id.clone(),
                             target: Some(match &transaction {
@@ -8320,7 +8346,6 @@ entities:
                                 TransactionContextState::RollbackOnly
                             );
                             let transaction = crate::NodeRustTransactionContext {
-                                supports_given_stage: false,
                                 context: transaction,
                                 runtime: Arc::clone(&provider_runtime),
                                 successor_batch_invoked: marker,

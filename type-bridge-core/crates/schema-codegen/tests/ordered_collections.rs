@@ -1607,6 +1607,52 @@ assert.deepEqual(counters(nativeRoundTrip), {
 });
 assert.equal(counters(nativeRoundTrip).queries.length, 4);
 
+for (const targetKind of ["owned", "read", "write"]) {
+  const reading = fixture([
+    documents(recordDocument("0xdc", "keyword", ["read"])),
+    documents(recordDocument("0xdc", "keyword", ["read"])),
+    documents(recordDocument("0xdc", "keyword", ["read"])),
+    documents(recordDocument("0xdc", "keyword", ["read"])),
+    { Rows: [{ count2: scalar("long", 1) }] },
+    { Rows: [{ root0: thing("0xdc", "entity", "record") }] },
+    documents(),
+  ]);
+  let connection = reading.connection;
+  if (targetKind !== "owned") {
+    connection = Object.freeze({});
+    Handles.registerRustTransactionHandle(connection, reading.database.transaction(targetKind));
+  }
+  const unfiltered = Local.Record.manager(connection).all();
+  const compared = Local.Record.manager(connection).filter({ identifier: Local.Identifier.create("keyword") }).all();
+  for (const values of [unfiltered, compared]) {
+    assert.equal(Object.isFrozen(values), true);
+    assert.equal(values.length, 1);
+    assert.notEqual(Runtime.__testOrderedFacadeProof(values[0]), null);
+  }
+  const manager = Local.Record.manager(connection).filter({
+    identifier__in: [Local.Identifier.create("keyword")],
+  });
+  const all = manager.all();
+  assert.equal(Object.isFrozen(all), true);
+  assert.equal(all.length, 1);
+  const first = manager.first();
+  for (const value of [all[0], first]) {
+    assert.equal(value.iid, "0xdc");
+    assert.equal(value.identifier.value, "keyword");
+    assert.deepEqual(value.tag.map((tag) => tag.value), ["read"]);
+    assert.notEqual(Runtime.__testOrderedFacadeProof(value), null);
+  }
+  assert.equal(manager.count(), 1n);
+  assert.equal(manager.exists(), true);
+  assert.equal(manager.first(), null);
+  const state = counters(reading);
+  assert.deepEqual(state.opens, targetKind === "owned" ? Array(7).fill("read") : [targetKind]);
+  assert.equal(state.queries.length, 7);
+  assert.equal(state.commits, 0);
+  assert.equal(state.rollbacks, 0);
+  assert.equal(state.closes, targetKind === "owned" ? 7 : 0);
+}
+
 const sharedAuthority = Native.__newProjectionRecordingAuthority();
 const source = fixture([documents(personDocument("0xa7"))], sharedAuthority);
 const exactPerson = Local.Person.manager(source.connection).getByIid("0xa7");

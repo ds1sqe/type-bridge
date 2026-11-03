@@ -1421,38 +1421,6 @@ function isProjectedModelValue(value: unknown): value is object {
   );
 }
 
-function hydrateNativeResult<Complete>(
-  json: string,
-  expectedTypeKey: string,
-): Complete {
-  const value = JSON.parse(json) as unknown;
-  return hydrateProjectedValue(
-    parseProjectedWire(value),
-    expectedTypeKey,
-  ) as Complete;
-}
-
-function hydrateNativeResults<Complete>(
-  json: string,
-  expectedTypeKey: string,
-): readonly Complete[] {
-  const values = JSON.parse(json) as unknown;
-  if (!Array.isArray(values)) {
-    throw new TypeError(
-      "native projected manager returned a non-sequence result",
-    );
-  }
-  return Object.freeze(
-    values.map(
-      (value) =>
-        hydrateProjectedValue(
-          parseProjectedWire(value),
-          expectedTypeKey,
-        ) as Complete,
-    ),
-  );
-}
-
 function lowerProjectedValue(value: unknown): ProjectedWire {
   assertRecord(value, "projected value");
   const typeKey = value["__typebridgeModel"];
@@ -4623,7 +4591,7 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
   typeKey: Owner,
   native: NativeProjectedManager,
   compatibilityFilter: OrderedNativeManagerFilter | null = projectedManagerNativeCall(
-    () => native.managerFilter(),
+    () => native.compatibilityFilter(),
   ),
 ): OrderedProjectedModelManager<Complete, Owner> {
   const exactWire = (instance: Complete, operation: string): ProjectedWire => {
@@ -4761,7 +4729,7 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
         lowered.push({ name, value: lowerManagerFilterValue(value) });
       }
       let nextCompatibility: OrderedNativeManagerFilter | null = null;
-      const predicates = orderedCompatibilityPredicates(typeKey, entries);
+      const predicates = compatibilityFilter === null ? null : orderedCompatibilityPredicates(typeKey, entries);
       if (compatibilityFilter !== null && predicates !== null) {
         nextCompatibility = compatibilityFilter;
         for (const predicate of predicates) {
@@ -4811,15 +4779,17 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
     },
     all(): readonly Complete[] {
       return compatibilityFilter === null
-        ? hydrateNativeResults<Complete>(native.allJson(), typeKey)
+        ? Object.freeze(native.allProjected().map((envelope) =>
+            hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey),
+          ))
         : orderedProjectedFilterForNative<Complete, Owner>(
             typeKey,
             compatibilityFilter,
           ).all();
     },
     first(): Complete | null {
-      const value = JSON.parse(native.firstJson()) as unknown;
-      return value === null ? null : hydrateProjectedValue(parseProjectedWire(value), typeKey) as Complete;
+      const envelope = native.firstProjected();
+      return envelope === null ? null : hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey);
     },
     count(): bigint {
       return compatibilityFilter === null

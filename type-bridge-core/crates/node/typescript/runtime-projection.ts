@@ -435,8 +435,11 @@ export interface NativeProjectedManager {
     rowAt: (ordinal: number) => string,
   ): void;
   managerFilter(): NativeProjectedManagerFilter;
+  compatibilityFilter(): NativeProjectedManagerFilter | null;
   filterEntriesJson(filtersJson: string): NativeProjectedManager;
   getByIidProjected(iid: string): NativeProjectedValueEnvelope | null;
+  allProjected(): readonly NativeProjectedValueEnvelope[];
+  firstProjected(): NativeProjectedValueEnvelope | null;
   allJson(): string;
   firstJson(): string;
   count(): bigint;
