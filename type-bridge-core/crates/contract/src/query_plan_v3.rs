@@ -1346,7 +1346,7 @@ fn validate_stages(
                 }
                 *nodes -= reads.len();
                 if !reads.is_empty() {
-                    (mandatory, optional, _) = validate_pipeline(
+                    (mandatory, optional, _) = validate_native_pipeline(
                         &[ReadStage::Match {
                             patterns: reads.clone(),
                         }],

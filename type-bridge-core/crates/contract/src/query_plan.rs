@@ -1758,7 +1758,7 @@ fn validate_local_functions(
             // The predicate-node budget is one aggregate ceiling for the
             // whole plan: local bodies charge the same counter the root
             // conjunction does instead of resetting per function.
-            inspect_pattern(pattern, 1, bindings.len(), 0, limits, nodes)?;
+            inspect_pattern(pattern, 1, bindings.len(), 0, limits, nodes, false)?;
         }
         let returns = function.returns();
         check_binding(returns.input(), bindings.len())?;
@@ -1961,6 +1961,27 @@ fn validate_pipeline(
     limits: StructuralLimits,
     nodes: &mut usize,
 ) -> Result<(BTreeSet<BindingId>, BTreeSet<BindingId>, bool), Diagnostic> {
+    validate_pipeline_inner(pipeline, binding_count, input_count, limits, nodes, false)
+}
+
+fn validate_native_pipeline(
+    pipeline: &[ReadStage],
+    binding_count: usize,
+    input_count: usize,
+    limits: StructuralLimits,
+    nodes: &mut usize,
+) -> Result<(BTreeSet<BindingId>, BTreeSet<BindingId>, bool), Diagnostic> {
+    validate_pipeline_inner(pipeline, binding_count, input_count, limits, nodes, true)
+}
+
+fn validate_pipeline_inner(
+    pipeline: &[ReadStage],
+    binding_count: usize,
+    input_count: usize,
+    limits: StructuralLimits,
+    nodes: &mut usize,
+    native_optional_union: bool,
+) -> Result<(BTreeSet<BindingId>, BTreeSet<BindingId>, bool), Diagnostic> {
     let Some((first, rest)) = pipeline.split_first() else {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -1983,7 +2004,15 @@ fn validate_pipeline(
         ));
     }
     for pattern in patterns {
-        inspect_pattern(pattern, 1, binding_count, input_count, limits, nodes)?;
+        inspect_pattern(
+            pattern,
+            1,
+            binding_count,
+            input_count,
+            limits,
+            nodes,
+            native_optional_union,
+        )?;
     }
 
     // Keep every pattern reference for freshness checks, but derive the row
@@ -2242,6 +2271,23 @@ fn canonical_stage_set(
     Ok(set)
 }
 
+fn supported_optional_body(pattern: &QueryPattern, unions: bool) -> bool {
+    match pattern {
+        QueryPattern::Or { branches } => {
+            unions
+                && branches
+                    .iter()
+                    .flatten()
+                    .all(|child| supported_optional_body(child, unions))
+        }
+        QueryPattern::Not { .. }
+        | QueryPattern::Try { .. }
+        | QueryPattern::Reachable { .. }
+        | QueryPattern::FunctionCall { .. } => false,
+        _ => true,
+    }
+}
+
 fn inspect_pattern(
     pattern: &QueryPattern,
     depth: usize,
@@ -2249,6 +2295,7 @@ fn inspect_pattern(
     input_count: usize,
     limits: StructuralLimits,
     nodes: &mut usize,
+    native_optional_union: bool,
 ) -> Result<(), Diagnostic> {
     *nodes += 1;
     if !limits.allows_predicate_nodes(*nodes) {
@@ -2322,7 +2369,15 @@ fn inspect_pattern(
             }
             for branch in branches {
                 for child in branch {
-                    inspect_pattern(child, depth + 1, binding_count, input_count, limits, nodes)?;
+                    inspect_pattern(
+                        child,
+                        depth + 1,
+                        binding_count,
+                        input_count,
+                        limits,
+                        nodes,
+                        native_optional_union,
+                    )?;
                 }
             }
             Ok(())
@@ -2336,7 +2391,15 @@ fn inspect_pattern(
                 ));
             }
             for child in patterns {
-                inspect_pattern(child, depth + 1, binding_count, input_count, limits, nodes)?;
+                inspect_pattern(
+                    child,
+                    depth + 1,
+                    binding_count,
+                    input_count,
+                    limits,
+                    nodes,
+                    native_optional_union,
+                )?;
             }
             Ok(())
         }
@@ -2356,21 +2419,22 @@ fn inspect_pattern(
                 ));
             }
             for child in patterns {
-                if matches!(
-                    child,
-                    QueryPattern::Or { .. }
-                        | QueryPattern::Not { .. }
-                        | QueryPattern::Try { .. }
-                        | QueryPattern::Reachable { .. }
-                        | QueryPattern::FunctionCall { .. }
-                ) {
+                if !supported_optional_body(child, native_optional_union) {
                     return Err(failure(
                         DiagnosticCategory::InvalidContract,
                         "query_plan_try_body_unsupported",
                         "the first optional vocabulary admits only isa, has, links, and value patterns",
                     ));
                 }
-                inspect_pattern(child, depth + 1, binding_count, input_count, limits, nodes)?;
+                inspect_pattern(
+                    child,
+                    depth + 1,
+                    binding_count,
+                    input_count,
+                    limits,
+                    nodes,
+                    native_optional_union,
+                )?;
             }
             Ok(())
         }

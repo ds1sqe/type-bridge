@@ -2464,3 +2464,104 @@ fn optional_has_attachment_requires_a_bound_typed_owner_and_optional_flag() {
         }
     }
 }
+
+#[test]
+fn native_optional_unions_keep_branch_visibility_and_legacy_fences() {
+    let optional = QueryPattern::Try {
+        patterns: vec![QueryPattern::Or {
+            branches: vec![
+                vec![isa(0, entity("account"))],
+                vec![isa(0, entity("account"))],
+            ],
+        }],
+    };
+    let request = spec(
+        vec![Stage::Match {
+            patterns: vec![optional.clone().into()],
+        }],
+        vec![0],
+    );
+    let plan = QueryPlanV3::new(request.clone(), &schema()).unwrap();
+    let bytes = plan.canonical_bytes().unwrap();
+    assert_eq!(
+        decode_query_plan_v3(&bytes, &schema())
+            .unwrap()
+            .canonical_bytes()
+            .unwrap(),
+        bytes
+    );
+    assert_eq!(
+        QueryPlan::new(
+            request.bindings,
+            vec![],
+            vec![ReadStage::Match {
+                patterns: vec![optional]
+            }],
+            request.output,
+            request.managed_semantics
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "query_plan_v1_disjunction_unsupported"
+    );
+    let not_in_every_branch = QueryPattern::Try {
+        patterns: vec![QueryPattern::Or {
+            branches: vec![
+                vec![isa(0, entity("account"))],
+                vec![isa(1, entity("account"))],
+            ],
+        }],
+    };
+    assert_eq!(
+        QueryPlanV3::new(
+            spec(
+                vec![Stage::Match {
+                    patterns: vec![not_in_every_branch.into()]
+                }],
+                vec![0]
+            ),
+            &schema()
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "query_plan_output_not_visible"
+    );
+    for forbidden in [
+        QueryPattern::Not {
+            patterns: vec![isa(0, entity("account"))],
+        },
+        QueryPattern::Try {
+            patterns: vec![isa(0, entity("account"))],
+        },
+    ] {
+        for child in [
+            forbidden.clone(),
+            QueryPattern::Or {
+                branches: vec![vec![forbidden]],
+            },
+        ] {
+            assert_eq!(
+                QueryPlanV3::new(
+                    spec(
+                        vec![Stage::Match {
+                            patterns: vec![
+                                QueryPattern::Try {
+                                    patterns: vec![child]
+                                }
+                                .into()
+                            ]
+                        }],
+                        vec![0]
+                    ),
+                    &schema()
+                )
+                .unwrap_err()
+                .code()
+                .as_str(),
+                "query_plan_try_body_unsupported"
+            );
+        }
+    }
+}

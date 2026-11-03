@@ -149,9 +149,10 @@ Comparators are `contains`, `starts_with`, `ends_with`, `like`,
 `greater_or_equal`. Boolean branches are nonempty. Reachability bounds satisfy
 `0 <= min_depth <= max_depth <= 64` (the receiver's predicate-depth limit),
 with root-only reachability and expanded-hop node-budget checks. Functions use checked declarations and
-argument/return types. Nested boolean bodies and local functions retain the
-released read-pattern vocabulary. Let remains a root-match assignment; nested
-IID operands are the additive V3 exception described below.
+argument/return types. Nested boolean bodies retain the released read patterns
+and the native optional unions described below. Local functions keep their
+released body vocabulary. Let remains a root-match assignment; nested IID
+operands are the additive V3 exception described below.
 A root string iid pattern names a canonical thing IID (`0x` followed by 1..256
 hexadecimal digits) and constrains a mandatory binding that positive patterns
 of the same match type only as entities or relations; it adds
@@ -163,6 +164,11 @@ in only one disjunction arm. Forward/cyclic expression references fail. Positive
 matches establish mandatory bindings; disjunction exports the intersection of
 mandatory bindings. Try-only bindings are optional; negated bindings do not
 escape. Every write target must be mandatory and alive.
+
+A native `try` body may contain disjunctions of the existing positive patterns.
+Only bindings established in every arm become optional output bindings.
+Negation, nested `try`, reachability and function calls remain refused inside
+these arms. V1/V2 optional-pattern admission remains unchanged.
 
 Local functions have `name`, `bindings`, `parameters`, `body`, `returns`.
 Parameters are ordered label strings. Bindings use an independent dense scope.
