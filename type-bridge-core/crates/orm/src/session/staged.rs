@@ -412,7 +412,6 @@ fn format_op_index(index: Option<usize>) -> String {
 }
 
 /// Commit failure retaining the released ORM/provider error without reclassification.
-#[derive(Debug)]
 #[non_exhaustive]
 pub struct CommitError {
     /// Failing query index, or none for opening/commit.
@@ -425,7 +424,23 @@ pub struct CommitError {
     pub context: Box<FailureContext>,
     /// The signed server refusal of a proxy commit, kept under its own code.
     remote: Option<Box<SdkExecutionDiagnostic>>,
-    transport_error: Option<Box<crate::QueryTargetError>>,
+    source_error: Option<Box<crate::QueryTargetError>>,
+}
+impl std::fmt::Debug for CommitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommitError")
+            .field("op_index", &self.op_index)
+            .field("error", &self.error)
+            .field("failure", &self.failure)
+            .field("context", &self.context)
+            .field("remote", &self.remote)
+            .field(
+                "source_error",
+                &self.source_error.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 impl std::fmt::Display for CommitError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -434,7 +449,7 @@ impl std::fmt::Display for CommitError {
 }
 impl std::error::Error for CommitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(match &self.transport_error {
+        Some(match &self.source_error {
             Some(error) => error.as_ref(),
             None => self.error.as_ref(),
         })
@@ -454,7 +469,7 @@ impl CommitError {
             failure: failure.map(Box::new),
             context: Box::new(context),
             remote: None,
-            transport_error: None,
+            source_error: None,
         }
     }
     pub(crate) fn target_before_dispatch(error: crate::QueryTargetError) -> Self {
@@ -468,7 +483,7 @@ impl CommitError {
                     None,
                     Default::default(),
                 );
-                commit.transport_error = Some(Box::new(error));
+                commit.source_error = Some(Box::new(error));
                 commit
             }
             crate::QueryTargetError::Direct(error) => {
@@ -501,6 +516,23 @@ impl CommitError {
             ),
             None => Self::lifecycle(error),
         }
+    }
+    fn unknown(message: &str) -> Self {
+        let mut error = Self::new(
+            ClassifiedCommitError::Driver {
+                certainty: crate::error::CommitFailureCertainty::Unknown,
+                message: message.to_owned(),
+            },
+            None,
+            Default::default(),
+        );
+        error.failure = Some(Box::new(Failure::Indeterminate { code: None }));
+        error
+    }
+    pub(crate) fn proxy_projection_failure(diagnostic: SdkExecutionDiagnostic) -> Self {
+        let mut error = Self::unknown("proxy model projection failed after commit");
+        error.source_error = Some(Box::new(crate::QueryTargetError::Interrupted(diagnostic)));
+        error
     }
     fn lifecycle(error: PendingError) -> Self {
         Self::new(
@@ -2393,18 +2425,7 @@ impl Transaction {
     ) -> Result<(), CommitError> {
         let (request, bytes) = encoded;
         // Anything short of a verified reply may have committed.
-        let unknown = |message: &str| {
-            let mut error = CommitError::new(
-                ClassifiedCommitError::Driver {
-                    certainty: crate::error::CommitFailureCertainty::Unknown,
-                    message: message.to_owned(),
-                },
-                None,
-                Default::default(),
-            );
-            error.failure = Some(Box::new(Failure::Indeterminate { code: None }));
-            error
-        };
+        let unknown = CommitError::unknown;
         // Unknown from before the first byte is sent: a cancelled commit
         // leaves its handles unknown.
         execution.fail(unknown("the proxy commit outcome is not known").pending());
@@ -2441,7 +2462,7 @@ impl Transaction {
         let outcome = match sent {
             Err(cause) => {
                 let mut error = unknown("the proxy reply was not received");
-                error.transport_error = Some(Box::new(cause));
+                error.source_error = Some(Box::new(cause));
                 Err(error)
             }
             Ok(reply) => match proxy.verify(&reply, &request) {

@@ -45,7 +45,7 @@ pub enum QueryTargetError {
     /// The proxy route failed, or the invocation was cancelled or ran out of
     /// time.
     #[error("{0:?}")]
-    Interrupted(SdkExecutionDiagnostic),
+    Interrupted(#[source] SdkExecutionDiagnostic),
     /// An application-owned transport failure retained for its owning binding.
     #[error("caller-owned proxy transport failed")]
     Callback(#[source] Box<dyn std::error::Error + Send + Sync>),
@@ -510,13 +510,32 @@ impl ProxyQueryConnection {
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,
     ) -> Result<Vec<crate::query_plan_exec::PlanAnswer>, crate::session::staged::CommitError> {
+        self.execute_write_stack_mapped(entries, resources, cancellation, deadline, Ok)
+            .await
+    }
+
+    /// Materialize a verified write answer under the captured invocation policy.
+    /// Projection failure after remote commit leaves the outcome indeterminate.
+    #[doc(hidden)]
+    pub async fn execute_write_stack_mapped<T, F>(
+        &self,
+        entries: Vec<type_bridge_contract::query_remote_v3::StagedPlanV3>,
+        resources: QueryExecutionResourceLimits,
+        cancellation: &AnswerCancellation,
+        deadline: QueryExecutionDeadline,
+        mapper: F,
+    ) -> Result<T, crate::session::staged::CommitError>
+    where
+        F: FnOnce(Vec<crate::query_plan_exec::PlanAnswer>) -> Result<T, SdkExecutionDiagnostic>,
+    {
         use crate::session::staged::CommitError;
         let (resources, deadline) = QueryTarget::Proxy(self).budget(resources, deadline);
         deadline
             .check(cancellation)
             .map_err(|error| CommitError::target_before_dispatch(error.into()))?;
         if entries.is_empty() {
-            return Ok(vec![]);
+            return mapper(vec![])
+                .map_err(|error| CommitError::target_before_dispatch(error.into()));
         }
         let route = self
             .route
@@ -559,14 +578,26 @@ impl ProxyQueryConnection {
             .check(cancellation)
             .map_err(|error| CommitError::target_before_dispatch(error.into()))?;
         transaction.commit_with_policy(deadline, &limits).await?;
-        pending
+        let answers = pending
             .into_iter()
             .map(|pending| {
-                let answer = pending.get().map_err(CommitError::staging);
+                let answer = pending.get().map_err(|error| {
+                    CommitError::proxy_projection_failure(
+                        error
+                            .diagnostic()
+                            .cloned()
+                            .unwrap_or_else(SdkExecutionDiagnostic::internal_failure),
+                    )
+                });
                 drop(pending);
                 answer.map(Arc::unwrap_or_clone)
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        let mapped = mapper(answers).map_err(CommitError::proxy_projection_failure)?;
+        deadline
+            .check(cancellation)
+            .map_err(CommitError::proxy_projection_failure)?;
+        Ok(mapped)
     }
 
     pub(crate) async fn execute_read_plans(
@@ -1150,6 +1181,68 @@ mod policy_tests {
                     }
                 }
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_write_stack_mapper_failure_or_cancellation_preserves_unknown_outcome() {
+        for cancel in [false, true] {
+            let (connection, transport) = write_stack_fixture(0);
+            let resources = QueryExecutionResourceLimits::default();
+            let cancellation = AnswerCancellation::default();
+            let error = connection
+                .execute_write_stack_mapped(
+                    vec![purchase_entry(&connection)],
+                    resources,
+                    &cancellation,
+                    QueryExecutionDeadline::for_limits(resources),
+                    |answers| {
+                        assert_eq!(
+                            answers,
+                            vec![crate::query_plan_exec::PlanAnswer::Matched(1)]
+                        );
+                        if cancel {
+                            cancellation.cancel();
+                            Ok(())
+                        } else {
+                            Err(SdkExecutionDiagnostic::invalid_input(
+                                type_bridge_contract::sdk_diagnostic::SdkDiagnosticCode::new(
+                                    "mapper_rejected",
+                                )
+                                .unwrap(),
+                                type_bridge_contract::sdk_diagnostic::SdkDiagnosticMessage::new(
+                                    "private mapper input",
+                                )
+                                .unwrap(),
+                            ))
+                        }
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.diagnostic().code().as_str(), "commit_outcome_unknown");
+            assert!(matches!(
+                error.failure.as_deref(),
+                Some(type_bridge_contract::failure::Failure::Indeterminate { .. })
+            ));
+            let target = std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<QueryTargetError>()
+                .unwrap();
+            let source = std::error::Error::source(target)
+                .unwrap()
+                .downcast_ref::<SdkExecutionDiagnostic>()
+                .unwrap();
+            assert_eq!(
+                source.code().as_str(),
+                if cancel {
+                    "provider_cancelled"
+                } else {
+                    "mapper_rejected"
+                }
+            );
+            assert!(!format!("{error} {error:?}").contains("private mapper input"));
+            assert_eq!(transport.seen.lock().unwrap().len(), 1);
         }
     }
 

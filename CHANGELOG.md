@@ -36,6 +36,8 @@ All notable changes to TypeBridge will be documented in this file.
   their source while keeping `commit_outcome_unknown` as the outcome.
   Rust SDK conversion preserves that cause and the typed commit failure.
   Application error text remains absent from public diagnostics and rendering.
+  Proxy stack materialization failures and post-mapping cancellation retain
+  an indeterminate outcome after remote commit, with the typed cause available.
 
 - Single writes that match nothing now return `count: 0`, empty `items`, and
   absent `item`, including missing-player inserts and absent-root updates.
