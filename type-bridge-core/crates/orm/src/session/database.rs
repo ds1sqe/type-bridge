@@ -1255,4 +1255,67 @@ mod tests {
         assert_eq!(bounded.answer_limits(), Some(requested.effective()));
         bounded.close().await.unwrap();
     }
+    struct SlowRawBackend(Arc<std::sync::atomic::AtomicUsize>);
+    impl DriverBackend for SlowRawBackend {
+        fn open_transaction(
+            &self,
+            _: &str,
+            _: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn super::super::backend::TransactionOps>>> {
+            Box::pin(async {
+                Ok(Box::new(SlowRawBackend(Arc::clone(&self.0)))
+                    as Box<dyn super::super::backend::TransactionOps>)
+            })
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+    impl super::super::backend::TransactionOps for SlowRawBackend {
+        fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult>> {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(61)).await;
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(QueryResult::Documents(Vec::new()))
+            })
+        }
+        fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn raw_and_schema_reads_keep_their_unbounded_default() {
+        let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let db =
+            Database::with_backend(Box::new(SlowRawBackend(Arc::clone(&completed))), "slow-raw");
+        db.execute_raw("match $x isa person; fetch { 'x': $x };", TxType::Read)
+            .await
+            .unwrap();
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        crate::_schema::SchemaManager::new(&db)
+            .introspect()
+            .await
+            .unwrap();
+        assert_eq!(completed.load(Ordering::SeqCst), 4);
+
+        let mut tx = db.transaction(
+            super::super::staged::TransactionOptions::default()
+                .with_timeout(crate::QueryTimeout::from_milliseconds(60_000)),
+        );
+        tx.stage(super::super::staged::StagedQuery::new("slow raw", false))
+            .unwrap();
+        assert_eq!(
+            tx.commit().await.unwrap_err().diagnostic().code().as_str(),
+            "transaction_deadline_exceeded"
+        );
+        // The legacy mock completes its read; the configured deadline still refuses publication.
+        assert_eq!(completed.load(Ordering::SeqCst), 5);
+    }
 }

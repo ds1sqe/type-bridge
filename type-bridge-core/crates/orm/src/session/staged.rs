@@ -73,7 +73,8 @@ pub struct TransactionOptions {
     pub never_commit: bool,
     /// Relative answer timeout refreshed at every commit.
     pub answer_timeout: Option<Duration>,
-    /// Per-call timeout, inherited from the connection when unset (default 60000 ms).
+    /// Per-call timeout, inherited from the connection when unset.
+    /// Typed plans default to 60000 ms; raw queries have no implicit deadline.
     /// An explicit unbounded value disables this deadline; commit is never interrupted.
     pub timeout: Option<crate::QueryTimeout>,
 }
@@ -2104,7 +2105,13 @@ impl Transaction {
             .options
             .timeout
             .unwrap_or_else(|| {
-                if self.options.answer_timeout.is_some() {
+                if self.options.answer_timeout.is_some()
+                    || !self
+                        .stack
+                        .0
+                        .iter()
+                        .any(|item| matches!(item.slot, Slot::Plan { .. } | Slot::Program(_)))
+                {
                     crate::QueryTimeout::NONE
                 } else {
                     crate::QueryTimeout::default()
@@ -2821,6 +2828,18 @@ mod tests {
             })
         }
     }
+    #[test]
+    fn implicit_timeout_applies_to_typed_plans_but_not_raw_queries() {
+        let (mut raw, _) = fixture(TransactionOptions::default());
+        raw.stage(StagedQuery::new("raw read", false)).unwrap();
+        assert_eq!(raw.commit_timeout(), None);
+        let (mut typed, _) = fixture(TransactionOptions::default());
+        typed
+            .stage_plan(&crate::query_plan_exec::race::touch())
+            .unwrap();
+        assert_eq!(typed.commit_timeout(), Some(Duration::from_secs(60)));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn absolute_commit_deadline_counts_time_spent_staging() {
         let call = crate::QueryExecutionDeadline::from_timeout_milliseconds(10);
