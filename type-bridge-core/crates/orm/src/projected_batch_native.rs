@@ -177,7 +177,7 @@ impl BatchPlan<'_> {
             .ok_or_else(SdkExecutionDiagnostic::internal_failure)
     }
 
-    fn native_delete(
+    pub(super) fn native_delete(
         &self,
         rows: GivenRowsSpec,
     ) -> std::result::Result<BuiltPlan, SdkExecutionDiagnostic> {
@@ -236,11 +236,44 @@ impl ProjectedBatchExecutor<'_> {
             )
             .into());
         }
+        self.execute_on_proxy_mapped(proxy, batch, control, None, |result| {
+            let ProjectedBatchResult::Things(things) = result else {
+                return Err(SdkExecutionDiagnostic::internal_failure());
+            };
+            mapper(crate::WriteResult::new(things.into_items())).map(Some)
+        })
+        .await?
+        .ok_or_else(|| SdkExecutionDiagnostic::internal_failure().into())
+    }
+
+    pub(super) async fn execute_on_proxy_mapped<T, F>(
+        &self,
+        proxy: &crate::ProxyQueryConnection,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        empty: T,
+        mapper: F,
+    ) -> std::result::Result<T, crate::QueryTargetError>
+    where
+        F: FnOnce(ProjectedBatchResult) -> std::result::Result<T, SdkExecutionDiagnostic>,
+    {
+        if self.return_deleted && batch.operation() != ProjectedBatchOperation::Delete {
+            return Err(invalid_at_type(
+                "delete_returning_operation",
+                "Deletion snapshots require a delete batch",
+                batch.model(),
+            )
+            .into());
+        }
         let prepared = PreparedProjectedBatchInvocation::try_new(
             self.installed,
             batch,
             control.constrained_by(Some(proxy.answer_limits())),
         )?;
+        if batch.is_empty() {
+            return Ok(empty);
+        }
+        prepared.check_control()?;
         let identity = proxy.execution_identity();
         let query_limits = proxy
             .manager_write_query_limits(prepared.deadline(), prepared.cancellation())
@@ -249,9 +282,14 @@ impl ProjectedBatchExecutor<'_> {
             self.installed,
             &prepared,
             identity,
-            false,
+            self.return_deleted,
             query_limits.as_ref(),
         )?;
+        if batch.operation() == ProjectedBatchOperation::Delete {
+            return self
+                .execute_proxy_delete(proxy, &prepared, &plan, identity, mapper)
+                .await;
+        }
         let (mut program, mut ledger) = plan
             .write_program
             .take()
@@ -288,6 +326,11 @@ impl ProjectedBatchExecutor<'_> {
                             .next()
                             .map_err(diagnostic)?
                             .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+                        if plan.capture_role_snapshots
+                            && let Some(snapshots) = program.take_reference_snapshots()
+                        {
+                            consumer.resolved_references = Some(snapshots);
+                        }
                         let records_answers = program.records_answers();
                         program.record_answer(&step, &answer).map_err(diagnostic)?;
                         if step.complete {
@@ -303,21 +346,190 @@ impl ProjectedBatchExecutor<'_> {
                     let snapshots = consumer.resolved_references.take();
                     let things = consumer.finish()?;
                     ledger.charge_projected(things.items())?;
-                    for thing in things.items() {
+                    for (thing, &index) in things.items().iter().zip(things.input_indexes()) {
                         validate_written_role_identities(
                             self.installed,
                             &plan,
                             thing,
-                            0,
-                            snapshots.as_ref().and_then(|snapshots| snapshots.get(&0)),
+                            index,
+                            snapshots
+                                .as_ref()
+                                .and_then(|snapshots| snapshots.get(&index)),
                         )?;
                     }
                     prepared.check_control()?;
-                    mapper(crate::WriteResult::new(things.into_items()))
+                    mapper(ProjectedBatchResult::Things(things))
                 },
             )
             .await
             .map_err(|error| crate::QueryTargetError::Commit(Box::new(error)))
+    }
+
+    async fn execute_proxy_delete<T, F>(
+        &self,
+        proxy: &crate::ProxyQueryConnection,
+        prepared: &PreparedProjectedBatchInvocation<'_>,
+        plan: &BatchPlan<'_>,
+        identity: &DatabaseExecutionIdentity,
+        mapper: F,
+    ) -> Result<T, crate::QueryTargetError>
+    where
+        F: FnOnce(ProjectedBatchResult) -> Result<T, SdkExecutionDiagnostic>,
+    {
+        let iids = self.return_deleted.then(|| {
+            plan.rows
+                .iter()
+                .map(|(_, row)| row_iid(row).expect("normalized deletion IID").to_owned())
+                .collect::<Vec<_>>()
+        });
+        let plans = if let Some(iids) = &iids {
+            let registry = self.installed.manager_registry().map_err(|error| {
+                at_type(
+                    lower_orm_error(&error, SdkProviderOperation::Write),
+                    plan.model.id(),
+                )
+            })?;
+            let manager = crate::plan_builders::manager::ManagerPlans::new(registry)
+                .with_query_limits(plan.authority.shared_query_limits());
+            crate::_manager::returning::DeleteSelection::Iids(iids)
+                .plans(&manager, plan.model.id().label().as_str(), true)
+                .map_err(|error| {
+                    at_type(
+                        lower_orm_error(&error, SdkProviderOperation::Write),
+                        plan.model.id(),
+                    )
+                })?
+                .into_vec()
+        } else {
+            input_chunks(plan.delete_rows()?, false)?
+                .into_iter()
+                .map(|rows| plan.native_delete(rows))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let statements = plans
+            .len()
+            .checked_mul(if self.return_deleted { 2 } else { 1 })
+            .ok_or_else(complexity_overflow)?;
+        let resources = prepared.limits().for_adapter_statements(statements);
+        let mut ledger =
+            ExecutionLedger::new(resources, prepared.batch().resource_measure().bytes());
+        ledger.charge_preflight(
+            plan.preflight_bytes,
+            u32::try_from(statements).map_err(|_| complexity_overflow())?,
+        )?;
+        let entries = plans
+            .iter()
+            .map(|native| {
+                type_bridge_contract::query_remote_v3::StagedPlanV3::new(
+                    native.local(),
+                    native.local().given_rows().unwrap_or_default().to_vec(),
+                    plan.authority.declared(),
+                )
+                .map_err(diagnostic)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        prepared.check_control()?;
+        proxy
+            .execute_write_stack_mapped(
+                entries,
+                resources,
+                prepared.cancellation(),
+                prepared.deadline(),
+                |answers| {
+                    if answers.len() != plans.len() {
+                        return Err(SdkExecutionDiagnostic::internal_failure());
+                    }
+                    let result = if let Some(iids) = &iids {
+                        let registry = self
+                            .installed
+                            .manager_registry()
+                            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+                        let descriptor = registry
+                            .descriptor_id(plan.model.id().label().as_str())
+                            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+                        let rows = plans
+                            .iter()
+                            .zip(answers)
+                            .map(|(plan, answer)| {
+                                let crate::query_plan_exec::PlanAnswer::Documents(documents) =
+                                    answer
+                                else {
+                                    return Err(SdkExecutionDiagnostic::internal_failure());
+                                };
+                                crate::_manager::returning::capture_rows(
+                                    &registry,
+                                    plan.local(),
+                                    &documents,
+                                    &descriptor,
+                                    resources,
+                                )
+                                .map_err(|error| {
+                                    lower_orm_error(&error, SdkProviderOperation::Read)
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let ordered =
+                            crate::_manager::returning::ordered_things(rows.iter().flatten(), iids)
+                                .map_err(|error| {
+                                    lower_orm_error(&error, SdkProviderOperation::Read)
+                                })?;
+                        let rows = lower_deleted_rows(&registry, plan.model.id().kind(), &ordered)
+                            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+                        let things = self.project_deleted_rows(plan, rows, identity)?;
+                        ledger.charge_projected(things.items())?;
+                        ProjectedBatchResult::Things(things)
+                    } else {
+                        let mut identities = DeleteIdentityConsumer::new(plan.row_count)?;
+                        for (native, answer) in plans.iter().zip(answers) {
+                            accept_native_answer(
+                                native.local(),
+                                answer,
+                                Reply::Mutation,
+                                &mut identities,
+                            )?;
+                        }
+                        identities.finish(plan)?;
+                        ProjectedBatchResult::Deleted
+                    };
+                    prepared.check_control()?;
+                    mapper(result)
+                },
+            )
+            .await
+            .map_err(|error| crate::QueryTargetError::Commit(Box::new(error)))
+    }
+
+    fn project_deleted_rows(
+        &self,
+        plan: &BatchPlan<'_>,
+        rows: Vec<(usize, DeletedRow)>,
+        identity: &DatabaseExecutionIdentity,
+    ) -> Result<crate::BatchWriteResult<ProjectedThing>, SdkExecutionDiagnostic> {
+        let mut things = crate::BatchWriteResult::try_with_capacity(rows.len())
+            .map_err(|_| allocation_failure())?;
+        for (index, row) in rows {
+            let mut thing = match row {
+                DeletedRow::Entity(row) => {
+                    let iid = row
+                        .iid
+                        .clone()
+                        .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+                    self.project_entity(row, plan.model.id(), &iid, identity)?
+                }
+                DeletedRow::Relation(row) => {
+                    let iid = row
+                        .iid
+                        .clone()
+                        .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+                    self.project_relation(row, plan.model.id(), &iid, identity)?
+                }
+            };
+            thing.mark_deleted()?;
+            things
+                .try_push(index, thing)
+                .map_err(|_| allocation_failure())?;
+        }
+        Ok(things)
     }
 
     pub(super) async fn run_native(
@@ -334,7 +546,8 @@ impl ProjectedBatchExecutor<'_> {
                     plan.model.id(),
                 )
             })?;
-            let plans = crate::plan_builders::manager::ManagerPlans::new(registry);
+            let plans = crate::plan_builders::manager::ManagerPlans::new(registry)
+                .with_query_limits(plan.authority.shared_query_limits());
             let iids = plan
                 .rows
                 .iter()
@@ -362,23 +575,7 @@ impl ProjectedBatchExecutor<'_> {
                 prepared.cancellation(),
                 prepared.deadline(),
                 |registry, things, _, remaining| {
-                    let rows = things
-                        .iter()
-                        .map(|(index, thing)| match plan.model.id().kind() {
-                            TypeKind::Entity => {
-                                crate::_manager::dynamic::plan_entity_row(registry, thing)
-                                    .map(|row| (*index, DeletedRow::Entity(row)))
-                            }
-                            TypeKind::Relation => {
-                                crate::_manager::dynamic::plan_relation_row(registry, thing)
-                                    .map(|row| (*index, DeletedRow::Relation(row)))
-                            }
-                            _ => Err(crate::plan_builders::manager::invalid(
-                                "manager_result_shape",
-                                "Deletion requires an entity or relation",
-                            )),
-                        })
-                        .collect::<crate::Result<Vec<_>>>()?;
+                    let rows = lower_deleted_rows(registry, plan.model.id().kind(), things)?;
                     Ok((rows, remaining))
                 },
             )
@@ -390,30 +587,7 @@ impl ProjectedBatchExecutor<'_> {
                 )
             })?;
             let (rows, remaining) = rows;
-            let mut things = crate::BatchWriteResult::try_with_capacity(rows.len())
-                .map_err(|_| allocation_failure())?;
-            for (index, row) in rows {
-                let mut thing = match row {
-                    DeletedRow::Entity(row) => {
-                        let iid = row
-                            .iid
-                            .clone()
-                            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-                        self.project_entity(row, plan.model.id(), &iid, identity)?
-                    }
-                    DeletedRow::Relation(row) => {
-                        let iid = row
-                            .iid
-                            .clone()
-                            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-                        self.project_relation(row, plan.model.id(), &iid, identity)?
-                    }
-                };
-                thing.mark_deleted()?;
-                things
-                    .try_push(index, thing)
-                    .map_err(|_| allocation_failure())?;
-            }
+            let things = self.project_deleted_rows(plan, rows, identity)?;
             let mut ledger = ExecutionLedger::new(remaining, 0);
             ledger.charge_projected(things.items())?;
             prepared.check_control()?;
@@ -816,6 +990,29 @@ fn input_chunks_reserved(
     })
 }
 
+fn lower_deleted_rows(
+    registry: &crate::_registry::DescriptorRegistry,
+    kind: TypeKind,
+    things: &[(usize, &crate::match_request::HydratedThing)],
+) -> crate::Result<Vec<(usize, DeletedRow)>> {
+    things
+        .iter()
+        .map(|(index, thing)| {
+            let row = match kind {
+                TypeKind::Entity => crate::_manager::dynamic::plan_entity_row(registry, thing)
+                    .map(DeletedRow::Entity),
+                TypeKind::Relation => crate::_manager::dynamic::plan_relation_row(registry, thing)
+                    .map(DeletedRow::Relation),
+                _ => Err(crate::plan_builders::manager::invalid(
+                    "manager_result_shape",
+                    "Deletion requires an entity or relation",
+                )),
+            }?;
+            Ok((*index, row))
+        })
+        .collect()
+}
+
 enum DeletedRow {
     Entity(DynamicEntityRow),
     Relation(DynamicRelationRow),
@@ -995,21 +1192,42 @@ fn accept_hydration_answer(
     plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
     answer: crate::query_plan_exec::PlanAnswer,
     inner: &mut dyn AnswerConsumer,
-) -> std::result::Result<(), SdkExecutionDiagnostic> {
-    let crate::query_plan_exec::PlanAnswer::Documents(documents) = answer else {
-        return Err(SdkExecutionDiagnostic::internal_failure());
-    };
+) -> Result<(), SdkExecutionDiagnostic> {
+    accept_native_answer(plan, answer, Reply::Hydration, inner)
+}
+
+fn accept_native_answer(
+    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    answer: crate::query_plan_exec::PlanAnswer,
+    reply: Reply,
+    inner: &mut dyn AnswerConsumer,
+) -> Result<(), SdkExecutionDiagnostic> {
     let mut consumer = Consumer {
         record: &mut |_: &AnswerItem| {},
         inner,
         plan,
-        reply: Reply::Hydration,
+        reply,
         deferred: None,
     };
-    for document in documents {
-        consumer
-            .decode(AnswerItem::Document(document))
-            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+    match (reply, answer) {
+        (Reply::Hydration, crate::query_plan_exec::PlanAnswer::Documents(documents)) => {
+            for document in documents {
+                consumer
+                    .decode(AnswerItem::Document(document))
+                    .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+            }
+        }
+        (
+            Reply::Mutation | Reply::ReferenceResolution,
+            crate::query_plan_exec::PlanAnswer::Rows(rows),
+        ) => {
+            for row in rows {
+                consumer
+                    .decode(AnswerItem::Row(row))
+                    .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?;
+            }
+        }
+        _ => return Err(SdkExecutionDiagnostic::internal_failure()),
     }
     Ok(())
 }

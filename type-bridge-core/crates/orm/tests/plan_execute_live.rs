@@ -1995,7 +1995,11 @@ async fn native_batches_keep_key_identity_replace_players_and_collect_without_ca
         let ProjectedBatchResult::Things(things) = result else {
             panic!("expected things")
         };
-        things
+        assert_eq!(
+            things.input_indexes(),
+            (0..things.count()).collect::<Vec<_>>()
+        );
+        things.into_items()
     };
     let people = things(
         executor
@@ -2652,7 +2656,11 @@ async fn native_batches_preserve_integer_keys_and_model_ownership_constraints() 
         let ProjectedBatchResult::Things(things) = result else {
             panic!("model batch result");
         };
-        things
+        assert_eq!(
+            things.input_indexes(),
+            (0..things.count()).collect::<Vec<_>>()
+        );
+        things.into_items()
     };
     let text = |value: &str| CanonicalValue::String(CanonicalString::new(value).unwrap());
     let executor = ProjectedBatchExecutor::new(&installed);

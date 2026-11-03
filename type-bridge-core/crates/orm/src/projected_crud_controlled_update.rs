@@ -841,6 +841,8 @@ mod tests {
         model: TypeId,
         roots: usize,
         tags: usize,
+        input_indexes: std::sync::Mutex<Option<Vec<usize>>>,
+        mutation_columns: std::sync::atomic::AtomicUsize,
         seen: std::sync::Mutex<Vec<type_bridge_contract::query_remote_v3::StagedRequestV3>>,
     }
     impl crate::session::staged_proxy::StagedTransport for SingleProxyTransport {
@@ -867,6 +869,7 @@ mod tests {
                     self.advertisement.query_limits(),
                 )
                 .unwrap();
+                let input_indexes = self.input_indexes.lock().unwrap().clone();
                 let mut answers = Vec::new();
                 for entry in request.plans() {
                     let plan = entry.bind_results(&answers, &self.schema).unwrap();
@@ -878,13 +881,18 @@ mod tests {
                             _ => None,
                         }) {
                         let mut documents = Vec::new();
-                        for iid in ["0x20", "0x22"].iter().take(self.roots) {
+                        for (position, iid) in
+                            ["0x20", "0x22", "0x24"].iter().take(self.roots).enumerate()
+                        {
+                            let input_index = input_indexes
+                                .as_ref()
+                                .map_or(0, |indexes| indexes[position]);
                             let mut document = serde_json::json!({
                                 "_iid": iid, "_type": self.model.label().as_str(),
                                 "attributes": {"item-key":"key", "item-tag": (0..self.tags).map(|index| format!("tag-{index}")).collect::<Vec<_>>()}
                             });
                             for scalar in &fetch.scalars {
-                                document[scalar.key.as_str()] = serde_json::json!(0);
+                                document[scalar.key.as_str()] = serde_json::json!(input_index);
                             }
                             for (index, role) in fetch.roles.iter().enumerate() {
                                 let player = serde_json::json!({"_iid":"0x10", "_type":"wide-item", "attributes":{"item-key":"player"}});
@@ -910,21 +918,30 @@ mod tests {
                         else {
                             panic!("identity output")
                         };
-                        assert_eq!(columns.len(), 2);
+                        assert_eq!(
+                            columns.len(),
+                            self.mutation_columns
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                        );
                         StagedAnswerV3::Rows {
-                            rows: ["0x20", "0x22"]
+                            rows: ["0x20", "0x22", "0x24"]
                                 .iter()
                                 .take(self.roots)
-                                .map(|iid| {
-                                    vec![
-                                        RemoteValue::Value {
-                                            value: CanonicalValue::Long(0),
-                                        },
-                                        RemoteValue::Thing {
+                                .enumerate()
+                                .map(|(position, iid)| {
+                                    let index = input_indexes
+                                        .as_ref()
+                                        .map_or(0, |indexes| indexes[position]);
+                                    let mut row = vec![RemoteValue::Value {
+                                        value: CanonicalValue::Long(index as i64),
+                                    }];
+                                    if columns.len() == 2 {
+                                        row.push(RemoteValue::Thing {
                                             iid: (*iid).into(),
                                             type_id: self.model.clone(),
-                                        },
-                                    ]
+                                        });
+                                    }
+                                    row
                                 })
                                 .collect(),
                         }
@@ -1019,6 +1036,8 @@ mod tests {
             model,
             roots,
             tags,
+            input_indexes: std::sync::Mutex::new(None),
+            mutation_columns: std::sync::atomic::AtomicUsize::new(2),
             seen: std::sync::Mutex::new(vec![]),
         });
         (
@@ -1032,6 +1051,15 @@ mod tests {
         installed: &InstalledRuntimeProjection,
         model: &TypeId,
         tags: usize,
+    ) -> ProjectedCreate {
+        proxy_batch_input(installed, model, tags, "key")
+    }
+
+    fn proxy_batch_input(
+        installed: &InstalledRuntimeProjection,
+        model: &TypeId,
+        tags: usize,
+        key: &str,
     ) -> ProjectedCreate {
         let kind = model.kind();
         let scalar = |attribute: &str, value: String| {
@@ -1048,7 +1076,7 @@ mod tests {
             vec![
                 (
                     OwnsFactId::new(model.clone(), AttributeId::new("item-key").unwrap()).unwrap(),
-                    vec![scalar("item-key", "key".into())],
+                    vec![scalar("item-key", key.to_owned())],
                 ),
                 (
                     OwnsFactId::new(model.clone(), AttributeId::new("item-tag").unwrap()).unwrap(),
@@ -1075,6 +1103,254 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn batch_proxy_writes_keep_sparse_plural_indexes_and_one_exchange() {
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            for operation in [
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchOperation::Put,
+                ProjectedBatchOperation::Update,
+            ] {
+                let model = TypeId::new(
+                    kind,
+                    if kind == TypeKind::Entity {
+                        "wide-item"
+                    } else {
+                        "wide-edge"
+                    },
+                )
+                .unwrap();
+                let update = operation == ProjectedBatchOperation::Update;
+                let indexes = if update { vec![0, 2] } else { vec![1, 1, 2] };
+                let (installed, proxy, transport) =
+                    single_proxy_fixture(model.clone(), indexes.len(), 1);
+                *transport.input_indexes.lock().unwrap() = Some(indexes.clone());
+                let control = ProjectedBatchInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                );
+                let rows = (0..3)
+                    .map(|index| {
+                        let input =
+                            proxy_batch_input(&installed, &model, 1, &format!("key-{index}"));
+                        if update {
+                            ProjectedBatchRow::Update {
+                                iid: ["0x20", "0x21", "0x22"][index].into(),
+                                replacement: input,
+                            }
+                        } else {
+                            ProjectedBatchRow::Create(input)
+                        }
+                    })
+                    .collect();
+                let batch = ProjectedBatch::try_new_for_invocation(
+                    &installed, model, operation, rows, &control,
+                )
+                .unwrap();
+                let mapped = std::sync::atomic::AtomicUsize::new(0);
+                let direct = crate::projected_batch_executor::inline_batch_plan_bytes_for_test(
+                    &installed,
+                    &batch,
+                    proxy.execution_identity(),
+                    false,
+                )
+                .unwrap();
+                let result = ProjectedBatchExecutor::new(&installed)
+                    .execute_on_target_mapped(
+                        crate::QueryTarget::Proxy(&proxy),
+                        &batch,
+                        control,
+                        None,
+                        |result| {
+                            mapped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            Ok(Some(result))
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let Some(ProjectedBatchResult::Things(things)) = result else {
+                    panic!("expected mapped batch");
+                };
+                assert_eq!(things.count(), indexes.len());
+                assert_eq!(things.input_indexes(), indexes);
+                assert_eq!(mapped.load(std::sync::atomic::Ordering::Relaxed), 1);
+                let seen = transport.seen.lock().unwrap();
+                assert_eq!(seen.len(), 1);
+                assert_eq!(seen[0].plans().len(), 1);
+                assert_eq!(
+                    seen[0].plans()[0]
+                        .bound_plan(&transport.schema)
+                        .unwrap()
+                        .canonical_bytes()
+                        .unwrap(),
+                    direct
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_proxy_empty_inputs_are_validated_without_exchange_or_mapper() {
+        let model = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
+        let (installed, proxy, transport) = single_proxy_fixture(model.clone(), 0, 0);
+        for operation in [
+            ProjectedBatchOperation::Insert,
+            ProjectedBatchOperation::Put,
+            ProjectedBatchOperation::Update,
+            ProjectedBatchOperation::Delete,
+        ] {
+            let control =
+                ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+            let batch = ProjectedBatch::try_new_for_invocation(
+                &installed,
+                model.clone(),
+                operation,
+                vec![],
+                &control,
+            )
+            .unwrap();
+            let value = ProjectedBatchExecutor::new(&installed)
+                .execute_on_target_mapped(
+                    crate::QueryTarget::Proxy(&proxy),
+                    &batch,
+                    control,
+                    7,
+                    |_| panic!("empty mapper invoked"),
+                )
+                .await
+                .unwrap();
+            assert_eq!(value, 7);
+            assert!(transport.seen.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_proxy_deletes_and_snapshots_share_one_plan_and_original_iid_indexes() {
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            for returning in [false, true] {
+                for roots in [0, 2] {
+                    let model = TypeId::new(
+                        kind,
+                        if kind == TypeKind::Entity {
+                            "wide-item"
+                        } else {
+                            "wide-edge"
+                        },
+                    )
+                    .unwrap();
+                    let (installed, proxy, transport) =
+                        single_proxy_fixture(model.clone(), roots, 1);
+                    *transport.input_indexes.lock().unwrap() = Some(vec![0, 2]);
+                    transport
+                        .mutation_columns
+                        .store(1, std::sync::atomic::Ordering::Relaxed);
+                    let control = ProjectedBatchInvocationControl::capture(
+                        Default::default(),
+                        Default::default(),
+                    );
+                    let batch = ProjectedBatch::try_new_for_invocation(
+                        &installed,
+                        model,
+                        ProjectedBatchOperation::Delete,
+                        ["0x20", "0x21", "0x22"]
+                            .into_iter()
+                            .map(|iid| ProjectedBatchRow::Delete { iid: iid.into() })
+                            .collect(),
+                        &control,
+                    )
+                    .unwrap();
+                    let executor = ProjectedBatchExecutor::new(&installed);
+                    let executor = if returning {
+                        executor.returning_deleted()
+                    } else {
+                        executor
+                    };
+                    let direct = crate::projected_batch_executor::inline_batch_plan_bytes_for_test(
+                        &installed,
+                        &batch,
+                        proxy.execution_identity(),
+                        returning,
+                    )
+                    .unwrap();
+                    let output = executor
+                        .execute_on_target_mapped(
+                            crate::QueryTarget::Proxy(&proxy),
+                            &batch,
+                            control,
+                            None,
+                            |result| Ok(Some(result)),
+                        )
+                        .await
+                        .unwrap();
+                    if returning {
+                        let Some(ProjectedBatchResult::Things(things)) = output else {
+                            panic!("expected snapshots");
+                        };
+                        assert_eq!(things.count(), roots);
+                        assert_eq!(
+                            things.input_indexes(),
+                            if roots == 0 { &[][..] } else { &[0, 2][..] }
+                        );
+                        assert!(things.items().iter().all(ProjectedThing::is_deleted));
+                    } else {
+                        assert!(matches!(output, Some(ProjectedBatchResult::Deleted)));
+                    }
+                    let seen = transport.seen.lock().unwrap();
+                    assert_eq!(seen.len(), 1);
+                    assert_eq!(seen[0].plans().len(), 1);
+                    assert_eq!(
+                        seen[0].plans()[0]
+                            .bound_plan(&transport.schema)
+                            .unwrap()
+                            .canonical_bytes()
+                            .unwrap(),
+                        direct
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_proxy_mapping_failure_preserves_commit_outcome_and_original_diagnostic() {
+        let model = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
+        let (installed, proxy, transport) = single_proxy_fixture(model.clone(), 1, 1);
+        let control =
+            ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+        let batch = ProjectedBatch::try_new_for_invocation(
+            &installed,
+            model.clone(),
+            ProjectedBatchOperation::Insert,
+            vec![ProjectedBatchRow::Create(proxy_single_input(
+                &installed, &model, 1,
+            ))],
+            &control,
+        )
+        .unwrap();
+        let expected = ProjectedBatchExecutor::binding_materialization_failure(0);
+        let error = ProjectedBatchExecutor::new(&installed)
+            .execute_on_target_mapped(
+                crate::QueryTarget::Proxy(&proxy),
+                &batch,
+                control,
+                (),
+                |_| Err(expected.clone()),
+            )
+            .await
+            .unwrap_err();
+        let crate::QueryTargetError::Commit(error) = error else {
+            panic!("expected staged failure");
+        };
+        assert_eq!(error.diagnostic().code().as_str(), "commit_outcome_unknown");
+        let source = std::error::Error::source(error.as_ref()).unwrap();
+        let original = std::error::Error::source(source)
+            .unwrap()
+            .downcast_ref::<SdkExecutionDiagnostic>()
+            .unwrap();
+        assert_eq!(*original, expected);
+        assert_eq!(transport.seen.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

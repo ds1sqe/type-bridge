@@ -16,7 +16,7 @@ use std::collections::HashMap;
     clippy::large_enum_variant,
     reason = "single-plan returning deletes avoid an allocation"
 )]
-enum DeletionPlans {
+pub(crate) enum DeletionPlans {
     One(crate::plan_builders::BuiltPlan),
     Many(Vec<crate::plan_builders::BuiltPlan>),
 }
@@ -28,6 +28,13 @@ impl DeletionPlans {
             Self::Many(plans)
         }
     }
+    pub(crate) fn into_vec(self) -> Vec<crate::plan_builders::BuiltPlan> {
+        match self {
+            Self::One(plan) => vec![plan],
+            Self::Many(plans) => plans,
+        }
+    }
+
     fn len(&self) -> usize {
         match self {
             Self::One(_) => 1,
@@ -49,7 +56,12 @@ pub(crate) enum DeleteSelection<'a> {
 }
 
 impl DeleteSelection<'_> {
-    fn plans(&self, plans: &ManagerPlans, name: &str, exact: bool) -> Result<DeletionPlans> {
+    pub(crate) fn plans(
+        &self,
+        plans: &ManagerPlans,
+        name: &str,
+        exact: bool,
+    ) -> Result<DeletionPlans> {
         match self {
             Self::Iids(iids) if iids.len() <= type_bridge_contract::limits::MAX_INPUT_ROWS => plans
                 .delete_many(name, iids, exact, true)
@@ -331,7 +343,7 @@ async fn delete_chunks_on_lease<T>(
     materialize(&plans.registry, &ordered, documents, remaining)
 }
 
-fn capture_rows(
+pub(crate) fn capture_rows(
     registry: &DescriptorRegistry,
     plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
     documents: &[serde_json::Value],
@@ -350,7 +362,7 @@ fn capture_rows(
     Ok(rows)
 }
 
-fn ordered_things<'row>(
+pub(crate) fn ordered_things<'row>(
     rows: impl IntoIterator<Item = &'row crate::match_request::MatchRow>,
     iids: &[String],
 ) -> Result<Vec<(usize, &'row HydratedThing)>> {

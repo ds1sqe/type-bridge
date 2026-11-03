@@ -513,7 +513,7 @@ async fn empty_and_missing_given_transport_reject_without_transaction_or_provide
             .execute(&database, &empty, control())
             .await
             .unwrap(),
-        ProjectedBatchResult::Things(vec![])
+        ProjectedBatchResult::Things(Default::default())
     );
     assert!(state.lock().unwrap().opens.is_empty());
 
@@ -604,6 +604,7 @@ async fn mapped_execution_preserves_input_order_before_owned_commit() {
                     panic!("insert returned a delete result")
                 };
                 Ok(things
+                    .into_items()
                     .into_iter()
                     .map(|thing| thing.iid().to_owned())
                     .collect())
@@ -641,8 +642,9 @@ async fn first_middle_and_last_mapper_failures_roll_back_owned_execution_once() 
                     let ProjectedBatchResult::Things(things) = result else {
                         panic!("insert returned a delete result")
                     };
-                    let mut mapped = Vec::with_capacity(things.len());
-                    for (ordinal, thing) in things.into_iter().enumerate() {
+                    let mut mapped = Vec::with_capacity(things.count());
+                    let (items, indexes) = things.into_parts();
+                    for (thing, ordinal) in items.into_iter().zip(indexes) {
                         if ordinal == failing_ordinal {
                             return Err(ProjectedBatchExecutor::binding_materialization_failure(
                                 u64::try_from(ordinal).expect("three-row batch ordinal fits u64"),
@@ -735,8 +737,9 @@ async fn borrowed_mapper_failure_latches_the_exact_cause_and_rejects_commit() {
                 let ProjectedBatchResult::Things(things) = result else {
                     panic!("insert returned a delete result")
                 };
-                let mut mapped = Vec::with_capacity(things.len());
-                for (ordinal, thing) in things.into_iter().enumerate() {
+                let mut mapped = Vec::with_capacity(things.count());
+                let (items, indexes) = things.into_parts();
+                for (thing, ordinal) in items.into_iter().zip(indexes) {
                     if ordinal == 1 {
                         return Err(ProjectedBatchExecutor::binding_materialization_failure(
                             u64::try_from(ordinal).expect("three-row batch ordinal fits u64"),
@@ -876,6 +879,7 @@ async fn cancellation_triggered_by_the_mapper_poisons_borrowed_execution() {
                     panic!("insert returned a delete result")
                 };
                 Ok(things
+                    .into_items()
                     .into_iter()
                     .map(|thing| thing.iid().to_owned())
                     .collect())
@@ -941,6 +945,7 @@ async fn deadline_crossed_by_the_mapper_poisons_borrowed_execution() {
                     panic!("insert returned a delete result")
                 };
                 Ok(things
+                    .into_items()
                     .into_iter()
                     .map(|thing| thing.iid().to_owned())
                     .collect())
@@ -1013,7 +1018,11 @@ async fn entity_insert_is_one_call_and_correlates_shuffled_documents_by_ordinal(
             panic!("insert returned delete result")
         };
         assert_eq!(
-            things.iter().map(|thing| thing.iid()).collect::<Vec<_>>(),
+            things
+                .items()
+                .iter()
+                .map(|thing| thing.iid())
+                .collect::<Vec<_>>(),
             ["0x10", "0x11"]
         );
         let state = state.lock().unwrap();
@@ -1072,7 +1081,11 @@ async fn put_uses_one_multirow_key_pattern_and_preserves_hit_identity() {
         panic!("put returned delete result")
     };
     assert_eq!(
-        things.iter().map(|thing| thing.iid()).collect::<Vec<_>>(),
+        things
+            .items()
+            .iter()
+            .map(|thing| thing.iid())
+            .collect::<Vec<_>>(),
         ["0x10", "0x11"]
     );
     let state = state.lock().unwrap();
@@ -1128,9 +1141,9 @@ async fn empty_ordered_only_model_batches_insert_and_update_without_empty_write_
         else {
             panic!("memo model result")
         };
-        assert_eq!(things.len(), 1);
-        assert_eq!(things[0].iid(), "0x10");
-        assert!(things[0].fields()[&field(&memo, "tag")].is_empty());
+        assert_eq!(things.count(), 1);
+        assert_eq!(things.items()[0].iid(), "0x10");
+        assert!(things.items()[0].fields()[&field(&memo, "tag")].is_empty());
         let state = state.lock().unwrap();
         assert_eq!(state.calls.len(), 1);
         assert!(
@@ -1393,7 +1406,11 @@ async fn mixed_relation_put_is_one_call_and_keeps_key_hit_identity() {
         panic!("relation put returned delete result")
     };
     assert_eq!(
-        things.iter().map(|thing| thing.iid()).collect::<Vec<_>>(),
+        things
+            .items()
+            .iter()
+            .map(|thing| thing.iid())
+            .collect::<Vec<_>>(),
         ["0x30", "0x31"]
     );
     let state = state.lock().unwrap();
@@ -2342,8 +2359,8 @@ async fn native_batches_split_five_thousand_rows_atomically_for_every_write_form
                     let ProjectedBatchResult::Things(things) = result.unwrap() else {
                         panic!("write result");
                     };
-                    assert_eq!(things.len(), 5000);
-                    for (ordinal, thing) in things.iter().enumerate() {
+                    assert_eq!(things.count(), 5000);
+                    for (ordinal, thing) in things.items().iter().enumerate() {
                         assert_eq!(thing.iid(), format!("0x{:04x}", ordinal + 1));
                     }
                 }
@@ -2447,8 +2464,8 @@ async fn wide_unordered_fields_use_only_forced_pieces_and_last_failure_rolls_bac
                     }) else {
                         panic!("write result")
                     };
-                    assert_eq!(things[0].fields()[&tag].len(), count);
-                    let actual = things[0].fields()[&tag]
+                    assert_eq!(things.items()[0].fields()[&tag].len(), count);
+                    let actual = things.items()[0].fields()[&tag]
                         .iter()
                         .map(|value| value.value().clone())
                         .collect::<std::collections::BTreeSet<_>>();
@@ -2577,8 +2594,8 @@ async fn wide_unordered_players_use_only_forced_pieces_and_last_failure_rolls_ba
                     }) else {
                         panic!("write result")
                     };
-                    assert_eq!(things[0].roles()[&member].len(), count);
-                    let actual = things[0].roles()[&member]
+                    assert_eq!(things.items()[0].roles()[&member].len(), count);
+                    let actual = things.items()[0].roles()[&member]
                         .iter()
                         .map(|player| player.iid().to_owned())
                         .collect::<std::collections::BTreeSet<_>>();
@@ -2643,7 +2660,7 @@ async fn homogeneous_relation_put_hits_and_misses_keep_one_provider_call() {
         else {
             panic!("put result");
         };
-        assert_eq!(things[0].iid(), iid);
+        assert_eq!(things.items()[0].iid(), iid);
         let state = state.lock().unwrap();
         assert_eq!(state.calls.len(), 1);
         assert!(state.calls[0].0.contains("put $root0 isa! membership"));
@@ -2701,10 +2718,10 @@ async fn ordered_role_returning_delete_keeps_empty_roles_and_refuses_population_
             let ProjectedBatchResult::Things(things) = result.unwrap() else {
                 panic!("returning deletion")
             };
-            assert_eq!(things.len(), 1);
-            assert_eq!(things[0].iid(), "0x20");
-            assert!(things[0].is_deleted());
-            assert!(things[0].roles()[&role].is_empty());
+            assert_eq!(things.count(), 1);
+            assert_eq!(things.items()[0].iid(), "0x20");
+            assert!(things.items()[0].is_deleted());
+            assert!(things.items()[0].roles()[&role].is_empty());
             let state = state.lock().unwrap();
             assert_eq!(state.calls.len(), 2);
             assert!(!state.calls[0].0.contains("delete"));
@@ -2778,8 +2795,8 @@ async fn returning_batch_captures_all_chunks_before_any_deletion() {
         let ProjectedBatchResult::Things(things) = result.unwrap() else {
             panic!("returning deletion");
         };
-        assert_eq!(things.len(), 5000);
-        for (ordinal, thing) in things.iter().enumerate() {
+        assert_eq!(things.count(), 5000);
+        for (ordinal, thing) in things.items().iter().enumerate() {
             assert!(thing.is_deleted());
             assert_eq!(thing.iid(), format!("0x{:04x}", ordinal + 1));
         }
@@ -2979,7 +2996,7 @@ async fn raised_query_dimensions_keep_wide_projected_batches_in_one_statement() 
             else {
                 panic!("write result")
             };
-            assert_eq!(things[0].fields()[&tag].len(), 300);
+            assert_eq!(things.items()[0].fields()[&tag].len(), 300);
             let state = state.lock().unwrap();
             assert_eq!(state.opens, [TxType::Write]);
             assert_eq!(

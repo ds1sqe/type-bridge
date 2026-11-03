@@ -202,6 +202,12 @@ impl PlanAuthority {
         self
     }
 
+    pub(crate) fn shared_query_limits(
+        &self,
+    ) -> Option<&Arc<type_bridge_contract::limits::QueryLimits>> {
+        self.query_limits.as_ref()
+    }
+
     pub(crate) fn query_limits(&self) -> type_bridge_contract::limits::QueryLimits {
         self.query_limits
             .as_deref()

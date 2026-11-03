@@ -127,6 +127,39 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         self
     }
 
+    /// Execute a batch on the connection-selected target with the same mapper.
+    ///
+    /// Empty batches validate admission without dispatch or materialization.
+    /// Direct owned writes retain pre-commit mapping; borrowed writes retain
+    /// their mutation lease. Proxy mapping preserves the staged commit outcome.
+    #[doc(hidden)]
+    pub async fn execute_on_target_mapped<T, F>(
+        &self,
+        target: crate::QueryTarget<'_>,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        empty: T,
+        mapper: F,
+    ) -> std::result::Result<T, crate::QueryTargetError>
+    where
+        F: FnOnce(ProjectedBatchResult) -> std::result::Result<T, SdkExecutionDiagnostic>,
+    {
+        match target {
+            crate::QueryTarget::Database(database) => self
+                .execute_mapped(database, batch, control, empty, mapper)
+                .await
+                .map_err(Into::into),
+            crate::QueryTarget::Transaction(transaction) => self
+                .execute_in_transaction_mapped(transaction, batch, control, empty, mapper)
+                .await
+                .map_err(Into::into),
+            crate::QueryTarget::Proxy(proxy) => {
+                self.execute_on_proxy_mapped(proxy, batch, control, empty, mapper)
+                    .await
+            }
+        }
+    }
+
     /// Execute and commit one batch in an owned write transaction.
     pub async fn execute(
         &self,
@@ -371,6 +404,56 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
             }
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn inline_batch_plan_bytes_for_test(
+    installed: &InstalledRuntimeProjection,
+    batch: &ProjectedBatch,
+    identity: &DatabaseExecutionIdentity,
+    returning: bool,
+) -> std::result::Result<Vec<u8>, SdkExecutionDiagnostic> {
+    let prepared = PreparedProjectedBatchInvocation::try_new(
+        installed,
+        batch,
+        ProjectedBatchInvocationControl::capture(Default::default(), Default::default()),
+    )?;
+    let mut plan = BatchPlan::compile(installed, &prepared, identity, returning, None)?;
+    let native = if let Some((mut program, _)) = plan.write_program.take() {
+        assert_eq!(program.statement_count(), 1);
+        program
+            .next()
+            .map_err(|error| {
+                lower_orm_error(
+                    &crate::plan_builders::manager::diagnostic(error),
+                    SdkProviderOperation::Write,
+                )
+            })?
+            .expect("one inline direct write")
+            .plan
+    } else if returning {
+        let iids = plan
+            .rows
+            .iter()
+            .map(|(_, row)| row_iid(row).unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let plans = crate::plan_builders::manager::ManagerPlans::new(
+            installed
+                .manager_registry()
+                .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?,
+        );
+        plans
+            .delete_many(plan.model.id().label().as_str(), &iids, true, true)
+            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?
+    } else {
+        plan.native_delete(plan.delete_rows()?)?
+    };
+    native.local().canonical_bytes().map_err(|error| {
+        lower_orm_error(
+            &crate::plan_builders::manager::diagnostic(error),
+            SdkProviderOperation::Write,
+        )
+    })
 }
 
 fn empty_result(operation: ProjectedBatchOperation) -> ProjectedBatchResult {
