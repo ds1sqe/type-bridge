@@ -500,6 +500,75 @@ impl ProxyQueryConnection {
         ))
     }
 
+    /// Execute a canonical manager stack as one atomic proxy exchange.
+    /// Result references remain in the stack until the adapter binds them.
+    #[doc(hidden)]
+    pub async fn execute_write_stack(
+        &self,
+        entries: Vec<type_bridge_contract::query_remote_v3::StagedPlanV3>,
+        resources: QueryExecutionResourceLimits,
+        cancellation: &AnswerCancellation,
+        deadline: QueryExecutionDeadline,
+    ) -> Result<Vec<crate::query_plan_exec::PlanAnswer>, crate::session::staged::CommitError> {
+        use crate::session::staged::CommitError;
+        let (resources, deadline) = QueryTarget::Proxy(self).budget(resources, deadline);
+        deadline
+            .check(cancellation)
+            .map_err(|error| CommitError::target_before_dispatch(error.into()))?;
+        if entries.is_empty() {
+            return Ok(vec![]);
+        }
+        let route = self
+            .route
+            .as_ref()
+            .ok_or_else(caller_owned_exchange)
+            .map_err(|error| CommitError::target_before_dispatch(error.into()))?;
+        let advertisement = self
+            .ensure_staged_advertisement(deadline, cancellation)
+            .await
+            .map_err(CommitError::target_before_dispatch)?;
+        let options = TransactionOptions::default().with_answer_limits(
+            crate::session::backend::AnswerLimits {
+                answer: crate::session::backend::BoundedAnswerLimits {
+                    max_items: resources.items,
+                    max_bytes: resources.bytes,
+                    deadline: deadline.instant(),
+                    cancellation: cancellation.clone(),
+                },
+                max_graph_nodes: resources.graph_nodes,
+                max_attribute_values: resources.attribute_values,
+                max_collection_members: resources.collection_members,
+                max_role_players: resources.role_players,
+            },
+        );
+        let mut transaction = self
+            .staged(route.clone(), &advertisement, options)
+            .map_err(|error| CommitError::target_before_dispatch(error.into()))?;
+        let pending = transaction
+            .stage_plan_stack(
+                entries,
+                self.authority.adapter_authority().shared_declared(),
+            )
+            .map_err(CommitError::staging)?;
+        let limits = crate::match_request::MatchExecutionLimits::from_policy(
+            resources,
+            cancellation.clone(),
+        )
+        .with_absolute_deadline(deadline);
+        deadline
+            .check(cancellation)
+            .map_err(|error| CommitError::target_before_dispatch(error.into()))?;
+        transaction.commit_with_policy(deadline, &limits).await?;
+        pending
+            .into_iter()
+            .map(|pending| {
+                let answer = pending.get().map_err(CommitError::staging);
+                drop(pending);
+                answer.map(Arc::unwrap_or_clone)
+            })
+            .collect()
+    }
+
     pub(crate) async fn execute_read_plans(
         &self,
         plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
@@ -895,6 +964,279 @@ mod policy_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    struct WriteStackTransport {
+        advertisement: RemoteCapabilities,
+        signer: crate::query_v2_remote::RemoteReplySigningKey,
+        mode: u8,
+        seen: Arc<Mutex<Vec<Vec<u8>>>>,
+        entered: Arc<tokio::sync::Notify>,
+        reply_cancellation: AnswerCancellation,
+    }
+    impl StagedTransport for WriteStackTransport {
+        fn staged_capabilities(
+            &self,
+        ) -> crate::session::backend::BoxFuture<'_, Result<Vec<u8>, QueryTargetError>> {
+            panic!("the connection pins its advertisement")
+        }
+        fn exchange_staged<'a>(
+            &'a self,
+            bytes: &'a [u8],
+        ) -> crate::session::backend::BoxFuture<'a, Result<Vec<u8>, QueryTargetError>> {
+            use type_bridge_contract::query_remote_v3::{
+                StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+            };
+            self.seen.lock().unwrap().push(bytes.to_vec());
+            self.entered.notify_one();
+            Box::pin(async move {
+                if self.mode == 2 {
+                    return Err(QueryTargetError::Callback(Box::new(std::io::Error::other(
+                        "caller cause",
+                    ))));
+                }
+                if self.mode == 3 {
+                    std::future::pending::<()>().await;
+                }
+                let request = StagedRequestV3::decode(
+                    bytes,
+                    &crate::query_plan_exec::race::schema(),
+                    &self.advertisement,
+                )
+                .unwrap();
+                let (outcome, answers) = if self.mode == 1 {
+                    (StagedOutcomeV3::Failed { diagnostic: SdkExecutionDiagnostic::query_failure(
+                        type_bridge_contract::sdk_diagnostic::SdkQueryDiagnosticCategory::InvalidPlan,
+                        type_bridge_contract::sdk_diagnostic::SdkDiagnosticCode::new("write_policy_refused").unwrap(),
+                    ) }, vec![])
+                } else {
+                    (
+                        StagedOutcomeV3::Committed,
+                        request
+                            .plans()
+                            .iter()
+                            .map(|_| StagedAnswerV3::Matched {
+                                value: if self.mode == 4 { 0 } else { 1 },
+                            })
+                            .collect(),
+                    )
+                };
+                if self.mode == 5 {
+                    self.reply_cancellation.cancel();
+                }
+                Ok(StagedReplyV3::new(&request, outcome, answers)
+                    .unwrap()
+                    .encode_signed(&request, &self.advertisement, &self.signer)
+                    .unwrap())
+            })
+        }
+    }
+    fn write_stack_fixture(mode: u8) -> (ProxyQueryConnection, Arc<WriteStackTransport>) {
+        let signer = crate::query_v2_remote::RemoteReplySigningKey::from_secret_bytes([0x47; 32]);
+        let mut caps = type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        for name in [
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_WRITE_V3,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        ] {
+            caps.insert(type_bridge_contract::capability::CapabilityId::new(name).unwrap());
+        }
+        let advertisement = RemoteCapabilities::new(
+            caps,
+            RemoteExecutorBinding::new("proxy-write-tests", "epoch-write-tests").unwrap(),
+            signer.public_key(),
+        );
+        let transport = Arc::new(WriteStackTransport {
+            advertisement: advertisement.clone(),
+            signer,
+            mode,
+            seen: Arc::new(Mutex::new(vec![])),
+            entered: Arc::new(tokio::sync::Notify::new()),
+            reply_cancellation: AnswerCancellation::default(),
+        });
+        (
+            connection(advertisement).with_staged_transport(transport.clone()),
+            transport,
+        )
+    }
+    fn purchase_entry(
+        connection: &ProxyQueryConnection,
+    ) -> type_bridge_contract::query_remote_v3::StagedPlanV3 {
+        let plan = crate::query_plan_exec::race::purchase("O1", "I1", "A1");
+        type_bridge_contract::query_remote_v3::StagedPlanV3::new(
+            &plan,
+            plan.given_rows().unwrap().to_vec(),
+            connection.authority.adapter_authority().declared(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn proxy_write_stack_preserves_plan_bytes_policy_and_signed_outcomes() {
+        for mode in [0, 1, 2, 4] {
+            let (connection, transport) = write_stack_fixture(mode);
+            let entry = purchase_entry(&connection);
+            let bytes = entry.plan().canonical_bytes().unwrap();
+            let resources = QueryExecutionResourceLimits {
+                items: 9,
+                bytes: 100_000,
+                graph_nodes: 11,
+                attribute_values: 12,
+                collection_members: 13,
+                role_players: 14,
+                statements: Some(1),
+                ..Default::default()
+            };
+            let result = connection
+                .execute_write_stack(
+                    vec![entry],
+                    resources,
+                    &AnswerCancellation::default(),
+                    QueryExecutionDeadline::for_limits(resources),
+                )
+                .await;
+            let seen = transport.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            let request = type_bridge_contract::query_remote_v3::StagedRequestV3::decode(
+                &seen[0],
+                &crate::query_plan_exec::race::schema(),
+                &transport.advertisement,
+            )
+            .unwrap();
+            assert_eq!(
+                request.kind(),
+                type_bridge_contract::query_remote_v3::StagedKindV3::Write
+            );
+            assert_eq!(request.plans()[0].plan().canonical_bytes().unwrap(), bytes);
+            let policy = request.limits();
+            assert_eq!((policy.max_items, policy.max_bytes), (9, 100_000));
+            assert_eq!(
+                (
+                    policy.max_graph_nodes,
+                    policy.max_attribute_values,
+                    policy.max_collection_members,
+                    policy.max_role_players
+                ),
+                (Some(11), Some(12), Some(13), Some(14))
+            );
+            match mode {
+                0 => assert_eq!(
+                    result.unwrap(),
+                    vec![crate::query_plan_exec::PlanAnswer::Matched(1)]
+                ),
+                4 => assert_eq!(
+                    result.unwrap(),
+                    vec![crate::query_plan_exec::PlanAnswer::Matched(0)]
+                ),
+                _ => {
+                    let error = result.unwrap_err();
+                    assert_eq!(
+                        error.diagnostic().code().as_str(),
+                        if mode == 1 {
+                            "write_policy_refused"
+                        } else {
+                            "commit_outcome_unknown"
+                        }
+                    );
+                    if mode == 2 {
+                        let target = std::error::Error::source(&error)
+                            .unwrap()
+                            .downcast_ref::<QueryTargetError>()
+                            .unwrap();
+                        assert_eq!(
+                            std::error::Error::source(target).unwrap().to_string(),
+                            "caller cause"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_write_stack_refuses_statement_limits_before_dispatch() {
+        let (connection, transport) = write_stack_fixture(0);
+        let resources = QueryExecutionResourceLimits {
+            statements: Some(1),
+            ..Default::default()
+        };
+        let error = connection
+            .execute_write_stack(
+                vec![purchase_entry(&connection), purchase_entry(&connection)],
+                resources,
+                &AnswerCancellation::default(),
+                QueryExecutionDeadline::for_limits(resources),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.diagnostic().code().as_str(), "statement_count_limit");
+        assert!(transport.seen.lock().unwrap().is_empty());
+        let cancellation = AnswerCancellation::default();
+        cancellation.cancel();
+        let error = connection
+            .execute_write_stack(
+                vec![purchase_entry(&connection)],
+                resources,
+                &cancellation,
+                QueryExecutionDeadline::for_limits(resources),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.diagnostic().code().as_str(), "provider_cancelled");
+        assert!(transport.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn proxy_write_stack_cancelled_during_reply_processing_remains_unknown() {
+        let (connection, transport) = write_stack_fixture(5);
+        let resources = QueryExecutionResourceLimits::default();
+        let error = connection
+            .execute_write_stack(
+                vec![purchase_entry(&connection)],
+                resources,
+                &transport.reply_cancellation,
+                QueryExecutionDeadline::for_limits(resources),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.diagnostic().code().as_str(), "commit_outcome_unknown");
+        assert_eq!(transport.seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn proxy_write_stack_captures_cancellation_and_deadline() {
+        for cancel in [false, true] {
+            let (connection, transport) = write_stack_fixture(3);
+            let entry = purchase_entry(&connection);
+            let cancellation = AnswerCancellation::default();
+            let resources = QueryExecutionResourceLimits::default();
+            let deadline = QueryExecutionDeadline::from_timeout_milliseconds(5000);
+            let captured = cancellation.clone();
+            let execution = tokio::spawn(async move {
+                connection
+                    .execute_write_stack(vec![entry], resources, &captured, deadline)
+                    .await
+            });
+            transport.entered.notified().await;
+            if cancel {
+                cancellation.cancel();
+            } else {
+                tokio::time::advance(std::time::Duration::from_secs(5)).await;
+            }
+            tokio::task::yield_now().await;
+            assert!(execution.is_finished());
+            assert_eq!(
+                execution
+                    .await
+                    .unwrap()
+                    .unwrap_err()
+                    .diagnostic()
+                    .code()
+                    .as_str(),
+                "commit_outcome_unknown"
+            );
+            assert_eq!(transport.seen.lock().unwrap().len(), 1);
+        }
     }
 
     #[test]

@@ -457,6 +457,51 @@ impl CommitError {
             transport_error: None,
         }
     }
+    pub(crate) fn target_before_dispatch(error: crate::QueryTargetError) -> Self {
+        match error {
+            error @ crate::QueryTargetError::Callback(_) => {
+                let mut commit = Self::new(
+                    OrmError::ExecutionDiagnostic(Box::new(
+                        SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Connect),
+                    ))
+                    .into(),
+                    None,
+                    Default::default(),
+                );
+                commit.transport_error = Some(Box::new(error));
+                commit
+            }
+            crate::QueryTargetError::Direct(error) => {
+                Self::new(error.into(), None, Default::default())
+            }
+            error => Self::new(
+                OrmError::ExecutionDiagnostic(Box::new(
+                    error.into_diagnostic(SdkProviderOperation::Connect),
+                ))
+                .into(),
+                None,
+                Default::default(),
+            ),
+        }
+    }
+    pub(crate) fn staging(error: PendingError) -> Self {
+        let diagnostic = match &error {
+            PendingError::InvalidPlan(diagnostic) => {
+                Some(crate::execution_diagnostic::lower_remote_query_diagnostic(
+                    diagnostic.as_ref().clone(),
+                ))
+            }
+            _ => error.diagnostic().cloned(),
+        };
+        match diagnostic {
+            Some(diagnostic) => Self::new(
+                OrmError::ExecutionDiagnostic(Box::new(diagnostic)).into(),
+                None,
+                Default::default(),
+            ),
+            None => Self::lifecycle(error),
+        }
+    }
     fn lifecycle(error: PendingError) -> Self {
         Self::new(
             OrmError::Transaction(error.to_string()).into(),
@@ -1809,10 +1854,27 @@ impl Transaction {
         &mut self,
         deadline: crate::QueryExecutionDeadline,
     ) -> Result<(), CommitError> {
+        self.commit_controlled(deadline, None).await
+    }
+
+    pub(crate) async fn commit_with_policy(
+        &mut self,
+        deadline: crate::QueryExecutionDeadline,
+        limits: &MatchExecutionLimits,
+    ) -> Result<(), CommitError> {
+        self.commit_controlled(deadline, Some(limits)).await
+    }
+
+    async fn commit_controlled(
+        &mut self,
+        deadline: crate::QueryExecutionDeadline,
+        limits: Option<&MatchExecutionLimits>,
+    ) -> Result<(), CommitError> {
         use tracing::Instrument;
         let deadline = self.commit_deadline(deadline)?;
         let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.commit", plans = self.stack.0.len(), nonce = tracing::field::Empty, outcome = tracing::field::Empty);
         let collect = self.options.collect_phase_timestamps
+            || limits.is_some_and(|limits| limits.policy().collect_phase_timestamps)
             || self.stack.0.iter().any(|item| match &item.slot {
                 Slot::Program(program) => program
                     .remote_limits()
@@ -1822,7 +1884,7 @@ impl Transaction {
         let (mut result, phases) = crate::execution_phases::observe_result(
             deadline.started(),
             collect,
-            self.commit_inner(deadline),
+            self.commit_inner(deadline, limits),
         )
         .instrument(span.clone())
         .await;
@@ -1840,9 +1902,10 @@ impl Transaction {
     async fn commit_inner(
         &mut self,
         deadline: crate::QueryExecutionDeadline,
+        limits: Option<&MatchExecutionLimits>,
     ) -> Result<(), CommitError> {
         let empty = std::mem::take(&mut self.empty);
-        let result = self.commit_work(deadline).await;
+        let result = self.commit_work(deadline, limits).await;
         for (state, answer) in empty {
             *state.lock().unwrap() = match &result {
                 Ok(()) => Ok(answer),
@@ -1855,6 +1918,7 @@ impl Transaction {
     async fn commit_work(
         &mut self,
         deadline: crate::QueryExecutionDeadline,
+        limits: Option<&MatchExecutionLimits>,
     ) -> Result<(), CommitError> {
         if self.closed {
             return Err(CommitError::lifecycle(PendingError::Closed));
@@ -1901,7 +1965,7 @@ impl Transaction {
             Backend::Local(backend) => Arc::clone(backend),
             Backend::Proxy(proxy) => {
                 return self
-                    .commit_proxy(Arc::clone(proxy), execution, deadline)
+                    .commit_proxy(Arc::clone(proxy), execution, deadline, limits)
                     .await;
             }
         };
@@ -2047,6 +2111,7 @@ impl Transaction {
         proxy: Arc<ProxyStaging>,
         mut execution: Execution,
         deadline: crate::QueryExecutionDeadline,
+        limits: Option<&MatchExecutionLimits>,
     ) -> Result<(), CommitError> {
         let kind = self.options.kind.unwrap_or_else(|| {
             if execution.0.iter().any(|item| {
@@ -2066,6 +2131,15 @@ impl Transaction {
         let mut counts = Vec::with_capacity(execution.0.len());
         let mut policy = None;
         let mut origins = std::collections::BTreeMap::new();
+        if let Some(limits) = limits {
+            constrain_match_policy(
+                &mut policy,
+                &mut origins,
+                limits.policy(),
+                "program",
+                Some(0),
+            );
+        }
         for group in &execution.1 {
             constrain_match_policy(
                 &mut policy,
@@ -2259,6 +2333,7 @@ impl Transaction {
             counts,
             policy,
             origins,
+            limits,
         )
         .await
     }
@@ -2305,6 +2380,7 @@ impl Transaction {
             .flatten()
             .min()
     }
+    #[allow(clippy::too_many_arguments)]
     async fn attempt(
         proxy: &ProxyStaging,
         encoded: (StagedRequestV3, Vec<u8>),
@@ -2313,6 +2389,7 @@ impl Transaction {
         counts: Vec<usize>,
         policy: Option<crate::QueryExecutionResourceLimits>,
         origins: std::collections::BTreeMap<&'static str, (&'static str, Option<usize>)>,
+        limits: Option<&MatchExecutionLimits>,
     ) -> Result<(), CommitError> {
         let (request, bytes) = encoded;
         // Anything short of a verified reply may have committed.
@@ -2332,13 +2409,12 @@ impl Transaction {
         // leaves its handles unknown.
         execution.fail(unknown("the proxy commit outcome is not known").pending());
         let sent = {
-            let mut cancellations = execution
-                .0
-                .iter()
-                .filter_map(|item| match &item.slot {
+            let mut cancellations = limits
+                .into_iter()
+                .chain(execution.0.iter().filter_map(|item| match &item.slot {
                     Slot::Program(program) => program.remote_limits(),
                     _ => None,
-                })
+                }))
                 .map(|limits| Box::pin(limits.cancellation().cancelled()))
                 .collect::<Vec<_>>();
             let cancelled = std::future::poll_fn(|context| {
@@ -2443,6 +2519,20 @@ impl Transaction {
                 },
             },
         };
+        let outcome = outcome.and_then(|answers| {
+            if limits.is_some_and(|limits| {
+                limits.cancellation().is_cancelled()
+                    || limits
+                        .deadline()
+                        .is_some_and(|deadline| tokio::time::Instant::now().into_std() >= deadline)
+            }) {
+                Err(unknown(
+                    "proxy answer processing exceeded the invocation budget",
+                ))
+            } else {
+                Ok(answers)
+            }
+        });
         match outcome {
             Ok(answers) => {
                 for (item, answer) in execution.0.iter_mut().zip(answers) {
