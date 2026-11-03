@@ -54,10 +54,13 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
-- Per-call execution timeouts now default to 60,000 ms on direct and proxy
+- Typed-plan execution timeouts now default to 60,000 ms on direct and proxy
   connections, with no 24-hour maximum. Signed timeout inputs of zero or
   less mean no deadline; Rust uses `QueryTimeout`. Server ceilings remain
-  tighten-only, and a dispatched commit runs to its actual outcome.
+  tighten-only, and a dispatched commit runs to its actual outcome. Raw and
+  schema calls retain their previous defaults. Frozen C policies retain
+  30,000 ms defaults, immediate zero-timeout refusal and the 24-hour maximum
+  until the ABI 2.0 migration.
 - Proxy request freshness is independent of execution duration. Configure
   `admission_window_milliseconds` on the client and server (default 60,000 ms);
   the server ceiling wins and even unbounded calls retain finite replay expiry.

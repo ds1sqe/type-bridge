@@ -985,8 +985,11 @@ and `collect_phase_timestamps`. Node's `Database.stagedTransaction(kind, options
 accepts `timeoutMilliseconds` (a signed bigint) and `collectPhaseTimestamps`.
 Omitting these options preserves 60000 ms and collection off; zero or a negative
 timeout disables the deadline. The C ABI retains its existing unsigned fields
-and staged transaction defaults; its signed timeout, admission and timeline
-options are part of the ABI 2.0 migration.
+and staged transaction defaults. Its omitted policies remain 30000 ms, a zero
+policy expires before execution, and values above 24 hours are refused. A
+zero-timeout context can still be created; executing through it returns a
+resource-limit diagnostic before opening a transaction. Signed timeouts,
+60000 ms defaults, admission and timeline options move with ABI 2.0.
 This is a diagnostic option, not another resource ceiling or deadline.
 With collection disabled and no enabled plan tracing span, phase observation
 adds no heap allocation or per-phase clock reads. Full collection allocates
@@ -1000,3 +1003,16 @@ statement indices and the failing phase. They remain diagnostic data and
 never become answer content. Ordinary diagnostic details keep their existing
 byte ceiling; timeline records use the request's existing statement bound
 and the reply envelope ceiling.
+
+Execution deadlines do not bound transport admission: the server's finite
+admission window independently bounds transport policy, body collection,
+preflight/decode, plan authorization and replay reservation, even when execution
+is unbounded. Proxy connection setup also retains finite TCP, TLS-handshake and
+capability-fetch timeouts. Raw and schema calls retain no implicit execution
+deadline unless the caller configures one; the 60000 ms default applies to typed
+plans and programs.
+
+Collected timelines retain the first 8192 statement records and bounded
+lifecycle/terminal records. Larger direct calls continue executing, but their
+additional statement records are omitted. Invalid collected lifecycle data
+produces a typed internal diagnostic rather than a reporting panic.
