@@ -68,10 +68,8 @@ pub(super) async fn handle_raw(
     request: Request,
 ) -> Response {
     let now = Instant::now();
-    let deadline = state
-        .query
-        .execution_timeout
-        .map(|timeout| now.checked_add(timeout).unwrap_or(now));
+    let deadline = state.query.execution_deadline(now);
+    let admission = state.query.admission_deadline(now, deadline);
     let mut metadata = staged_request_metadata(request.headers(), "raw");
     metadata.insert("query_format".into(), serde_json::json!("raw-typeql"));
     let mut ctx = state.pipeline().request_context(metadata);
@@ -96,7 +94,7 @@ pub(super) async fn handle_raw(
         .await;
     }
     if !matches!(
-        await_before_deadline(deadline, state.pipeline().begin_v3_request(&mut ctx)).await,
+        await_before_deadline(admission, state.pipeline().begin_v3_request(&mut ctx)).await,
         Some(Ok(()))
     ) {
         return refuse(
@@ -109,19 +107,29 @@ pub(super) async fn handle_raw(
         .await;
     }
     let body = match await_before_deadline(
-        deadline,
+        admission,
         to_bytes(request.into_body(), state.query.body_limit_bytes()),
     )
     .await
     {
         Some(Ok(body)) => body,
-        _ => {
+        Some(Err(_)) => {
             return refuse(
                 &state,
                 &ctx,
                 deadline,
                 StatusCode::BAD_REQUEST,
                 "raw_request_invalid",
+            )
+            .await;
+        }
+        None => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::GATEWAY_TIMEOUT,
+                "transaction_deadline_exceeded",
             )
             .await;
         }
@@ -204,7 +212,7 @@ pub(super) async fn handle_raw(
     };
     ctx.transaction_type = request.kind;
     if kind != TransactionKind::Read && !state.query.allow_unauthenticated_staged_writes {
-        match await_before_deadline(deadline, state.pipeline().authorize_v3_write(&ctx)).await {
+        match await_before_deadline(admission, state.pipeline().authorize_v3_write(&ctx)).await {
             Some(Ok(true)) => {}
             Some(Ok(false)) => {
                 return refuse(
@@ -239,7 +247,7 @@ pub(super) async fn handle_raw(
         }
     }
     match await_before_deadline(
-        deadline,
+        admission,
         state
             .pipeline()
             .authorize_v3_raw(&request.query, kind, &mut ctx),
@@ -272,7 +280,7 @@ pub(super) async fn handle_raw(
         .await;
     }
     match await_before_deadline(
-        deadline,
+        admission,
         state.query.replay_store.reserve(
             state.advertisement().executor().epoch(),
             &request.nonce,

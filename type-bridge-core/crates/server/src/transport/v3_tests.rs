@@ -1711,6 +1711,58 @@ mod raw_tests {
         let response = fixture.router.clone().oneshot(Request::builder().method("POST").uri("/v3/raw").header("content-type","application/json").body(Body::from(body.to_string())).unwrap()).await.unwrap();
         (response.status(),response.into_body().collect().await.unwrap().to_bytes().to_vec())
     }
+    #[test]
+    fn raw_and_staged_execution_deadline_overflow_is_unbounded() {
+        let fixture = fixture_with_query(Arc::new(RawHost::default()), None, |query| query.with_execution_timeout(Duration::MAX));
+        let received = Instant::now();
+        assert_eq!(fixture.query.execution_deadline(received), None);
+        assert!(fixture.query.admission_deadline(received, None) > received);
+    }
+
+    #[tokio::test]
+    async fn unbounded_execution_keeps_trickled_transport_bodies_finite() {
+        let host = Arc::new(RawHost::default());
+        let fixture = fixture_with_query(Arc::clone(&host), None, |query| {
+            query.with_execution_timeout(None).with_admission_window(Duration::from_millis(30)).unwrap()
+        });
+        for path in ["/v3/staged", "/v3/raw"] {
+            let stream = futures::stream::unfold((), |()| async {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                Some((Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b" ")), ()))
+            });
+            let request = Request::builder().method("POST").uri(path).body(Body::from_stream(stream)).unwrap();
+            let router = if path == "/v3/staged" {
+                create_v3_router(Arc::new(default_pipeline()), Arc::clone(&fixture.query))
+            } else { fixture.router.clone() };
+            let response = tokio::time::timeout(Duration::from_secs(2), router.oneshot(request)).await.expect("admission must end despite trickled bytes").unwrap();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            if path == "/v3/staged" {
+                assert_eq!(unbound_code(&fixture, &bytes), "transaction_deadline_exceeded");
+            } else {
+                let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(value["error"], "transaction_deadline_exceeded");
+            }
+            assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
+        }
+        assert!(host.queries.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unbounded_execution_keeps_a_held_preflight_slot_finite() {
+        let host = Arc::new(RawHost::default());
+        let fixture = fixture_with_query(host, None, |query| {
+            query.with_execution_timeout(None).with_admission_window(Duration::from_millis(10)).unwrap()
+        });
+        // Use the same bounded acquisition as the route without starving other parallel route tests.
+        let slots = crate::transport::staged_state::new_staged_preflight_slots();
+        let held = Arc::clone(&slots).acquire_many_owned(4).await.unwrap();
+        let admission = fixture.query.admission_deadline(Instant::now(), None);
+        let result = crate::transport::staged_state::await_before_deadline(admission, slots.acquire_owned()).await;
+        assert!(result.is_none());
+        assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
+        drop(held);
+    }
+
     #[tokio::test]
     async fn raw_is_disabled_without_collecting_or_dispatching_the_body() {
         let fixture = v3_fixture(default_pipeline(),false);

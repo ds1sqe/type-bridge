@@ -282,6 +282,22 @@ impl StagedQueryState {
         self
     }
 
+    pub(super) fn execution_deadline(&self, received: Instant) -> Option<Instant> {
+        self.execution_timeout
+            .and_then(|timeout| received.checked_add(timeout))
+    }
+
+    pub(super) fn admission_deadline(
+        &self,
+        received: Instant,
+        execution: Option<Instant>,
+    ) -> Instant {
+        let admission = received
+            .checked_add(self.admission_window)
+            .unwrap_or(received);
+        execution.map_or(admission, |execution| admission.min(execution))
+    }
+
     /// Set the finite delivery window shared by staged and raw admission.
     /// Execution may continue after that admission window has closed.
     pub fn with_admission_window(mut self, window: Duration) -> Result<Self, Diagnostic> {

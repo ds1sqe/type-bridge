@@ -284,14 +284,14 @@ async fn handle_v3_capabilities(
     State(state): State<Arc<StagedExecutor>>,
     request: Request,
 ) -> Response {
-    let deadline = state
-        .query
-        .execution_timeout
-        .and_then(|timeout| Instant::now().checked_add(timeout));
-    let ctx = match admit_transport(&state, request.headers(), "capabilities", deadline).await {
-        Ok(ctx) => ctx,
-        Err(response) => return *response,
-    };
+    let received_at = Instant::now();
+    let deadline = state.query.execution_deadline(received_at);
+    let admission = state.query.admission_deadline(received_at, deadline);
+    let ctx =
+        match admit_transport(&state, request.headers(), "capabilities", Some(admission)).await {
+            Ok(ctx) => ctx,
+            Err(response) => return *response,
+        };
     let outcome = match state.advertisement.encode() {
         Ok(bytes) => {
             finish(
@@ -312,13 +312,12 @@ async fn handle_v3_capabilities(
 
 async fn handle_v3_staged(State(shared): State<Arc<StagedExecutor>>, request: Request) -> Response {
     let state = shared.as_ref();
-    let deadline = state
-        .query
-        .execution_timeout
-        .and_then(|timeout| Instant::now().checked_add(timeout));
+    let received_at = Instant::now();
+    let deadline = state.query.execution_deadline(received_at);
+    let admission = state.query.admission_deadline(received_at, deadline);
     // Transport policy authenticates before any attacker-controlled bytes
     // are buffered, exactly as for `/v2/query`.
-    let ctx = match admit_transport(state, request.headers(), "staged", deadline).await {
+    let ctx = match admit_transport(state, request.headers(), "staged", Some(admission)).await {
         Ok(ctx) => ctx,
         Err(response) => return *response,
     };
@@ -327,7 +326,7 @@ async fn handle_v3_staged(State(shared): State<Arc<StagedExecutor>>, request: Re
         return envelope_response(outcome.reply);
     }
     let body = match await_before_deadline(
-        deadline,
+        admission,
         to_bytes(request.into_body(), state.query.body_limit_bytes()),
     )
     .await
@@ -342,7 +341,7 @@ async fn handle_v3_staged(State(shared): State<Arc<StagedExecutor>>, request: Re
             return envelope_response(outcome.reply);
         }
     };
-    let outcome = shared.execute_staged_request(ctx, body, deadline).await;
+    let outcome = execute(&shared, ctx, body, deadline, received_at).await;
     envelope_response(outcome.reply)
 }
 
@@ -373,7 +372,7 @@ impl StagedExecutor {
         body: Bytes,
         deadline: impl Into<Option<Instant>>,
     ) -> StagedOutcome {
-        execute(self, ctx, body, deadline.into()).await
+        execute(self, ctx, body, deadline.into(), Instant::now()).await
     }
 }
 
@@ -383,8 +382,8 @@ async fn execute(
     ctx: RequestContext,
     body: Bytes,
     deadline: Option<Instant>,
+    received_at: Instant,
 ) -> StagedOutcome {
-    let received_at = Instant::now();
     let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "proxy_server");
     type_bridge_orm::execution_phases::observe(received_at, false, async {
         type_bridge_orm::execution_phases::received();
@@ -403,9 +402,10 @@ async fn execute_inner(
     received_at: Instant,
 ) -> StagedOutcome {
     let state = shared.as_ref();
+    let admission = state.query.admission_deadline(received_at, deadline);
     tracing::debug!(target: "type_bridge.io", bytes_in = body.len(), "type_bridge.io.request");
     let permit = match await_before_deadline(
-        deadline,
+        admission,
         Arc::clone(&STAGED_PREFLIGHT_SLOTS).acquire_owned(),
     )
     .await
@@ -425,7 +425,7 @@ async fn execute_inner(
             advertisement.query_limits(),
         )
     });
-    let staged = match await_before_deadline(deadline, decode).await {
+    let staged = match await_before_deadline(admission, decode).await {
         Some(Ok(Ok(staged))) => staged,
         Some(Ok(Err(diagnostic))) => {
             tracing::debug!(target: "type_bridge.io", decode = "refused", code = diagnostic.code().as_str(), "type_bridge.io.request");
@@ -457,6 +457,9 @@ async fn execute_inner(
         (Some(left), Some(right)) => Some(left.min(right)),
         (left, right) => left.or(right),
     };
+    let admission = deadline
+        .map_or(admission, |deadline| admission.min(deadline))
+        .min(expires);
     let kind = match staged.kind() {
         StagedKindV3::Read => TransactionKind::Read,
         StagedKindV3::Write => TransactionKind::Write,
@@ -471,7 +474,7 @@ async fn execute_inner(
     let open_writes = state.query.allow_unauthenticated_staged_writes;
     if kind == TransactionKind::Write && !open_writes {
         let vouched =
-            match await_before_deadline(deadline, state.pipeline.authorize_v3_write(&ctx)).await {
+            match await_before_deadline(admission, state.pipeline.authorize_v3_write(&ctx)).await {
                 Some(Ok(vouched)) => vouched,
                 Some(Err(_)) => {
                     return refuse(state, deadline, &ctx, request, policy_rejected()).await;
@@ -503,7 +506,7 @@ async fn execute_inner(
         let types = touched_types(plan);
         let view = V3PolicyPlan::new(plan, &types);
         match await_before_deadline(
-            deadline,
+            admission,
             state.pipeline.authorize_v3_plan(index, view, &ctx),
         )
         .await
@@ -526,7 +529,11 @@ async fn execute_inner(
                 staged.clone(),
                 plans,
                 kind,
-                Window { deadline, expires },
+                Window {
+                    deadline,
+                    expires,
+                    admission,
+                },
             ),
         )
         .instrument(tracing::Span::current())
@@ -554,6 +561,7 @@ async fn execute_inner(
 /// When a staged request must finish, and when its nonce may be forgotten.
 #[derive(Clone, Copy)]
 struct Window {
+    admission: Instant,
     deadline: Option<Instant>,
     expires: Instant,
 }
@@ -578,7 +586,7 @@ async fn run_staged(
         staged.nonce(),
         window.expires,
     );
-    let refused = match await_before_deadline(deadline, reserve).await {
+    let refused = match await_before_deadline(window.admission, reserve).await {
         Some(Ok(())) => None,
         // An earlier copy of these exact write bytes ran and may have
         // committed, so the replay never reads as nothing applied.
