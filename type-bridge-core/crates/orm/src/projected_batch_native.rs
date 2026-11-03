@@ -343,12 +343,12 @@ impl ProjectedBatchExecutor<'_> {
                             guard.validate(&iids, |role, reference_ordinal| {
                                 plan.role_references
                                     .iter()
-                                    .find(|reference| {
+                                    .filter(|reference| {
                                         reference.owner_ordinal == step.ordinal
                                             && reference.role == *role
-                                            && reference.reference_ordinal == reference_ordinal
                                     })
-                                    .map(|reference| reference.reference.type_id().clone())
+                                    .nth(reference_ordinal)
+                                    .map(|reference| (reference.reference_ordinal, reference.reference.type_id().clone()))
                             })?;
                         }
                         if step.reference_resolution.as_ref().is_some_and(|resolution| resolution.guard.is_none()) {
@@ -406,7 +406,7 @@ impl ProjectedBatchExecutor<'_> {
                             u16::try_from(coordinate("source_column")?).ok()?,
                         ))?;
                         match context {
-                            crate::plan_builders::bulk_write::ReferenceContext::Guard(context) => context.validate(&[], |role, reference_ordinal| plan.role_references.iter().find(|reference| reference.owner_ordinal == context.row() && reference.role == *role && reference.reference_ordinal == reference_ordinal).map(|reference| reference.reference.type_id().clone())).err(),
+                            crate::plan_builders::bulk_write::ReferenceContext::Guard(context) => context.validate(&[], |role, reference_ordinal| plan.role_references.iter().filter(|reference| reference.owner_ordinal == context.row() && reference.role == *role).nth(reference_ordinal).map(|reference| (reference.reference_ordinal, reference.reference.type_id().clone()))).err(),
                             crate::plan_builders::bulk_write::ReferenceContext::Snapshot(ordinal) => {
                                 let mut references = plan.role_references.iter().collect::<Vec<_>>();
                                 references.sort_by_key(|reference| reference.owner_ordinal);
@@ -707,12 +707,16 @@ impl ProjectedBatchExecutor<'_> {
                     guard.validate(&returned, |role, ordinal| {
                         plan.role_references
                             .iter()
-                            .find(|reference| {
-                                reference.owner_ordinal == step.ordinal
-                                    && reference.role == *role
-                                    && reference.reference_ordinal == ordinal
+                            .filter(|reference| {
+                                reference.owner_ordinal == step.ordinal && reference.role == *role
                             })
-                            .map(|reference| reference.reference.type_id().clone())
+                            .nth(ordinal)
+                            .map(|reference| {
+                                (
+                                    reference.reference_ordinal,
+                                    reference.reference.type_id().clone(),
+                                )
+                            })
                     })?;
                     record_static_answer(&mut program, &step, recorded, records_answers)?;
                     continue;

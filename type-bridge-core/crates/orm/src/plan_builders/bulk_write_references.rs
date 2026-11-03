@@ -34,7 +34,7 @@ impl GuardContext {
     pub(crate) fn validate(
         &self,
         answers: &[(usize, String)],
-        requested_type: impl FnOnce(&RoleId, usize) -> Option<TypeId>,
+        requested_reference: impl FnOnce(&RoleId, usize) -> Option<(usize, TypeId)>,
     ) -> Result<(), type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic> {
         use crate::projected_batch_executor::{integrity_at_reference, integrity_at_row};
         let malformed = || {
@@ -66,14 +66,16 @@ impl GuardContext {
             .iter()
             .find(|reference| !seen.contains(&reference.0))
         {
+            let (reference, requested_type) = requested_reference(role, *reference)
+                .unwrap_or_else(|| (*reference, player.clone()));
             return Err(integrity_at_reference(
                 "projected_batch_reference_missing",
                 "A projected role-player reference did not resolve exactly once",
                 &self.relation,
                 role,
                 self.row,
-                *reference,
-                &requested_type(role, *reference).unwrap_or_else(|| player.clone()),
+                reference,
+                &requested_type,
             ));
         }
         Ok(())
@@ -1039,6 +1041,38 @@ mod tests {
         ]);
         assert!(step.reference_iids(&answer).is_err());
     }
+    #[test]
+    fn guard_missing_uses_the_original_batch_ordinal_and_requested_nominal_type() {
+        let model = TypeId::new(TypeKind::Relation, "r").unwrap();
+        let role = RoleId::new("r", "prior").unwrap();
+        let concrete = TypeId::new(TypeKind::Relation, "child").unwrap();
+        let requested = TypeId::new(TypeKind::Relation, "parent").unwrap();
+        let context = GuardContext {
+            relation: model.clone(),
+            row: 3,
+            references: vec![(1, role.clone(), 0, concrete, None)],
+        };
+        let error = context
+            .validate(&[], |actual_role, local_index| {
+                assert_eq!(actual_role, &role);
+                assert_eq!(local_index, 0);
+                Some((17, requested.clone()))
+            })
+            .unwrap_err();
+        assert_eq!(
+            error,
+            crate::projected_batch_executor::integrity_at_reference(
+                "projected_batch_reference_missing",
+                "A projected role-player reference did not resolve exactly once",
+                &model,
+                &role,
+                3,
+                17,
+                &requested,
+            )
+        );
+    }
+
     #[test]
     fn insert_and_keyed_put_prefix_proofs_preserve_allocation_dependencies() {
         for kind in [WriteKind::Insert, WriteKind::Put] {

@@ -1543,6 +1543,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_guard_after_an_earlier_row_reports_the_batch_reference_ordinal() {
+        let model = TypeId::new(TypeKind::Relation, "wide-edge").unwrap();
+        let player = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
+        let role = RoleId::new("wide-edge", "member").unwrap();
+        let (installed, proxy, transport) = single_proxy_fixture(model.clone(), 1, 300);
+        transport
+            .missing_guard_ordinal
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        let first = proxy_batch_input(&installed, &model, 1, "first");
+        let base = proxy_batch_input(&installed, &model, 300, "second");
+        let mut players = base.roles()[&role].clone();
+        players.push(
+            ProjectedReference::try_new(&installed, player.clone(), Some("0x11".into()), vec![])
+                .unwrap(),
+        );
+        let second = ProjectedCreate::try_new(
+            &installed,
+            model.clone(),
+            base.fields()
+                .iter()
+                .map(|(field, values)| (field.clone(), values.clone()))
+                .collect(),
+            vec![(role.clone(), players)],
+        )
+        .unwrap();
+        let batch = ProjectedBatch::try_new(
+            &installed,
+            model.clone(),
+            ProjectedBatchOperation::Insert,
+            vec![
+                ProjectedBatchRow::Create(first),
+                ProjectedBatchRow::Create(second),
+            ],
+        )
+        .unwrap();
+        let result = ProjectedBatchExecutor::new(&installed)
+            .execute_on_target_mapped(
+                crate::QueryTarget::Proxy(&proxy),
+                &batch,
+                ProjectedBatchInvocationControl::capture(Default::default(), Default::default()),
+                None,
+                |result| Ok(Some(result)),
+            )
+            .await;
+        let crate::QueryTargetError::Commit(error) = result.unwrap_err() else {
+            panic!("signed refusal")
+        };
+        let expected = crate::projected_batch_executor::integrity_at_reference(
+            "projected_batch_reference_missing",
+            "A projected role-player reference did not resolve exactly once",
+            &model,
+            &role,
+            1,
+            2,
+            &player,
+        );
+        assert_eq!(error.diagnostic().code(), expected.code());
+        assert_eq!(error.diagnostic().path(), expected.path());
+        assert_eq!(
+            error.error.commit_failure_certainty(),
+            Some(crate::CommitFailureCertainty::DefinitelyAborted)
+        );
+        assert_eq!(
+            transport
+                .dispatched_writes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        let seen = transport.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].plans().len(), 4);
+        assert!(seen[0].plans()[0].plan().writes());
+        assert!(!seen[0].plans()[1].plan().writes());
+    }
+
+    #[tokio::test]
     async fn proxy_wide_guard_maps_signed_missing_cell_before_any_write() {
         let model = TypeId::new(TypeKind::Relation, "wide-edge").unwrap();
         let player = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
