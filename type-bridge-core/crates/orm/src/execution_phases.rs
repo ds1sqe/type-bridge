@@ -92,7 +92,14 @@ impl ExecutionPhases {
         if index.is_some() {
             self.statements = self.statements.saturating_add(1);
         }
-        if let Some((anchor, stamps)) = self.timeline.as_deref_mut() {
+        if let Some((anchor, stamps)) = self.timeline.as_deref_mut()
+            && index.is_none_or(|index| {
+                index < type_bridge_contract::limits::MAX_STAGED_STATEMENTS_V3.saturating_mul(2)
+            })
+            && (stamps.len()
+                < type_bridge_contract::limits::MAX_STAGED_STATEMENTS_V3 as usize * 2 + 5
+                || matches!(phase, ExecutionPhase::Committed | ExecutionPhase::Failed))
+        {
             let offset = u64::try_from(
                 tokio::time::Instant::now()
                     .into_std()
@@ -175,8 +182,10 @@ impl ExecutionPhases {
                     failing_phase: Some(self.current),
                 });
             }
-            let timeline = ExecutionTimeline::new(*anchor, stamps)
-                .expect("execution phases follow the lifecycle");
+            let timeline = match ExecutionTimeline::new(*anchor, stamps) {
+                Ok(timeline) => timeline,
+                Err(_) => return SdkExecutionDiagnostic::internal_failure(),
+            };
             details.push((
                 "execution_timeline",
                 SdkDiagnosticDetailValue::ExecutionTimeline(timeline),
@@ -492,5 +501,41 @@ mod tests {
         assert_eq!(timeline["stamps"][4]["offset_milliseconds"], 4);
         assert_eq!(timeline["stamps"][5]["phase"], "failed");
         assert_eq!(timeline["stamps"][5]["failing_phase"], "db_write");
+    }
+    #[tokio::test]
+    async fn collected_direct_statements_are_bounded_before_diagnostic_validation() {
+        let limit = type_bridge_contract::limits::MAX_STAGED_STATEMENTS_V3 * 2;
+        let (_, phases) = observe(tokio::time::Instant::now().into_std(), true, async {
+            record(ExecutionPhase::Accepted);
+            record(ExecutionPhase::ExecutionStarted);
+            for _ in 0..limit + 100 {
+                record(ExecutionPhase::DbWrite);
+            }
+        })
+        .await;
+        let phases = phases.unwrap();
+        assert_eq!(
+            phases.timeline.as_deref().unwrap().1.len(),
+            limit as usize + 3
+        );
+        let diagnostic = phases.diagnostic(deadline_error());
+        assert_eq!(diagnostic.code().as_str(), "transaction_deadline_exceeded");
+        let json = serde_json::to_value(diagnostic.host_json()).unwrap();
+        let stamps = json["details"]["execution_timeline"]["value"]["stamps"]
+            .as_array()
+            .unwrap();
+        assert_eq!(stamps.len(), limit as usize + 4);
+        assert_eq!(stamps[limit as usize + 2]["statement_index"], limit - 1);
+        assert_eq!(stamps.last().unwrap()["phase"], "failed");
+    }
+
+    #[tokio::test]
+    async fn invalid_collected_lifecycle_returns_a_typed_internal_failure() {
+        let mut phases = ExecutionPhases::new(tokio::time::Instant::now().into_std(), true);
+        phases.record(ExecutionPhase::DbWrite);
+        assert_eq!(
+            phases.diagnostic(deadline_error()).code().as_str(),
+            "internal_failure"
+        );
     }
 }
