@@ -192,7 +192,11 @@ pub async fn given_rows_supported(test: &str) -> bool {
 /// schema omits those annotations to keep the live-authority check exact.
 pub async fn seeded(test: &str) -> (String, Database) {
     let name = match std::env::var("TB_STAGED_DATABASE_PREFIX") {
-        Ok(prefix) => format!("{prefix}{test}_{}_{}", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)),
+        Ok(prefix) => format!(
+            "{prefix}{test}_{}_{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ),
         Err(_) => live_database::name(&format!("server_v3_{test}")),
     };
     let db = connect(&name).await;
@@ -306,13 +310,22 @@ pub async fn proxy_with_database(
     .with_query_limits(policy.query_limits.unwrap_or_default())
     .expect("query limits")
     .with_unauthenticated_staged_writes(allow_unauthenticated);
-    let answer_limits = policy.answer_limits.map(|mut limits| {
-        if let Some(timeout) = policy.execution_timeout { limits.timeout_milliseconds = timeout; }
-        limits
-    }).or_else(|| policy.execution_timeout.map(|timeout| type_bridge_orm::QueryExecutionResourceLimits {
-        timeout_milliseconds: timeout,
-        ..type_bridge_orm::QueryExecutionResourceLimits::default()
-    }));
+    let answer_limits = policy
+        .answer_limits
+        .map(|mut limits| {
+            if let Some(timeout) = policy.execution_timeout {
+                limits.timeout_milliseconds = timeout;
+            }
+            limits
+        })
+        .or_else(|| {
+            policy
+                .execution_timeout
+                .map(|timeout| type_bridge_orm::QueryExecutionResourceLimits {
+                    timeout_milliseconds: timeout,
+                    ..type_bridge_orm::QueryExecutionResourceLimits::default()
+                })
+        });
     if let Some(limits) = answer_limits {
         state = state.with_answer_limits(limits).expect("answer limits");
     }

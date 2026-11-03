@@ -197,7 +197,9 @@ async fn run(
 ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
     bounded_exchange(deadline, cancellation, async move {
         // The blocking worker gets a grace period; the invocation deadline wins.
-        let timeout = deadline.remaining_milliseconds().map(|remaining| Duration::from_millis(remaining).saturating_add(BLOCKING_GRACE));
+        let timeout = deadline
+            .remaining_milliseconds()
+            .map(|remaining| Duration::from_millis(remaining).saturating_add(BLOCKING_GRACE));
         match tokio::task::spawn_blocking(move || call(timeout)).await {
             Ok(result) => result.map_err(|error| lower(error, operation)),
             Err(_) => Err(SdkExecutionDiagnostic::internal_failure()),
