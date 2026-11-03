@@ -5403,3 +5403,107 @@ async fn reduced_full_match_equals_stepwise_candidates_live() {
     }
     database.delete_database().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn mixed_wide_full_match_puts_use_static_probes_and_rollback_last_piece_live() {
+    use type_bridge_orm::_dynamic::DynamicAttributeMap;
+    use type_bridge_orm::_manager::DynamicEntityManager;
+    use type_bridge_orm::AttributeValue;
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    let yaml = "format: typebridge.schema/v2\nattributes:\n  mixed-tag: { value: string }\n  mixed-alias: { value: string }\n  mixed-number: { value: integer }\nentities:\n  mixed-note:\n    owns:\n      mixed-tag: { card: { min: 0 } }\n      mixed-alias: { card: { min: 0 } }\n      mixed-number: { card: { min: 0 } }\n";
+    let declared = normalize_documents(
+        &SchemaDocumentSet::parse([(DocumentId::new("mixed-wide-match.yaml").unwrap(), yaml)])
+            .unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolve(
+                &declared,
+                &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+            )
+            .unwrap(),
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    database.execute_raw("define attribute mixed-tag, value string; attribute mixed-alias, value string; attribute mixed-number, value integer; entity mixed-note, owns mixed-tag @card(0..), owns mixed-alias @card(0..), owns mixed-number @card(0..);", TxType::Schema).await.unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let note = registry.entity("mixed-note").unwrap();
+    let normalized = |fields: DynamicAttributeMap| {
+        fields
+            .into_iter()
+            .map(|(name, value)| format!("{name}={value:?}"))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    for literal in [false, true] {
+        let raw = DynamicEntityManager::new(&database, note.clone());
+        let full = (0..100)
+            .flat_map(|index| {
+                [
+                    (
+                        "mixed-tag".to_owned(),
+                        AttributeValue::String(format!("mixed-{literal}-{index}")),
+                    ),
+                    (
+                        "mixed-alias".to_owned(),
+                        AttributeValue::String(format!("mixed-{literal}-{index}")),
+                    ),
+                    ("mixed-number".to_owned(), AttributeValue::Long(index)),
+                ]
+            })
+            .collect::<DynamicAttributeMap>();
+        let hit = raw.insert(&full).await.unwrap();
+        let mut near = full.clone();
+        near[299] = ("mixed-number".into(), AttributeValue::Long(10_000));
+        let mut repeated = full.clone();
+        repeated.extend(full[..3].iter().cloned());
+        let expected = [normalized(full.clone()), normalized(near.clone())];
+        let (counted, log) = counted_connection(&database, literal).await;
+        let manager = DynamicEntityManager::from_registry(&counted, registry.clone(), note.clone());
+        let before = raw.count().await.unwrap();
+        let actual = manager.put_many(&[repeated.clone(), near]).await.unwrap();
+        assert_eq!(actual[0], hit);
+        assert_ne!(actual[1], hit);
+        assert_eq!(raw.count().await.unwrap(), before + 1);
+        for (iid, expected) in actual.iter().zip(expected) {
+            assert_eq!(
+                normalized(raw.get_by_iid(iid).await.unwrap().unwrap().attributes),
+                expected
+            );
+        }
+        {
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.statements.len(), 8);
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+        }
+        let before = raw.count().await.unwrap();
+        let mut failing = full;
+        failing[299] = ("mixed-number".into(), AttributeValue::Long(20_000));
+        *log.lock().unwrap() = DispatchLog {
+            fail_at: Some(8),
+            ..Default::default()
+        };
+        assert!(manager.put_many(&[repeated, failing]).await.is_err());
+        assert_eq!(raw.count().await.unwrap(), before);
+        {
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.statements.len(), 8);
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+        }
+        eprintln!(
+            "mixed scalar full-match literal={literal}: 300 field/value pairs, same values across fields, duplicate predicates; full hit reused, one-value near miss allocated, last piece rolled back; eight fixed statements per two-row call"
+        );
+    }
+    database.delete_database().await.unwrap();
+}

@@ -336,6 +336,101 @@ mod static_tests {
     use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 
     #[test]
+    fn mixed_scalar_full_match_keeps_field_value_pairs_and_bounds_boolean_branches() {
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_contract::value::CanonicalString;
+        use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
+        let yaml = "format: typebridge.schema/v2\nattributes:\n  mixed-tag: { value: string }\n  mixed-alias: { value: string }\n  mixed-number: { value: integer }\nentities:\n  note:\n    owns:\n      mixed-tag: { card: { min: 0 } }\n      mixed-alias: { card: { min: 0 } }\n      mixed-number: { card: { min: 0 } }\n";
+        let declared = normalize_documents(
+            &SchemaDocumentSet::parse([(DocumentId::new("mixed-scalar.yaml").unwrap(), yaml)])
+                .unwrap(),
+        )
+        .unwrap();
+        let note = TypeId::new(TypeKind::Entity, "note").unwrap();
+        let mut fields = (0..300)
+            .map(|index| {
+                let (name, value) = match index % 3 {
+                    0 => (
+                        "mixed-tag",
+                        CanonicalValue::String(
+                            CanonicalString::new(format!("v-{}", index / 3)).unwrap(),
+                        ),
+                    ),
+                    1 => (
+                        "mixed-alias",
+                        CanonicalValue::String(
+                            CanonicalString::new(format!("v-{}", index / 3)).unwrap(),
+                        ),
+                    ),
+                    _ => ("mixed-number", CanonicalValue::Long(index / 3)),
+                };
+                (
+                    OwnsFactId::new(note.clone(), AttributeId::new(name).unwrap()).unwrap(),
+                    value,
+                )
+            })
+            .collect::<Vec<_>>();
+        fields.extend([fields[0].clone(), fields[1].clone()]);
+        let authority = PlanAuthority::new(
+            declared,
+            ManagedSemanticSchemaFingerprint::compute(
+                SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                b"mixed-scalar-match",
+            )
+            .unwrap(),
+        );
+        for terms in [256, 8, 3] {
+            let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+            limits.structural.boolean_terms = terms;
+            let authority = authority
+                .clone()
+                .with_query_limits(std::sync::Arc::new(limits));
+            let WriteProgram::Static(program) = super::super::match_put::wide_match(
+                &authority,
+                WriteShape {
+                    type_id: &note,
+                    keys: &[],
+                    cleared_fields: &[],
+                    cleared_roles: &[],
+                    document_roles: vec![],
+                    include_subtypes: false,
+                    return_documents: true,
+                    references_see_prior_writes: true,
+                },
+                &WriteRow {
+                    iid: None,
+                    fields: &fields,
+                    players: &[],
+                },
+                0,
+            )
+            .unwrap() else {
+                panic!("mixed fields require a static program")
+            };
+            let probe = &program.entries[0];
+            assert_eq!(probe.rows().len(), 300);
+            assert_eq!(probe.plan().bindings().len(), 5);
+            assert_eq!(probe.plan().inputs().len(), 1);
+            assert_eq!(
+                probe
+                    .rows()
+                    .iter()
+                    .map(|row| row.values()[0].clone().unwrap())
+                    .collect::<Vec<_>>(),
+                (0..300).map(CanonicalValue::Long).collect::<Vec<_>>()
+            );
+            assert!(probe.plan().pipeline().iter().any(|stage| matches!(stage, Stage::Match { patterns } if patterns.iter().any(|pattern| matches!(pattern, Pattern::Read(QueryPattern::Value { right: QueryOperand::Literal { value: CanonicalValue::Long(300) }, .. }))))));
+            let plan = probe.bound_plan(authority.declared()).unwrap();
+            let query = crate::query_plan_exec::staged_query(&plan, true).unwrap();
+            assert!(!query.writes);
+            for name in ["mixed-tag", "mixed-alias", "mixed-number"] {
+                assert!(query.typeql.contains(name));
+            }
+            assert!(!program.entries.last().unwrap().plan().writes());
+        }
+    }
+
+    #[test]
     fn wide_scalar_full_match_has_static_optional_hit_and_miss_dependencies() {
         let account = TypeId::new(TypeKind::Entity, "account").unwrap();
         let field = OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();

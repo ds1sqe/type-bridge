@@ -316,6 +316,7 @@ fn scalar_probe(
     row: &WriteRow<'_>,
     ordinal: usize,
     complete: bool,
+    single_field: bool,
 ) -> Result<BuiltPlan, Diagnostic> {
     let mut draft = authority.draft(ValueTransport::Given);
     let root = draft.bind("root")?;
@@ -323,23 +324,26 @@ fn scalar_probe(
     let field = draft.bind("field")?;
     let wanted = draft.bind("wanted")?;
     let count = draft.bind("matched")?;
-    let input = draft.input("wanted_value", row.fields[0].1.value_type(), false)?;
-    // Unordered predicates repeat existentially; duplicate authored values do
-    // not require a second attribute instance.
-    let values = row
-        .fields
-        .iter()
-        .map(|(_, value)| {
-            Ok((
-                type_bridge_contract::codec::to_canonical_json(value)?,
-                value.clone(),
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>, Diagnostic>>()?;
-    let required = i64::try_from(values.len()).map_err(|_| identity_error())?;
-    let mut pipeline = vec![
-        Stage::Match {
-            patterns: vec![
+    // Duplicate unordered predicates remain existential, including when two
+    // distinct fields carry the same scalar value.
+    let (patterns, rows) = if single_field {
+        let input = draft.input("wanted_value", row.fields[0].1.value_type(), false)?;
+        let values = row
+            .fields
+            .iter()
+            .map(|(_, value)| {
+                Ok((
+                    type_bridge_contract::codec::to_canonical_json(value)?,
+                    value.clone(),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, Diagnostic>>()?;
+        let rows = values
+            .into_values()
+            .map(|value| InputRow::new(vec![Some(value)]))
+            .collect::<Vec<_>>();
+        (
+            vec![
                 QueryPattern::Isa {
                     binding: root,
                     type_id: shape.type_id.clone(),
@@ -363,7 +367,83 @@ fn scalar_probe(
                 }
                 .into(),
             ],
-        },
+            rows,
+        )
+    } else {
+        let terms = authority.query_limits().structural.boolean_terms;
+        if terms < 3 {
+            return Err(invalid(
+                "query_plan_pattern_limit",
+                "Mixed scalar predicates require three Boolean terms",
+            ));
+        }
+        let input = draft.input("wanted_predicate", ValueTypeTag::Long, false)?;
+        let values = row
+            .fields
+            .iter()
+            .map(|(field, value)| {
+                Ok((
+                    (
+                        field.clone(),
+                        type_bridge_contract::codec::to_canonical_json(value)?,
+                    ),
+                    value.clone(),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, Diagnostic>>()?;
+        let mut branches = Vec::with_capacity(values.len());
+        let mut rows = Vec::with_capacity(values.len());
+        for (index, ((owner, _), value)) in values.into_iter().enumerate() {
+            let ordinal = CanonicalValue::Long(i64::try_from(index).map_err(|_| identity_error())?);
+            rows.push(InputRow::new(vec![Some(ordinal.clone())]));
+            branches.push(vec![
+                QueryPattern::Value {
+                    comparator: ValueComparator::Equal,
+                    left: QueryOperand::Binding { binding: wanted },
+                    right: QueryOperand::Literal { value: ordinal },
+                },
+                QueryPattern::Has {
+                    owner: root,
+                    attribute: field,
+                    attribute_id: owner.attribute().clone(),
+                },
+                QueryPattern::Value {
+                    comparator: ValueComparator::Equal,
+                    left: QueryOperand::Binding { binding: field },
+                    right: QueryOperand::Literal { value },
+                },
+            ]);
+        }
+        while branches.len() > terms {
+            branches = branches
+                .chunks(terms)
+                .map(|branches| {
+                    vec![QueryPattern::Or {
+                        branches: branches.to_vec(),
+                    }]
+                })
+                .collect();
+        }
+        (
+            vec![
+                QueryPattern::Isa {
+                    binding: root,
+                    type_id: shape.type_id.clone(),
+                    include_subtypes: true,
+                }
+                .into(),
+                Pattern::Let {
+                    binding: wanted,
+                    expr: Expr::Operand(input),
+                },
+                QueryPattern::Or { branches }.into(),
+            ],
+            rows,
+        )
+    };
+    let required = i64::try_from(rows.len()).map_err(|_| identity_error())?;
+    let mut pipeline = vec![
+        Stage::Match { patterns },
         Stage::Select {
             bindings: vec![root, wanted],
         },
@@ -411,18 +491,7 @@ fn scalar_probe(
             columns: vec![output_ordinal, root],
         }
     };
-    draft.finish_rows(
-        authority,
-        pipeline,
-        Operation::Rows,
-        output,
-        Some(
-            values
-                .into_values()
-                .map(|value| InputRow::new(vec![Some(value)]))
-                .collect(),
-        ),
-    )
+    draft.finish_rows(authority, pipeline, Operation::Rows, output, Some(rows))
 }
 
 fn static_scalar_match(
@@ -431,21 +500,22 @@ fn static_scalar_match(
     row: &WriteRow<'_>,
     ordinal: usize,
 ) -> Result<Option<WriteProgram>, Diagnostic> {
-    let Some((field, _)) = row.fields.first() else {
-        return Ok(None);
-    };
-    if shape.type_id.kind() != TypeKind::Entity
-        || !row.players.is_empty()
-        || row.fields.iter().any(|(other, _)| other != field)
-    {
+    if row.fields.is_empty() {
         return Ok(None);
     }
-    let probe = match scalar_probe(authority, shape, row, ordinal, false) {
+    if shape.type_id.kind() != TypeKind::Entity || !row.players.is_empty() {
+        return Ok(None);
+    }
+    let single_field = row
+        .fields
+        .iter()
+        .all(|(field, _)| field == &row.fields[0].0);
+    let probe = match scalar_probe(authority, shape, row, ordinal, false, single_field) {
         Ok(plan) => plan,
         Err(error) if forces_pieces(&error) => return Ok(None),
         Err(error) => return Err(error),
     };
-    let final_read = scalar_probe(authority, shape, row, ordinal, true)?;
+    let final_read = scalar_probe(authority, shape, row, ordinal, true, single_field)?;
     let mut miss_shape = shape.clone();
     miss_shape.return_documents = false;
     let WriteProgram::Split(miss) = split_at(
