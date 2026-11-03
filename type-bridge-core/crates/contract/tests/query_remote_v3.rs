@@ -1706,3 +1706,177 @@ fn phase_collection_is_optional_in_the_request_wire() {
         mutate_request(|value| value["limits"]["collect_phase_timestamps"] = json!(1)).is_err()
     );
 }
+
+#[test]
+fn missing_player_proof_cell_keeps_coordinates_in_signed_failure() {
+    use type_bridge_contract::diagnostic::DiagnosticDetailValue;
+    use type_bridge_contract::migration_assertion::QueryVariable;
+    use type_bridge_contract::query_plan::v3::{Expr, Pattern, Stage};
+    use type_bridge_contract::query_plan::{
+        InputColumn, InputColumnId, InputRow, QueryOperand, QueryPattern,
+    };
+    use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticDetailValue, SdkDiagnosticName};
+    use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+
+    let schema = support::schema();
+    let proof = QueryPlanV3::new(
+        support::spec(
+            vec![Stage::Match {
+                patterns: vec![
+                    Pattern::Let {
+                        binding: support::id(2),
+                        expr: Expr::Operand(support::literal(0)),
+                    },
+                    QueryPattern::Try {
+                        patterns: vec![support::isa(0, support::entity("account"))],
+                    }
+                    .into(),
+                    QueryPattern::Try {
+                        patterns: vec![support::isa(1, support::entity("account"))],
+                    }
+                    .into(),
+                ],
+            }],
+            vec![2, 0, 1],
+        ),
+        &schema,
+    )
+    .unwrap();
+    let proof = StagedPlanV3::new(&proof, vec![], &schema).unwrap();
+    let mut target = support::spec(
+        vec![Stage::Match {
+            patterns: vec![
+                support::isa(0, support::entity("account")).into(),
+                QueryPattern::Iid {
+                    binding: support::id(0),
+                    iid: QueryOperand::Input {
+                        column: InputColumnId::new(0),
+                    },
+                }
+                .into(),
+            ],
+        }],
+        vec![0],
+    );
+    target.inputs = (0..2)
+        .map(|index| {
+            InputColumn::new(
+                InputColumnId::new(index),
+                QueryVariable::new(format!("player{index}")).unwrap(),
+                ValueTypeTag::String,
+                false,
+            )
+        })
+        .collect();
+    let target = QueryPlanV3::new(target, &schema).unwrap();
+    let target = StagedPlanV3::new_with_result_refs(
+        &target,
+        vec![InputRow::new(vec![None, None])],
+        (0..2)
+            .map(|index| StagedResultRefV3 {
+                input: InputColumnId::new(index),
+                source_plan: 0,
+                source_column: index + 1,
+                expected_types: vec![support::entity("account")],
+            })
+            .collect(),
+        &schema,
+    )
+    .unwrap();
+    let answer = StagedAnswerV3::Rows {
+        rows: vec![vec![
+            RemoteValue::Value {
+                value: CanonicalValue::Long(0),
+            },
+            RemoteValue::Thing {
+                iid: "0x10".into(),
+                type_id: support::entity("account"),
+            },
+            RemoteValue::Absent,
+        ]],
+    };
+    answer.validate_for(proof.plan()).unwrap();
+    let failure = target.bind_results(&[answer], &schema).unwrap_err();
+    assert_eq!(failure.code().as_str(), "query_stage_result_ref_missing");
+    for (name, expected) in [
+        ("source_plan", 0),
+        ("source_row", 0),
+        ("source_column", 2),
+        ("input_column", 1),
+    ] {
+        assert_eq!(
+            failure.details().get(name),
+            Some(&DiagnosticDetailValue::Long(expected))
+        );
+    }
+    let empty = target
+        .bind_results(&[StagedAnswerV3::Rows { rows: vec![] }], &schema)
+        .unwrap_err();
+    assert_eq!(
+        empty.details().get("source_column"),
+        Some(&DiagnosticDetailValue::Long(1))
+    );
+    assert_eq!(
+        empty.details().get("input_column"),
+        Some(&DiagnosticDetailValue::Long(0))
+    );
+    assert!(!empty.details().contains_key("source_row"));
+
+    let mut diagnostic = SdkExecutionDiagnostic::query_failure(
+        SdkQueryDiagnosticCategory::ResultDecode,
+        SdkDiagnosticCode::new(failure.code().as_str()).unwrap(),
+    );
+    for (name, value) in failure.details() {
+        let DiagnosticDetailValue::Long(value) = value else {
+            panic!("proof coordinates are integers")
+        };
+        diagnostic = diagnostic
+            .try_with_detail(
+                SdkDiagnosticName::new(name).unwrap(),
+                SdkDiagnosticDetailValue::Signed(*value),
+            )
+            .unwrap();
+    }
+    let keys = Keys::new();
+    let base = advertisement();
+    let mut capabilities = base.capabilities().clone();
+    capabilities.insert(CapabilityId::new(CAP_QUERY_STAGE_RESULT_REF).unwrap());
+    for entry in [&proof, &target] {
+        for capability in entry.plan().required_capabilities().iter() {
+            capabilities.insert(capability.clone());
+        }
+    }
+    let advertisement =
+        RemoteCapabilities::new(capabilities, base.executor().clone(), keys.public_key())
+            .with_query_limits(base.query_limits())
+            .unwrap();
+    let request = StagedRequestV3::new(
+        StagedRequestSpecV3 {
+            nonce: "missing-proof-cell-0000001".into(),
+            kind: None,
+            limits: StagedLimitsV3::default(),
+            plans: vec![proof, target],
+            prepared_at_unix_ms: 1_000_000,
+        },
+        &schema,
+        &advertisement,
+    )
+    .unwrap();
+    let expected_diagnostic = diagnostic.clone();
+    let reply =
+        StagedReplyV3::new(&request, StagedOutcomeV3::Failed { diagnostic }, vec![]).unwrap();
+    let bytes = reply
+        .encode_signed(&request, &advertisement, &keys)
+        .unwrap();
+    let decoded =
+        VerifiedStagedReplyV3::decode(&bytes, &request, &advertisement, keys.public_key(), &keys)
+            .unwrap();
+    assert!(!decoded.committed());
+    assert_eq!(
+        decoded.encode_payload().unwrap(),
+        reply.encode_payload().unwrap()
+    );
+    let round_trip = decoded.diagnostic().unwrap().to_query_diagnostic().unwrap();
+    assert_eq!(round_trip.code().as_str(), failure.code().as_str());
+    assert_eq!(round_trip, expected_diagnostic);
+}

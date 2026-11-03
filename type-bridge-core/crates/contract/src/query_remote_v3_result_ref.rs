@@ -220,6 +220,9 @@ impl StagedPlanV3 {
 
     /// Bind this entry's single source without copying earlier answers.
     /// The executor selects `source` from the validated ordered dependency graph.
+    /// A missing required IID reports `query_stage_result_ref_missing` with
+    /// `source_plan`, `source_column`, and `input_column`; an absent cell also
+    /// carries `source_row`.
     pub fn bind_source_result(
         &self,
         source: &StagedAnswerV3,
@@ -284,7 +287,9 @@ impl StagedPlanV3 {
                             "query_stage_result_ref_missing",
                             "a required IID input has no source row",
                         )
-                        .with_detail("source_plan", i64::from(reference.source_plan)));
+                        .with_detail("source_plan", i64::from(reference.source_plan))
+                        .with_detail("source_column", i64::from(reference.source_column))
+                        .with_detail("input_column", i64::from(reference.input.get())));
                     }
                     Some(RemoteValue::Absent) => {
                         return Err(result_failure(
@@ -292,7 +297,9 @@ impl StagedPlanV3 {
                             "a required IID input has an absent source",
                         )
                         .with_detail("source_plan", i64::from(reference.source_plan))
-                        .with_detail("source_row", source_row as i64));
+                        .with_detail("source_row", source_row as i64)
+                        .with_detail("source_column", i64::from(reference.source_column))
+                        .with_detail("input_column", i64::from(reference.input.get())));
                     }
                     _ => {
                         return Err(result_failure(

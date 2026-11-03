@@ -733,7 +733,9 @@ retaining its ordinary fixed values for each root. With several template rows,
 more than one source row zips by index only when its count equals the template
 count. Several columns from that same source zip together. An empty
 source or absent source cell supplies absence only to an optional input; a
-required input refuses with `query_stage_result_ref_missing`. Other row-count
+required input refuses with `query_stage_result_ref_missing`. Its integer
+`source_plan`, `source_column`, and `input_column` details identify the failed
+reference; an absent cell also carries `source_row`. Other row-count
 mismatches refuse with `query_stage_result_ref_rows`. Binding validates the
 resulting input rows under the plan's captured limits before that plan runs;
 a failure aborts the transaction. No cross product is implied.
