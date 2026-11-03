@@ -83,6 +83,9 @@ Employment(
 person(7)  # E: wrong_scalar:reportArgumentType
 
 person_manager = Person.manager(Database(address="localhost:1729", database="generated-manager"))
+person_manager.delete()  # E: delete_requires_explicit_iid:reportCallIssue
+person_manager.filter(score=Score(3)).delete()  # E: filtered_delete_requires_iid:reportCallIssue
+person_manager.update_with = None  # E: removed_update_with:reportAttributeAccessIssue
 person_manager.where(
     Robot.robot_id,  # E: wrong_manager_field_owner:reportArgumentType
     ProjectedManagerComparison.EQ,

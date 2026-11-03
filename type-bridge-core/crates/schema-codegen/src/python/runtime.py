@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-import warnings
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -487,20 +486,16 @@ class ProjectedModelManager[ModelT: ModelBase]:
         self._run_pre(CrudEvent.PRE_UPDATE, instance)
         if instance.iid is None:
             type(instance).__runtime_projection__.validate_create(type(instance), instance)
-        if self._resolve_instance_iid(instance):
-            result = self._native.update(instance)
-        else:
-            result = WriteResult[ModelT]([])
+        result = self._native.update(instance)
         self._run_post_many(CrudEvent.POST_UPDATE, result.items)
         return result
 
     def update_many(self, instances: Sequence[ModelT]) -> list[ModelT]:
         values = list(instances)
         self._run_pre_many(CrudEvent.PRE_UPDATE, values)
-        resolved = [value for value in values if self._resolve_instance_iid(value)]
-        self._native.update_many(resolved)
-        self._run_post_many(CrudEvent.POST_UPDATE, values)
-        return values
+        result = self._native.update_many(values)
+        self._run_post_many(CrudEvent.POST_UPDATE, result)
+        return result
 
     @overload
     def delete(self, instance_or_iid: ModelT) -> ModelT: ...
@@ -508,23 +503,10 @@ class ProjectedModelManager[ModelT: ModelBase]:
     @overload
     def delete(self, instance_or_iid: str) -> None: ...
 
-    @overload
-    def delete(self) -> int: ...
-
-    def delete(self, instance_or_iid: ModelT | str | None = None) -> ModelT | None | int:
-        if instance_or_iid is None:
-            if not self._filtered:
-                raise TypeError("generated manager delete() without an instance requires filter()")
-            instances = cast(list[ModelT], self._native.legacy_all())
-            self._run_pre_many(CrudEvent.PRE_DELETE, instances)
-            self._native.delete_many([cast(str, instance.iid) for instance in instances])
-            self._run_post_many(CrudEvent.POST_DELETE, instances)
-            return len(instances)
+    def delete(self, instance_or_iid: ModelT | str) -> ModelT | None:
         if isinstance(instance_or_iid, str):
             self._native.delete(instance_or_iid)
             return None
-        if not self._resolve_instance_iid(instance_or_iid):
-            return instance_or_iid
         self._run_pre(CrudEvent.PRE_DELETE, instance_or_iid)
         self._native.delete(instance_or_iid)
         self._run_post(CrudEvent.POST_DELETE, instance_or_iid)
@@ -532,15 +514,20 @@ class ProjectedModelManager[ModelT: ModelBase]:
 
     def delete_returning(self, instance: ModelT) -> WriteResult[ModelT]:
         """Delete an instance and return its stored pre-delete snapshot."""
-        return WriteResult(self.delete_many_returning([instance]))
+        self._run_pre(CrudEvent.PRE_DELETE, instance)
+        result = cast(
+            WriteResult[ModelT], self._native.delete_by_iid_returning(cast(str, instance.iid))
+        )
+        self._run_post_many(CrudEvent.POST_DELETE, result.items)
+        return result
 
     def delete_many_returning(self, instances: Sequence[ModelT]) -> list[ModelT]:
         """Return existing deletion snapshots in input order."""
-        resolved = [value for value in instances if self._resolve_instance_iid(value)]
-        self._run_pre_many(CrudEvent.PRE_DELETE, resolved)
+        values = list(instances)
+        self._run_pre_many(CrudEvent.PRE_DELETE, values)
         snapshots = cast(
             list[ModelT],
-            self._native.delete_many_returning([cast(str, value.iid) for value in resolved]),
+            self._native.delete_many_returning([cast(str, value.iid) for value in values]),
         )
         self._run_post_many(CrudEvent.POST_DELETE, snapshots)
         return snapshots
@@ -552,40 +539,10 @@ class ProjectedModelManager[ModelT: ModelBase]:
         strict: bool = False,
     ) -> list[ModelT]:
         values = list(instances)
-        resolved: list[ModelT] = []
-        missing: list[ModelT] = []
-        for value in values:
-            if self._resolve_instance_iid(value):
-                resolved.append(value)
-            else:
-                missing.append(value)
-        if strict and missing:
-            raise ProjectedModelNotFoundError("generated model(s) not found")
-        self._run_pre_many(CrudEvent.PRE_DELETE, resolved)
-        self._native.delete_many([cast(str, value.iid) for value in resolved])
-        self._run_post_many(CrudEvent.POST_DELETE, resolved)
-        return resolved
-
-    def update_with(self, function: Callable[[ModelT], None]) -> list[ModelT]:
-        """Apply ``function`` to every filtered instance and update each one.
-
-        .. deprecated:: 2.3.0
-            Removed in 3.0. Build an update plan that computes the new value
-            with ``let_()`` and stage it in a transaction.
-        """
-        warnings.warn(
-            "update_with() is deprecated since 2.3.0 and is removed in 3.0; compute "
-            "the new value with let_() in an update plan (type_bridge.plan."
-            "PlanBuilder) and stage it in a transaction",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if not self._filtered:
-            raise TypeError("generated manager update_with() requires filter()")
-        instances = cast(list[ModelT], self._native.legacy_all())
-        for instance in instances:
-            function(instance)
-        return self.update_many(instances)
+        self._run_pre_many(CrudEvent.PRE_DELETE, values)
+        self._native.delete_many([cast(str, value.iid) for value in values])
+        self._run_post_many(CrudEvent.POST_DELETE, values)
+        return values
 
     def filter(self, **filters: object) -> ProjectedModelManager[ModelT]:
         return ProjectedModelManager(
@@ -624,16 +581,6 @@ class ProjectedModelManager[ModelT: ModelBase]:
 
     def get_by_iid(self, iid: str) -> ModelT | None:
         return cast(ModelT | None, self._native.get_by_iid(iid))
-
-    def _resolve_instance_iid(self, instance: ModelT) -> bool:
-        require_live(instance)
-        if instance.iid is not None:
-            return True
-        iid = self._native.resolve_iid(instance)
-        if iid is None:
-            return False
-        instance.attach_runtime_iid(iid)
-        return True
 
     def _run_pre(self, event: CrudEvent, instance: ModelT) -> None:
         require_live(instance)

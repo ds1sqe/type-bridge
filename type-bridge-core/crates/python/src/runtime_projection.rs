@@ -46,7 +46,7 @@ use type_bridge_orm::_descriptor::{
 };
 use type_bridge_orm::_dynamic::{
     DynamicAttributeMap, DynamicComparisonOp, DynamicEntityRow, DynamicExpr, DynamicRelationRow,
-    DynamicRolePlayer, DynamicRolePlayerInput,
+    DynamicRolePlayer,
 };
 use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::_registry::DescriptorRegistry;
@@ -2866,121 +2866,6 @@ impl PyProjectedModelManager {
             bounded_projected_facades(&instances)?,
             ProjectedBatchOperation::Update,
         )
-    }
-
-    /// Resolve an IID-less exact generated model through its projected identity.
-    ///
-    /// Entities use every declared key. Relations use every populated owned
-    /// attribute and role player, matching the detached-instance behavior of
-    /// the pre-cutover manager without accepting handwritten descriptors.
-    fn resolve_iid(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<Option<String>> {
-        self.ensure_instance(py, &instance)?;
-        if let Some(iid) = projected_iid(&instance)? {
-            return Ok(Some(iid));
-        }
-        match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let attributes = lower_attributes(
-                    py,
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let keys = descriptor
-                    .owned_attributes
-                    .iter()
-                    .filter(|attribute| attribute.is_key())
-                    .collect::<Vec<_>>();
-                if keys.is_empty() {
-                    return Err(py_value_error(format!(
-                        "generated entity {:?} requires an attached IID or projected key",
-                        descriptor.type_name
-                    )));
-                }
-                let mut expressions = Vec::with_capacity(keys.len());
-                for key in keys {
-                    let value = attributes
-                        .iter()
-                        .find_map(|(name, value)| (name == &key.attr_name).then(|| value.clone()))
-                        .ok_or_else(|| {
-                            py_value_error(format!(
-                                "generated entity {:?} requires projected key {:?}",
-                                descriptor.type_name, key.field_name
-                            ))
-                        })?;
-                    expressions.push(DynamicExpr::Compare {
-                        attr_name: key.attr_name.clone(),
-                        operator: DynamicComparisonOp::Eq,
-                        value,
-                    });
-                }
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                let rows = provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.get_exact_with_query(&expressions, &[], Some(1), None),
-                )
-                .map_err(py_orm_error)?;
-                resolved_entity_iid(rows.first())
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let attributes = lower_attributes(
-                    py,
-                    self.package.as_ref(),
-                    &self.type_id,
-                    &descriptor.owned_attributes,
-                    &instance,
-                )?;
-                let key_names = descriptor
-                    .owned_attributes
-                    .iter()
-                    .filter(|attribute| attribute.is_key())
-                    .map(|attribute| attribute.attr_name.clone())
-                    .collect::<BTreeSet<_>>();
-                let mut expressions = attributes
-                    .into_iter()
-                    .filter(|(attr_name, _)| key_names.is_empty() || key_names.contains(attr_name))
-                    .map(|(attr_name, value)| DynamicExpr::Compare {
-                        attr_name,
-                        operator: DynamicComparisonOp::Eq,
-                        value,
-                    })
-                    .collect::<Vec<_>>();
-                if key_names.is_empty() {
-                    let players = lower_roles(
-                        py,
-                        self.package.as_ref(),
-                        &self.type_id,
-                        &descriptor,
-                        &instance,
-                    )?;
-                    expressions.extend(players.into_iter().map(|player| {
-                        let expr = match (player.iid, player.key) {
-                            (Some(iid), None) => DynamicExpr::Iid { iid },
-                            (None, Some((attr_name, value))) => DynamicExpr::Compare {
-                                attr_name,
-                                operator: DynamicComparisonOp::Eq,
-                                value,
-                            },
-                            _ => unreachable!("lower_roles enforces exactly one player identity"),
-                        };
-                        DynamicExpr::RolePlayer {
-                            role_name: player.role_name,
-                            expr: Box::new(expr),
-                        }
-                    }));
-                }
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                let rows = provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.get_exact_with_query(&expressions, &[], Some(1), None),
-                )
-                .map_err(py_orm_error)?;
-                resolved_relation_iid(rows.first())
-            }
-        }
     }
 
     /// Delete one exact generated model by its instance or canonical TypeDB IID.
@@ -7162,101 +7047,6 @@ fn projected_filter_iid(value: &Bound<'_, PyAny>) -> PyResult<String> {
     Ok(iid)
 }
 
-fn lower_roles(
-    py: Python<'_>,
-    package: &InstalledPackage,
-    relation_id: &TypeId,
-    descriptor: &RelationDescriptor,
-    instance: &Bound<'_, PyAny>,
-) -> PyResult<Vec<DynamicRolePlayerInput>> {
-    let projection = package.projection.projection();
-    let model = &projection.models()[relation_id];
-    let values = instance.call_method0("runtime_values")?;
-    let values = values.cast::<PyDict>()?;
-    let mut inputs = Vec::new();
-    for create in model.create().roles().values() {
-        let token = &model.query_tokens().roles()[create.role()];
-        let role_name = create.role().label().as_str();
-        let role = descriptor
-            .role(role_name)
-            .ok_or_else(|| py_runtime_error("projected role has no provider descriptor"))?;
-        let value = values.get_item(token.target_name().as_str())?;
-        for item in normalized_items(
-            package,
-            relation_id,
-            token.target_name().as_str(),
-            value.as_ref(),
-            role_cardinality(role),
-        )? {
-            let (player_id, form) = package.identify_value(py, &item)?;
-            if !create
-                .players()
-                .iter()
-                .any(|allowed| allowed.id() == &player_id && allowed.form() == form)
-            {
-                return Err(py_type_error(format!(
-                    "role {:?} received an incompatible projected player",
-                    token.target_name().as_str()
-                )));
-            }
-            let iid = projected_iid(&item)?;
-            let key = if iid.is_none() {
-                projected_key(py, package, &player_id, &item)?
-            } else {
-                None
-            };
-            if iid.is_none() && key.is_none() {
-                return Err(py_value_error(format!(
-                    "role player {:?} requires an attached IID or projected key",
-                    player_id.label().as_str()
-                )));
-            }
-            inputs.push(DynamicRolePlayerInput {
-                role_name: role_name.to_owned(),
-                player_type_name: player_id.label().as_str().to_owned(),
-                iid,
-                key,
-            });
-        }
-    }
-    Ok(inputs)
-}
-
-fn projected_key(
-    py: Python<'_>,
-    package: &InstalledPackage,
-    id: &TypeId,
-    value: &Bound<'_, PyAny>,
-) -> PyResult<Option<(String, AttributeValue)>> {
-    let descriptor = match package.projection.descriptor(id) {
-        Ok(TypeDescriptor::Entity(descriptor)) => descriptor,
-        Ok(TypeDescriptor::Relation(_)) | Err(_) => return Ok(None),
-    };
-    let Some(key) = descriptor.key_attribute() else {
-        return Ok(None);
-    };
-    let values = value.call_method0("runtime_values")?;
-    let values = values.cast::<PyDict>()?;
-    let Some(wrapper) = values.get_item(&key.field_name)? else {
-        return Ok(None);
-    };
-    if wrapper.is_none() {
-        return Ok(None);
-    }
-    let (wrapper_id, form) = package.identify_value(py, &wrapper)?;
-    let expected = package.type_by_label(&key.attr_name, TypeKind::Attribute)?;
-    if &wrapper_id != expected || form != ProjectedModelForm::Complete {
-        return Err(py_type_error(
-            "projected key uses the wrong attribute wrapper",
-        ));
-    }
-    let scalar = wrapper.call_method0("runtime_attribute_value")?;
-    Ok(Some((
-        key.attr_name.clone(),
-        attribute_value_from_py(py, &scalar, key.value_type)?,
-    )))
-}
-
 fn projected_iid(value: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
     let iid = value.getattr("iid")?;
     if iid.is_none() {
@@ -7333,24 +7123,6 @@ fn required_projected_iid(value: &Bound<'_, PyAny>) -> PyResult<String> {
     projected_iid(value)?.ok_or_else(|| {
         py_value_error("generated manager update and delete require an attached TypeDB IID")
     })
-}
-
-fn resolved_entity_iid(row: Option<&DynamicEntityRow>) -> PyResult<Option<String>> {
-    row.map(|row| {
-        row.iid
-            .clone()
-            .ok_or_else(|| py_runtime_error("generated entity identity lookup omitted its IID"))
-    })
-    .transpose()
-}
-
-fn resolved_relation_iid(row: Option<&DynamicRelationRow>) -> PyResult<Option<String>> {
-    row.map(|row| {
-        row.iid
-            .clone()
-            .ok_or_else(|| py_runtime_error("generated relation identity lookup omitted its IID"))
-    })
-    .transpose()
 }
 
 /// Unpack one generated create member of `id` for lowering into a provider

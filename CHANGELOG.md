@@ -200,6 +200,19 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Removed generated Python manager `update_with`; use an authored update
+  plan staged in a transaction, or read models and call `update_many` with
+  attached IIDs after application-side changes.
+- Removed detached-model IID lookup from Python `update`, `update_many`,
+  `delete`, `delete_many`, `delete_returning`, and `delete_many_returning`.
+  Supply models with attached canonical TypeDB IIDs (or an IID string to
+  `delete`). Batch inputs are no longer silently dropped before execution.
+- Removed generated Python manager no-argument and filtered `delete()`;
+  use an authored match/delete plan staged in one transaction. Explicit IID
+  deletion remains available.
+- Removed native Python `PyProjectedModelManager.resolve_iid`; retrieve
+  models through manager reads and use their attached IIDs.
+
 - Removed Node native manager `insertJson`, `insertManyJson`, `putJson`,
   `putManyJson`, and `updateJson`; use `insertProjected`,
   `insertManyProjected`, `putProjected`, `putManyProjected`, and

@@ -553,6 +553,45 @@ assert ordered_update_hook.post_update_calls == 0
 assert fake_ordered_native.resolve_iid_calls == 0
 assert fake_ordered_native.update_calls == 0
 
+
+class FakeExplicitIidBatchNative:
+    def __init__(self) -> None:
+        self.inputs: list[OrderedPerson] = []
+        self.deleted_iids: list[str] = []
+
+    def update_many(self, instances: list[OrderedPerson]) -> list[OrderedPerson]:
+        self.inputs = instances
+        return instances[1:]
+
+    def delete_many(self, iids: list[str]) -> None:
+        self.deleted_iids = iids
+
+
+explicit_first = OrderedPerson(tag=[OrderedTag("first")])
+explicit_second = OrderedPerson(tag=[OrderedTag("second")])
+explicit_first.attach_runtime_iid("0x10")
+explicit_second.attach_runtime_iid("0x20")
+explicit_native = FakeExplicitIidBatchNative()
+explicit_manager = OrderedProjectedModelManager.__new__(OrderedProjectedModelManager)
+object.__setattr__(explicit_manager, "_model", OrderedPerson)
+object.__setattr__(explicit_manager, "_native", explicit_native)
+object.__setattr__(explicit_manager, "_hooks", [])
+object.__setattr__(explicit_manager, "_filtered", True)
+assert explicit_manager.update_many([explicit_first, explicit_second]) == [explicit_second]
+assert explicit_native.inputs == [explicit_first, explicit_second]
+assert explicit_manager.delete_many([explicit_first, explicit_second]) == [
+    explicit_first,
+    explicit_second,
+]
+assert explicit_native.deleted_iids == ["0x10", "0x20"]
+assert not hasattr(explicit_manager, "update_with")
+try:
+    getattr(explicit_manager, "delete")()
+except TypeError:
+    pass
+else:
+    raise AssertionError("filtered deletion accepted an implicit target")
+
 try:
     make_person("person-1", aliases="not-a-sequence-value")
 except TypeError:

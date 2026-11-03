@@ -34,8 +34,8 @@ borrowed write makes that transaction rollback-only.
 | `insert_many(values)` | Insert one homogeneous batch atomically. |
 | `put(value)` | Idempotently match/insert by the declared key. |
 | `put_many(values)` | Put one homogeneous batch atomically. |
-| `update(value)` | Update by attached IID, or resolve a detached Python model by its projected key. |
-| `delete(value_or_iid)` | Delete by IID, or resolve a detached Python model by its projected key. |
+| `update(value)` | Update by attached canonical TypeDB IID. |
+| `delete(value_or_iid)` | Delete by attached canonical TypeDB IID or an IID string. |
 | `get_by_iid(iid)` | Return one hydrated model or `None`. |
 | `filter(**lookups)` | Return a new immutable filtered manager. |
 | `where(field, comparison, value)` | Start an immutable exact field-token filter. |
@@ -45,7 +45,8 @@ borrowed write makes that transaction rollback-only.
 ```python
 manager = Person.manager(db)
 
-ada = manager.insert(Person(person_id=PersonId("ada"), age=Age(36)))
+ada = manager.insert(Person(person_id=PersonId("ada"), age=Age(36))).item
+assert ada is not None
 assert ada.iid is not None
 
 ada.age = Age(37)
@@ -56,16 +57,20 @@ manager.delete(ada)
 assert manager.get_by_iid(ada.iid) is None
 ```
 
-For Python, `update` and model-valued `delete` use an attached canonical TypeDB
-IID when present. A detached model is resolved by its projected key; if no row
-has that key, the operation is a no-op and the model remains detached. Passing
-an IID string to `delete` keeps exact-IID behavior. `put` requires the generated
-model's projected key contract.
+Python `update`, `update_many`, and model-valued deletion require attached
+canonical TypeDB IIDs. They do not look up detached models or discard inputs.
+Read the desired models first, then pass them to the explicit IID operations.
+`put` requires the generated model's projected key contract.
+
+The callback `update_with` and no-argument/filtered `delete()` conveniences
+are removed. Use an authored update/delete plan staged in one transaction
+for a database-side filtered mutation. For application-computed values,
+read the models, change them, then call `update_many` with their attached IIDs.
 
 ## Filters
 
 Generated managers retain the compatibility `filter(...)` surface for IID,
-raw-scalar, rich-operator, and filtered-mutation workflows. Its scalar lookup
+raw-scalar and rich-operator read workflows. Its scalar lookup
 suffixes are `eq`, `ne`, `gt`, `gte`, `lt`, and `lte`; no suffix means
 equality.
 

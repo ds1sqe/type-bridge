@@ -191,14 +191,6 @@ assert_type(filtered_person_manager.all(), list[Person])
 assert_type(filtered_person_manager.first(), Person | None)
 assert_type(filtered_person_manager.count(), int)
 assert_type(filtered_person_manager.exists(), bool)
-assert_type(filtered_person_manager.delete(), int)
-
-
-def update_person(value: Person) -> None:
-    value.nickname = Nickname("updated")
-
-
-assert_type(filtered_person_manager.update_with(update_person), list[Person])
 
 
 class PersonHook(CrudHook[Person]):
