@@ -5883,6 +5883,36 @@ plays:
     };
     for literal in [false, true] {
         let (counted, log) = counted_connection(&database, literal).await;
+        let entities = DynamicEntityManager::from_registry(
+            &counted,
+            Arc::clone(&registry),
+            registry.entity("fanout-person").unwrap(),
+        );
+        let entities = if literal {
+            entities.literal_values()
+        } else {
+            entities
+        };
+        let missing_iid = format!("{}ff", &player_iids[0][..player_iids[0].len() - 2]);
+        let empty = entities
+            .update_exact(
+                &missing_iid,
+                &vec![(
+                    "fanout-selector".into(),
+                    AttributeValue::String("absent".into()),
+                )],
+            )
+            .await
+            .unwrap();
+        assert_eq!(empty.count(), 0);
+        assert!(empty.items().is_empty());
+        assert!(empty.item().is_none());
+        {
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.statements.len(), 1);
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+        }
         for borrowed in [false, true] {
             let before = all_edges.count().await.unwrap();
             *log.lock().unwrap() = DispatchLog::default();
@@ -6023,12 +6053,42 @@ plays:
         );
         assert_eq!(log.lock().unwrap().statements.len(), 1);
         assert_eq!(all_edges.count().await.unwrap(), before);
-        let missing = player(None, Some(("fanout-selector", "missing")));
-        *log.lock().unwrap() = DispatchLog::default();
-        assert!(manager.insert(&vec![], &[missing]).await.is_err());
-        let observed = log.lock().unwrap();
-        assert_eq!(observed.statements.len(), 1);
-        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+        let seed = manager
+            .insert(&vec![], &[player(Some(player_iids[0].clone()), None)])
+            .await
+            .unwrap();
+        let existing_iid = seed.item().unwrap().iid.clone().unwrap();
+        let absent_iid = format!("{}ff", &existing_iid[..existing_iid.len() - 2]);
+        let before = all_edges.count().await.unwrap();
+        for operation in [
+            "insert",
+            "put",
+            "update_missing_player",
+            "update_missing_root",
+        ] {
+            let missing = [player(None, Some(("fanout-selector", "missing")))];
+            let valid = [player(Some(player_iids[0].clone()), None)];
+            *log.lock().unwrap() = DispatchLog::default();
+            let empty = match operation {
+                "insert" => manager.insert(&vec![], &missing).await,
+                "put" => manager.put(&vec![], &missing).await,
+                "update_missing_player" => {
+                    manager.update(Some(&existing_iid), &vec![], &missing).await
+                }
+                _ => manager.update(Some(&absent_iid), &vec![], &valid).await,
+            }
+            .unwrap();
+            assert_eq!(empty.count(), 0, "{operation}");
+            assert!(empty.items().is_empty());
+            assert!(empty.item().is_none());
+            {
+                let observed = log.lock().unwrap();
+                assert_eq!(observed.statements.len(), 1, "{operation}");
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+            }
+            assert_eq!(all_edges.count().await.unwrap(), before);
+        }
     }
     for literal in [false, true] {
         let (counted, log) = counted_connection(&database, literal).await;
@@ -6103,6 +6163,56 @@ plays:
                 all_edges.count().await.unwrap(),
                 before + if operation == "put_hit" { 0 } else { 2 }
             );
+        }
+        let attributes = (0..300)
+            .map(|index| {
+                (
+                    "fanout-tag".into(),
+                    AttributeValue::String(format!("wide-zero-{literal}-{index}")),
+                )
+            })
+            .collect::<Vec<_>>();
+        let seed = manager
+            .insert(&vec![], &[player(Some(player_iids[0].clone()), None)])
+            .await
+            .unwrap();
+        let existing_iid = seed.item().unwrap().iid.clone().unwrap();
+        let absent_iid = format!("{}ff", &existing_iid[..existing_iid.len() - 2]);
+        let before = all_edges.count().await.unwrap();
+        for operation in [
+            "insert",
+            "put",
+            "update_missing_player",
+            "update_missing_root",
+        ] {
+            let missing = [player(None, Some(("fanout-selector", "missing")))];
+            let valid = [player(Some(player_iids[0].clone()), None)];
+            *log.lock().unwrap() = DispatchLog::default();
+            let result = match operation {
+                "insert" => manager.insert(&attributes, &missing).await,
+                "put" => manager.put(&attributes, &missing).await,
+                "update_missing_player" => {
+                    manager
+                        .update(Some(&existing_iid), &attributes, &missing)
+                        .await
+                }
+                _ => manager.update(Some(&absent_iid), &attributes, &valid).await,
+            }
+            .unwrap();
+            assert_eq!(result.count(), 0, "wide {operation}");
+            assert!(result.items().is_empty());
+            assert!(result.item().is_none());
+            {
+                let observed = log.lock().unwrap();
+                assert!(observed.statements.len() > 1, "wide {operation}");
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+                eprintln!(
+                    "DYNAMIC_WIDE_ZERO literal={literal} operation={operation} count=0 values=300 statements={} transactions=1",
+                    observed.statements.len()
+                );
+            }
+            assert_eq!(all_edges.count().await.unwrap(), before);
         }
     }
     database.delete_database().await.unwrap();

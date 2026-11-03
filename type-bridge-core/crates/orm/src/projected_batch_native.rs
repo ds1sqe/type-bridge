@@ -8,8 +8,8 @@ use crate::plan_builders::{
 use crate::query_plan_exec::{self, remote_value};
 use crate::session::backend::QueryResult;
 use type_bridge_contract::diagnostic::Diagnostic;
+use type_bridge_contract::query_plan::QueryPattern;
 use type_bridge_contract::query_plan::v3::{DeleteItem, DocumentRole, Stage};
-use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
 use type_bridge_contract::query_remote::RemoteValue;
 
 fn diagnostic(error: Diagnostic) -> SdkExecutionDiagnostic {
@@ -151,7 +151,7 @@ impl BatchPlan<'_> {
             kind,
             WriteShape {
                 references_see_prior_writes: false,
-                single_input: false,
+                single_input: self.single_input,
                 include_subtypes: false,
                 return_documents: true,
                 type_id: self.model.id(),
@@ -175,116 +175,6 @@ impl BatchPlan<'_> {
             .get(field)
             .map(|token| token.declaring_id())
             .ok_or_else(SdkExecutionDiagnostic::internal_failure)
-    }
-
-    fn domain(
-        &self,
-        field: &OwnsFactId,
-    ) -> std::result::Result<ValueTypeTag, SdkExecutionDiagnostic> {
-        self.installed
-            .projection()
-            .models()
-            .get(&attribute_type(field))
-            .and_then(|model| model.declaration().value_type())
-            .ok_or_else(SdkExecutionDiagnostic::internal_failure)
-    }
-
-    pub(super) fn native_prerequisite(
-        &self,
-        rows: GivenRowsSpec,
-    ) -> std::result::Result<BuiltPlan, SdkExecutionDiagnostic> {
-        let put_keys = self.model.reference_read().key_fields();
-        let mut columns = vec![(ValueTypeTag::Long, false); 4];
-        columns.push((ValueTypeTag::String, true));
-        for field in put_keys {
-            columns.push((self.domain(field)?, true));
-        }
-        for route in &self.reference_routes {
-            if let ReferenceRouteKey::Key(_, _, field) = &route.key {
-                columns.push((self.domain(field)?, true));
-            }
-        }
-        let mut draft = BatchDraft::new(&self.authority, rows, &columns).map_err(diagnostic)?;
-        let mut patterns = Vec::new();
-        let kind = draft
-            .bind_input(0, "kind", &mut patterns)
-            .map_err(diagnostic)?;
-        let ordinal = draft
-            .bind_input(1, "ordinal", &mut patterns)
-            .map_err(diagnostic)?;
-        let reference = draft
-            .bind_input(2, "reference", &mut patterns)
-            .map_err(diagnostic)?;
-        let thing = draft.draft.bind("thing").map_err(diagnostic)?;
-        let mut branches = Vec::new();
-        if self.operation == ProjectedBatchOperation::Put {
-            let mut branch = vec![
-                build::equal(draft.inputs[0].clone(), build::literal(0)),
-                build::isa(thing, self.model.id()),
-            ];
-            for (index, field) in put_keys.iter().enumerate() {
-                let value = draft.draft.bind("key").map_err(diagnostic)?;
-                branch.extend([
-                    QueryPattern::Has {
-                        owner: thing,
-                        attribute: value,
-                        attribute_id: field.attribute().clone(),
-                    },
-                    build::equal(
-                        QueryOperand::Binding { binding: value },
-                        draft.inputs[5 + index].clone(),
-                    ),
-                ]);
-            }
-            branches.push(branch);
-        }
-        let mut key_column = 5 + put_keys.len();
-        for (index, route) in self.reference_routes.iter().enumerate() {
-            let operand = if route.key_variable.is_some() {
-                let operand = draft.inputs[key_column].clone();
-                key_column += 1;
-                Some(operand)
-            } else {
-                None
-            };
-            for candidate in &route.candidate_types {
-                let mut branch = vec![
-                    build::equal(draft.inputs[0].clone(), build::literal(1)),
-                    build::equal(draft.inputs[3].clone(), build::literal(index as i64)),
-                    build::isa(thing, candidate),
-                ];
-                match &route.key {
-                    ReferenceRouteKey::Iid(_, _) => branch.push(QueryPattern::Iid {
-                        binding: thing,
-                        iid: draft.inputs[4].clone(),
-                    }),
-                    ReferenceRouteKey::Key(_, _, field) => {
-                        let value = draft.draft.bind("key").map_err(diagnostic)?;
-                        branch.extend([
-                            QueryPattern::Has {
-                                owner: thing,
-                                attribute: value,
-                                attribute_id: field.attribute().clone(),
-                            },
-                            build::equal(
-                                QueryOperand::Binding { binding: value },
-                                operand.clone().expect("key route operand"),
-                            ),
-                        ]);
-                    }
-                }
-                branches.push(branch);
-            }
-        }
-        patterns.push(QueryPattern::Or { branches }.into());
-        draft
-            .finish(
-                self.authority.as_ref(),
-                vec![Stage::Match { patterns }],
-                false,
-                vec![kind, ordinal, reference, thing],
-            )
-            .map_err(diagnostic)
     }
 
     fn native_delete(
@@ -596,7 +486,9 @@ impl ProjectedBatchExecutor<'_> {
                                     OrmError::ExecutionDiagnostic(Box::new(error))
                                 })?)
                             };
-                        if ordinal != step.ordinal || returned.is_some() {
+                        if ordinal != step.ordinal
+                            || (returned.is_some() && !(plan.single_input && records_answers))
+                        {
                             return Err(OrmError::ExecutionDiagnostic(Box::new(integrity_at_row(
                                 "provider_identity_mismatch",
                                 "A write piece repeated or changed its input ordinal",
@@ -626,6 +518,10 @@ impl ProjectedBatchExecutor<'_> {
                         },
                     )
                     .await?;
+                    if plan.single_input && records_answers {
+                        record_static_answer(&mut program, &step, recorded, true)?;
+                        continue;
+                    }
                     let iid = returned.ok_or_else(|| {
                         integrity_at_row(
                             "provider_identity_mismatch",
@@ -672,6 +568,7 @@ impl ProjectedBatchExecutor<'_> {
             }
             ledger.charge_projected(&things)?;
             for (ordinal, thing) in things.iter().enumerate() {
+                let ordinal = if plan.single_input { 0 } else { ordinal };
                 validate_written_role_identities(
                     self.installed,
                     plan,
@@ -830,7 +727,6 @@ enum DeletedRow {
 
 #[derive(Clone, Copy)]
 enum Reply {
-    Prerequisite,
     ReferenceResolution,
     Mutation,
     Hydration,
@@ -918,7 +814,7 @@ impl<R: FnMut(&AnswerItem) + Send> Consumer<'_, R> {
                 }
                 document
             }
-            Reply::Prerequisite | Reply::Mutation | Reply::ReferenceResolution => {
+            Reply::Mutation | Reply::ReferenceResolution => {
                 let AnswerItem::Row(row) = item else {
                     return Err(crate::match_request::MatchError::new(
                         crate::match_request::MatchErrorCategory::ResultDecode,
@@ -932,10 +828,7 @@ impl<R: FnMut(&AnswerItem) + Send> Consumer<'_, R> {
                 else {
                     unreachable!("row output")
                 };
-                let names = match self.reply {
-                    Reply::Prerequisite => &["kind", "ordinal", "reference_ordinal", "thing"][..],
-                    _ => &["ordinal", "iid"][..],
-                };
+                let names = &["ordinal", "iid"];
                 let mut document = serde_json::Map::new();
                 for (column, key) in columns.iter().zip(names) {
                     let name = self.plan.bindings()[column.get() as usize]
@@ -960,9 +853,6 @@ impl<R: FnMut(&AnswerItem) + Send> Consumer<'_, R> {
                                 )));
                             }
                             document.insert("iid".into(), iid.into());
-                            if matches!(self.reply, Reply::Prerequisite) {
-                                document.insert("type".into(), type_id.label().as_str().into());
-                            }
                         }
                         RemoteValue::Absent
                             if matches!(self.reply, Reply::Mutation) && *key == "iid" => {}
@@ -1003,29 +893,6 @@ impl<R: FnMut(&AnswerItem) + Send> AnswerConsumer for Consumer<'_, R> {
             }
         }
     }
-}
-
-pub(super) fn accept_prerequisite_result(
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
-    answer: QueryResult,
-    inner: &mut dyn AnswerConsumer,
-) -> std::result::Result<(), SdkExecutionDiagnostic> {
-    let QueryResult::Rows(rows) = answer else {
-        return Err(SdkExecutionDiagnostic::internal_failure());
-    };
-    let mut consumer = Consumer {
-        record: &mut |_: &AnswerItem| {},
-        inner,
-        plan,
-        reply: Reply::Prerequisite,
-        deferred: None,
-    };
-    for row in rows {
-        consumer
-            .accept(AnswerItem::Row(row))
-            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
-    }
-    consumer.deferred.map_or(Ok(()), Err)
 }
 
 #[allow(clippy::too_many_arguments)]

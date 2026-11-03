@@ -206,7 +206,7 @@ impl CompatibilityCapture {
 }
 
 #[derive(Clone, Copy, Default)]
-struct ExecutionMode<'capture> {
+pub(crate) struct ExecutionMode<'capture> {
     capture: Option<&'capture CompatibilityCapture>,
 }
 
@@ -4072,9 +4072,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         )
         .map_err(|error| plan_build_failure(&error, type_id))?;
         let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
-        if documents.is_empty() {
-            return Err(mutation_rehydration_missing(type_id));
-        }
         let hydrated = self
             .hydrate_entity_documents(
                 transaction.execution_identity(),
@@ -4216,7 +4213,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     /// role-player reference and whose fetch answers the hydration document,
     /// so nothing is read before or after the write.
     ///
-    /// Zero documents preserve the released missing-reference diagnostic.
+    /// An empty answer returns an empty write result.
     /// Every answered root is hydrated in answer order, including fan-out;
     /// hydration failures still poison a borrowed write transaction.
     async fn insert_relation_by_plan(
@@ -4240,9 +4237,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         );
         let plan = plan.map_err(|error| plan_build_failure(&error, type_id))?;
         let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
-        if documents.is_empty() {
-            return Err(identity_cardinality(type_id));
-        }
         let hydrated = self.hydrate_relation_documents(
             transaction.execution_identity(),
             &prepared.type_id,
@@ -4325,7 +4319,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         after_write(transaction, hydrated).await
     }
 
-    fn hydrate_entity_documents(
+    pub(crate) fn hydrate_entity_documents(
         &self,
         identity: &DatabaseExecutionIdentity,
         type_id: &TypeId,
@@ -4353,7 +4347,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         Ok(WriteResult::new(items))
     }
 
-    fn hydrate_relation_documents(
+    pub(crate) fn hydrate_relation_documents(
         &self,
         identity: &DatabaseExecutionIdentity,
         type_id: &TypeId,
@@ -4405,37 +4399,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         );
         let plan = plan.map_err(|error| plan_build_failure(&error, type_id))?;
         let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
-        // No document: the IID or a reference matched nothing, so nothing
-        // was written. Only on this failure path, one read tells which, to
-        // keep the released codes.
-        if documents.is_empty() {
-            let manager = self
-                .relation_manager(
-                    transaction,
-                    Arc::clone(&prepared.descriptor),
-                    &prepared.type_id,
-                    mode,
-                )
-                .await?;
-            let present = manager
-                .get_by_iid_exact(iid)
-                .await
-                .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
-            return Err(if present.is_empty() {
-                mutation_rehydration_missing(type_id)
-            } else if has_polymorphic_or_relation_players(prepared) {
-                identity_cardinality(type_id)
-            } else {
-                mode.orm_at_type(
-                    crate::OrmError::Hydration {
-                        type_name: prepared.descriptor.type_name.clone(),
-                        message: "A relation player reference matched no thing".into(),
-                    },
-                    SdkProviderOperation::Write,
-                    type_id,
-                )
-            });
-        }
         let hydrated = self
             .hydrate_relation_documents(
                 transaction.execution_identity(),
@@ -4491,9 +4454,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         )
         .map_err(|error| plan_build_failure(&error, type_id))?;
         let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
-        if documents.is_empty() {
-            return Err(identity_cardinality(type_id));
-        }
         let hydrated = self.hydrate_relation_documents(
             transaction.execution_identity(),
             &prepared.type_id,
@@ -5932,14 +5892,6 @@ fn require_update_iid(
     }
 }
 
-fn identity_cardinality(type_id: &TypeId) -> SdkExecutionDiagnostic {
-    integrity_at_type(
-        "provider_identity_cardinality_invalid",
-        "The provider identity query did not resolve exactly one thing",
-        type_id,
-    )
-}
-
 /// Read one canonical IID key of a fetched document; `null` is absent.
 fn document_iid(
     document: &serde_json::Value,
@@ -5984,12 +5936,6 @@ fn write_plan_invalid(type_id: &TypeId) -> SdkExecutionDiagnostic {
         "The projected write cannot be built as a validated plan",
         type_id,
     )
-}
-
-fn has_polymorphic_or_relation_players(prepared: &PreparedRelationCreate) -> bool {
-    prepared.role_players.iter().any(|player| {
-        !matches!(player.candidate_types.as_slice(), [candidate] if candidate.kind() == TypeKind::Entity)
-    })
 }
 
 fn unique_descriptor_role<'a>(

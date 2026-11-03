@@ -1084,10 +1084,6 @@ impl<'db> DynamicEntityManager<'db> {
         let plans = self.plans.as_ref().expect("registry-backed manager");
         let program =
             plans.single_write_program(&self.descriptor.type_name, kind, iid, attributes, &[])?;
-        let require_row = matches!(
-            kind,
-            WriteKind::Insert | WriteKind::Put | WriteKind::PartialPut
-        );
         let hydrate = |plan: &BuiltPlan, answer| {
             hydrate_write_rows(
                 plans,
@@ -1096,7 +1092,6 @@ impl<'db> DynamicEntityManager<'db> {
                 answer,
                 self.target.answer_limits(),
                 iid,
-                require_row,
                 plan_entity_row,
             )
         };
@@ -2342,10 +2337,6 @@ impl<'db> DynamicRelationManager<'db> {
             attributes,
             role_players,
         )?;
-        let require_row = matches!(
-            kind,
-            WriteKind::Insert | WriteKind::Put | WriteKind::PartialPut
-        ) || !role_players.is_empty();
         let hydrate = |plan: &BuiltPlan, answer| {
             hydrate_write_rows(
                 plans,
@@ -2354,7 +2345,6 @@ impl<'db> DynamicRelationManager<'db> {
                 answer,
                 self.target.answer_limits(),
                 iid,
-                require_row,
                 plan_relation_row,
             )
         };
@@ -3017,7 +3007,6 @@ fn hydrate_write_rows<T>(
     answer: PlanAnswer,
     limits: QueryExecutionResourceLimits,
     expected: Option<&str>,
-    require_row: bool,
     map: impl Fn(&DescriptorRegistry, &HydratedThing) -> Result<T>,
 ) -> Result<WriteResult<T>> {
     let PlanAnswer::Documents(documents) = answer else {
@@ -3037,9 +3026,6 @@ fn hydrate_write_rows<T>(
     let MatchResult::Rows { rows } = result.for_request(&request)? else {
         return Err(snapshot_error(name));
     };
-    if require_row && rows.is_empty() {
-        return Err(snapshot_error(name));
-    }
     rows.iter()
         .map(|row| match row.slots() {
             [SlotValue::One(thing)] => {

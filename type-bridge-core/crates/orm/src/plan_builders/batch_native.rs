@@ -5,7 +5,7 @@ use super::{BuiltPlan, PlanDraft, ValueTransport};
 use crate::session::backend::{GivenRowsSpec, GivenValue};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::TypeId;
-use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
+use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::v3::{Expr, Operation, Pattern, Stage, WriteReturns};
 use type_bridge_contract::query_plan::{InputRow, QueryOperand, QueryOutput, QueryPattern};
 use type_bridge_contract::temporal::{CanonicalDateTimeTz, CanonicalDuration, TimeZoneDesignator};
@@ -94,20 +94,6 @@ pub(crate) fn isa(binding: BindingId, type_id: &TypeId) -> QueryPattern {
         binding,
         type_id: type_id.clone(),
         include_subtypes: false,
-    }
-}
-
-pub(crate) fn equal(left: QueryOperand, right: QueryOperand) -> QueryPattern {
-    QueryPattern::Value {
-        comparator: ValueComparator::Equal,
-        left,
-        right,
-    }
-}
-
-pub(crate) fn literal(value: i64) -> QueryOperand {
-    QueryOperand::Literal {
-        value: CanonicalValue::Long(value),
     }
 }
 

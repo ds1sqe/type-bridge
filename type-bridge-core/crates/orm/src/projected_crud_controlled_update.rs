@@ -354,7 +354,6 @@ impl ProjectedCrudExecutor<'_> {
         lease
             .check_plan_provider(single.plan.local())
             .map_err(|error| orm_at_type(error, SdkProviderOperation::Write, type_id))?;
-        let mut reference_failure_without_mutation = false;
         let result = async {
             prepared.check_control()?;
             let mut policy = prepared.limits();
@@ -380,33 +379,7 @@ impl ProjectedCrudExecutor<'_> {
             let PlanAnswer::Documents(documents) = answer else {
                 return Err(write_plan_invalid(type_id));
             };
-            if documents.is_empty() {
-                if matches!(single.model, WriteModel::Relation(_))
-                    && !stats.stopped_early
-                    && prepared.limits().statement_limit() > 1
-                    && let Err(diagnostic) = ProjectedBatchExecutor::new(self.installed)
-                        .diagnose_missing_single_update(
-                            &mut lease,
-                            prepared,
-                            ledger,
-                            transaction.execution_identity(),
-                            transaction.shared_query_limits(),
-                        )
-                        .await
-                {
-                    // A complete empty answer from this conditional plan proves no writes;
-                    // retain the old pre-mutation reference-failure transaction state.
-                    reference_failure_without_mutation =
-                        diagnostic.code().as_str() == "projected_batch_reference_missing";
-                    return Err(diagnostic);
-                }
-                return Err(crate::projected_batch_executor::integrity_at_row(
-                    "projected_batch_mutation_result_missing",
-                    "A projected batch mutation omitted one input ordinal",
-                    type_id,
-                    0,
-                ));
-            }
+
             let thing = match &single.model {
                 WriteModel::Entity(model) => self.hydrate_entity_documents(
                     transaction.execution_identity(),
@@ -439,11 +412,7 @@ impl ProjectedCrudExecutor<'_> {
                 Ok(thing)
             }
             Err(diagnostic) => {
-                if reference_failure_without_mutation {
-                    lease.complete_success();
-                } else {
-                    lease.record_failure(&diagnostic);
-                }
+                lease.record_failure(&diagnostic);
                 Err(diagnostic)
             }
         }

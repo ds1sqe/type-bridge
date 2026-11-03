@@ -32,6 +32,15 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- Single writes that match nothing now return `count: 0`, empty `items`, and
+  absent `item`, including missing-player inserts and absent-root updates.
+  The zero-answer `provider_identity_cardinality_invalid`,
+  `mutation_rehydration_missing`, `provider_hydration_failed`,
+  `projected_batch_mutation_result_missing`, and
+  `projected_batch_reference_missing` refusals and their diagnostic lookup
+  are removed from single writes. Input validation and the rare split-wide
+  existence guard remain.
+
 - Manager `all()` keeps the caller's authored window across direct and proxy
   targets. Proxy execution ceilings stay outside plan bytes and refuse an
   oversized answer without silently truncating it.

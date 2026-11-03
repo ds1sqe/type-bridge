@@ -2189,79 +2189,83 @@ async fn native_entity_single_results_preserve_every_root_and_transaction_owners
         "update_exact",
         "update_and_get_exact",
     ] {
-        for borrowed in [false, true] {
-            let count = if operation.ends_with("exact") && operation != "put_exact" {
-                1
-            } else {
-                2
-            };
-            let documents = ["0x11", "0x12"]
-                .into_iter()
-                .take(count)
-                .map(native_person_document)
-                .collect();
-            let (backend, state) = RecordingBackend::new(vec![RecordingResponse::Result(
-                QueryResult::Documents(documents),
-            )]);
-            let db = Database::with_backend(Box::new(backend), "testdb");
-            let tx = if borrowed {
-                Some(db.transaction_context(TxType::Write).await.unwrap())
-            } else {
-                None
-            };
-            let manager = if let Some(tx) = &tx {
-                DynamicEntityManager::with_registry_transaction(
-                    tx.clone(),
-                    manager_registry(),
-                    manager_registry().entity("person").unwrap(),
-                )
-                .literal_values()
-            } else {
-                native_people(&db)
-            };
-            let attrs = person_attrs();
-            let result = match operation {
-                "insert" => manager.insert(&attrs).await,
-                "put" => manager.put(&attrs).await,
-                "put_exact" => manager.put_exact(&attrs).await,
-                "update" => manager.update(None, &attrs).await,
-                "update_exact" => manager.update_exact("0x11", &attrs).await,
-                _ => manager.update_and_get_exact("0x11", &attrs).await,
-            }
-            .unwrap();
-            assert_eq!(result.count(), count, "{operation} borrowed={borrowed}");
-            assert_eq!(result.item().is_some(), count == 1);
-            assert_eq!(
-                result
-                    .items()
-                    .iter()
-                    .map(|row| row.iid.as_deref().unwrap())
-                    .collect::<Vec<_>>(),
-                ["0x11", "0x12"][..count]
-            );
-            assert!(result.items().iter().all(|row| row.attributes
-                == vec![
-                    ("age".into(), AttributeValue::Long(30)),
-                    ("name".into(), AttributeValue::String("Alice".into()))
-                ]));
-            {
-                let state = state.lock().unwrap();
-                assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.queries.len(), 1);
-                assert_eq!(state.query_modes, ["canonical"]);
-                assert_eq!(state.commits, usize::from(!borrowed));
-                assert_eq!(state.rollbacks, 0);
-                for forbidden in ["count(", "limit 1", "__tb_guard"] {
-                    assert!(
-                        !state.queries[0].contains(forbidden),
-                        "{operation}: {forbidden}"
-                    );
+        for empty in [false, true] {
+            for borrowed in [false, true] {
+                let count = if empty {
+                    0
+                } else if operation.ends_with("exact") && operation != "put_exact" {
+                    1
+                } else {
+                    2
+                };
+                let documents = ["0x11", "0x12"]
+                    .into_iter()
+                    .take(count)
+                    .map(native_person_document)
+                    .collect();
+                let (backend, state) = RecordingBackend::new(vec![RecordingResponse::Result(
+                    QueryResult::Documents(documents),
+                )]);
+                let db = Database::with_backend(Box::new(backend), "testdb");
+                let tx = if borrowed {
+                    Some(db.transaction_context(TxType::Write).await.unwrap())
+                } else {
+                    None
+                };
+                let manager = if let Some(tx) = &tx {
+                    DynamicEntityManager::with_registry_transaction(
+                        tx.clone(),
+                        manager_registry(),
+                        manager_registry().entity("person").unwrap(),
+                    )
+                    .literal_values()
+                } else {
+                    native_people(&db)
+                };
+                let attrs = person_attrs();
+                let result = match operation {
+                    "insert" => manager.insert(&attrs).await,
+                    "put" => manager.put(&attrs).await,
+                    "put_exact" => manager.put_exact(&attrs).await,
+                    "update" => manager.update(None, &attrs).await,
+                    "update_exact" => manager.update_exact("0x11", &attrs).await,
+                    _ => manager.update_and_get_exact("0x11", &attrs).await,
                 }
+                .unwrap();
+                assert_eq!(result.count(), count, "{operation} borrowed={borrowed}");
+                assert_eq!(result.item().is_some(), count == 1);
+                assert_eq!(
+                    result
+                        .items()
+                        .iter()
+                        .map(|row| row.iid.as_deref().unwrap())
+                        .collect::<Vec<_>>(),
+                    ["0x11", "0x12"][..count]
+                );
+                assert!(result.items().iter().all(|row| row.attributes
+                    == vec![
+                        ("age".into(), AttributeValue::Long(30)),
+                        ("name".into(), AttributeValue::String("Alice".into()))
+                    ]));
+                {
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.opens, [TxType::Write]);
+                    assert_eq!(state.queries.len(), 1);
+                    assert_eq!(state.query_modes, ["canonical"]);
+                    assert_eq!(state.commits, usize::from(!borrowed));
+                    assert_eq!(state.rollbacks, 0);
+                    for forbidden in ["count(", "limit 1", "__tb_guard"] {
+                        assert!(
+                            !state.queries[0].contains(forbidden),
+                            "{operation}: {forbidden}"
+                        );
+                    }
+                }
+                if let Some(tx) = tx {
+                    tx.commit_sdk().await.unwrap();
+                }
+                assert_eq!(state.lock().unwrap().commits, 1);
             }
-            if let Some(tx) = tx {
-                tx.commit_sdk().await.unwrap();
-            }
-            assert_eq!(state.lock().unwrap().commits, 1);
         }
     }
 }
@@ -2276,79 +2280,83 @@ async fn native_relation_single_results_preserve_every_root_and_all_players() {
         "update_exact",
         "update_and_get_exact",
     ] {
-        for borrowed in [false, true] {
-            let count = if operation.ends_with("exact") && operation != "put_exact" {
-                1
-            } else {
-                2
-            };
-            let docs = ["0x11", "0x12"]
-                .into_iter()
-                .take(count)
-                .map(native_employment_document)
-                .collect();
-            let (backend, state) = RecordingBackend::new(vec![RecordingResponse::Result(
-                QueryResult::Documents(docs),
-            )]);
-            let db = Database::with_backend(Box::new(backend), "testdb");
-            let tx = if borrowed {
-                Some(db.transaction_context(TxType::Write).await.unwrap())
-            } else {
-                None
-            };
-            let registry = manager_registry();
-            let manager = if let Some(tx) = &tx {
-                DynamicRelationManager::with_registry_transaction(
-                    tx.clone(),
-                    Arc::clone(&registry),
-                    registry.relation("employment").unwrap(),
-                )
-                .literal_values()
-            } else {
-                native_employments(&db)
-            };
-            let attrs = employment_attrs("Engineer");
-            let players = native_role_players();
-            let result = match operation {
-                "insert" => manager.insert(&attrs, &players).await,
-                "put" => manager.put(&attrs, &players).await,
-                "put_exact" => manager.put_exact(&attrs, &players).await,
-                "update" => manager.update(None, &attrs, &players).await,
-                "update_exact" => manager.update_exact("0x11", &attrs, &players).await,
-                _ => manager.update_and_get_exact("0x11", &attrs, &players).await,
-            }
-            .unwrap();
-            assert_eq!(result.count(), count, "{operation} borrowed={borrowed}");
-            assert_eq!(result.item().is_some(), count == 1);
-            for row in result.items() {
-                assert_eq!(row.attributes, attrs);
-                assert_eq!(row.role_players.len(), 2);
-                assert!(
-                    row.role_players
-                        .iter()
-                        .any(|player| player.player_iid.as_deref() == Some("0x02"))
-                );
-                assert!(
-                    row.role_players
-                        .iter()
-                        .any(|player| player.player_iid.as_deref() == Some("0x03"))
-                );
-            }
-            {
-                let state = state.lock().unwrap();
-                assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.queries.len(), 1);
-                assert_eq!(state.query_modes, ["canonical"]);
-                assert_eq!(state.commits, usize::from(!borrowed));
-                assert_eq!(state.rollbacks, 0);
-                for forbidden in ["count(", "limit 1", "__tb_guard"] {
-                    assert!(!state.queries[0].contains(forbidden));
+        for empty in [false, true] {
+            for borrowed in [false, true] {
+                let count = if empty {
+                    0
+                } else if operation.ends_with("exact") && operation != "put_exact" {
+                    1
+                } else {
+                    2
+                };
+                let docs = ["0x11", "0x12"]
+                    .into_iter()
+                    .take(count)
+                    .map(native_employment_document)
+                    .collect();
+                let (backend, state) = RecordingBackend::new(vec![RecordingResponse::Result(
+                    QueryResult::Documents(docs),
+                )]);
+                let db = Database::with_backend(Box::new(backend), "testdb");
+                let tx = if borrowed {
+                    Some(db.transaction_context(TxType::Write).await.unwrap())
+                } else {
+                    None
+                };
+                let registry = manager_registry();
+                let manager = if let Some(tx) = &tx {
+                    DynamicRelationManager::with_registry_transaction(
+                        tx.clone(),
+                        Arc::clone(&registry),
+                        registry.relation("employment").unwrap(),
+                    )
+                    .literal_values()
+                } else {
+                    native_employments(&db)
+                };
+                let attrs = employment_attrs("Engineer");
+                let players = native_role_players();
+                let result = match operation {
+                    "insert" => manager.insert(&attrs, &players).await,
+                    "put" => manager.put(&attrs, &players).await,
+                    "put_exact" => manager.put_exact(&attrs, &players).await,
+                    "update" => manager.update(None, &attrs, &players).await,
+                    "update_exact" => manager.update_exact("0x11", &attrs, &players).await,
+                    _ => manager.update_and_get_exact("0x11", &attrs, &players).await,
                 }
+                .unwrap();
+                assert_eq!(result.count(), count, "{operation} borrowed={borrowed}");
+                assert_eq!(result.item().is_some(), count == 1);
+                for row in result.items() {
+                    assert_eq!(row.attributes, attrs);
+                    assert_eq!(row.role_players.len(), 2);
+                    assert!(
+                        row.role_players
+                            .iter()
+                            .any(|player| player.player_iid.as_deref() == Some("0x02"))
+                    );
+                    assert!(
+                        row.role_players
+                            .iter()
+                            .any(|player| player.player_iid.as_deref() == Some("0x03"))
+                    );
+                }
+                {
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.opens, [TxType::Write]);
+                    assert_eq!(state.queries.len(), 1);
+                    assert_eq!(state.query_modes, ["canonical"]);
+                    assert_eq!(state.commits, usize::from(!borrowed));
+                    assert_eq!(state.rollbacks, 0);
+                    for forbidden in ["count(", "limit 1", "__tb_guard"] {
+                        assert!(!state.queries[0].contains(forbidden));
+                    }
+                }
+                if let Some(tx) = tx {
+                    tx.commit_sdk().await.unwrap();
+                }
+                assert_eq!(state.lock().unwrap().commits, 1);
             }
-            if let Some(tx) = tx {
-                tx.commit_sdk().await.unwrap();
-            }
-            assert_eq!(state.lock().unwrap().commits, 1);
         }
     }
 }
@@ -2379,11 +2387,7 @@ async fn native_single_malformed_answers_rollback_owned_and_poison_borrowed_writ
             .into_iter()
             .map(|doc| QueryResult::Documents(vec![doc]))
             .collect::<Vec<_>>();
-        answers.extend([
-            QueryResult::Ok,
-            QueryResult::Rows(vec![]),
-            QueryResult::Documents(vec![]),
-        ]);
+        answers.extend([QueryResult::Ok, QueryResult::Rows(vec![])]);
         for (case, answer) in answers.into_iter().enumerate() {
             for borrowed in [false, true] {
                 let (backend, state) = RecordingBackend::with_rollback_error(

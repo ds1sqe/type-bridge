@@ -371,95 +371,6 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
             }
         }
     }
-
-    pub(crate) async fn diagnose_missing_single_update(
-        &self,
-        lease: &mut TransactionContextMutationLease,
-        prepared: &PreparedProjectedBatchInvocation<'_>,
-        ledger: &mut ExecutionLedger,
-        identity: &DatabaseExecutionIdentity,
-        query_limits: Option<&Arc<type_bridge_contract::limits::QueryLimits>>,
-    ) -> std::result::Result<(), SdkExecutionDiagnostic> {
-        let mut plan = BatchPlan::compile_for_diagnosis::<true>(
-            self.installed,
-            prepared,
-            identity,
-            false,
-            query_limits,
-        )?;
-        let prerequisite = plan.prerequisite.take();
-        let mut resolved = ResolvedPrerequisites::new(&plan)?;
-        if let Some(statement) = prerequisite {
-            let mut consumer = PrerequisiteConsumer::new(&plan, &mut resolved);
-            let native = plan.native_prerequisite(statement.rows.clone())?;
-            let query = lease.prepare_plan(native.local()).map_err(|error| {
-                at_type(
-                    lower_orm_error(&error, SdkProviderOperation::Read),
-                    prepared.batch().model(),
-                )
-            })?;
-            preflight_statement_complexity(&query.typeql)?;
-            let chunks = split_lookups(&query.typeql, statement.rows, SplitLimits::CANONICAL)?;
-            if chunks.len() as u64
-                > u64::from(
-                    prepared
-                        .limits()
-                        .statement_limit()
-                        .saturating_sub(ledger.statements),
-                )
-            {
-                return Ok(());
-            }
-            for chunk in chunks {
-                prepared.check_control()?;
-                let native = plan.native_prerequisite(chunk)?;
-                let query = lease.prepare_plan(native.local()).map_err(|error| {
-                    at_type(
-                        lower_orm_error(&error, SdkProviderOperation::Read),
-                        prepared.batch().model(),
-                    )
-                })?;
-                let rows = query
-                    .rows
-                    .as_ref()
-                    .map(|rows| given_rows_bytes(&rows.rows))
-                    .transpose()?
-                    .unwrap_or(0);
-                let bytes = u64::try_from(query.typeql.len())
-                    .unwrap_or(u64::MAX)
-                    .saturating_add(rows);
-                ledger.charge_preflight(bytes, ledger.statements.saturating_add(1))?;
-                let mut policy = prepared.limits();
-                policy.items = ledger.remaining_items();
-                policy.bytes = ledger.remaining_bytes();
-                let limits = crate::query_plan_exec::plan_answer_limits(
-                    policy,
-                    prepared.cancellation(),
-                    prepared.deadline(),
-                )
-                .map_err(|error| {
-                    at_type(
-                        lower_orm_error(&error, SdkProviderOperation::Read),
-                        prepared.batch().model(),
-                    )
-                })?;
-                let (answer, stats) = await_controlled(
-                    lease.dispatch_plan_counted(query, limits, Some(native.local())),
-                    prepared.deadline(),
-                    prepared.cancellation(),
-                )
-                .await
-                .map_err(|error| {
-                    controlled_orm(error, SdkProviderOperation::Read, prepared.batch().model())
-                })?;
-                prepared.check_control()?;
-                ledger.record_reply(stats)?;
-                native::accept_prerequisite_result(native.local(), answer, &mut consumer)?;
-            }
-            consumer.finish()?;
-        }
-        resolved.finish(&plan)
-    }
 }
 
 fn empty_result(operation: ProjectedBatchOperation) -> ProjectedBatchResult {
@@ -518,11 +429,6 @@ fn controlled_orm(
     }
 }
 
-#[derive(Clone)]
-struct ProviderStatement {
-    rows: GivenRowsSpec,
-}
-
 struct FieldRoute {
     field: OwnsFactId,
     variable: String,
@@ -565,12 +471,11 @@ struct BatchPlan<'a> {
     operation: ProjectedBatchOperation,
     rows: Vec<(usize, &'a ProjectedBatchRow)>,
     field_routes: Vec<FieldRoute>,
-    role_routes: Vec<RoleRoute>,
     role_references: Vec<RoleReference<'a>>,
-    prerequisite: Option<ProviderStatement>,
     reference_routes: Vec<ReferenceRoute>,
     return_deleted: bool,
     row_count: usize,
+    single_input: bool,
     statement_count: u32,
     preflight_bytes: u64,
     capture_role_snapshots: bool,
@@ -582,22 +487,6 @@ struct BatchPlan<'a> {
 
 impl<'a> BatchPlan<'a> {
     fn compile(
-        installed: &'a InstalledRuntimeProjection,
-        prepared: &PreparedProjectedBatchInvocation<'a>,
-        identity: &DatabaseExecutionIdentity,
-        return_deleted: bool,
-        query_limits: Option<&Arc<type_bridge_contract::limits::QueryLimits>>,
-    ) -> std::result::Result<Self, SdkExecutionDiagnostic> {
-        Self::compile_for_diagnosis::<false>(
-            installed,
-            prepared,
-            identity,
-            return_deleted,
-            query_limits,
-        )
-    }
-
-    fn compile_for_diagnosis<const DIAGNOSIS: bool>(
         installed: &'a InstalledRuntimeProjection,
         prepared: &PreparedProjectedBatchInvocation<'a>,
         identity: &DatabaseExecutionIdentity,
@@ -653,7 +542,7 @@ impl<'a> BatchPlan<'a> {
                     SdkProviderOperation::Write,
                 )
             })?;
-        if !DIAGNOSIS && batch.operation() != ProjectedBatchOperation::Delete {
+        if batch.operation() != ProjectedBatchOperation::Delete {
             let capture_role_snapshots = batch.operation() == ProjectedBatchOperation::Update
                 && role_references.iter().any(|reference| {
                     reference.reference.iid().is_none()
@@ -666,12 +555,11 @@ impl<'a> BatchPlan<'a> {
                 operation: batch.operation(),
                 rows,
                 field_routes,
-                role_routes,
                 role_references,
-                prerequisite: None,
                 reference_routes,
                 return_deleted,
                 row_count: batch.len(),
+                single_input: batch.is_single_write(),
                 statement_count: batch.resource_measure().statements(),
                 preflight_bytes: 0,
                 capture_role_snapshots,
@@ -699,20 +587,8 @@ impl<'a> BatchPlan<'a> {
             plan.write_program = Some((program, ledger));
             return Ok(plan);
         }
-        let prerequisite = compile_prerequisite(
-            model,
-            batch.operation(),
-            &rows,
-            &reference_routes,
-            &role_references,
-        )?;
         let attach = batch.operation() != ProjectedBatchOperation::Delete;
-        let actual_statement_count = u32::from(prerequisite.is_some()) + 1 + u32::from(attach);
-        let statement_count = if DIAGNOSIS {
-            actual_statement_count
-        } else {
-            batch.resource_measure().statements()
-        };
+        let statement_count = batch.resource_measure().statements();
         let preflight_bytes = {
             preflight_transport_bytes(
                 prepared,
@@ -721,7 +597,6 @@ impl<'a> BatchPlan<'a> {
                 &field_routes,
                 &role_routes,
                 &role_references,
-                prerequisite.as_ref(),
                 attach,
             )?
         };
@@ -742,12 +617,11 @@ impl<'a> BatchPlan<'a> {
             operation: batch.operation(),
             rows,
             field_routes,
-            role_routes,
             role_references,
-            prerequisite,
             reference_routes,
             return_deleted,
             row_count: batch.len(),
+            single_input: batch.is_single_write(),
             statement_count,
             preflight_bytes,
             capture_role_snapshots: false,
@@ -1184,355 +1058,6 @@ fn compile_reference_routes(
     Ok(routes)
 }
 
-fn compile_prerequisite(
-    model: &ModelProjection,
-    operation: ProjectedBatchOperation,
-    rows: &[(usize, &ProjectedBatchRow)],
-    routes: &[ReferenceRoute],
-    references: &[RoleReference<'_>],
-) -> std::result::Result<Option<ProviderStatement>, SdkExecutionDiagnostic> {
-    let include_put = operation == ProjectedBatchOperation::Put;
-    if !include_put && references.is_empty() {
-        return Ok(None);
-    }
-
-    let put_keys = model.reference_read().key_fields();
-    let mut variables = vec![
-        "kind".to_owned(),
-        "ordinal".to_owned(),
-        "reference-ordinal".to_owned(),
-        "route".to_owned(),
-        "wanted-iid".to_owned(),
-    ];
-    variables.extend((0..put_keys.len()).map(|index| format!("put-key-{index}")));
-    variables.extend(routes.iter().filter_map(|route| route.key_variable.clone()));
-    let width = variables.len();
-    let mut given_rows = Vec::new();
-    given_rows
-        .try_reserve_exact(rows.len() + references.len())
-        .map_err(|_| allocation_failure())?;
-
-    if include_put {
-        for (ordinal, row) in rows {
-            let mut values = base_prerequisite_row(width, 0, *ordinal, -1, -1)?;
-            let create = row_create(row).expect("put rows have create input");
-            for (index, field) in put_keys.iter().enumerate() {
-                values[5 + index] =
-                    given_from_canonical(create.fields()[field][0].value().clone())?;
-            }
-            given_rows.push(values);
-        }
-    }
-
-    let route_index = routes
-        .iter()
-        .enumerate()
-        .map(|(index, route)| (route.key.clone(), index))
-        .collect::<BTreeMap<_, _>>();
-    let mut key_column_by_route = BTreeMap::new();
-    let mut next_key_column = 5 + put_keys.len();
-    for (index, route) in routes.iter().enumerate() {
-        if route.key_variable.is_some() {
-            key_column_by_route.insert(index, next_key_column);
-            next_key_column += 1;
-        }
-    }
-    for prepared in references {
-        let route_key = match prepared.reference.iid() {
-            Some(_) => {
-                ReferenceRouteKey::Iid(prepared.role.clone(), prepared.reference.type_id().clone())
-            }
-            None => ReferenceRouteKey::Key(
-                prepared.role.clone(),
-                prepared.reference.type_id().clone(),
-                prepared
-                    .reference
-                    .keys()
-                    .first_key_value()
-                    .expect("validated key reference has one key")
-                    .0
-                    .clone(),
-            ),
-        };
-        let index = *route_index
-            .get(&route_key)
-            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-        let mut values = base_prerequisite_row(
-            width,
-            1,
-            prepared.owner_ordinal,
-            i64::try_from(prepared.reference_ordinal).map_err(|_| complexity_overflow())?,
-            i64::try_from(index).map_err(|_| complexity_overflow())?,
-        )?;
-        if let Some(iid) = prepared.reference.iid() {
-            values[4] = GivenValue::String(iid.to_ascii_lowercase());
-        } else {
-            let (_, key) = prepared
-                .reference
-                .keys()
-                .first_key_value()
-                .expect("validated key reference has one key");
-            values[*key_column_by_route
-                .get(&index)
-                .ok_or_else(SdkExecutionDiagnostic::internal_failure)?] =
-                given_from_canonical(key.value().clone())?;
-        }
-        given_rows.push(values);
-    }
-
-    Ok(Some(ProviderStatement {
-        rows: GivenRowsSpec {
-            variables,
-            rows: given_rows,
-        },
-    }))
-}
-
-fn base_prerequisite_row(
-    width: usize,
-    kind: i64,
-    ordinal: usize,
-    reference_ordinal: i64,
-    route: i64,
-) -> std::result::Result<Vec<GivenValue>, SdkExecutionDiagnostic> {
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(width)
-        .map_err(|_| allocation_failure())?;
-    values.extend([
-        GivenValue::Integer(kind),
-        ordinal_value(ordinal)?,
-        GivenValue::Integer(reference_ordinal),
-        GivenValue::Integer(route),
-        GivenValue::Empty,
-    ]);
-    values.resize(width, GivenValue::Empty);
-    Ok(values)
-}
-
-struct ResolvedPrerequisites {
-    put_hits: Vec<Option<String>>,
-    put_seen: Vec<bool>,
-    references: Vec<bool>,
-}
-
-impl ResolvedPrerequisites {
-    fn new(plan: &BatchPlan<'_>) -> std::result::Result<Self, SdkExecutionDiagnostic> {
-        let mut put_hits = Vec::new();
-        let mut put_seen = Vec::new();
-        if plan.operation == ProjectedBatchOperation::Put {
-            put_hits
-                .try_reserve_exact(plan.row_count)
-                .map_err(|_| allocation_failure())?;
-            put_hits.resize(plan.row_count, None);
-            put_seen
-                .try_reserve_exact(plan.row_count)
-                .map_err(|_| allocation_failure())?;
-            put_seen.resize(plan.row_count, false);
-        }
-        let mut references = Vec::new();
-        references
-            .try_reserve_exact(plan.role_references.len())
-            .map_err(|_| allocation_failure())?;
-        references.resize(plan.role_references.len(), false);
-        Ok(Self {
-            put_hits,
-            put_seen,
-            references,
-        })
-    }
-
-    fn finish(&self, plan: &BatchPlan<'_>) -> std::result::Result<(), SdkExecutionDiagnostic> {
-        for (index, resolved) in self.references.iter().enumerate() {
-            if !resolved {
-                let prepared = &plan.role_references[index];
-                return Err(integrity_at_reference(
-                    "projected_batch_reference_missing",
-                    "A projected role-player reference did not resolve exactly once",
-                    plan.model.id(),
-                    &prepared.role,
-                    prepared.owner_ordinal,
-                    prepared.reference_ordinal,
-                    prepared.reference.type_id(),
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
-struct PrerequisiteConsumer<'plan, 'result> {
-    plan: &'plan BatchPlan<'plan>,
-    resolved: &'result mut ResolvedPrerequisites,
-    deferred: Option<SdkExecutionDiagnostic>,
-}
-
-impl<'plan, 'result> PrerequisiteConsumer<'plan, 'result> {
-    fn new(plan: &'plan BatchPlan<'plan>, resolved: &'result mut ResolvedPrerequisites) -> Self {
-        Self {
-            plan,
-            resolved,
-            deferred: None,
-        }
-    }
-
-    fn finish(self) -> std::result::Result<(), SdkExecutionDiagnostic> {
-        self.deferred.map_or(Ok(()), Err)
-    }
-
-    fn accept_document(
-        &mut self,
-        document: Value,
-    ) -> std::result::Result<(), SdkExecutionDiagnostic> {
-        let kind = document_integer(&document, "kind")?;
-        let ordinal = document_index(&document, "ordinal", self.plan.row_count)?;
-        let mut iid = document_string(&document, "iid")?;
-        let concrete_label = document_string(&document, "type")?;
-        if !is_canonical_thing_iid(&iid) {
-            return Err(integrity_at_type(
-                "provider_identity_mismatch",
-                "The provider prerequisite returned a noncanonical IID",
-                self.plan.model.id(),
-            ));
-        }
-        iid.make_ascii_lowercase();
-        match kind {
-            0 if self.plan.operation == ProjectedBatchOperation::Put => {
-                if concrete_label != self.plan.model.id().label().as_str() {
-                    return Err(integrity_at_type(
-                        "provider_identity_mismatch",
-                        "The provider put prerequisite returned a different exact type",
-                        self.plan.model.id(),
-                    ));
-                }
-                if self.resolved.put_seen[ordinal] {
-                    return Err(integrity_at_row(
-                        "projected_batch_put_identity_ambiguous",
-                        "A projected put key resolved more than one existing exact thing",
-                        self.plan.model.id(),
-                        ordinal,
-                    ));
-                }
-                self.resolved.put_seen[ordinal] = true;
-                self.resolved.put_hits[ordinal] = Some(iid);
-                Ok(())
-            }
-            1 => {
-                let reference_ordinal = document_index(
-                    &document,
-                    "reference_ordinal",
-                    self.plan.role_references.len(),
-                )?;
-                let prepared = &self.plan.role_references[reference_ordinal];
-                if prepared.owner_ordinal != ordinal {
-                    return Err(integrity_at_reference(
-                        "projected_batch_reference_ordinal_mismatch",
-                        "Provider prerequisite evidence was correlated to a different input row",
-                        self.plan.model.id(),
-                        &prepared.role,
-                        prepared.owner_ordinal,
-                        reference_ordinal,
-                        prepared.reference.type_id(),
-                    ));
-                }
-                resolve_concrete_type(self.plan, prepared, &concrete_label)?;
-                if let Some(expected_iid) = prepared.reference.iid()
-                    && !iid.eq_ignore_ascii_case(expected_iid)
-                {
-                    return Err(integrity_at_reference(
-                        "provider_identity_mismatch",
-                        "The provider prerequisite returned a different requested IID",
-                        self.plan.model.id(),
-                        &prepared.role,
-                        ordinal,
-                        reference_ordinal,
-                        prepared.reference.type_id(),
-                    ));
-                }
-                if self.resolved.references[reference_ordinal] {
-                    return Err(integrity_at_reference(
-                        "projected_batch_reference_ambiguous",
-                        "A projected role-player reference resolved more than one exact thing",
-                        self.plan.model.id(),
-                        &prepared.role,
-                        ordinal,
-                        reference_ordinal,
-                        prepared.reference.type_id(),
-                    ));
-                }
-                self.resolved.references[reference_ordinal] = true;
-                Ok(())
-            }
-            _ => Err(integrity_at_type(
-                "projected_batch_prerequisite_kind_invalid",
-                "Provider prerequisite evidence carried an unknown lookup kind",
-                self.plan.model.id(),
-            )),
-        }
-    }
-}
-
-impl AnswerConsumer for PrerequisiteConsumer<'_, '_> {
-    fn accept(&mut self, item: AnswerItem) -> crate::Result<AnswerControl> {
-        if self.deferred.is_some() {
-            return Ok(AnswerControl::Continue);
-        }
-        let result = match item {
-            AnswerItem::Document(document) => self.accept_document(document),
-            AnswerItem::Row(_) => Err(integrity_at_type(
-                "projected_batch_answer_kind_invalid",
-                "A projected batch prerequisite returned rows instead of documents",
-                self.plan.model.id(),
-            )),
-        };
-        if let Err(error) = result {
-            self.deferred = Some(error);
-        }
-        Ok(AnswerControl::Continue)
-    }
-}
-
-fn resolve_concrete_type(
-    plan: &BatchPlan<'_>,
-    prepared: &RoleReference<'_>,
-    label: &str,
-) -> std::result::Result<TypeId, SdkExecutionDiagnostic> {
-    let candidates = plan
-        .role_routes
-        .iter()
-        .filter(|route| {
-            route.key.role == prepared.role
-                && route.key.player_type.label().as_str() == label
-                && is_same_or_subtype(
-                    plan.installed,
-                    &route.key.player_type,
-                    prepared.reference.type_id(),
-                )
-        })
-        .map(|route| route.key.player_type.clone())
-        .collect::<Vec<_>>();
-    match candidates.as_slice() {
-        [candidate] => Ok(candidate.clone()),
-        _ => Err(integrity_at_reference(
-            if candidates.is_empty() {
-                "projected_batch_reference_type_invalid"
-            } else {
-                "projected_batch_reference_type_ambiguous"
-            },
-            if candidates.is_empty() {
-                "The provider resolved a role-player type outside the projected domain"
-            } else {
-                "The provider role-player label maps to more than one projected concrete type"
-            },
-            plan.model.id(),
-            &prepared.role,
-            prepared.owner_ordinal,
-            prepared.reference_ordinal,
-            prepared.reference.type_id(),
-        )),
-    }
-}
-
 struct DeleteIdentityConsumer {
     slots: Vec<Option<String>>,
     deferred: Option<SdkExecutionDiagnostic>,
@@ -1814,6 +1339,7 @@ struct HydrationConsumer<'executor, 'projection, 'plan> {
     resolved_references: Option<Box<crate::plan_builders::bulk_write::ReferenceSnapshots>>,
     slots: Vec<Option<ProjectedThing>>,
     ordered: Vec<ProjectedThing>,
+    single_documents: Vec<Value>,
     deferred: Option<SdkExecutionDiagnostic>,
 }
 
@@ -1844,6 +1370,7 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
             resolved_references: None,
             slots,
             ordered,
+            single_documents: Vec::new(),
             deferred: None,
         })
     }
@@ -1857,6 +1384,22 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
             return Err(allocation_failure());
         }
         let ordinal = document_index(&document, "ordinal", self.plan.row_count)?;
+        if self.plan.single_input {
+            if self.plan.model.id().kind() == TypeKind::Relation {
+                let descriptor = self
+                    .executor
+                    .installed
+                    .relation_descriptor(self.plan.model.id())
+                    .map_err(|error| runtime_projection_error(error, self.plan.model.id()))?;
+                normalize_scoped_role_labels(self.plan.model, descriptor, &mut document)?;
+            }
+            self.capture_reference_snapshot(&document, ordinal)?;
+            self.single_documents
+                .try_reserve(1)
+                .map_err(|_| allocation_failure())?;
+            self.single_documents.push(document);
+            return Ok(());
+        }
         if self.slots[ordinal].is_some() {
             return Err(integrity_at_row(
                 "projected_batch_hydration_duplicate",
@@ -1939,6 +1482,16 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
             }
             _ => return Err(SdkExecutionDiagnostic::internal_failure()),
         };
+        self.capture_reference_snapshot(&document, ordinal)?;
+        self.slots[ordinal] = Some(thing);
+        Ok(())
+    }
+
+    fn capture_reference_snapshot(
+        &mut self,
+        document: &Value,
+        ordinal: usize,
+    ) -> std::result::Result<(), SdkExecutionDiagnostic> {
         if self.plan.capture_role_snapshots
             && !self
                 .resolved_references
@@ -1948,14 +1501,13 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
             let captured = document_reference_snapshots(
                 self.executor.installed,
                 self.plan,
-                &document,
+                document,
                 ordinal,
             )?;
             self.resolved_references
                 .get_or_insert_default()
                 .insert(ordinal, captured);
         }
-        self.slots[ordinal] = Some(thing);
         Ok(())
     }
 
@@ -1966,6 +1518,51 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
     fn finish(mut self) -> std::result::Result<Vec<ProjectedThing>, SdkExecutionDiagnostic> {
         if let Some(error) = self.deferred {
             return Err(error);
+        }
+        if self.plan.single_input {
+            let executor = crate::ProjectedCrudExecutor::new(self.executor.installed);
+            let type_id = self.plan.model.id();
+            let mode = crate::projected_crud::ExecutionMode::default();
+            let result = match type_id.kind() {
+                TypeKind::Entity => executor.hydrate_entity_documents(
+                    self.identity,
+                    type_id,
+                    self.executor
+                        .installed
+                        .entity_descriptor(type_id)
+                        .map_err(|error| runtime_projection_error(error, type_id))?,
+                    &self.single_documents,
+                    mode,
+                ),
+                TypeKind::Relation => executor.hydrate_relation_documents(
+                    self.identity,
+                    type_id,
+                    self.executor
+                        .installed
+                        .relation_descriptor(type_id)
+                        .map_err(|error| runtime_projection_error(error, type_id))?,
+                    &self.single_documents,
+                    mode,
+                ),
+                _ => return Err(SdkExecutionDiagnostic::internal_failure()),
+            }?;
+            if self.plan.operation == ProjectedBatchOperation::Update {
+                let expected = self
+                    .targets
+                    .first()
+                    .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+                for thing in result.items() {
+                    if !thing.iid().eq_ignore_ascii_case(expected) {
+                        return Err(integrity_at_row(
+                            "projected_batch_update_identity_changed",
+                            "A projected update returned a different exact target IID",
+                            type_id,
+                            0,
+                        ));
+                    }
+                }
+            }
+            return Ok(result.into_items());
         }
         for (ordinal, value) in self.slots.into_iter().enumerate() {
             self.ordered.push(value.ok_or_else(|| {
@@ -2047,7 +1644,7 @@ fn validate_written_role_identities(
             .get(role)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        if requested.len() != returned.len() {
+        if !plan.single_input && requested.len() != returned.len() {
             return Err(integrity_at_row(
                 "provider_identity_mismatch",
                 "Returned role players differ from the write input",
@@ -2062,7 +1659,16 @@ fn validate_written_role_identities(
                 .map(|player| player.iid().to_ascii_lowercase())
                 .collect::<Vec<_>>();
             returned_iids.sort_unstable();
-            if resolved != &returned_iids {
+            let matches = if plan.single_input {
+                returned_iids.dedup();
+                let mut expected_iids = resolved.clone();
+                expected_iids.sort_unstable();
+                expected_iids.dedup();
+                expected_iids == returned_iids
+            } else {
+                resolved == &returned_iids
+            };
+            if !matches {
                 return Err(integrity_at_row(
                     "provider_identity_mismatch",
                     "Returned role players differ from the invocation reference IIDs",
@@ -2577,13 +2183,9 @@ fn preflight_transport_bytes(
     fields: &[FieldRoute],
     roles: &[RoleRoute],
     references: &[RoleReference<'_>],
-    prerequisite: Option<&ProviderStatement>,
     attach: bool,
 ) -> std::result::Result<u64, SdkExecutionDiagnostic> {
     let mut total = 0_u64;
-    if let Some(statement) = prerequisite {
-        total = checked_add_u64(total, given_rows_bytes(&statement.rows)?)?;
-    }
     let mutation_rows = preflight_mutation_rows(prepared.batch().operation(), rows, model)?;
     total = checked_add_u64(total, given_rows_bytes(&mutation_rows)?)?;
     if attach {
@@ -3623,6 +3225,132 @@ plays:
             "role_players": []
         })]);
         answers
+    }
+
+    #[test]
+    fn single_write_hydration_keeps_all_unique_roots_in_provider_order() {
+        let installed = allocation_installed();
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            for count in 0..=2 {
+                let mut input = allocation_create(&installed, kind);
+                if kind == TypeKind::Relation {
+                    let role = RoleId::new("membership", "member").unwrap();
+                    let players = input.roles().get(&role).unwrap();
+                    input = ProjectedCreate::try_new(
+                        &installed,
+                        input.type_id().clone(),
+                        input
+                            .fields()
+                            .iter()
+                            .map(|(field, values)| (field.clone(), values.clone()))
+                            .collect(),
+                        vec![(role, vec![players[0].clone(), players[0].clone()])],
+                    )
+                    .unwrap();
+                }
+                let model = input.type_id().clone();
+                let control = ProjectedBatchInvocationControl::capture(
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                );
+                let batch = crate::ProjectedCrudExecutor::new(&installed)
+                    .single_controlled_write_batch(
+                        &model,
+                        ProjectedBatchOperation::Insert,
+                        ProjectedBatchRow::Create(input),
+                        &control,
+                    )
+                    .unwrap();
+                let prepared =
+                    PreparedProjectedBatchInvocation::try_new(&installed, &batch, control).unwrap();
+                let identity = DatabaseExecutionIdentity::isolated("single-hydration");
+                let plan =
+                    BatchPlan::compile(&installed, &prepared, &identity, false, None).unwrap();
+                assert!(plan.single_input);
+                let executor = ProjectedBatchExecutor::new(&installed);
+                let mut consumer = HydrationConsumer::new(&executor, &plan, &identity).unwrap();
+                consumer.targets.push(String::new());
+                let expected = ["0x22", "0x20"];
+                for iid in expected.iter().take(count) {
+                    let mut document = json!({
+                        "ordinal": 0,
+                        "_iid": iid,
+                        "_type": model.label().as_str(),
+                        "attributes": {"identifier": "key"},
+                        "_role_0_iid": "0x10",
+                        "_role_0_type": "person",
+                        "_role_0_attributes": {"identifier": "key"}
+                    });
+                    if kind == TypeKind::Entity {
+                        document
+                            .as_object_mut()
+                            .unwrap()
+                            .retain(|key, _| !key.starts_with("_role_"));
+                    }
+                    consumer.accept_document(document.clone()).unwrap();
+                    consumer.accept_document(document).unwrap();
+                }
+                let roots = consumer.finish().unwrap();
+                assert_eq!(
+                    roots.iter().map(ProjectedThing::iid).collect::<Vec<_>>(),
+                    expected[..count]
+                );
+                for thing in &roots {
+                    validate_written_role_identities(&installed, &plan, thing, 0, None).unwrap();
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn single_write_native_execution_commits_empty_answers_without_diagnosis() {
+        let installed = allocation_installed();
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            for operation in [
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchOperation::Update,
+            ] {
+                let input = allocation_create(&installed, kind);
+                let model = input.type_id().clone();
+                let row = if operation == ProjectedBatchOperation::Update {
+                    ProjectedBatchRow::Update {
+                        iid: "0x20".into(),
+                        replacement: input,
+                    }
+                } else {
+                    ProjectedBatchRow::Create(input)
+                };
+                let control = ProjectedBatchInvocationControl::capture(
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                );
+                let batch = crate::ProjectedCrudExecutor::new(&installed)
+                    .single_controlled_write_batch(&model, operation, row, &control)
+                    .unwrap();
+                let state = Arc::new(Mutex::new(AllocationState {
+                    answers: VecDeque::from([vec![]]),
+                    ..AllocationState::default()
+                }));
+                let database = Database::with_backend(
+                    Box::new(AllocationBackend {
+                        state: Arc::clone(&state),
+                    }),
+                    "single-zero",
+                );
+                let result = ProjectedBatchExecutor::new(&installed)
+                    .execute(&database, &batch, control)
+                    .await
+                    .unwrap();
+                let ProjectedBatchResult::Things(things) = result else {
+                    panic!("expected things")
+                };
+                assert!(things.is_empty());
+                let state = state.lock().unwrap();
+                assert_eq!(state.calls, 1);
+                assert_eq!((state.commits, state.rollbacks), (1, 0));
+                assert!(state.answers.is_empty());
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -33,6 +33,10 @@ person = result.item
 ```
 
 Check `result.count` or iterate `result.items` when your references can fan out.
+A single write that matches no root returns `count == 0`, empty `items`, and
+`item is None`, including a missing referenced player or an absent update root.
+It does not run a diagnostic lookup or raise the former missing-reference error.
+The rare wide-row existence guard still prevents partially created relations.
 Python attaches the input instance IID and refreshes that instance only when the
 result contains exactly one root. For zero or several roots, the input instance
 is unchanged and `items` contains the returned hydrated instances.

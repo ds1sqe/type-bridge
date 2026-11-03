@@ -831,17 +831,21 @@ async fn public_relation_insert_provider_error_rolls_back() {
 }
 
 #[tokio::test]
-async fn public_relation_insert_without_a_written_row_rolls_back() {
+async fn public_relation_insert_without_a_written_row_commits_an_empty_result() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(Vec::new()))]);
-    let error = db
+    let result = db
         .relations::<Assignment>()
         .insert(create("p", "0x9"))
         .await
-        .unwrap_err();
-    // An empty answer means the write matched nothing: no row was written.
-    assert_eq!(error.code(), Some("provider_identity_cardinality_invalid"));
+        .unwrap();
+    assert_eq!(result.count(), 0);
+    assert!(result.items().is_empty());
+    assert!(result.item().is_none());
     let guard = state.lock().unwrap();
-    assert!(matches!(guard.events.last(), Some(Event::Rollback)));
+    assert!(matches!(
+        guard.events.as_slice(),
+        [Event::Open(TxType::Write), Event::Query(_), Event::Commit]
+    ));
 }
 
 #[tokio::test]

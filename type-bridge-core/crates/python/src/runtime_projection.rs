@@ -18139,7 +18139,8 @@ class CyclicFinalizer:
         Python::initialize();
         Python::attach(|py| {
             for kind in [TypeKind::Entity, TypeKind::Relation] {
-                for count in [1usize, 2] {
+                let counts: &[usize] = &[0, 1, 2];
+                for &count in counts {
                     let (_, package) = install(py);
                     let documents = ["0x30", "0x31"].into_iter().take(count).map(|iid| {
                         if kind == TypeKind::Entity {
@@ -18213,16 +18214,18 @@ class CyclicFinalizer:
                             );
                         }
                     }
-                    assert_eq!(
-                        items
-                            .get_item(0)
-                            .unwrap()
-                            .getattr("iid")
-                            .unwrap()
-                            .extract::<String>()
-                            .unwrap(),
-                        "0x30"
-                    );
+                    if count > 0 {
+                        assert_eq!(
+                            items
+                                .get_item(0)
+                                .unwrap()
+                                .getattr("iid")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            "0x30"
+                        );
+                    }
                     let state = state.lock().unwrap();
                     assert_eq!(state.opens, [TxType::Write]);
                     assert_eq!(state.queries.len(), 1);

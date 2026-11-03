@@ -848,7 +848,7 @@ fn split_with_guards(
             complete: false,
             ordinal: output_ordinal,
             expected_iid: row.iid,
-            missing_iid_noop: kind == WriteKind::PartialUpdate,
+            missing_iid_noop: shape.single_input || kind == WriteKind::PartialUpdate,
             candidate_filter: false,
             reference_guard: false,
             reference_resolution: None,

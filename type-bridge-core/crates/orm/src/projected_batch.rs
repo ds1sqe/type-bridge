@@ -158,6 +158,7 @@ pub struct ProjectedBatch {
     rows: Vec<NormalizedProjectedBatchRow>,
     measure: ProjectedBatchResourceMeasure,
     resource_ceiling: QueryExecutionResourceLimits,
+    single_write: bool,
 }
 
 #[derive(Debug)]
@@ -603,6 +604,7 @@ impl ProjectedBatch {
                 rows: Vec::new(),
                 measure: ProjectedBatchResourceMeasure::default(),
                 resource_ceiling,
+                single_write: SINGLE_WRITE,
             });
         }
         check_control(control)?;
@@ -685,7 +687,12 @@ impl ProjectedBatch {
             rows: normalized,
             measure,
             resource_ceiling,
+            single_write: SINGLE_WRITE,
         })
+    }
+
+    pub(crate) const fn is_single_write(&self) -> bool {
+        self.single_write
     }
 
     /// Return the exact projected model identity.
