@@ -40,6 +40,11 @@ use type_bridge_generated_schema::{
     ValDuration, integer_input, plays_event_container_item, qualifying_score,
 };
 
+fn one_written<T>(result: type_bridge::WriteResult<T>) -> T {
+    assert_eq!(result.count(), 1, "this fixture writes exactly one root");
+    result.into_items().pop().expect("one written root")
+}
+
 #[derive(type_bridge::SelectedRow)]
 struct PersonGraph {
     person: Person,
@@ -2275,8 +2280,10 @@ fn sdk_queries_resource_limit_base() -> Value {
     // Every dimension but the statement count may be raised past its default
     // and is kept as given.
     let raised = QueryExecutionResourceLimits {
-            collect_phase_timestamps: false,
-        timeout_milliseconds: type_bridge::QueryTimeout::from_milliseconds(hard.timeout_milliseconds.milliseconds().unwrap() + 1),
+        collect_phase_timestamps: false,
+        timeout_milliseconds: type_bridge::QueryTimeout::from_milliseconds(
+            hard.timeout_milliseconds.milliseconds().unwrap() + 1,
+        ),
         items: hard.items + 1,
         bytes: hard.bytes + 1,
         graph_nodes: hard.graph_nodes + 1,
@@ -2292,8 +2299,7 @@ fn sdk_queries_resource_limit_base() -> Value {
         ..hard
     }
     .validate()
-    .is_err_and(|refusal| refusal.limit == "statements")
-;
+    .is_err_and(|refusal| refusal.limit == "statements");
     let zero = QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0);
     let zero_tightening_all = zero.timeout_milliseconds == hard.timeout_milliseconds
         && zero.items == 0
@@ -2547,7 +2553,8 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
                 .collect(),
         )
         .await
-        .expect("queries people insert").into_items();
+        .expect("queries people insert")
+        .into_items();
     assert_eq!(people.len(), 2);
     sdk_queries_assert_person(&people[0], &people_records[0]);
     sdk_queries_assert_person(&people[1], &people_records[1]);
@@ -2559,46 +2566,51 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
         .expect("queries person read after create")
         .is_some();
 
-    let employee = db
-        .entities::<Employee>()
-        .insert(
-            EmployeeCreate::try_new(
-                Identifier::new(sdk_field_string(employee_fields, "identifier", "string"))
-                    .expect("queries employee identifier"),
-                PartyName::new(sdk_field_string(employee_fields, "party_name", "string"))
-                    .expect("queries employee party name"),
-                Rank::new(sdk_field_long(employee_fields, "rank")).expect("queries employee rank"),
+    let employee = one_written(
+        db.entities::<Employee>()
+            .insert(
+                EmployeeCreate::try_new(
+                    Identifier::new(sdk_field_string(employee_fields, "identifier", "string"))
+                        .expect("queries employee identifier"),
+                    PartyName::new(sdk_field_string(employee_fields, "party_name", "string"))
+                        .expect("queries employee party name"),
+                    Rank::new(sdk_field_long(employee_fields, "rank"))
+                        .expect("queries employee rank"),
+                )
+                .expect("queries employee create"),
             )
-            .expect("queries employee create"),
-        )
-        .await
-        .expect("queries employee insert");
+            .await
+            .expect("queries employee insert"),
+    );
     let employee_iid = employee.iid().to_owned();
-    let manager = db
-        .entities::<Manager>()
-        .insert(
-            ManagerCreate::try_new(
-                Identifier::new(sdk_field_string(manager_fields, "identifier", "string"))
-                    .expect("queries manager identifier"),
-                ManagerNote::new(sdk_field_string(manager_fields, "manager_note", "string"))
-                    .expect("queries manager note"),
-                PartyName::new(sdk_field_string(manager_fields, "party_name", "string"))
-                    .expect("queries manager party name"),
-                Rank::new(sdk_field_long(manager_fields, "rank")).expect("queries manager rank"),
+    let manager = one_written(
+        db.entities::<Manager>()
+            .insert(
+                ManagerCreate::try_new(
+                    Identifier::new(sdk_field_string(manager_fields, "identifier", "string"))
+                        .expect("queries manager identifier"),
+                    ManagerNote::new(sdk_field_string(manager_fields, "manager_note", "string"))
+                        .expect("queries manager note"),
+                    PartyName::new(sdk_field_string(manager_fields, "party_name", "string"))
+                        .expect("queries manager party name"),
+                    Rank::new(sdk_field_long(manager_fields, "rank"))
+                        .expect("queries manager rank"),
+                )
+                .expect("queries manager create"),
             )
-            .expect("queries manager create"),
-        )
-        .await
-        .expect("queries manager insert");
+            .await
+            .expect("queries manager insert"),
+    );
     let manager_iid = manager.iid().to_owned();
-    let membership = db
-        .relations::<Membership>()
-        .insert(
-            MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
-                .expect("queries membership create"),
-        )
-        .await
-        .expect("queries membership insert");
+    let membership = one_written(
+        db.relations::<Membership>()
+            .insert(
+                MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
+                    .expect("queries membership create"),
+            )
+            .await
+            .expect("queries membership insert"),
+    );
     let membership_iid = membership.iid().to_owned();
     let membership_read_after_create = db
         .relations::<Membership>()
@@ -2606,24 +2618,25 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
         .await
         .expect("queries membership read after create")
         .is_some();
-    let network = db
-        .relations::<NetworkLink>()
-        .insert(
-            NetworkLinkCreate::new(
-                Identifier::new(sdk_field_string(network_fields, "identifier", "string"))
-                    .expect("queries network identifier"),
-                Some(
-                    Nickname::new(sdk_field_string(network_fields, "nickname", "string"))
-                        .expect("queries network nickname"),
-                ),
-                people[1].reference(),
-                people[0].reference(),
-                vec![people[0].reference(), people[1].reference()],
+    let network = one_written(
+        db.relations::<NetworkLink>()
+            .insert(
+                NetworkLinkCreate::new(
+                    Identifier::new(sdk_field_string(network_fields, "identifier", "string"))
+                        .expect("queries network identifier"),
+                    Some(
+                        Nickname::new(sdk_field_string(network_fields, "nickname", "string"))
+                            .expect("queries network nickname"),
+                    ),
+                    people[1].reference(),
+                    people[0].reference(),
+                    vec![people[0].reference(), people[1].reference()],
+                )
+                .expect("queries network create"),
             )
-            .expect("queries network create"),
-        )
-        .await
-        .expect("queries network insert");
+            .await
+            .expect("queries network insert"),
+    );
     let network_iid = network.iid().to_owned();
     let keyed_create_order = [
         people[0].identifier().value().clone(),
@@ -3121,21 +3134,24 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
         db.entities::<Person>()
             .insert_many(Vec::new())
             .await
-            .expect("empty person insert batch").into_items()
+            .expect("empty person insert batch")
+            .into_items()
             .is_empty()
     );
     assert!(
         db.entities::<Person>()
             .put_many(Vec::new())
             .await
-            .expect("empty person put batch").into_items()
+            .expect("empty person put batch")
+            .into_items()
             .is_empty()
     );
     assert!(
         db.entities::<Person>()
             .update_many(Vec::new())
             .await
-            .expect("empty person update batch").into_items()
+            .expect("empty person update batch")
+            .into_items()
             .is_empty()
     );
     db.entities::<Person>()
@@ -3183,11 +3199,12 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
     )
     .expect("PersonCreate is valid");
 
-    let person = db
-        .entities::<Person>()
-        .insert(person_create)
-        .await
-        .expect("person insert returns a complete model");
+    let person = one_written(
+        db.entities::<Person>()
+            .insert(person_create)
+            .await
+            .expect("person insert returns a complete model"),
+    );
 
     {
         let mut session = db.query().expect("scalar-domain query session");
@@ -3363,7 +3380,7 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
         ValDuration::new(Duration::try_new("P2D").expect("duration")).expect("duration"),
     )
     .expect("replacement");
-    let put = db.entities::<Person>().put(replaced).await.expect("put");
+    let put = one_written(db.entities::<Person>().put(replaced).await.expect("put"));
     assert_eq!(put.iid(), iid);
     assert_person(
         &put,
@@ -3432,7 +3449,8 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
             .unwrap(),
         ])
         .await
-        .expect("person insert_many").into_items();
+        .expect("person insert_many")
+        .into_items();
     assert_eq!(batch_people.len(), 2);
     assert_eq!(batch_people[0].identifier().value(), "p-101");
     assert_eq!(batch_people[1].identifier().value(), "p-102");
@@ -3460,32 +3478,35 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
     let mut public_ids = public_ids;
     public_ids.sort();
     assert_eq!(public_ids, vec!["p-100", "p-101", "p-102"]);
-    let updated = db
-        .entities::<Person>()
-        .update(
-            &iid,
-            PersonCreate::try_new(
-                vec![Aliases::new("f2b03-public-delta".to_owned()).expect("alias")],
-                None,
-                Identifier::new("p-100".to_owned()).expect("identifier"),
-                None,
-                Score::new(44).expect("score"),
-                None,
-                ValBool::new(true).expect("bool"),
-                ValConstrained::new(52).expect("constrained"),
-                ValDate::new(Date::try_new("2026-07-30").expect("date")).expect("date"),
-                ValDatetime::new(DateTime::try_new("2026-07-30T03:55:00").expect("datetime"))
-                    .expect("datetime"),
-                ValDatetimeTz::new(DateTimeTz::try_new("2026-07-30T03:55:00Z").expect("tz"))
-                    .expect("tz"),
-                ValDecimal::new(Decimal::try_new("125.45").expect("decimal")).expect("decimal"),
-                ValDouble::new(CanonicalDouble::try_new(5.14).expect("double")).expect("double"),
-                ValDuration::new(Duration::try_new("P3D").expect("duration")).expect("duration"),
+    let updated = one_written(
+        db.entities::<Person>()
+            .update(
+                &iid,
+                PersonCreate::try_new(
+                    vec![Aliases::new("f2b03-public-delta".to_owned()).expect("alias")],
+                    None,
+                    Identifier::new("p-100".to_owned()).expect("identifier"),
+                    None,
+                    Score::new(44).expect("score"),
+                    None,
+                    ValBool::new(true).expect("bool"),
+                    ValConstrained::new(52).expect("constrained"),
+                    ValDate::new(Date::try_new("2026-07-30").expect("date")).expect("date"),
+                    ValDatetime::new(DateTime::try_new("2026-07-30T03:55:00").expect("datetime"))
+                        .expect("datetime"),
+                    ValDatetimeTz::new(DateTimeTz::try_new("2026-07-30T03:55:00Z").expect("tz"))
+                        .expect("tz"),
+                    ValDecimal::new(Decimal::try_new("125.45").expect("decimal")).expect("decimal"),
+                    ValDouble::new(CanonicalDouble::try_new(5.14).expect("double"))
+                        .expect("double"),
+                    ValDuration::new(Duration::try_new("P3D").expect("duration"))
+                        .expect("duration"),
+                )
+                .expect("update input"),
             )
-            .expect("update input"),
-        )
-        .await
-        .expect("update");
+            .await
+            .expect("update"),
+    );
     assert_eq!(updated.iid(), iid);
     assert_person(
         &updated,
@@ -3527,21 +3548,23 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
     assert_eq!(updated.score().value(), &44);
     assert_eq!(updated.val_duration().value().as_str(), "P3D");
     let special_alias = "quote'\"\\line\nunicode-λ";
-    let replaced_ownerships = db
-        .entities::<Person>()
-        .update(
-            &iid,
-            ownership_edge_person_input("p-100", &[special_alias], None),
-        )
-        .await
-        .expect("special ownership replacement");
+    let replaced_ownerships = one_written(
+        db.entities::<Person>()
+            .update(
+                &iid,
+                ownership_edge_person_input("p-100", &[special_alias], None),
+            )
+            .await
+            .expect("special ownership replacement"),
+    );
     assert_eq!(replaced_ownerships.nickname(), None);
     assert_eq!(replaced_ownerships.aliases()[0].value(), special_alias);
-    let cleared_ownerships = db
-        .entities::<Person>()
-        .update(&iid, ownership_edge_person_input("p-100", &[], None))
-        .await
-        .expect("ownership clearing update");
+    let cleared_ownerships = one_written(
+        db.entities::<Person>()
+            .update(&iid, ownership_edge_person_input("p-100", &[], None))
+            .await
+            .expect("ownership clearing update"),
+    );
     assert_eq!(cleared_ownerships.nickname(), None);
     assert!(cleared_ownerships.aliases().is_empty());
     assert!(
@@ -3595,35 +3618,37 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     assert_eq!(employee_baseline, 0);
     assert_eq!(employee_subtype_baseline, 0);
     assert_eq!(party_baseline, 0);
-    let employee = db
-        .entities::<Employee>()
-        .insert(
-            EmployeeCreate::try_new(
-                Identifier::new("emp-1").unwrap(),
-                PartyName::new("employee").unwrap(),
-                Rank::new(1).unwrap(),
+    let employee = one_written(
+        db.entities::<Employee>()
+            .insert(
+                EmployeeCreate::try_new(
+                    Identifier::new("emp-1").unwrap(),
+                    PartyName::new("employee").unwrap(),
+                    Rank::new(1).unwrap(),
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .await
-        .expect("employee insert");
+            .await
+            .expect("employee insert"),
+    );
     let employee_iid = employee.iid().to_owned();
     assert!(!employee_iid.is_empty());
     assert_eq!(employee.identifier().value(), "emp-1");
     assert_eq!(employee.party_name().value(), "employee");
     assert_eq!(employee.rank().value(), &1);
-    let employee_put = db
-        .entities::<Employee>()
-        .put(
-            EmployeeCreate::try_new(
-                Identifier::new("emp-1").unwrap(),
-                PartyName::new("employee-put").unwrap(),
-                Rank::new(3).unwrap(),
+    let employee_put = one_written(
+        db.entities::<Employee>()
+            .put(
+                EmployeeCreate::try_new(
+                    Identifier::new("emp-1").unwrap(),
+                    PartyName::new("employee-put").unwrap(),
+                    Rank::new(3).unwrap(),
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .await
-        .expect("employee put");
+            .await
+            .expect("employee put"),
+    );
     assert_eq!(employee_put.iid(), employee_iid);
     assert_eq!(employee_put.identifier().value(), "emp-1");
     assert_eq!(employee_put.party_name().value(), "employee-put");
@@ -3645,7 +3670,8 @@ async fn generated_inheritance_exact_and_subtype_reads() {
             .unwrap(),
         ])
         .await
-        .expect("employee put_many").into_items();
+        .expect("employee put_many")
+        .into_items();
     assert_eq!(put_many.len(), 2);
     assert_eq!(put_many[0].iid(), employee_iid);
     assert_eq!(put_many[0].rank().value(), &4);
@@ -3656,19 +3682,20 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     assert_eq!(put_many[1].party_name().value(), "employee-batch-new");
     assert_eq!(put_many[1].rank().value(), &5);
     assert!(!new_employee_iid.is_empty());
-    let employee_updated = db
-        .entities::<Employee>()
-        .update(
-            &employee_iid,
-            EmployeeCreate::try_new(
-                Identifier::new("emp-1").unwrap(),
-                PartyName::new("employee-updated").unwrap(),
-                Rank::new(6).unwrap(),
+    let employee_updated = one_written(
+        db.entities::<Employee>()
+            .update(
+                &employee_iid,
+                EmployeeCreate::try_new(
+                    Identifier::new("emp-1").unwrap(),
+                    PartyName::new("employee-updated").unwrap(),
+                    Rank::new(6).unwrap(),
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .await
-        .expect("employee update");
+            .await
+            .expect("employee update"),
+    );
     assert_eq!(employee_updated.iid(), employee_iid);
     assert_eq!(employee_updated.rank().value(), &6);
     assert_eq!(employee_updated.identifier().value(), "emp-1");
@@ -3708,32 +3735,34 @@ async fn generated_inheritance_exact_and_subtype_reads() {
             .iter()
             .any(|value| value.iid() == employee_iid)
     );
-    let manager = db
-        .entities::<Manager>()
-        .insert(
-            ManagerCreate::try_new(
-                Identifier::new("mgr-1").unwrap(),
-                ManagerNote::new("lead").unwrap(),
-                PartyName::new("manager").unwrap(),
-                Rank::new(2).unwrap(),
+    let manager = one_written(
+        db.entities::<Manager>()
+            .insert(
+                ManagerCreate::try_new(
+                    Identifier::new("mgr-1").unwrap(),
+                    ManagerNote::new("lead").unwrap(),
+                    PartyName::new("manager").unwrap(),
+                    Rank::new(2).unwrap(),
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .await
-        .expect("manager insert");
+            .await
+            .expect("manager insert"),
+    );
     assert!(!manager.iid().is_empty());
-    let contractor = db
-        .entities::<Contractor>()
-        .insert(
-            ContractorCreate::try_new(
-                ContractorCode::new("ctr-1").unwrap(),
-                Identifier::new("ctr-1").unwrap(),
-                PartyName::new("contractor").unwrap(),
+    let contractor = one_written(
+        db.entities::<Contractor>()
+            .insert(
+                ContractorCreate::try_new(
+                    ContractorCode::new("ctr-1").unwrap(),
+                    Identifier::new("ctr-1").unwrap(),
+                    PartyName::new("contractor").unwrap(),
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .await
-        .expect("contractor insert");
+            .await
+            .expect("contractor insert"),
+    );
     assert!(!contractor.iid().is_empty());
     let exact_employees = db
         .entities::<Employee>()
@@ -4089,64 +4118,72 @@ async fn generated_relation_query_and_remote_lifecycle() {
         db.relations::<Employment>()
             .insert_many(Vec::new())
             .await
-            .expect("empty relation insert batch").into_items()
+            .expect("empty relation insert batch")
+            .into_items()
             .is_empty()
     );
     assert!(
         db.relations::<Employment>()
             .put_many(Vec::new())
             .await
-            .expect("empty relation put batch").into_items()
+            .expect("empty relation put batch")
+            .into_items()
             .is_empty()
     );
     assert!(
         db.relations::<Employment>()
             .update_many(Vec::new())
             .await
-            .expect("empty relation update batch").into_items()
+            .expect("empty relation update batch")
+            .into_items()
             .is_empty()
     );
     db.relations::<Employment>()
         .delete_many(&[])
         .await
         .expect("empty relation delete batch");
-    let worker_a = db
-        .entities::<Person>()
-        .insert(relation_person_input("p-200", "f2c03-worker-a"))
-        .await
-        .expect("relation worker a insert");
-    let worker_b = db
-        .entities::<Person>()
-        .insert(relation_person_input("p-201", "f2c03-worker-b"))
-        .await
-        .expect("relation worker b insert");
-    let worker_c = db
-        .entities::<Person>()
-        .insert(relation_person_input("p-202", "f2c03-worker-c"))
-        .await
-        .expect("relation worker c insert");
-    let worker_d = db
-        .entities::<Person>()
-        .insert(relation_person_input("p-203", "f5-worker-d"))
-        .await
-        .expect("relation worker d insert");
+    let worker_a = one_written(
+        db.entities::<Person>()
+            .insert(relation_person_input("p-200", "f2c03-worker-a"))
+            .await
+            .expect("relation worker a insert"),
+    );
+    let worker_b = one_written(
+        db.entities::<Person>()
+            .insert(relation_person_input("p-201", "f2c03-worker-b"))
+            .await
+            .expect("relation worker b insert"),
+    );
+    let worker_c = one_written(
+        db.entities::<Person>()
+            .insert(relation_person_input("p-202", "f2c03-worker-c"))
+            .await
+            .expect("relation worker c insert"),
+    );
+    let worker_d = one_written(
+        db.entities::<Person>()
+            .insert(relation_person_input("p-203", "f5-worker-d"))
+            .await
+            .expect("relation worker d insert"),
+    );
 
     // F5: a keyed generated relation covers relation-owned attribute
     // replacement, repeated players on one role, and put hit/miss behavior.
-    let keyed_link = db
-        .relations::<NetworkLink>()
-        .insert(
-            NetworkLinkCreate::new(
-                Identifier::new("link-keyed").expect("network key"),
-                Some(Nickname::new("initial").expect("network nickname")),
-                worker_b.reference(),
-                worker_a.reference(),
-                vec![worker_a.reference(), worker_b.reference()],
+    let keyed_link = one_written(
+        db.relations::<NetworkLink>()
+            .insert(
+                NetworkLinkCreate::new(
+                    Identifier::new("link-keyed").expect("network key"),
+                    Some(Nickname::new("initial").expect("network nickname")),
+                    worker_b.reference(),
+                    worker_a.reference(),
+                    vec![worker_a.reference(), worker_b.reference()],
+                )
+                .expect("keyed network create"),
             )
-            .expect("keyed network create"),
-        )
-        .await
-        .expect("keyed network insert");
+            .await
+            .expect("keyed network insert"),
+    );
     let keyed_link_iid = keyed_link.iid().to_owned();
     assert_eq!(keyed_link.identifier().value(), "link-keyed");
     assert_eq!(
@@ -4155,20 +4192,21 @@ async fn generated_relation_query_and_remote_lifecycle() {
     );
     assert_eq!(keyed_link.participant().len(), 2);
 
-    let keyed_put = db
-        .relations::<NetworkLink>()
-        .put(
-            NetworkLinkCreate::new(
-                Identifier::new("link-keyed").expect("network key"),
-                Some(Nickname::new("put-replaced").expect("network nickname")),
-                worker_c.reference(),
-                worker_a.reference(),
-                vec![worker_a.reference(), worker_c.reference()],
+    let keyed_put = one_written(
+        db.relations::<NetworkLink>()
+            .put(
+                NetworkLinkCreate::new(
+                    Identifier::new("link-keyed").expect("network key"),
+                    Some(Nickname::new("put-replaced").expect("network nickname")),
+                    worker_c.reference(),
+                    worker_a.reference(),
+                    vec![worker_a.reference(), worker_c.reference()],
+                )
+                .expect("keyed network put create"),
             )
-            .expect("keyed network put create"),
-        )
-        .await
-        .expect("keyed network put hit");
+            .await
+            .expect("keyed network put hit"),
+    );
     assert_eq!(keyed_put.iid(), keyed_link_iid);
     assert_eq!(
         keyed_put.nickname().expect("put nickname").value(),
@@ -4177,39 +4215,41 @@ async fn generated_relation_query_and_remote_lifecycle() {
     assert_eq!(keyed_put.destination().identifier().value(), "p-202");
     assert_eq!(keyed_put.participant().len(), 2);
 
-    let put_new = db
-        .relations::<NetworkLink>()
-        .put(
-            NetworkLinkCreate::new(
-                Identifier::new("link-put-new").expect("new network key"),
-                Some(Nickname::new("new").expect("network nickname")),
-                PersonRef::from_key(Identifier::new("p-203").expect("destination key"))
-                    .expect("destination key reference"),
-                PersonRef::from_key(Identifier::new("p-201").expect("origin key"))
-                    .expect("origin key reference"),
-                vec![worker_b.reference(), worker_d.reference()],
+    let put_new = one_written(
+        db.relations::<NetworkLink>()
+            .put(
+                NetworkLinkCreate::new(
+                    Identifier::new("link-put-new").expect("new network key"),
+                    Some(Nickname::new("new").expect("network nickname")),
+                    PersonRef::from_key(Identifier::new("p-203").expect("destination key"))
+                        .expect("destination key reference"),
+                    PersonRef::from_key(Identifier::new("p-201").expect("origin key"))
+                        .expect("origin key reference"),
+                    vec![worker_b.reference(), worker_d.reference()],
+                )
+                .expect("new keyed network create"),
             )
-            .expect("new keyed network create"),
-        )
-        .await
-        .expect("keyed network put miss");
+            .await
+            .expect("keyed network put miss"),
+    );
     let put_new_iid = put_new.iid().to_owned();
     assert_ne!(put_new_iid, keyed_link_iid);
-    let updated_new = db
-        .relations::<NetworkLink>()
-        .update(
-            &put_new_iid,
-            NetworkLinkCreate::new(
-                Identifier::new("link-put-new").expect("new network key"),
-                None,
-                worker_d.reference(),
-                worker_c.reference(),
-                vec![worker_c.reference(), worker_d.reference()],
+    let updated_new = one_written(
+        db.relations::<NetworkLink>()
+            .update(
+                &put_new_iid,
+                NetworkLinkCreate::new(
+                    Identifier::new("link-put-new").expect("new network key"),
+                    None,
+                    worker_d.reference(),
+                    worker_c.reference(),
+                    vec![worker_c.reference(), worker_d.reference()],
+                )
+                .expect("network update input"),
             )
-            .expect("network update input"),
-        )
-        .await
-        .expect("network update replaces attributes and roles");
+            .await
+            .expect("network update replaces attributes and roles"),
+    );
     assert_eq!(updated_new.iid(), put_new_iid);
     assert!(updated_new.nickname().is_none());
     assert_eq!(updated_new.origin().identifier().value(), "p-202");
@@ -4242,7 +4282,8 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .expect("new batch network create"),
         ])
         .await
-        .expect("network relation put_many").into_items();
+        .expect("network relation put_many")
+        .into_items();
     assert_eq!(keyed_batch.len(), 2);
     assert_eq!(keyed_batch[0].iid(), keyed_link_iid);
     let batch_link_iid = keyed_batch[1].iid().to_owned();
@@ -4273,23 +4314,25 @@ async fn generated_relation_query_and_remote_lifecycle() {
     ];
     let mut graph_link_iids = Vec::new();
     for (identifier, origin, destination) in graph_specs {
-        let link = db
-            .relations::<NetworkLink>()
-            .insert(
-                NetworkLinkCreate::new(
-                    Identifier::new(identifier).expect("graph link key"),
-                    None,
-                    destination.reference(),
-                    origin.reference(),
-                    vec![origin.reference(), destination.reference()],
+        let link = one_written(
+            db.relations::<NetworkLink>()
+                .insert(
+                    NetworkLinkCreate::new(
+                        Identifier::new(identifier).expect("graph link key"),
+                        None,
+                        destination.reference(),
+                        origin.reference(),
+                        vec![origin.reference(), destination.reference()],
+                    )
+                    .expect("graph link create"),
                 )
-                .expect("graph link create"),
-            )
-            .await
-            .expect("graph link insert");
+                .await
+                .expect("graph link insert"),
+        );
         graph_link_iids.push(link.iid().to_owned());
     }
-    {
+    // Keep query scopes in separate polling frames in this large fixture.
+    Box::pin(async {
         let mut session = db.query().expect("F5 reachability session");
         let source = session.exact::<Person>().expect("F5 source binding");
         let target = session.exact::<Person>().expect("F5 target binding");
@@ -4376,12 +4419,14 @@ async fn generated_relation_query_and_remote_lifecycle() {
                 .await
                 .expect("F5 cycle inclusion exists")
         );
-    }
-    let employment_one = db
-        .relations::<Employment>()
-        .insert(EmploymentCreate::new(worker_a.reference()).expect("employment create by iid"))
-        .await
-        .expect("employment insert by IID reference");
+    })
+    .await;
+    let employment_one = one_written(
+        db.relations::<Employment>()
+            .insert(EmploymentCreate::new(worker_a.reference()).expect("employment create by iid"))
+            .await
+            .expect("employment insert by IID reference"),
+    );
     let employment_one_iid = employment_one.iid().to_owned();
     assert!(!employment_one_iid.is_empty());
     let employment_read = db
@@ -4408,26 +4453,29 @@ async fn generated_relation_query_and_remote_lifecycle() {
             EmploymentCreate::new(key_reference).expect("employment create by key"),
         ])
         .await
-        .expect("employment insert_many by typed key reference").into_items();
+        .expect("employment insert_many by typed key reference")
+        .into_items();
     assert_eq!(employment_batch.len(), 1);
     let employment_two_iid = employment_batch[0].iid().to_owned();
     assert_ne!(employment_two_iid, employment_one_iid);
 
-    let employment_updated = db
-        .relations::<Employment>()
-        .update(
-            &employment_one_iid,
-            EmploymentCreate::new(worker_c.reference()).expect("employment replacement create"),
-        )
-        .await
-        .expect("employment update replaces the active player set");
+    let employment_updated = one_written(
+        db.relations::<Employment>()
+            .update(
+                &employment_one_iid,
+                EmploymentCreate::new(worker_c.reference()).expect("employment replacement create"),
+            )
+            .await
+            .expect("employment update replaces the active player set"),
+    );
     assert_eq!(employment_updated.iid(), employment_one_iid);
 
-    let employment_put = db
-        .relations::<Employment>()
-        .put(EmploymentCreate::new(worker_a.reference()).expect("employment put create"))
-        .await
-        .expect("employment put without a usable key inserts");
+    let employment_put = one_written(
+        db.relations::<Employment>()
+            .put(EmploymentCreate::new(worker_a.reference()).expect("employment put create"))
+            .await
+            .expect("employment put without a usable key inserts"),
+    );
     let employment_three_iid = employment_put.iid().to_owned();
     assert_ne!(employment_three_iid, employment_one_iid);
     assert_ne!(employment_three_iid, employment_two_iid);
@@ -4452,7 +4500,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
 
     // F3-06B: reusable generated queries, all reducers, and role-grouped
     // materialization over the live relation lifecycle.
-    {
+    Box::pin(async {
         let mut session = db.query().expect("query session");
         let person_binding = session.exact::<Person>().expect("person binding");
         let employment_binding = session.exact::<Employment>().expect("employment binding");
@@ -4648,7 +4696,8 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .expect("cross query result");
         assert_eq!(cross_pair.0.iid(), worker_a.iid());
         assert_eq!(cross_pair.1.iid(), worker_b.iid());
-    }
+    })
+    .await;
     println!("F3 public generated query lifecycle: passed");
 
     // F4: named collected pages, reusable read contexts, and identical
@@ -4697,7 +4746,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         observed
     };
 
-    {
+    Box::pin(async {
         let read = db.read().await.expect("F4 read transaction opens");
         let mut session = read.query();
         let person_binding = session.exact::<Person>().expect("F4 read person binding");
@@ -4713,7 +4762,8 @@ async fn generated_relation_query_and_remote_lifecycle() {
         drop(query);
         drop(session);
         read.close().await.expect("F4 read transaction closes");
-    }
+    })
+    .await;
 
     let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("F4 remote server URL");
     let remote: ProxyDatabase<AppSchema> = ProxyDatabase::connect(
@@ -4989,17 +5039,19 @@ async fn generated_relation_query_and_remote_lifecycle() {
         membership_family_baseline + 3
     );
 
-    let event = db
-        .relations::<Event>()
-        .insert(EventCreate::new(worker_a.reference()).expect("event create"))
-        .await
-        .expect("event insert");
+    let event = one_written(
+        db.relations::<Event>()
+            .insert(EventCreate::new(worker_a.reference()).expect("event create"))
+            .await
+            .expect("event insert"),
+    );
     let event_iid = event.iid().to_owned();
-    let container = db
-        .relations::<Container>()
-        .insert(ContainerCreate::new(vec![event.reference()]).expect("container create"))
-        .await
-        .expect("container insert with a relation player");
+    let container = one_written(
+        db.relations::<Container>()
+            .insert(ContainerCreate::new(vec![event.reference()]).expect("container create"))
+            .await
+            .expect("container insert with a relation player"),
+    );
     let container_iid = container.iid().to_owned();
     let container_read = db
         .relations::<Container>()
@@ -5213,20 +5265,25 @@ async fn role_player_refusal(
 async fn generated_one_program_under_direct_and_proxy_connections() {
     let db = database().await;
     let workers = [
-        db.entities::<Person>()
-            .insert(relation_person_input("p-600", "one-program-a"))
-            .await
-            .expect("one-program person a"),
-        db.entities::<Person>()
-            .insert(relation_person_input("p-601", "one-program-b"))
-            .await
-            .expect("one-program person b"),
+        one_written(
+            db.entities::<Person>()
+                .insert(relation_person_input("p-600", "one-program-a"))
+                .await
+                .expect("one-program person a"),
+        ),
+        one_written(
+            db.entities::<Person>()
+                .insert(relation_person_input("p-601", "one-program-b"))
+                .await
+                .expect("one-program person b"),
+        ),
     ];
-    let employment = db
-        .relations::<Employment>()
-        .insert(EmploymentCreate::new(workers[0].reference()).expect("one-program employment"))
-        .await
-        .expect("one-program employment insert");
+    let employment = one_written(
+        db.relations::<Employment>()
+            .insert(EmploymentCreate::new(workers[0].reference()).expect("one-program employment"))
+            .await
+            .expect("one-program employment insert"),
+    );
 
     let direct = SCHEMA
         .connect(direct_connection_policy())
@@ -5347,24 +5404,26 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
         .await
         .expect("interaction baseline");
 
-    let person_actor = db
-        .entities::<Person>()
-        .insert(ownership_edge_person_input(
-            "parity-person-actor",
-            &["parity-person-actor"],
-            Some("parity-actor-person"),
-        ))
-        .await
-        .expect("person actor insert");
-    let target = db
-        .entities::<Person>()
-        .insert(ownership_edge_person_input(
-            "parity-person-target",
-            &["parity-person-target"],
-            Some("parity-target"),
-        ))
-        .await
-        .expect("interaction target insert");
+    let person_actor = one_written(
+        db.entities::<Person>()
+            .insert(ownership_edge_person_input(
+                "parity-person-actor",
+                &["parity-person-actor"],
+                Some("parity-actor-person"),
+            ))
+            .await
+            .expect("person actor insert"),
+    );
+    let target = one_written(
+        db.entities::<Person>()
+            .insert(ownership_edge_person_input(
+                "parity-person-target",
+                &["parity-person-target"],
+                Some("parity-target"),
+            ))
+            .await
+            .expect("interaction target insert"),
+    );
 
     let robots = db
         .entities::<Robot>()
@@ -5387,21 +5446,23 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
             .collect(),
         )
         .await
-        .expect("integer-key robot insert batch").into_items();
+        .expect("integer-key robot insert batch")
+        .into_items();
     assert_eq!(robots.len(), 4);
     let negative_robot = robots
         .iter()
         .find(|robot| robot.robot_id().value() == &-42)
         .expect("negative integer-key robot");
 
-    let robot_membership = db
-        .relations::<Membership>()
-        .insert(
-            MembershipCreate::new(MembershipMemberRef::Robot(negative_robot.reference()))
-                .expect("robot membership create"),
-        )
-        .await
-        .expect("robot membership insert");
+    let robot_membership = one_written(
+        db.relations::<Membership>()
+            .insert(
+                MembershipCreate::new(MembershipMemberRef::Robot(negative_robot.reference()))
+                    .expect("robot membership create"),
+            )
+            .await
+            .expect("robot membership insert"),
+    );
     match robot_membership.member() {
         MembershipMemberPlayer::Robot(reference) => {
             assert_eq!(reference.robot_id().expect("robot key").value(), &-42);
@@ -5409,32 +5470,34 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
         MembershipMemberPlayer::Person(_) => panic!("robot membership hydrated as a person"),
     }
 
-    let person_interaction = db
-        .relations::<Interaction>()
-        .insert(
-            InteractionCreate::new(
-                Identifier::new("parity-interaction-person").expect("interaction key"),
-                Some(Nickname::new("drop-person").expect("interaction nickname")),
-                Some(InteractionActorRef::Person(person_actor.reference())),
-                target.reference(),
+    let person_interaction = one_written(
+        db.relations::<Interaction>()
+            .insert(
+                InteractionCreate::new(
+                    Identifier::new("parity-interaction-person").expect("interaction key"),
+                    Some(Nickname::new("drop-person").expect("interaction nickname")),
+                    Some(InteractionActorRef::Person(person_actor.reference())),
+                    target.reference(),
+                )
+                .expect("person interaction create"),
             )
-            .expect("person interaction create"),
-        )
-        .await
-        .expect("person interaction insert");
-    let robot_interaction = db
-        .relations::<Interaction>()
-        .insert(
-            InteractionCreate::new(
-                Identifier::new("parity-interaction-robot").expect("interaction key"),
-                Some(Nickname::new("keep-robot").expect("interaction nickname")),
-                Some(InteractionActorRef::Robot(negative_robot.reference())),
-                target.reference(),
+            .await
+            .expect("person interaction insert"),
+    );
+    let robot_interaction = one_written(
+        db.relations::<Interaction>()
+            .insert(
+                InteractionCreate::new(
+                    Identifier::new("parity-interaction-robot").expect("interaction key"),
+                    Some(Nickname::new("keep-robot").expect("interaction nickname")),
+                    Some(InteractionActorRef::Robot(negative_robot.reference())),
+                    target.reference(),
+                )
+                .expect("robot interaction create"),
             )
-            .expect("robot interaction create"),
-        )
-        .await
-        .expect("robot interaction insert");
+            .await
+            .expect("robot interaction insert"),
+    );
     match robot_interaction.actor().expect("robot actor") {
         InteractionActorPlayer::Robot(reference) => {
             assert_eq!(reference.robot_id().expect("actor robot key").value(), &-42);
@@ -5633,23 +5696,25 @@ async fn generated_plain_inherited_abstract_role_parity() {
         .await
         .expect("plain activity baseline");
 
-    let person = db
-        .entities::<Person>()
-        .insert(ownership_edge_person_input(
-            "plain-activity-person",
-            &["plain-activity-person"],
-            Some("plain-activity-participant"),
-        ))
-        .await
-        .expect("plain activity participant insert");
-    let activity = db
-        .relations::<PlainActivity>()
-        .insert(
-            PlainActivityCreate::new(person.reference())
-                .expect("plain-inherited abstract role create input"),
-        )
-        .await
-        .expect("plain activity insert");
+    let person = one_written(
+        db.entities::<Person>()
+            .insert(ownership_edge_person_input(
+                "plain-activity-person",
+                &["plain-activity-person"],
+                Some("plain-activity-participant"),
+            ))
+            .await
+            .expect("plain activity participant insert"),
+    );
+    let activity = one_written(
+        db.relations::<PlainActivity>()
+            .insert(
+                PlainActivityCreate::new(person.reference())
+                    .expect("plain-inherited abstract role create input"),
+            )
+            .await
+            .expect("plain activity insert"),
+    );
     assert_eq!(activity.participant().iid(), person.iid());
 
     let stored = db
@@ -5711,14 +5776,15 @@ async fn generated_unkeyed_entity_iid_lifecycle_and_singular_query() {
         .count()
         .await
         .expect("counter baseline");
-    let counter = db
-        .entities::<Counter>()
-        .insert(
-            CounterCreate::new(CounterValue::new(42).expect("counter value"))
-                .expect("counter create input"),
-        )
-        .await
-        .expect("counter insert");
+    let counter = one_written(
+        db.entities::<Counter>()
+            .insert(
+                CounterCreate::new(CounterValue::new(42).expect("counter value"))
+                    .expect("counter create input"),
+            )
+            .await
+            .expect("counter insert"),
+    );
     assert!(!counter.iid().is_empty());
     assert_eq!(counter.counter_value().value(), &42);
 
@@ -5786,7 +5852,8 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
             relation_person_input("p-402", "removed-control"),
         ])
         .await
-        .expect("hook parity people insert").into_items();
+        .expect("hook parity people insert")
+        .into_items();
     let first_iid = people[0].iid().to_owned();
     let second_iid = people[1].iid().to_owned();
     let absent_iid = people[2].iid().to_owned();
@@ -5801,15 +5868,19 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
         RecordingLifecycleHook::new("update-only", Arc::clone(&filtered_events))
             .only(type_bridge::CrudOperation::Update),
     ));
-    operation_filtered
-        .put(relation_person_input("p-400", "original-a"))
-        .await
-        .expect("operation-filtered hook skips put");
+    one_written(
+        operation_filtered
+            .put(relation_person_input("p-400", "original-a"))
+            .await
+            .expect("operation-filtered hook skips put"),
+    );
     assert!(filtered_events.lock().expect("hook event lock").is_empty());
-    operation_filtered
-        .update(&first_iid, relation_person_input("p-400", "original-a"))
-        .await
-        .expect("operation-filtered hook runs update");
+    one_written(
+        operation_filtered
+            .update(&first_iid, relation_person_input("p-400", "original-a"))
+            .await
+            .expect("operation-filtered hook runs update"),
+    );
     assert_eq!(
         filtered_events.lock().expect("hook event lock").as_slice(),
         [
@@ -5863,24 +5934,31 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
         assert_eq!(value.aliases()[0].value(), expected);
     }
 
-    let failed_atomic = db
+    let partially_matched = db
         .entities::<Person>()
         .update_many(vec![
             (
                 first_iid.clone(),
-                relation_person_input("p-400", "must-roll-back"),
+                relation_person_input("p-400", "matched-update"),
             ),
             (absent_iid.clone(), relation_person_input("p-402", "absent")),
         ])
-        .await;
-    assert!(failed_atomic.is_err());
-    let first_after_rollback = db
+        .await
+        .expect("a missing input does not discard matched writes");
+    assert_eq!(partially_matched.count(), 1);
+    assert_eq!(partially_matched.input_indexes(), &[0]);
+    assert_eq!(partially_matched.items()[0].iid(), first_iid);
+    assert_eq!(
+        partially_matched.items()[0].aliases()[0].value(),
+        "matched-update"
+    );
+    let first_after_commit = db
         .entities::<Person>()
         .get_by_iid(&first_iid)
         .await
-        .expect("atomic rollback read")
-        .expect("first person survives rollback");
-    assert_eq!(first_after_rollback.aliases()[0].value(), "original-a");
+        .expect("partial-match durable read")
+        .expect("matched person survives commit");
+    assert_eq!(first_after_commit.aliases()[0].value(), "matched-update");
 
     events.lock().expect("hook event lock").clear();
     let mut hooked = db.entities::<Person>();
@@ -5903,7 +5981,8 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
             ),
         ])
         .await
-        .expect("post-hook failure is non-fatal after atomic update").into_items();
+        .expect("post-hook failure is non-fatal after atomic update")
+        .into_items();
     assert_eq!(updated[0].aliases()[0].value(), "updated-a");
     assert_eq!(updated[1].aliases()[0].value(), "updated-b");
     assert_eq!(
@@ -5927,7 +6006,8 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
             EmploymentCreate::new(updated[1].reference()).expect("second employment create"),
         ])
         .await
-        .expect("hook parity employment insert batch").into_items();
+        .expect("hook parity employment insert batch")
+        .into_items();
     let first_employment_iid = employment[0].iid().to_owned();
     let second_employment_iid = employment[1].iid().to_owned();
 
@@ -5954,7 +6034,8 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
             ),
         ])
         .await
-        .expect("relation update batch commits despite post-hook failure").into_items();
+        .expect("relation update batch commits despite post-hook failure")
+        .into_items();
     assert_eq!(updated_relations[0].iid(), first_employment_iid);
     assert_eq!(updated_relations[1].iid(), second_employment_iid);
     assert!(
@@ -6010,19 +6091,21 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
         .await
         .expect("transaction person baseline");
     let tx = db.write().await.expect("write transaction opens");
-    let committed_worker = tx
-        .entities::<Person>()
-        .insert(relation_person_input("p-300", "f2d-committed"))
-        .await
-        .expect("transaction person insert");
-    let committed_employment = tx
-        .relations::<Employment>()
-        .insert(
-            EmploymentCreate::new(committed_worker.reference())
-                .expect("transaction employment create"),
-        )
-        .await
-        .expect("transaction employment insert");
+    let committed_worker = one_written(
+        tx.entities::<Person>()
+            .insert(relation_person_input("p-300", "f2d-committed"))
+            .await
+            .expect("transaction person insert"),
+    );
+    let committed_employment = one_written(
+        tx.relations::<Employment>()
+            .insert(
+                EmploymentCreate::new(committed_worker.reference())
+                    .expect("transaction employment create"),
+            )
+            .await
+            .expect("transaction employment insert"),
+    );
     assert!(
         tx.entities::<Person>()
             .get_by_iid(committed_worker.iid())
@@ -6047,11 +6130,12 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
     );
 
     let tx = db.write().await.expect("second write transaction opens");
-    let rolled = tx
-        .entities::<Person>()
-        .insert(relation_person_input("p-301", "f2d-rolled"))
-        .await
-        .expect("rolled-back person insert");
+    let rolled = one_written(
+        tx.entities::<Person>()
+            .insert(relation_person_input("p-301", "f2d-rolled"))
+            .await
+            .expect("rolled-back person insert"),
+    );
     let rolled_iid = rolled.iid().to_owned();
     tx.rollback().await.expect("explicit rollback");
     assert!(
@@ -6063,11 +6147,12 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
     );
 
     let tx = db.write().await.expect("third write transaction opens");
-    let dropped = tx
-        .entities::<Person>()
-        .insert(relation_person_input("p-302", "f2d-dropped"))
-        .await
-        .expect("dropped-transaction person insert");
+    let dropped = one_written(
+        tx.entities::<Person>()
+            .insert(relation_person_input("p-302", "f2d-dropped"))
+            .await
+            .expect("dropped-transaction person insert"),
+    );
     let dropped_iid = dropped.iid().to_owned();
     drop(tx);
     assert!(
@@ -6104,16 +6189,20 @@ async fn sdk_serialization_live() {
     };
     require_sdk_server_version(&sdk_matrix_entry("serialization")).await;
     let db = database().await;
-    let person = db
-        .entities::<Person>()
-        .insert(ownership_edge_person_input("v5-live-person", &[], None))
-        .await
-        .expect("Serialization live person insert");
-    let employment = db
-        .relations::<Employment>()
-        .insert(EmploymentCreate::new(person.reference()).expect("Serialization employment input"))
-        .await
-        .expect("Serialization live employment insert");
+    let person = one_written(
+        db.entities::<Person>()
+            .insert(ownership_edge_person_input("v5-live-person", &[], None))
+            .await
+            .expect("Serialization live person insert"),
+    );
+    let employment = one_written(
+        db.relations::<Employment>()
+            .insert(
+                EmploymentCreate::new(person.reference()).expect("Serialization employment input"),
+            )
+            .await
+            .expect("Serialization live employment insert"),
+    );
 
     let (direct_employment, direct_person) = {
         let mut session = db.query().expect("Serialization direct query session");
@@ -6223,14 +6312,15 @@ async fn sdk_serialization_live() {
             .await
             .expect("Serialization fresh key lookup finds the person")
     };
-    let rebound_employment = db
-        .relations::<Employment>()
-        .update(
-            employment.iid(),
-            EmploymentCreate::new(rebound.reference()).expect("Serialization rebound input"),
-        )
-        .await
-        .expect("Serialization rebound mutation succeeds");
+    let rebound_employment = one_written(
+        db.relations::<Employment>()
+            .update(
+                employment.iid(),
+                EmploymentCreate::new(rebound.reference()).expect("Serialization rebound input"),
+            )
+            .await
+            .expect("Serialization rebound mutation succeeds"),
+    );
 
     let evidence = json!({
         "binding": "rust",
@@ -6298,7 +6388,8 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
             CounterCreate::new(CounterValue::new(2).unwrap()).unwrap(),
         ])
         .await
-        .unwrap().into_items();
+        .unwrap()
+        .into_items();
     model_plan_mark("");
     assert_eq!(values.len(), 2);
     let ids = values
@@ -6323,13 +6414,15 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("");
     assert_eq!(pending.result().unwrap(), before + 2);
     model_plan_mark("update");
-    let updated = manager
-        .update(
-            &ids[0],
-            CounterCreate::new(CounterValue::new(11).unwrap()).unwrap(),
-        )
-        .await
-        .unwrap();
+    let updated = one_written(
+        manager
+            .update(
+                &ids[0],
+                CounterCreate::new(CounterValue::new(11).unwrap()).unwrap(),
+            )
+            .await
+            .unwrap(),
+    );
     model_plan_mark("");
     assert_eq!(updated.iid(), ids[0]);
     assert_eq!(*updated.counter_value().value(), 11);
@@ -6358,7 +6451,8 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
             ),
         ])
         .await
-        .unwrap().into_items();
+        .unwrap()
+        .into_items();
     model_plan_mark("");
     assert_eq!(
         updated_many
@@ -6377,16 +6471,13 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
             CounterCreate::new(CounterValue::new(2).unwrap()).unwrap(),
         ])
         .await
-        .unwrap().into_items();
+        .unwrap()
+        .into_items();
     for (name, value) in ["counter-left", "counter-right"].into_iter().zip(&returned) {
         model_plan_identity(name, value.iid());
     }
     model_plan_mark("manager_returning_delete.entity");
-    let snapshot = manager
-        .delete_returning(returned[0].iid())
-        .await
-        .unwrap()
-        .unwrap();
+    let snapshot = one_written(manager.delete_returning(returned[0].iid()).await.unwrap());
     model_plan_mark("");
     assert_eq!(*snapshot.counter_value().value(), 1);
     model_plan_mark("manager_returning_delete.entity_many");
@@ -6398,7 +6489,8 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
                 .collect::<Vec<_>>(),
         )
         .await
-        .unwrap().into_items();
+        .unwrap()
+        .into_items();
     model_plan_mark("");
     assert_eq!(snapshots.len(), 1);
     assert_eq!(*snapshots[0].counter_value().value(), 2);
@@ -6431,13 +6523,13 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     };
     let people = db.entities::<Person>();
     model_plan_mark("ordered_distinct_collections.entity_insert");
-    let ada = people.insert(person(false, "data-ada")).await.unwrap();
+    let ada = one_written(people.insert(person(false, "data-ada")).await.unwrap());
     model_plan_mark("");
     model_plan_identity("data-ada", ada.iid());
     assert!(ada.aliases().is_empty());
     model_plan_mark("ordered_distinct_collections.entity_put");
     assert_eq!(
-        people.put(person(false, "data-ada")).await.unwrap().iid(),
+        one_written(people.put(person(false, "data-ada")).await.unwrap()).iid(),
         ada.iid()
     );
     model_plan_mark("");
@@ -6445,10 +6537,12 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     assert_eq!(people.count().await.unwrap(), 1);
     model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.entity_update");
-    people
-        .update(ada.iid(), person(false, "data-ada"))
-        .await
-        .unwrap();
+    one_written(
+        people
+            .update(ada.iid(), person(false, "data-ada"))
+            .await
+            .unwrap(),
+    );
     model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.entity_read");
     assert!(
@@ -6477,13 +6571,13 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
         .unwrap()
     };
     model_plan_mark("ordered_distinct_collections.role_insert");
-    let link = links.insert(link_input(false)).await.unwrap();
+    let link = one_written(links.insert(link_input(false)).await.unwrap());
     model_plan_mark("");
     model_plan_identity("link-forward", link.iid());
     assert!(link.participant().is_empty());
     model_plan_mark("ordered_distinct_collections.role_put");
     assert_eq!(
-        links.put(link_input(false)).await.unwrap().iid(),
+        one_written(links.put(link_input(false)).await.unwrap()).iid(),
         link.iid()
     );
     model_plan_mark("");
@@ -6491,7 +6585,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     assert_eq!(links.count().await.unwrap(), 1);
     model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.role_update");
-    links.update(link.iid(), link_input(false)).await.unwrap();
+    one_written(links.update(link.iid(), link_input(false)).await.unwrap());
     model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.role_read");
     assert!(
@@ -6523,7 +6617,8 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     let put_people = people
         .put_many(vec![person(false, "data-ada"), person(false, "data-dana")])
         .await
-        .unwrap().into_items();
+        .unwrap()
+        .into_items();
     model_plan_mark("");
     assert_eq!(put_people[0].iid(), ada.iid());
     model_plan_identity("data-dana", put_people[1].iid());
@@ -6545,7 +6640,8 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
             batch_input("data-link-return"),
         ])
         .await
-        .unwrap().into_items();
+        .unwrap()
+        .into_items();
     model_plan_mark("");
     for (name, value) in ["link-forward", "link-return"].into_iter().zip(&put_links) {
         model_plan_identity(name, value.iid());
@@ -6566,7 +6662,8 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
             batch_input("data-link-return"),
         ])
         .await
-        .unwrap().into_items();
+        .unwrap()
+        .into_items();
     model_plan_mark("");
     for (name, value) in ["link-forward", "link-return"]
         .into_iter()
@@ -6584,7 +6681,8 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
             (batch_links[1].iid().into(), batch_input("data-link-return")),
         ])
         .await
-        .unwrap().into_items();
+        .unwrap()
+        .into_items();
     model_plan_mark("");
     assert_eq!(
         updated.iter().map(|value| value.iid()).collect::<Vec<_>>(),
@@ -6610,16 +6708,13 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
             batch_input("data-link-return"),
         ])
         .await
-        .unwrap().into_items();
+        .unwrap()
+        .into_items();
     for (name, value) in ["link-forward", "link-return"].into_iter().zip(&returned) {
         model_plan_identity(name, value.iid());
     }
     model_plan_mark("manager_returning_delete.relation");
-    let snapshot = links
-        .delete_returning(returned[0].iid())
-        .await
-        .unwrap()
-        .unwrap();
+    let snapshot = one_written(links.delete_returning(returned[0].iid()).await.unwrap());
     model_plan_mark("");
     assert_eq!(snapshot.identifier().value(), "data-link-forward");
     assert_eq!(snapshot.origin().iid(), ada.iid());
@@ -6632,7 +6727,8 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
                 .collect::<Vec<_>>(),
         )
         .await
-        .unwrap().into_items();
+        .unwrap()
+        .into_items();
     model_plan_mark("");
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].identifier().value(), "data-link-return");
@@ -6705,11 +6801,11 @@ async fn sdk_models_data_model_runtime_live() {
             .await
             .expect("insert batch cleanup");
     }
-    let original_ada = db
+    let original_ada = one_written(db
         .entities::<Person>()
         .insert(ownership_edge_person_input("data-ada", &[], None))
         .await
-        .expect("put replacement seed");
+        .expect("put replacement seed"));
     let put_people = db
         .entities::<Person>()
         .put_many(vec![
@@ -6730,11 +6826,11 @@ async fn sdk_models_data_model_runtime_live() {
             .await
             .expect("put batch cleanup");
     }
-    let conflict = db
+    let conflict = one_written(db
         .entities::<Person>()
         .insert(ownership_edge_person_input("data-conflict", &[], None))
         .await
-        .expect("late-failure conflict seed");
+        .expect("late-failure conflict seed"));
     let late_failure = db
         .entities::<Person>()
         .insert_many(vec![
@@ -6961,7 +7057,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("counter read")
         .expect("left counter exists");
     let value_before = found.counter_value().value().to_string();
-    let updated = db
+    let updated = one_written(db
         .entities::<Counter>()
         .update(
             &left_iid,
@@ -6969,7 +7065,7 @@ async fn sdk_models_data_model_runtime_live() {
                 .expect("updated counter input"),
         )
         .await
-        .expect("counter update");
+        .expect("counter update"));
     assert_eq!(updated.iid(), left_iid);
     let value_after = updated.counter_value().value().to_string();
     let count_after_update = db
@@ -7057,7 +7153,7 @@ async fn sdk_models_data_model_runtime_live() {
         ])
         .await
         .expect("Models membership people").into_items();
-    let robot = db
+    let robot = one_written(db
         .entities::<Robot>()
         .insert(
             RobotCreate::new(
@@ -7068,7 +7164,7 @@ async fn sdk_models_data_model_runtime_live() {
             .expect("robot input"),
         )
         .await
-        .expect("Models membership robot");
+        .expect("Models membership robot"));
 
     let network_baseline = db
         .relations::<NetworkLink>()
@@ -7122,11 +7218,11 @@ async fn sdk_models_data_model_runtime_live() {
             .await
             .expect("network-link insert cleanup");
     }
-    let original_forward = db
+    let original_forward = one_written(db
         .relations::<NetworkLink>()
         .insert(network_input("data-link-forward", false))
         .await
-        .expect("network-link put seed");
+        .expect("network-link put seed"));
     let put_networks = db
         .relations::<NetworkLink>()
         .put_many(vec![
@@ -7153,11 +7249,11 @@ async fn sdk_models_data_model_runtime_live() {
             .await
             .expect("network-link put cleanup");
     }
-    let network_conflict = db
+    let network_conflict = one_written(db
         .relations::<NetworkLink>()
         .insert(network_input("data-link-conflict", false))
         .await
-        .expect("network-link conflict seed");
+        .expect("network-link conflict seed"));
     let network_late_failure = db
         .relations::<NetworkLink>()
         .insert_many(vec![
@@ -7377,7 +7473,7 @@ async fn sdk_models_data_model_runtime_live() {
             .unwrap_or_else(|| people[0].identifier().value().clone()),
         MembershipMemberPlayer::Robot(_) => panic!("Ada membership retained wrong player"),
     };
-    let updated_membership = db
+    let updated_membership = one_written(db
         .relations::<Membership>()
         .update(
             &membership_ada_iid,
@@ -7385,7 +7481,7 @@ async fn sdk_models_data_model_runtime_live() {
                 .expect("Dana membership input"),
         )
         .await
-        .expect("membership update");
+        .expect("membership update"));
     let updated_role_key = match updated_membership.member() {
         MembershipMemberPlayer::Person(reference) => reference
             .identifier()
@@ -7480,7 +7576,7 @@ async fn sdk_models_data_model_runtime_live() {
     }.await;
 
     let (borrowed_transaction_lifecycle, data_resource_lifecycle) = async {
-    let transaction_seed = db
+    let transaction_seed = one_written(db
         .entities::<Person>()
         .insert(ownership_edge_person_input(
             "data-transaction-seed",
@@ -7488,7 +7584,7 @@ async fn sdk_models_data_model_runtime_live() {
             None,
         ))
         .await
-        .expect("transaction read seed");
+        .expect("transaction read seed"));
     let read = db.read().await.expect("borrowed read transaction opens");
     let read_manager = read.entities::<Person>();
     let read_filter = read_manager
@@ -7528,7 +7624,7 @@ async fn sdk_models_data_model_runtime_live() {
     read.close().await.expect("borrowed read closes");
 
     let commit_transaction = db.write().await.expect("commit transaction opens");
-    let committed = commit_transaction
+    let committed = one_written(commit_transaction
         .entities::<Person>()
         .insert(ownership_edge_person_input(
             "data-transaction-commit",
@@ -7536,7 +7632,7 @@ async fn sdk_models_data_model_runtime_live() {
             None,
         ))
         .await
-        .expect("borrowed commit insert");
+        .expect("borrowed commit insert"));
     let committed_iid = committed.iid().to_owned();
     let commit_same_transaction_visible = commit_transaction
         .entities::<Person>()
@@ -7562,7 +7658,7 @@ async fn sdk_models_data_model_runtime_live() {
         .is_some();
 
     let mut rollback_transaction = db.write().await.expect("rollback transaction opens");
-    let rolled = rollback_transaction
+    let rolled = one_written(rollback_transaction
         .entities::<Person>()
         .insert(ownership_edge_person_input(
             "data-transaction-rollback",
@@ -7570,7 +7666,7 @@ async fn sdk_models_data_model_runtime_live() {
             None,
         ))
         .await
-        .expect("borrowed rollback insert");
+        .expect("borrowed rollback insert"));
     let rolled_iid = rolled.iid().to_owned();
     let rollback_same_transaction_visible = rollback_transaction
         .entities::<Person>()
@@ -7595,7 +7691,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("outside postrollback read")
         .is_some();
 
-    let reused = rollback_transaction
+    let reused = one_written(rollback_transaction
         .entities::<Person>()
         .insert(ownership_edge_person_input(
             "data-rollback-reuse",
@@ -7603,7 +7699,7 @@ async fn sdk_models_data_model_runtime_live() {
             None,
         ))
         .await
-        .expect("insert after rollback");
+        .expect("insert after rollback"));
     let reused_iid = reused.iid().to_owned();
     rollback_transaction
         .commit()
@@ -7621,7 +7717,7 @@ async fn sdk_models_data_model_runtime_live() {
         .await
         .expect("clean reused commit");
 
-    let poison_conflict = db
+    let poison_conflict = one_written(db
         .entities::<Person>()
         .insert(ownership_edge_person_input(
             "data-poison-conflict",
@@ -7629,7 +7725,7 @@ async fn sdk_models_data_model_runtime_live() {
             None,
         ))
         .await
-        .expect("poison conflict seed");
+        .expect("poison conflict seed"));
     let poison_transaction = db.write().await.expect("poison transaction opens");
     let first_cause = poison_transaction
         .entities::<Person>()
