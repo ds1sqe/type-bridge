@@ -2053,6 +2053,15 @@ impl Transaction {
         let mut counts = Vec::with_capacity(execution.0.len());
         let mut policy = None;
         let mut origins = std::collections::BTreeMap::new();
+        for group in &execution.1 {
+            constrain_match_policy(
+                &mut policy,
+                &mut origins,
+                group.limits,
+                "program",
+                Some(group.range.start),
+            );
+        }
         for (index, item) in execution.0.iter_mut().enumerate() {
             match &mut item.slot {
                 Slot::Program(program) => {
@@ -3943,10 +3952,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_fetch_group_limits_reach_the_adapter_before_commit() {
+        let (mut tx, registry, committed) = proxy_match_fixture(Default::default(), false, None);
+        let registry = Arc::new(registry);
+        let source = model_fetch_stack(&registry);
+        let first = tx
+            .stage_plan_fetch(
+                Arc::clone(&source),
+                Arc::clone(&registry),
+                Default::default(),
+            )
+            .unwrap();
+        let pending = tx
+            .stage_plan_fetch(
+                source,
+                registry,
+                crate::QueryExecutionResourceLimits {
+                    items: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let error = tx.commit().await.unwrap_err();
+        assert_eq!(error.diagnostic().code().as_str(), "processed_item_limit");
+        assert_eq!(*committed.lock().unwrap(), 0);
+        assert!(first.get().is_err());
+        assert_eq!(
+            pending
+                .get()
+                .err()
+                .unwrap()
+                .diagnostic()
+                .unwrap()
+                .code()
+                .as_str(),
+            "processed_item_limit"
+        );
+    }
+
+    #[tokio::test]
     async fn proxy_fetch_groups_publish_together_or_leave_all_pending_unknown() {
         for fail in [false, true] {
-            let (mut tx, registry, committed) =
-                proxy_match_fixture(Default::default(), false, None);
+            let (mut tx, registry, committed) = proxy_match_fixture(Default::default(), fail, None);
             let registry = Arc::new(registry);
             let source = model_fetch_stack(&registry);
             let ordinary = tx
@@ -3964,7 +4011,7 @@ mod tests {
                     source,
                     registry,
                     crate::QueryExecutionResourceLimits {
-                        items: if fail { 0 } else { 10 },
+                        items: 10,
                         ..Default::default()
                     },
                 )
