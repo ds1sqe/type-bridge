@@ -638,7 +638,10 @@ impl PyDatabase {
         tls_root_ca: Option<PathBuf>,
         query_limits: Option<PyRef<'_, PyQueryLimits>>,
     ) -> PyResult<Self> {
-        let query_limits = query_limits.map(|limits| limits.inner().validate_v3()).transpose().map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let query_limits = query_limits
+            .map(|limits| limits.inner().validate_v3())
+            .transpose()
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         // Resolve every caller-controlled configuration value before creating
         // a runtime or allowing the connection path to perform network I/O.
         let tls_mode = python_tls_mode(exact_optional_tls(tls)?, tls_root_ca)?;
@@ -672,7 +675,9 @@ impl PyDatabase {
         .map_err(py_secure_connect_error)?;
 
         let db = match query_limits {
-            Some(limits) => db.with_query_limits(limits).map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?,
+            Some(limits) => db
+                .with_query_limits(limits)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?,
             None => db,
         };
 
