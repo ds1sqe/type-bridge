@@ -998,9 +998,14 @@ async function runOwnedDatabase({
     const hostile = preIoRejections(local, foreign, database);
 
     const manager = local.Person.manager(database);
-    const inserted = records.map((record) =>
+    const results = records.map((record) =>
       manager.insert(personValue(local, record)),
     );
+    requireCondition(
+      results.every((result) => result.count === 1 && result.item !== null && result.items[0] === result.item),
+      "seed_mismatch", "single-person insert did not return one item",
+    );
+    const inserted = results.map((result) => result.item);
     requireCondition(
       canonicalString(keys(local, inserted)) ===
         canonicalString(["data-ada", "data-dana"]),

@@ -22,13 +22,13 @@ use crate::projected_batch::{
     execute_owned_delete, execute_owned_things, prepare_batch, project_encoded_batch_create,
     reserved_binding_vec, validate_binding_row_count,
 };
-use crate::projected_codec::{materialize_projected, project_create};
+use crate::projected_codec::{materialize_projected, materialize_write_result, project_create};
 use crate::projected_filter::ProjectedRelationFilter;
 use crate::relation_codec::{
     hydrate_relation, resolve_discovered_relation, resolve_relation_authority,
 };
 use crate::schema::Schema;
-use crate::{Database, Result};
+use crate::{Database, Result, WriteResult};
 
 #[cfg(test)]
 mod tests;
@@ -141,7 +141,7 @@ where
     /// Inserts one exact relation with its complete active role players and returns the
     /// complete freshly hydrated model. Errors may be input/schema validation,
     /// database/transaction/close, or model hydration errors.
-    pub async fn insert(&self, input: M::Create) -> Result<M> {
+    pub async fn insert(&self, input: M::Create) -> Result<WriteResult<M>> {
         if !self.hooks.has_hooks() {
             return self
                 .projected_write(input, CrudOperation::Insert, None)
@@ -166,7 +166,7 @@ where
                 M::TYPE_ID_JSON,
                 ModelKind::Relation,
                 CrudOperation::Insert,
-                Some(output.iid()),
+                output.item().map(|item| item.iid()),
                 Some(&encoded),
                 state,
             )
@@ -177,7 +177,7 @@ where
     /// For an existing exact row, the supplied create value completely replaces non-key
     /// ownership and the complete effective active-role player set while preserving the
     /// exact IID and keys. It returns a complete freshly hydrated model.
-    pub async fn put(&self, input: M::Create) -> Result<M> {
+    pub async fn put(&self, input: M::Create) -> Result<WriteResult<M>> {
         if !self.hooks.has_hooks() {
             return self.projected_write(input, CrudOperation::Put, None).await;
         }
@@ -200,7 +200,7 @@ where
                 M::TYPE_ID_JSON,
                 ModelKind::Relation,
                 CrudOperation::Put,
-                Some(output.iid()),
+                output.item().map(|item| item.iid()),
                 Some(&encoded),
                 state,
             )
@@ -231,7 +231,7 @@ where
     /// Completely replaces non-key ownership and the complete effective active-role player
     /// set on the exact relation at canonical `iid`, preserves that IID and its keys, and
     /// returns its complete freshly hydrated model.
-    pub async fn update(&self, iid: &str, input: M::Create) -> Result<M> {
+    pub async fn update(&self, iid: &str, input: M::Create) -> Result<WriteResult<M>> {
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
@@ -259,7 +259,7 @@ where
                 M::TYPE_ID_JSON,
                 ModelKind::Relation,
                 CrudOperation::Update,
-                Some(output.iid()),
+                output.item().map(|item| item.iid()),
                 Some(&encoded),
                 state,
             )
@@ -267,9 +267,11 @@ where
         Ok(output)
     }
 
-    /// Delete an exact model and return its pre-delete snapshot, or `None` when absent.
-    pub async fn delete_returning(&self, iid: &str) -> Result<Option<M>> {
-        Ok(self.delete_many_returning(&[iid.to_owned()]).await?.pop())
+    /// Delete an exact model and return its snapshots in a write result.
+    pub async fn delete_returning(&self, iid: &str) -> Result<WriteResult<M>> {
+        self.delete_many_returning(&[iid.to_owned()])
+            .await
+            .map(WriteResult::new)
     }
 
     /// Atomically delete exact models and return existing snapshots in input order.
@@ -492,7 +494,7 @@ where
         input: M::Create,
         operation: CrudOperation,
         iid: Option<&str>,
-    ) -> Result<M> {
+    ) -> Result<WriteResult<M>> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
@@ -547,7 +549,7 @@ where
                 return Err(mapped);
             }
         };
-        let value = match materialize_projected(projected, installed) {
+        let value = match materialize_write_result(projected, installed) {
             Ok(value) => value,
             Err(error) => {
                 let _ = tx.rollback().await;

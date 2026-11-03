@@ -554,7 +554,10 @@ async fn write_transaction_commits_multiple_operations_in_one_context() {
             name: "alice".into(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(worker.iid, "0x1");
     assert_eq!(worker.name, "alice");
     let assignment = tx
@@ -564,7 +567,10 @@ async fn write_transaction_commits_multiple_operations_in_one_context() {
             worker_iid: worker.iid.clone(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(assignment.iid, "0x2");
     assert_eq!(assignment.position, "captain");
     tx.commit().await.unwrap();
@@ -604,7 +610,10 @@ async fn write_transaction_explicit_rollback_discards_operations() {
             name: "alice".into(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     tx.rollback().await.unwrap();
     let guard = state.lock().unwrap();
     assert!(matches!(guard.events.last(), Some(Event::Rollback)));
@@ -625,7 +634,10 @@ async fn write_transaction_uncommitted_drop_releases_without_commit() {
             name: "alice".into(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     drop(tx);
     let guard = state.lock().unwrap();
     assert!(
@@ -852,7 +864,10 @@ async fn rollback_keep_accepts_more_work_and_commit() {
             name: "alice".into(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     tx.commit().await.unwrap();
     let events = &state.lock().unwrap().events;
     assert_eq!(

@@ -636,12 +636,21 @@ async fn empty_ordered_ownership_insert_and_update_use_one_native_plan() {
     );
     let database = Database::with_backend(Box::new(backend), "test");
     let executor = ProjectedCrudExecutor::new(&installed);
-    let inserted = executor.insert_entity(&database, &create).await.unwrap();
+    let inserted = executor
+        .insert_entity(&database, &create)
+        .await
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert!(inserted.fields()[&field(create.type_id(), "tag")].is_empty());
     let updated = executor
         .update_entity(&database, "0x10", &create)
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert!(updated.fields()[&field(create.type_id(), "tag")].is_empty());
     let state = state.lock().unwrap();
     assert_eq!(state.opens, [TxType::Write, TxType::Write]);
@@ -702,12 +711,21 @@ async fn empty_ordered_role_insert_update_and_read_use_native_plans() {
     );
     let database = Database::with_backend(Box::new(backend), "test");
     let executor = ProjectedCrudExecutor::new(&installed);
-    let inserted = executor.insert_relation(&database, &create).await.unwrap();
+    let inserted = executor
+        .insert_relation(&database, &create)
+        .await
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert!(inserted.roles()[&role].is_empty());
     let updated = executor
         .update_relation(&database, "0x20", &create)
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert!(updated.roles()[&role].is_empty());
     let fetched = executor
         .get_relation_by_iid(&database, &relation, "0x20")
@@ -983,7 +1001,7 @@ async fn hydration_failure_after_insert_rolls_back_and_redacts_provider_shape() 
 }
 
 #[tokio::test]
-async fn relation_iid_ambiguity_is_rejected_before_commit() {
+async fn relation_insert_hydrates_every_answered_root_before_commit() {
     let installed = installed();
     let create = membership_create(&installed);
     let (backend, state) = RecordingBackend::new(
@@ -995,15 +1013,24 @@ async fn relation_iid_ambiguity_is_rejected_before_commit() {
     );
     let database = Database::with_backend(Box::new(backend), "test");
 
-    let diagnostic = ProjectedCrudExecutor::new(&installed)
+    let result = ProjectedCrudExecutor::new(&installed)
         .insert_relation(&database, &create)
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+    assert_eq!(result.count(), 2);
+    assert!(result.item().is_none());
+    assert_eq!(
+        result
+            .items()
+            .iter()
+            .map(|item| item.iid())
+            .collect::<Vec<_>>(),
+        ["0x20", "0x21"]
+    );
     let state = state.lock().unwrap();
-    assert_eq!(state.commits, 0);
-    assert_eq!(state.rollbacks, 1);
+    assert_eq!(state.commits, 1);
+    assert_eq!(state.rollbacks, 0);
     assert!(state.queries[0].contains("insert") && state.queries[0].contains("membership"));
     // The relation's own fetch is the hydration read; nothing follows it.
     assert_eq!(state.queries.len(), 1);
@@ -1023,7 +1050,10 @@ async fn abstract_nominal_role_reference_resolves_one_exact_concrete_player() {
     let relation = ProjectedCrudExecutor::new(&installed)
         .insert_relation(&database, &create)
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
 
     assert_eq!(relation.iid(), "0x20");
     let member = RoleId::new("membership", "member").unwrap();
@@ -1058,7 +1088,10 @@ async fn relation_role_player_resolves_inside_the_write_by_strict_identity() {
     let relation = ProjectedCrudExecutor::new(&installed)
         .insert_relation(&database, &create)
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
 
     assert_eq!(relation.iid(), "0x20");
     let member = RoleId::new("membership", "member").unwrap();
@@ -1154,7 +1187,10 @@ async fn retained_complete_entity_origin_accepts_same_database_and_fences_foreig
     let created = ProjectedCrudExecutor::new(&installed)
         .insert_relation(&same_database, &create)
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(created.iid(), "0x20");
     {
         let state = same_state.lock().unwrap();
@@ -1273,7 +1309,10 @@ async fn borrowed_origin_is_preserved_and_a_value_equal_lookalike_remains_unboun
     let created = ProjectedCrudExecutor::new(&installed)
         .insert_relation(&foreign_database, &lookalike_create)
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(created.iid(), "0x20");
     {
         let state = foreign_state.lock().unwrap();
@@ -1299,7 +1338,10 @@ async fn borrowed_write_transaction_is_never_implicitly_finished() {
     let thing = ProjectedCrudExecutor::new(&installed)
         .insert_entity_in_transaction(&transaction, &create)
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(thing.iid(), "0x10");
     {
         let state = state.lock().unwrap();
@@ -1329,7 +1371,10 @@ async fn owned_entity_put_rehydrates_before_one_classified_commit() {
     let thing = ProjectedCrudExecutor::new(&installed)
         .put_entity(&database, &create)
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
 
     assert_eq!(thing.iid(), "0x30");
     let state = state.lock().unwrap();
@@ -1369,7 +1414,13 @@ async fn owned_relation_put_and_update_rehydrate_before_commit() {
     let put_database = Database::with_backend(Box::new(put_backend), "test");
     let executor = ProjectedCrudExecutor::new(&installed);
 
-    let inserted = executor.put_relation(&put_database, &create).await.unwrap();
+    let inserted = executor
+        .put_relation(&put_database, &create)
+        .await
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(inserted.iid(), "0x20");
     let member = RoleId::new("membership", "member").unwrap();
     assert_eq!(inserted.roles().get(&member).unwrap().len(), 1);
@@ -1404,7 +1455,10 @@ async fn owned_relation_put_and_update_rehydrate_before_commit() {
     let updated = executor
         .update_relation(&update_database, "0x20", &create)
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(updated.iid(), "0x20");
     let state = update_state.lock().unwrap();
     assert_eq!(state.opens, [TxType::Write]);
@@ -1885,6 +1939,8 @@ async fn returning_delete_hydrates_entity_and_relation_snapshots_and_absence() {
         .delete_entity_by_iid_returning(&database, &person, "0x10")
         .await
         .unwrap()
+        .into_items()
+        .pop()
         .unwrap();
     assert_eq!(deleted.iid(), "0x10");
     assert!(deleted.is_deleted());
@@ -1900,6 +1956,8 @@ async fn returning_delete_hydrates_entity_and_relation_snapshots_and_absence() {
         .delete_relation_by_iid_returning(&database, &membership, "0x20")
         .await
         .unwrap()
+        .into_items()
+        .pop()
         .unwrap();
     assert!(deleted.is_deleted());
     let player = &deleted.roles()[&RoleId::new("membership", "member").unwrap()][0];
@@ -1909,6 +1967,8 @@ async fn returning_delete_hydrates_entity_and_relation_snapshots_and_absence() {
             .delete_entity_by_iid_returning(&database, &person, "0x10")
             .await
             .unwrap()
+            .into_items()
+            .pop()
             .is_none()
     );
     let state = state.lock().unwrap();
@@ -2192,7 +2252,7 @@ async fn missing_reference_writes_nothing_and_keeps_the_released_diagnostic() {
 }
 
 #[tokio::test]
-async fn a_reference_matching_several_things_poisons_the_borrowed_transaction() {
+async fn a_reference_matching_several_things_returns_every_root_in_answer_order() {
     let installed = installed_polymorphic();
     let create = party_key_membership(&installed, "shared");
     let (backend, state) = RecordingBackend::new(
@@ -2213,25 +2273,33 @@ async fn a_reference_matching_several_things_poisons_the_borrowed_transaction() 
     let database = Database::with_backend(Box::new(backend), "test");
     let transaction = database.transaction_context(TxType::Write).await.unwrap();
 
-    let diagnostic = ProjectedCrudExecutor::new(&installed)
+    let result = ProjectedCrudExecutor::new(&installed)
         .insert_relation_in_transaction(&transaction, &create)
         .await
-        .unwrap_err();
+        .unwrap();
 
+    assert_eq!(result.count(), 2);
+    assert!(result.item().is_none());
     assert_eq!(
-        diagnostic.code().as_str(),
-        "provider_identity_cardinality_invalid"
+        result
+            .items()
+            .iter()
+            .map(|item| item.iid())
+            .collect::<Vec<_>>(),
+        ["0x20", "0x21"]
     );
     assert_eq!(
         transaction.lifecycle_state().await,
-        type_bridge_orm::session::TransactionContextState::RollbackOnly
+        type_bridge_orm::session::TransactionContextState::Active
     );
     assert_eq!(state.lock().unwrap().queries.len(), 1);
-    transaction.rollback().await.unwrap();
+    transaction.commit_classified().await.unwrap();
+    assert_eq!(state.lock().unwrap().commits, 1);
+    assert_eq!(state.lock().unwrap().rollbacks, 0);
 }
 
 #[tokio::test]
-async fn two_references_resolving_to_one_player_are_refused_and_poison_the_transaction() {
+async fn two_references_resolving_to_one_player_follow_typeql_semantics() {
     let installed = installed_polymorphic();
     let party = type_id(TypeKind::Entity, "party");
     let by_iid =
@@ -2271,20 +2339,26 @@ async fn two_references_resolving_to_one_player_are_refused_and_poison_the_trans
     let database = Database::with_backend(Box::new(backend), "test");
     let transaction = database.transaction_context(TxType::Write).await.unwrap();
 
-    let diagnostic = ProjectedCrudExecutor::new(&installed)
+    let result = ProjectedCrudExecutor::new(&installed)
         .insert_relation_in_transaction(&transaction, &create)
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert_eq!(diagnostic.code().as_str(), "duplicate_resolved_role_player");
+    assert_eq!(result.count(), 1);
+    let item = result.item().expect("one returned relation");
+    let players = &item.roles()[&RoleId::new("membership", "member").unwrap()];
+    assert_eq!(players.len(), 1);
+    assert_eq!(players[0].iid(), "0x10");
     assert_eq!(
         transaction.lifecycle_state().await,
-        type_bridge_orm::session::TransactionContextState::RollbackOnly
+        type_bridge_orm::session::TransactionContextState::Active
     );
     let queries = state.lock().unwrap().queries.clone();
     assert_eq!(queries.len(), 1);
     assert!(queries[0].contains("_role_0_iid"), "{}", queries[0]);
-    transaction.rollback().await.unwrap();
+    transaction.commit_classified().await.unwrap();
+    assert_eq!(state.lock().unwrap().commits, 1);
+    assert_eq!(state.lock().unwrap().rollbacks, 0);
 }
 
 #[tokio::test]
@@ -2362,7 +2436,10 @@ async fn two_distinct_players_in_one_role_hydrate_from_several_documents() {
     let relation = ProjectedCrudExecutor::new(&installed)
         .insert_relation(&database, &create)
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
 
     let mut players: Vec<_> = relation.roles()[&member]
         .iter()
@@ -2555,6 +2632,8 @@ async fn handwritten_and_projected_returning_delete_share_queries_and_snapshots(
         )
         .await
         .unwrap()
+        .into_items()
+        .pop()
         .unwrap();
     assert_eq!(snapshot.iid.as_deref(), Some(projected.iid()));
     let person = type_id(TypeKind::Entity, "person");
@@ -2691,6 +2770,8 @@ async fn handwritten_and_projected_relations_share_returning_deletion() {
         )
         .await
         .unwrap()
+        .into_items()
+        .pop()
         .unwrap();
     assert_eq!(snapshot.iid.as_deref(), Some(projected.iid()));
     assert_eq!(
@@ -2938,7 +3019,7 @@ async fn single_crud_does_not_allocate_the_batch_execution_future() {
     eprintln!("CONTROLLED_FUTURE_ALLOCATION bytes={bytes}");
     drop(probe);
     let (result, count) = allocations::count(bytes, crud.insert_entity(&db, &create)).await;
-    assert_eq!(result.unwrap().iid(), "0x10");
+    assert_eq!(result.unwrap().item().unwrap().iid(), "0x10");
     assert_eq!(
         count, 0,
         "default call allocated the {bytes}-byte controlled execution future"
@@ -3191,7 +3272,8 @@ async fn controlled_single_updates_share_the_uncontrolled_one_query_for_owned_an
                     }
                     .unwrap()
                 };
-                assert_eq!(thing.iid(), iid);
+                assert_eq!(thing.count(), 1);
+                assert_eq!(thing.item().unwrap().iid(), iid);
                 let state = state.lock().unwrap();
                 assert_eq!(
                     state.queries.len(),
@@ -3297,7 +3379,8 @@ async fn controlled_single_inserts_share_the_uncontrolled_one_query_for_owned_an
                     }
                     .unwrap()
                 };
-                assert_eq!(thing.iid(), iid);
+                assert_eq!(thing.count(), 1);
+                assert_eq!(thing.item().unwrap().iid(), iid);
                 let state = state.lock().unwrap();
                 assert_eq!(
                     state.queries.len(),

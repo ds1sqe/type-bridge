@@ -866,6 +866,18 @@ pub(crate) fn materialize_projected<M: CompleteModel>(
         .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))
 }
 
+pub(crate) fn materialize_write_result<M: CompleteModel>(
+    result: type_bridge_orm::WriteResult<ProjectedThing>,
+    installed: &InstalledRuntimeProjection,
+) -> Result<type_bridge_orm::WriteResult<M>> {
+    result
+        .into_items()
+        .into_iter()
+        .map(|thing| materialize_projected(thing, installed))
+        .collect::<Result<Vec<_>>>()
+        .map(type_bridge_orm::WriteResult::new)
+}
+
 pub(crate) fn projected_to_hydrated_row(
     thing: &ProjectedThing,
     installed: &InstalledRuntimeProjection,

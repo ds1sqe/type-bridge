@@ -87,6 +87,7 @@ pub use transaction::{
 pub use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 #[cfg(feature = "typedb")]
 pub use type_bridge_orm::DirectConnectionPolicy;
+pub use type_bridge_orm::WriteResult;
 pub use type_bridge_orm::{
     AnswerCancellation, AnswerTransport, DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES,
     DEFAULT_DIRECT_QUERY_BYTES, DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,

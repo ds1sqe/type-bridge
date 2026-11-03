@@ -7,14 +7,14 @@
     "query-remote": {
       "source_commit": "5ec1ec836efbcca75a789b7777aeef8ea4753b40",
       "authorities": [
-        {"path": "tests/contracts/sdk_conformance/queries/catalog.json", "sha256": "f2360cd53e2b73f890df1ef46d10668105f3c2ec3fdb099312e0b2b22cd0b66e"},
+        {"path": "tests/contracts/sdk_conformance/queries/catalog.json", "sha256": "b85f3ace49544b2de142a2d3eb4beaabc4de12473f93e241b52885bcc7fa3754"},
         {"path": "tests/contracts/sdk_conformance/queries/journey.json", "sha256": "e03d136c6b8f98aa7d24d483c95112615f97483107e2f7c48175a782d6b842f0"}
       ]
     },
     "data-model": {
       "source_commit": "5ec1ec836efbcca75a789b7777aeef8ea4753b40",
       "authorities": [
-        {"path": "tests/contracts/sdk_conformance/models/catalog.json", "sha256": "ca17e4e350e65b71fcdd9573316012fe8be653cc86cd05ebc918ffab556e3f0b"},
+        {"path": "tests/contracts/sdk_conformance/models/catalog.json", "sha256": "6b8d18afb61e90fea77c4cdb2c6eb9c2657321e9ea98d3b17b481982854db03e"},
         {"path": "tests/contracts/sdk_conformance/models/journey.json", "sha256": "f05bce76c200f7425a39ed844e8ac520424185650bb95285d7e86d00b95a4e5f"}
       ]
     },

@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn manager_player_guards_are_pinned_only_for_multi_player_roles() {
+    fn manager_player_plans_follow_typeql_without_alias_guards() {
         use sha2::{Digest, Sha256};
         use type_bridge_contract::projection::{
             BindingTarget, ProjectionConfig, ProjectionHandler,
@@ -1228,9 +1228,9 @@ mod tests {
                     0
                 ),
                 (
-                    "ee6b240ab9274cd507f7294961590bece1e0e5a302b5a4ac7a65b59826cf5cb1".into(),
-                    2,
-                    1
+                    "bc097e4af424615874ee26d5f1bb1c5711775eea8ef95cdde828bf5c3314c3ef".into(),
+                    0,
+                    0
                 )
             ]
         );

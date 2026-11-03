@@ -77,6 +77,7 @@ export {
 } from "./index.js";
 
 export type {
+  WriteResult,
   ProviderFailure,
   AggregateInput,
   AttributeInput,

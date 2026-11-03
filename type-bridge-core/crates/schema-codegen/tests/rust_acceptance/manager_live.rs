@@ -848,20 +848,22 @@ async fn run_database(
         let database = live(unbound.with_schema(SCHEMA), "bind generated package")?;
         let ada = person_input(&authority.journey, "data-ada")?;
         let dana = person_input(&authority.journey, "data-dana")?;
-        let ada = live(
+        let ada_result = live(
             database
                 .entities::<Person>()
                 .insert(person_create(&ada)?)
                 .await,
             "insert Ada",
         )?;
-        let dana = live(
+        let ada = ada_result.item().ok_or_else(|| ProducerError::new("seed_mismatch", "single-person insert did not return exactly one item"))?;
+        let dana_result = live(
             database
                 .entities::<Person>()
                 .insert(person_create(&dana)?)
                 .await,
             "insert Dana",
         )?;
+        let dana = dana_result.item().ok_or_else(|| ProducerError::new("seed_mismatch", "single-person insert did not return exactly one item"))?;
         let observation = manager_observation(&database).await?;
         live(
             database.entities::<Person>().delete(dana.iid()).await,

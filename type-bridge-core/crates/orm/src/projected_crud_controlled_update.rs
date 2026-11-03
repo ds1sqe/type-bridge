@@ -5,9 +5,13 @@ use crate::plan_builders::BuiltPlan;
 use crate::projected_batch::PreparedProjectedBatchInvocation;
 use crate::projected_batch_executor::{ExecutionLedger, given_rows_bytes};
 
+/// Direct target for one controlled single-input write.
+#[doc(hidden)]
 #[derive(Clone, Copy)]
-pub(super) enum WriteTarget<'a> {
+pub enum WriteTarget<'a> {
+    /// Own and complete one write transaction.
     Database(&'a Database),
+    /// Reuse the caller's write transaction.
     Transaction(&'a TransactionContext),
 }
 
@@ -22,7 +26,9 @@ struct SingleWrite {
 }
 
 impl ProjectedCrudExecutor<'_> {
-    pub(super) fn single_controlled_write_batch(
+    /// Validate and retain the one input of a controlled write before dispatch.
+    #[doc(hidden)]
+    pub fn single_controlled_write_batch(
         &self,
         model: &TypeId,
         operation: ProjectedBatchOperation,
@@ -32,12 +38,28 @@ impl ProjectedCrudExecutor<'_> {
         ProjectedBatch::try_single_write(self.installed, model.clone(), operation, row, control)
     }
 
-    pub(super) async fn execute_controlled_single_write(
+    /// Execute one write and map its complete answer before committing.
+    ///
+    /// Binding compatibility adapters use this boundary to retain their result
+    /// shape without moving policy preflight or materialization after commit.
+    #[doc(hidden)]
+    pub async fn execute_controlled_single_write<T, F>(
         &self,
         target: WriteTarget<'_>,
         batch: &ProjectedBatch,
         control: ProjectedBatchInvocationControl,
-    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        mapper: F,
+    ) -> Result<T, SdkExecutionDiagnostic>
+    where
+        F: FnOnce(WriteResult<ProjectedThing>) -> Result<T, SdkExecutionDiagnostic>,
+    {
+        if batch.len() != 1 {
+            return Err(crate::projected_batch_executor::invalid_at_type(
+                "projected_crud_single_row_required",
+                "Single-write execution requires exactly one input row",
+                batch.model(),
+            ));
+        }
         let ceiling = match target {
             WriteTarget::Database(database) => database.answer_limits(),
             WriteTarget::Transaction(transaction) => transaction.answer_limits(),
@@ -82,7 +104,8 @@ impl ProjectedCrudExecutor<'_> {
             WriteTarget::Transaction(transaction) => transaction.shared_query_limits(),
         };
         let Some(single) = self.prepare_controlled_write(batch, &identity, query_limits)? else {
-            return Box::pin(self.execute_forced_single_write(target, batch, prepared)).await;
+            return Box::pin(self.execute_forced_single_write(target, batch, prepared, mapper))
+                .await;
         };
         let query = if given {
             crate::query_plan_exec::staged_query(single.plan.local(), true)
@@ -118,7 +141,14 @@ impl ProjectedCrudExecutor<'_> {
                     )
                 })?;
                 let result = self
-                    .run_controlled_write(&transaction, &prepared, &single, query, &mut ledger)
+                    .run_controlled_write(
+                        &transaction,
+                        &prepared,
+                        &single,
+                        query,
+                        &mut ledger,
+                        mapper,
+                    )
                     .await;
                 match result.and_then(|thing| prepared.check_control().map(|()| thing)) {
                     Ok(thing) => {
@@ -137,21 +167,32 @@ impl ProjectedCrudExecutor<'_> {
                 }
             }
             WriteTarget::Transaction(transaction) => {
-                self.run_controlled_write(transaction, &prepared, &single, query, &mut ledger)
-                    .await
+                self.run_controlled_write(
+                    transaction,
+                    &prepared,
+                    &single,
+                    query,
+                    &mut ledger,
+                    mapper,
+                )
+                .await
             }
         }
     }
 
-    async fn execute_forced_single_write(
+    async fn execute_forced_single_write<T, F>(
         &self,
         target: WriteTarget<'_>,
         batch: &ProjectedBatch,
         prepared: PreparedProjectedBatchInvocation<'_>,
-    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        mapper: F,
+    ) -> Result<T, SdkExecutionDiagnostic>
+    where
+        F: FnOnce(WriteResult<ProjectedThing>) -> Result<T, SdkExecutionDiagnostic>,
+    {
         let mapper = |result| {
-            single_batch_optional_thing(result, batch.model())?
-                .ok_or_else(|| single_batch_result_invalid(batch.model()))
+            single_batch_write_result(result, batch.model())
+                .and_then(mapper)
                 .map(Some)
         };
         let control = prepared.into_control();
@@ -201,9 +242,6 @@ impl ProjectedCrudExecutor<'_> {
             TypeKind::Relation => {
                 let prepared = self.prepare_relation_create(replacement)?;
                 require_role_player_database_identity(&prepared, identity)?;
-                if has_polymorphic_or_relation_players(&prepared) {
-                    reject_duplicate_references(&prepared)?;
-                }
                 WriteModel::Relation(prepared)
             }
             _ => return Err(single_batch_result_invalid(batch.model())),
@@ -293,14 +331,18 @@ impl ProjectedCrudExecutor<'_> {
         Ok(Some(SingleWrite { model, plan }))
     }
 
-    async fn run_controlled_write(
+    async fn run_controlled_write<T, F>(
         &self,
         transaction: &TransactionContext,
         prepared: &PreparedProjectedBatchInvocation<'_>,
         single: &SingleWrite,
         query: crate::session::staged::StagedQuery,
         ledger: &mut ExecutionLedger,
-    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        mapper: F,
+    ) -> Result<T, SdkExecutionDiagnostic>
+    where
+        F: FnOnce(WriteResult<ProjectedThing>) -> Result<T, SdkExecutionDiagnostic>,
+    {
         let type_id = prepared.batch().model();
         let mut lease = await_crud_controlled(
             transaction.acquire_mutation_lease(),
@@ -368,35 +410,27 @@ impl ProjectedCrudExecutor<'_> {
             let thing = match &single.model {
                 WriteModel::Entity(model) => self.hydrate_entity_documents(
                     transaction,
-                    model,
+                    &model.type_id,
+                    &model.descriptor,
                     &documents,
                     ExecutionMode::default(),
                 )?,
-                WriteModel::Relation(model) => {
-                    let iid = single_document_iid(&documents, type_id)?;
-                    if has_polymorphic_or_relation_players(model) {
-                        reject_resolved_duplicates(model, &documents)?;
-                    }
-                    let rows =
-                        coalesce_dynamic_relation_by_iid(&model.descriptor, &documents, &iid)
-                            .map_err(|error| {
-                                orm_at_type(error, SdkProviderOperation::Read, type_id)
-                            })?;
-                    self.hydrate_relation(
-                        require_mutation_relation_row(rows, type_id)?,
-                        type_id,
-                        &iid,
-                        transaction.execution_identity(),
-                        ExecutionMode::default(),
-                    )?
-                }
+                WriteModel::Relation(model) => self.hydrate_relation_documents(
+                    transaction,
+                    &model.type_id,
+                    &model.descriptor,
+                    &documents,
+                    ExecutionMode::default(),
+                )?,
             };
             if let Some((_, ProjectedBatchRow::Update { iid, .. })) = prepared.batch().row_at(0) {
-                require_update_iid(thing.iid(), iid, type_id)?;
+                for item in thing.items() {
+                    require_update_iid(item.iid(), iid, type_id)?;
+                }
             }
-            ledger.charge_projected(std::slice::from_ref(&thing))?;
+            ledger.charge_projected(thing.items())?;
             prepared.check_control()?;
-            Ok(thing)
+            mapper(thing)
         }
         .await;
         match result {

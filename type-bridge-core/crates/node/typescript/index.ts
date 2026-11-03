@@ -1152,3 +1152,5 @@ export function setDebugListener(listener: ((event: DebugEvent) => void) | null)
   loadNative().setDebugListener(listener === null ? null : (json) => listener(JSON.parse(json) as DebugEvent));
 }
 export { Expr, Value } from "./plan-values.js";
+
+export type { WriteResult } from "./runtime-projection.js";

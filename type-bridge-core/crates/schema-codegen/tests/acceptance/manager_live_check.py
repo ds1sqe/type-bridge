@@ -671,7 +671,13 @@ def _run_owned_database(
             )
         )
         manager = package.Person.manager(database)
-        inserted = [manager.insert(_person(package, record)) for record in (ada, dana)]
+        results = [manager.insert(_person(package, record)) for record in (ada, dana)]
+        if any(
+            result.count != 1 or result.item is None or result.items[0] is not result.item
+            for result in results
+        ):
+            raise ProducerError("seed_mismatch", "single-person insert did not return one item")
+        inserted = [result.item for result in results]
         if _keys(package, inserted) != ["data-ada", "data-dana"]:
             raise ProducerError("seed_mismatch", "manager fixture insertion drifted")
         observation = _run_manager_journey(package, database)

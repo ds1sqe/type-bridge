@@ -172,6 +172,16 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Python single-item manager `insert`, `put`, `update`, and `delete_returning`
+  return `WriteResult` with `count`, all hydrated `items`, and `item` only for
+  exactly one root. Replace `x = manager.insert(...)` with
+  `x = manager.insert(...).item`. Input IID attachment occurs only for one root.
+- Node single-item manager `insert`, `put`, `update`, and `deleteReturning`
+  return `WriteResult`; use `.item` for the single model or `.items` for all roots.
+- Rust single-item manager writes, including transaction forms and
+  `delete_returning`, return `WriteResult<M>`; use `item()` or `into_items()`
+  instead of consuming the former model or optional snapshot return directly.
+
 - Removed server `schema_source::{SchemaSource,FileSchemaSource,
   InMemorySchemaSource}`, `config::SchemaSection`,
   `ServerConfig::schema`, `RuntimeServerConfig::schema`, and
@@ -514,6 +524,13 @@ All notable changes to TypeBridge will be documented in this file.
   document evidence, with specific document-validation diagnostics.
 
 ### Changed
+
+- Manager writes preserve TypeQL fan-out and repeated-player behavior.
+  Multiple answered roots no longer cause `provider_identity_cardinality_invalid`,
+  and repeated resolved role-player references no longer cause
+  `duplicate_resolved_role_player`. All roots appear in the write result;
+  existing missing-reference lookup failures and split-wide existence guards
+  remain. No strict option or extra pre-flight query is introduced.
 
 - Policy-controlled single entity and relation inserts use the same single
   native plan as ordinary inserts, retaining cancellation, resource limits,

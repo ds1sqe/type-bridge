@@ -1154,39 +1154,7 @@ impl ManagerPlans {
         if !players.is_empty() {
             let links =
                 self.player_bindings(&mut draft, &type_id, players, !exact, &mut patterns)?;
-            let mut player_iids = Vec::new();
             for (role, binding) in &links {
-                // A single-player role cannot contain converged aliases.
-                if links
-                    .iter()
-                    .filter(|(candidate, _)| candidate == role)
-                    .take(2)
-                    .count()
-                    > 1
-                {
-                    let iid_binding = draft.bind("player_iid").map_err(diagnostic)?;
-                    patterns.push(Pattern::Let {
-                        binding: iid_binding,
-                        expr: Expr::Iid { binding: *binding },
-                    });
-                    for (previous_role, previous_iid) in &player_iids {
-                        if *previous_role == role {
-                            patterns.push(
-                                QueryPattern::Value {
-                                    comparator: ValueComparator::NotEqual,
-                                    left: QueryOperand::Binding {
-                                        binding: *previous_iid,
-                                    },
-                                    right: QueryOperand::Binding {
-                                        binding: iid_binding,
-                                    },
-                                }
-                                .into(),
-                            );
-                        }
-                    }
-                    player_iids.push((role, iid_binding));
-                }
                 retained.push(*binding);
                 if exact {
                     attached.push(AttachItem::Links {

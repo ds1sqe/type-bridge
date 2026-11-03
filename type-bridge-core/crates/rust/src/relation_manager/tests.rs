@@ -687,7 +687,10 @@ async fn public_relation_insert_runs_canonical_insert_fetch_commit() {
         .relations::<Assignment>()
         .insert(create("captain", "0x9"))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_assignment(&value, "0x1", "captain", "0x9");
     let guard = state.lock().unwrap();
     // One query: the insert fetches its own hydration document.
@@ -768,7 +771,10 @@ async fn hydrated_generated_reference_preserves_database_origin_before_relation_
     let stored = source_manager
         .insert(create_from_person("captain", &person))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_assignment(&stored, "0x1", "captain", "0x9");
     assert_eq!(source_hook.before.load(Ordering::SeqCst), 1);
     assert_eq!(source_hook.after.load(Ordering::SeqCst), 1);
@@ -1022,7 +1028,10 @@ async fn public_relation_update_replaces_and_rehydrates() {
         .relations::<Assignment>()
         .update("0x1", create("captain", "0x9"))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_assignment(&value, "0x1", "captain", "0x9");
     let guard = state.lock().unwrap();
     assert!(matches!(
@@ -1040,7 +1049,10 @@ async fn public_relation_put_key_hit_replaces_existing_and_preserves_iid() {
         .relations::<Assignment>()
         .put(create("captain", "0x9"))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_assignment(&value, "0x1", "captain", "0x9");
     let guard = state.lock().unwrap();
     assert!(matches!(
@@ -1068,7 +1080,10 @@ async fn public_relation_put_key_miss_inserts_and_rehydrates() {
         .relations::<Assignment>()
         .put(create("captain", "0x9"))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_assignment(&value, "0x1", "captain", "0x9");
     let guard = state.lock().unwrap();
     assert!(matches!(

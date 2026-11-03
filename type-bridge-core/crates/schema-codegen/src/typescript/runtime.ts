@@ -1,4 +1,6 @@
 import {
+  writeResult,
+  type WriteResult,
   installGeneratedSchemaAuthority,
   installRuntimeProjection,
   projectedManagerNativeCall,
@@ -31,6 +33,7 @@ import {
   projectedBatchDeleted,
 } from "@type-bridge/node/runtime-projection";
 export {
+  type WriteResult,
   ProxyConnection,
   QueryCancellation,
   QueryExecutionResourceLimits,
@@ -97,13 +100,13 @@ export type ProjectedManagerFilterValue =
   | readonly ProjectedManagerFilterValue[];
 
 export interface ProjectedModelManager<Complete> {
-  insert(instance: Complete): Complete;
+  insert(instance: Complete): WriteResult<Complete>;
   insertMany(instances: readonly Complete[]): readonly Complete[];
-  put(instance: Complete): Complete;
+  put(instance: Complete): WriteResult<Complete>;
   putMany(instances: readonly Complete[]): readonly Complete[];
-  update(iid: string, replacement: Complete): Complete;
+  update(iid: string, replacement: Complete): WriteResult<Complete>;
   delete(instanceOrIid: Complete | string): void;
-  deleteReturning(iid: string): Complete | null;
+  deleteReturning(iid: string): WriteResult<Complete>;
   deleteManyReturning(iids: readonly string[]): readonly Complete[];
   filter(
     filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
@@ -1436,7 +1439,7 @@ function projectedManagerForNative<Complete>(
   native: NativeProjectedManager,
 ): ProjectedModelManager<Complete> {
   return Object.freeze({
-    insert(instance: Complete): Complete {
+    insert(instance: Complete): WriteResult<Complete> {
       requireLiveSnapshot(instance);
       const wire = lowerProjectedValue(instance);
       if (wire.typeKey !== typeKey || wire.form !== "complete") {
@@ -1444,10 +1447,7 @@ function projectedManagerForNative<Complete>(
           "projected insert requires the manager's exact complete model",
         );
       }
-      return hydrateNativeResult(
-        native.insertJson(JSON.stringify(wire)),
-        typeKey,
-      );
+      return writeResult([hydrateNativeResult<Complete>(native.insertJson(JSON.stringify(wire)), typeKey)]);
     },
     insertMany(instances: readonly Complete[]): readonly Complete[] {
       const wires = lowerManagerBatch(instances, typeKey, "insertMany");
@@ -1456,7 +1456,7 @@ function projectedManagerForNative<Complete>(
         typeKey,
       );
     },
-    put(instance: Complete): Complete {
+    put(instance: Complete): WriteResult<Complete> {
       requireLiveSnapshot(instance);
       const wire = lowerProjectedValue(instance);
       if (wire.typeKey !== typeKey || wire.form !== "complete") {
@@ -1464,7 +1464,7 @@ function projectedManagerForNative<Complete>(
           "projected put requires the manager's exact complete model",
         );
       }
-      return hydrateNativeResult(native.putJson(JSON.stringify(wire)), typeKey);
+      return writeResult([hydrateNativeResult<Complete>(native.putJson(JSON.stringify(wire)), typeKey)]);
     },
     putMany(instances: readonly Complete[]): readonly Complete[] {
       const wires = lowerManagerBatch(instances, typeKey, "putMany");
@@ -1473,7 +1473,7 @@ function projectedManagerForNative<Complete>(
         typeKey,
       );
     },
-    update(iid: string, replacement: Complete): Complete {
+    update(iid: string, replacement: Complete): WriteResult<Complete> {
       requireLiveSnapshot(replacement);
       if (typeof iid !== "string" || iid.length === 0) {
         throw new TypeError(
@@ -1486,10 +1486,7 @@ function projectedManagerForNative<Complete>(
           "projected update requires the manager's exact complete model",
         );
       }
-      return hydrateNativeResult(
-        native.updateJson(iid, JSON.stringify(wire)),
-        typeKey,
-      );
+      return writeResult([hydrateNativeResult<Complete>(native.updateJson(iid, JSON.stringify(wire)), typeKey)]);
     },
     delete(instanceOrIid: Complete | string): void {
       requireLiveSnapshot(instanceOrIid);
@@ -1510,11 +1507,10 @@ function projectedManagerForNative<Complete>(
       }
       native.deleteByIid(wire.iid);
     },
-    deleteReturning(iid: string): Complete | null {
-      const envelope = native.deleteByIidReturning(iid);
-      return envelope === null ? null : retainDeletedSnapshot(
+    deleteReturning(iid: string): WriteResult<Complete> {
+      return writeResult(native.deleteByIidReturning(iid).map((envelope) => retainDeletedSnapshot(
         hydrateNativeResult<Complete>(envelope.json, typeKey), envelope,
-      );
+      )));
     },
     deleteManyReturning(iids: readonly string[]): readonly Complete[] {
       return native.deleteManyReturning([...iids]).map((envelope) => retainDeletedSnapshot(

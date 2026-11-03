@@ -891,6 +891,8 @@ async fn returning_delete_models_keep_snapshot_origin_and_input_order() {
         .delete_returning("0x10")
         .await
         .unwrap()
+        .into_items()
+        .pop()
         .unwrap();
     assert!(snapshot.origin.deleted());
     assert_eq!(state.lock().unwrap().commits, 0);

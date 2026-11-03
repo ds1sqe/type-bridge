@@ -117,7 +117,7 @@ export type OrderedModelToken<
 
 type OrderedProjectedEnvelope = ReturnType<
   NativeProjectedManager["insertProjected"]
->;
+>[number];
 retainDecodedSnapshot = <Complete>(
   projection: InstalledRuntimeProjection,
   value: Complete,
@@ -411,15 +411,12 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
     return wire;
   };
   return Object.freeze({
-    insert(instance: Complete): Complete {
+    insert(instance: Complete): WriteResult<Complete> {
       const wire = exactWire(instance, "insert");
-      return hydrateOrderedProjectedEnvelope(
-        native.insertProjected(
+      return writeResult(native.insertProjected(
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, instance),
-        ),
-        typeKey,
-      );
+        ).map((envelope) => hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey)));
     },
     insertMany(instances: readonly Complete[]): readonly Complete[] {
       if (!Array.isArray(instances)) {
@@ -434,15 +431,12 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
         };
       });
     },
-    put(instance: Complete): Complete {
+    put(instance: Complete): WriteResult<Complete> {
       const wire = exactWire(instance, "put");
-      return hydrateOrderedProjectedEnvelope(
-        native.putProjected(
+      return writeResult(native.putProjected(
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, instance),
-        ),
-        typeKey,
-      );
+        ).map((envelope) => hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey)));
     },
     putMany(instances: readonly Complete[]): readonly Complete[] {
       if (!Array.isArray(instances)) {
@@ -457,21 +451,18 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
         };
       });
     },
-    update(iid: string, replacement: Complete): Complete {
+    update(iid: string, replacement: Complete): WriteResult<Complete> {
       if (typeof iid !== "string" || iid.length === 0) {
         throw new TypeError(
           "projected manager update requires a non-empty TypeDB IID",
         );
       }
       const wire = exactWire(replacement, "update");
-      return hydrateOrderedProjectedEnvelope(
-        native.updateProjected(
+      return writeResult(native.updateProjected(
           iid,
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, replacement),
-        ),
-        typeKey,
-      );
+        ).map((envelope) => hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey)));
     },
     updateMany(
       updates: readonly ProjectedBatchUpdate<Complete>[],
@@ -501,11 +492,10 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
     delete(instanceOrIid: Complete | string): void {
       legacy.delete(instanceOrIid);
     },
-    deleteReturning(iid: string): Complete | null {
-      const envelope = native.deleteByIidReturning(iid);
-      return envelope === null ? null : retainDeletedSnapshot(
+    deleteReturning(iid: string): WriteResult<Complete> {
+      return writeResult(native.deleteByIidReturning(iid).map((envelope) => retainDeletedSnapshot(
         hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey), envelope,
-      );
+      )));
     },
     deleteManyReturning(iids: readonly string[]): readonly Complete[] {
       return native.deleteManyReturning([...iids]).map((envelope) => retainDeletedSnapshot(
@@ -1110,14 +1100,14 @@ mod tests {
                 .unwrap();
             return;
         }
-        assert_eq!(RUNTIME_SOURCE.len(), 143_047);
+        assert_eq!(RUNTIME_SOURCE.len(), 143_198);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "2c95ab7e8a7c01efdd6dbd999c58267380fe86bcf58e8d89d3b9b6372c141ad1"
+            "71c21c95a347be9e305ee0ca4fafad94c6098f0bc1bfba72c7df6c9e2ce78ab9"
         );
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "3032dfe45bcba18759977252801a52dd13e9d882b68c07eccecc3b861e77e4e9"
+            "189d235254db05b2beef4de69c75fbfc3fefce4d75f93ec7c7b1537897374775"
         );
     }
 

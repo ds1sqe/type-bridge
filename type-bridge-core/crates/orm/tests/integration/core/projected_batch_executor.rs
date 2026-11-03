@@ -1161,11 +1161,17 @@ async fn keyed_relation_put_replaces_players_live() {
     let first = executor
         .insert_entity(&counted, &person_create(&installed, &ids, "first", false))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     let second = executor
         .insert_entity(&counted, &person_create(&installed, &ids, "second", false))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     let role = RoleId::new(ids.membership.label().as_str(), "member").unwrap();
     let input = |player: &str| {
         relation_create(
@@ -1180,14 +1186,20 @@ async fn keyed_relation_put_replaces_players_live() {
     let original = executor
         .put_relation(&counted, &input(first.iid()))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_role_players(&original, &role, &[(&ids.person, first.iid())]);
     *log.lock().unwrap() = DispatchLog::default();
     let started = std::time::Instant::now();
     let replaced = executor
         .put_relation(&counted, &input(second.iid()))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     eprintln!(
         "keyed relation put: statements={} elapsed={:?}",
         log.lock().unwrap().statements.len(),
@@ -1211,7 +1223,10 @@ async fn keyed_relation_put_replaces_players_live() {
             AnswerCancellation::default(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(log.lock().unwrap().statements.len(), 1);
     assert_eq!(controlled, original);
     *log.lock().unwrap() = DispatchLog::default();
@@ -1230,7 +1245,10 @@ async fn keyed_relation_put_replaces_players_live() {
             AnswerCancellation::default(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(log.lock().unwrap().statements.len(), 1);
     assert_ne!(fresh.iid(), original.iid());
     assert_role_players(&fresh, &role, &[(&ids.person, second.iid())]);
@@ -1243,7 +1261,10 @@ async fn keyed_relation_put_replaces_players_live() {
             AnswerCancellation::default(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(literal_put.iid(), original.iid());
     assert_role_players(&literal_put, &role, &[(&ids.person, second.iid())]);
     {
@@ -1271,7 +1292,10 @@ async fn keyed_relation_put_replaces_players_live() {
                 AnswerCancellation::default(),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .into_items()
+            .pop()
+            .expect("one written root");
         let put_elapsed = started.elapsed().as_micros();
         assert_eq!(put.iid(), original.iid());
         let started = std::time::Instant::now();
@@ -1284,7 +1308,10 @@ async fn keyed_relation_put_replaces_players_live() {
                 AnswerCancellation::default(),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .into_items()
+            .pop()
+            .expect("one written root");
         let update_elapsed = started.elapsed().as_micros();
         assert_eq!(updated.iid(), original.iid());
         let started = std::time::Instant::now();
@@ -4058,14 +4085,20 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
     let first = crud
         .insert_relation(&database, &create("a", 0, None))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     let second = crud
         .insert_relation(
             &database,
             &create("b", 0, Some(reference(&installed, &edge, first.iid()))),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     let raw = DynamicRelationManager::new(&database, registry.relation("snapshot-edge").unwrap());
     let mut failures = Vec::new();
     for literal in [false, true] {

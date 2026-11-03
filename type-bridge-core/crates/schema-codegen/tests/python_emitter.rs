@@ -627,27 +627,29 @@ fn rejects_public_name_collisions_and_missing_parents() {
     );
     let employment_id = TypeId::new(TypeKind::Relation, "employment").unwrap();
     let employment = &projection.models()[&employment_id];
-    let collision = ModelProjection::new(
-        employment.id().clone(),
-        TargetIdentifier::python("Membership").unwrap(),
-        employment.declaration().clone(),
-        employment.create().clone(),
-        employment.complete_read().clone(),
-        employment.reference_read().clone(),
-        employment.query_tokens().clone(),
-    )
-    .unwrap();
-    let mut models = projection.models().clone();
-    models.insert(employment_id.clone(), collision);
-    let collision_projection = rebuild(&projection, models, &resources);
-    assert_eq!(
-        emitter
-            .emit(&collision_projection, &authority)
-            .unwrap_err()
-            .code()
-            .as_str(),
-        "python_emitter_name_collision"
-    );
+    for name in ["Membership", "WriteResult"] {
+        let collision = ModelProjection::new(
+            employment.id().clone(),
+            TargetIdentifier::python(name).unwrap(),
+            employment.declaration().clone(),
+            employment.create().clone(),
+            employment.complete_read().clone(),
+            employment.reference_read().clone(),
+            employment.query_tokens().clone(),
+        )
+        .unwrap();
+        let mut models = projection.models().clone();
+        models.insert(employment_id.clone(), collision);
+        let collision_projection = rebuild(&projection, models, &resources);
+        assert_eq!(
+            emitter
+                .emit(&collision_projection, &authority)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "python_emitter_name_collision"
+        );
+    }
 
     let ghost = TypeId::new(TypeKind::Relation, "ghost").unwrap();
     let declaration = DeclarationProjection::new(

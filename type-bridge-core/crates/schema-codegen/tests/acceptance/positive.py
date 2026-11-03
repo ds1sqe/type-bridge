@@ -54,6 +54,7 @@ from generated_v2 import (
     ValDecimal,
     ValDouble,
     ValDuration,
+    WriteResult,
     aggregate,
     connect_proxy,
     find_events,
@@ -126,10 +127,12 @@ assert_type(person.nickname, Nickname | None)
 assert_type(person.aliases, tuple[Aliases, ...])
 
 person_manager = Person.manager(Database(address="localhost:1729", database="generated-manager"))
-assert_type(person_manager.put(person), Person)
+assert_type(person_manager.insert(person), WriteResult[Person])
+assert_type(person_manager.put(person), WriteResult[Person])
 assert_type(person_manager.insert_many([person]), list[Person])
 assert_type(person_manager.put_many([person]), list[Person])
-assert_type(person_manager.update(person), Person)
+assert_type(person_manager.update(person), WriteResult[Person])
+assert_type(person_manager.delete_returning(person), WriteResult[Person])
 assert_type(person_manager.update_many([person]), list[Person])
 assert_type(person_manager.delete(person), Person)
 assert_type(person_manager.delete("0x1"), None)
@@ -139,7 +142,7 @@ assert_type(
     PlainActivity.manager(Database(address="localhost:1729", database="generated-manager")).put(
         plain_activity
     ),
-    PlainActivity,
+    WriteResult[PlainActivity],
 )
 
 

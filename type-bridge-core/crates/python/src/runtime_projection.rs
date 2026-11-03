@@ -2798,7 +2798,7 @@ impl PyProjectedModelManager {
             }
         };
         instance.call_method1("attach_runtime_iid", (iid,))?;
-        Ok(instance.unbind())
+        py_write_result(py, vec![instance.unbind()])
     }
 
     /// Insert exact generated models atomically and attach IIDs in input order.
@@ -2862,7 +2862,7 @@ impl PyProjectedModelManager {
             }
         };
         instance.call_method1("attach_runtime_iid", (iid,))?;
-        Ok(instance.unbind())
+        py_write_result(py, vec![instance.unbind()])
     }
 
     /// Put exact generated models atomically and attach IIDs in input order.
@@ -2887,12 +2887,7 @@ impl PyProjectedModelManager {
             let prepared = self.package.facade_origins.prepare(&instance)?;
             let snapshot = snapshot_projected_instance(&instance)?;
             let projected = self.update_projected(py, &iid, &input)?;
-            let hydrated = hydrate_projected_thing_value(py, self.package.as_ref(), &projected)?;
-            replace_projected_instance_atomic(py, &instance, hydrated, &snapshot)?;
-            self.package
-                .facade_origins
-                .install(prepared, FacadeProjectionProof::Thing(Arc::new(projected)));
-            return Ok(instance.unbind());
+            return self.publish_projected_write(instance, prepared, snapshot, projected);
         }
         let hydrated = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
@@ -2937,7 +2932,8 @@ impl PyProjectedModelManager {
                 hydrate_relation(py, self.package.as_ref(), &self.type_id, &row)?
             }
         };
-        replace_projected_instance(py, instance, hydrated)
+        let item = replace_projected_instance(py, instance, hydrated)?;
+        py_write_result(py, vec![item])
     }
 
     /// Replace exact generated models atomically and rehydrate them in input order.
@@ -3174,12 +3170,10 @@ impl PyProjectedModelManager {
     /// Delete one exact model and return its stored pre-delete snapshot.
     fn delete_by_iid_returning(&self, py: Python<'_>, iid: String) -> PyResult<Py<PyAny>> {
         let output = self.delete_many_returning_projected(py, vec![iid])?;
-        let values = output.bind(py).cast_exact::<PyList>()?;
-        if values.is_empty() {
-            Ok(py.None())
-        } else {
-            Ok(values.get_item(0)?.unbind())
-        }
+        py.import("type_bridge_core.write_result")?
+            .getattr("WriteResult")?
+            .call1((output,))
+            .map(Bound::unbind)
     }
 
     /// Delete exact models and return existing snapshots in input order.
@@ -3469,7 +3463,7 @@ impl PyProjectedModelManager {
         &self,
         py: Python<'_>,
         input: &ProjectedCreate,
-    ) -> PyResult<ProjectedThing> {
+    ) -> PyResult<type_bridge_orm::WriteResult<ProjectedThing>> {
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
         let result = match (self.type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => provider_block_on(
@@ -3501,7 +3495,11 @@ impl PyProjectedModelManager {
         result.map_err(py_sdk_diagnostic)
     }
 
-    fn put_projected(&self, py: Python<'_>, input: &ProjectedCreate) -> PyResult<ProjectedThing> {
+    fn put_projected(
+        &self,
+        py: Python<'_>,
+        input: &ProjectedCreate,
+    ) -> PyResult<type_bridge_orm::WriteResult<ProjectedThing>> {
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
         let result = match (self.type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => provider_block_on(
@@ -3538,7 +3536,7 @@ impl PyProjectedModelManager {
         py: Python<'_>,
         iid: &str,
         input: &ProjectedCreate,
-    ) -> PyResult<ProjectedThing> {
+    ) -> PyResult<type_bridge_orm::WriteResult<ProjectedThing>> {
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
         let result = match (self.type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => provider_block_on(
@@ -3628,15 +3626,29 @@ impl PyProjectedModelManager {
         instance: Bound<'_, PyAny>,
         prepared: PreparedFacadeOrigin,
         snapshot: ProjectedFacadeSnapshot,
-        projected: ProjectedThing,
+        result: type_bridge_orm::WriteResult<ProjectedThing>,
     ) -> PyResult<Py<PyAny>> {
         let py = instance.py();
-        let hydrated = hydrate_projected_thing_value(py, self.package.as_ref(), &projected)?;
-        replace_projected_instance_atomic(py, &instance, hydrated, &snapshot)?;
-        self.package
-            .facade_origins
-            .install(prepared, FacadeProjectionProof::Thing(Arc::new(projected)));
-        Ok(instance.unbind())
+        let items = result.into_items();
+        if items.len() == 1 {
+            // Allocate the result before modifying the caller's instance.
+            let output = py_write_result(py, vec![instance.clone().unbind()])?;
+            let projected = items.into_iter().next().expect("one root");
+            let hydrated = hydrate_projected_thing_value(py, self.package.as_ref(), &projected)?;
+            replace_projected_instance_atomic(py, &instance, hydrated, &snapshot)?;
+            self.package
+                .facade_origins
+                .install(prepared, FacadeProjectionProof::Thing(Arc::new(projected)));
+            Ok(output)
+        } else {
+            let items = items
+                .into_iter()
+                .map(|projected| {
+                    hydrate_projected_thing(py, self.package.as_ref(), Arc::new(projected))
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            py_write_result(py, items)
+        }
     }
 
     fn validate_ordered_create(&self, py: Python<'_>, instance: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -7669,6 +7681,14 @@ fn role_cardinality(descriptor: &RoleDescriptor) -> (u32, Option<u32>) {
     descriptor.cardinality.unwrap_or((0, Some(1)))
 }
 
+fn py_write_result(py: Python<'_>, items: Vec<Py<PyAny>>) -> PyResult<Py<PyAny>> {
+    let items = PyList::new(py, items)?;
+    py.import("type_bridge_core.write_result")?
+        .getattr("WriteResult")?
+        .call1((items,))
+        .map(Bound::unbind)
+}
+
 fn hydrate_projected_thing(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -10758,6 +10778,25 @@ plays:
         py: Python<'_>,
         projection: &RuntimeProjection,
     ) -> Vec<(Py<PyType>, Option<Py<PyType>>)> {
+        let modules = py.import("sys").unwrap().getattr("modules").unwrap();
+        if !modules.contains("type_bridge_core").unwrap() {
+            let package = PyModule::new(py, "type_bridge_core").unwrap();
+            package
+                .add(
+                    "__path__",
+                    PyList::new(
+                        py,
+                        [concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/../../python/type_bridge_core"
+                        )],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            modules.set_item("type_bridge_core", package).unwrap();
+        }
+        py.import("type_bridge_core.write_result").unwrap();
         let module = PyModule::from_code(
             py,
             ffi::c_str!(
@@ -15166,7 +15205,17 @@ def failing_initialize(target, original):
                     );
                     assert_eq!(package.facade_origins.len(), 0);
                 } else {
-                    let snapshot = result.unwrap();
+                    let result = result.unwrap();
+                    assert_eq!(
+                        result
+                            .bind(py)
+                            .getattr("count")
+                            .unwrap()
+                            .extract::<usize>()
+                            .unwrap(),
+                        1
+                    );
+                    let snapshot = result.bind(py).getattr("item").unwrap().unbind();
                     assert!(facade_is_deleted(package.as_ref(), snapshot.bind(py)));
                     assert_eq!(
                         snapshot

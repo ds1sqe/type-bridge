@@ -176,20 +176,28 @@ interface NativeProjectedCreateBatchRow {
 interface NativeProjectedUpdateBatchRow extends NativeProjectedCreateBatchRow {
     readonly iid: string;
 }
+/** Complete hydrated roots from a single-input manager write, in answer order. */
+export interface WriteResult<T> {
+    readonly count: number;
+    readonly items: readonly T[];
+    readonly item: T | null;
+}
+/** Build the public write result from all roots already returned by the engine. */
+export declare function writeResult<T>(items: readonly T[]): WriteResult<T>;
 export interface NativeProjectedManager {
-    insertProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope;
+    insertProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope[];
     insertJson(instanceJson: string): string;
     insertManyJson(batchJson: string): string;
     insertManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): readonly Complete[];
-    putProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope;
+    putProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope[];
     putJson(instanceJson: string): string;
     putManyJson(batchJson: string): string;
     putManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): readonly Complete[];
-    updateProjected(iid: string, instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope;
+    updateProjected(iid: string, instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope[];
     updateJson(iid: string, instanceJson: string): string;
     updateManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow): readonly Complete[];
     deleteByIid(iid: string): void;
-    deleteByIidReturning(iid: string): NativeProjectedValueEnvelope | null;
+    deleteByIidReturning(iid: string): NativeProjectedValueEnvelope[];
     deleteManyReturning(iids: string[]): NativeProjectedValueEnvelope[];
     deleteManyProjected(rowCount: number, rowAt: (ordinal: number) => string): void;
     managerFilter(): NativeProjectedManagerFilter;

@@ -10,7 +10,8 @@ use type_bridge_contract::id::{
     MAX_THING_IID_HEX_DIGITS, TypeId, TypeKind, is_canonical_thing_iid,
 };
 use type_bridge_contract::sdk_diagnostic::{
-    SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
+    SdkDiagnosticCode, SdkDiagnosticMessage, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
+    SdkProviderOperation,
 };
 use type_bridge_orm::projected_crud::ProjectedCrudInvocationControl;
 use type_bridge_orm::{
@@ -586,6 +587,23 @@ pub(crate) unsafe fn prepare_diagnostics_output_for_legacy_policy_target(
     unsafe { prepare_diagnostics_output_inner(inputs, Some(target), out_diagnostics) }
 }
 
+// ABI 1.11 temporarily retains singleton results. Replace this adapter with the
+// complete result handle in 06.11 (ABI 2.0); do not change the frozen C exports.
+fn legacy_single_write(
+    result: type_bridge_orm::WriteResult<ProjectedThing>,
+    model: &TypeId,
+) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+    if result.count() != 1 {
+        return Err(SdkExecutionDiagnostic::integrity(
+            code("provider_identity_cardinality_invalid"),
+            message("The provider identity query did not resolve exactly one thing"),
+        )
+        .try_at(SdkDiagnosticPathSegment::Type(model.clone()))
+        .expect("one C result type path fits"));
+    }
+    Ok(result.into_items().pop().expect("one root"))
+}
+
 #[derive(Clone, Copy)]
 enum ThingMutation<'iid> {
     Insert,
@@ -641,21 +659,27 @@ impl WriteTarget<'_> {
                         SdkProviderOperation::OpenWriteTransaction,
                     ))
                 })?;
-                let executed = catch_unwind(AssertUnwindSafe(|| match (kind, operation) {
-                    (CrudKind::Entity, ThingMutation::Insert) => database
-                        .block_on(executor.insert_entity_in_transaction(&context, &create.value)),
-                    (CrudKind::Entity, ThingMutation::Put) => database
-                        .block_on(executor.put_entity_in_transaction(&context, &create.value)),
-                    (CrudKind::Entity, ThingMutation::Update(iid)) => database.block_on(
-                        executor.update_entity_in_transaction(&context, iid, &create.value),
-                    ),
-                    (CrudKind::Relation, ThingMutation::Insert) => database
-                        .block_on(executor.insert_relation_in_transaction(&context, &create.value)),
-                    (CrudKind::Relation, ThingMutation::Put) => database
-                        .block_on(executor.put_relation_in_transaction(&context, &create.value)),
-                    (CrudKind::Relation, ThingMutation::Update(iid)) => database.block_on(
-                        executor.update_relation_in_transaction(&context, iid, &create.value),
-                    ),
+                let executed = catch_unwind(AssertUnwindSafe(|| {
+                    match (kind, operation) {
+                        (CrudKind::Entity, ThingMutation::Insert) => database.block_on(
+                            executor.insert_entity_in_transaction(&context, &create.value),
+                        ),
+                        (CrudKind::Entity, ThingMutation::Put) => database
+                            .block_on(executor.put_entity_in_transaction(&context, &create.value)),
+                        (CrudKind::Entity, ThingMutation::Update(iid)) => database.block_on(
+                            executor.update_entity_in_transaction(&context, iid, &create.value),
+                        ),
+                        (CrudKind::Relation, ThingMutation::Insert) => database.block_on(
+                            executor.insert_relation_in_transaction(&context, &create.value),
+                        ),
+                        (CrudKind::Relation, ThingMutation::Put) => database.block_on(
+                            executor.put_relation_in_transaction(&context, &create.value),
+                        ),
+                        (CrudKind::Relation, ThingMutation::Update(iid)) => database.block_on(
+                            executor.update_relation_in_transaction(&context, iid, &create.value),
+                        ),
+                    }
+                    .and_then(|result| legacy_single_write(result, create.value.type_id()))
                 }));
                 let thing = match executed {
                     Ok(Ok(thing)) => thing,
@@ -708,7 +732,16 @@ impl WriteTarget<'_> {
                         executor.update_relation_in_transaction(context, iid, &create.value),
                     ),
                 })) {
-                    Ok(result) => result.map_err(CrudFailure::Diagnostic),
+                    Ok(result) => {
+                        let result = result.and_then(|result| {
+                            legacy_single_write(result, create.value.type_id()).inspect_err(
+                                |diagnostic| {
+                                    transaction.block_on(context.latch_rollback_only(diagnostic));
+                                },
+                            )
+                        });
+                        result.map_err(CrudFailure::Diagnostic)
+                    }
                     Err(_) => {
                         transaction.mark_poisoned();
                         Err(CrudFailure::Panic)
@@ -730,108 +763,56 @@ impl WriteTarget<'_> {
         control: ProjectedBatchInvocationControl,
     ) -> Result<ProjectedThing, CrudFailure> {
         let executor = ProjectedCrudExecutor::new(&self.package_state().installed_projection);
-        let executed = catch_unwind(AssertUnwindSafe(|| match self {
-            Self::Database(database) => (match (kind, operation) {
-                (CrudKind::Entity, ThingMutation::Insert) => {
-                    database.block_on(executor.insert_entity_controlled_with_control(
-                        database.orm_database(),
-                        &create.value,
-                        control,
-                    ))
-                }
-                (CrudKind::Entity, ThingMutation::Put) => {
-                    database.block_on(executor.put_entity_controlled_with_control(
-                        database.orm_database(),
-                        &create.value,
-                        control,
-                    ))
-                }
-                (CrudKind::Entity, ThingMutation::Update(iid)) => {
-                    database.block_on(executor.update_entity_controlled_with_control(
-                        database.orm_database(),
-                        iid,
-                        &create.value,
-                        control,
-                    ))
-                }
-                (CrudKind::Relation, ThingMutation::Insert) => {
-                    database.block_on(executor.insert_relation_controlled_with_control(
-                        database.orm_database(),
-                        &create.value,
-                        control,
-                    ))
-                }
-                (CrudKind::Relation, ThingMutation::Put) => {
-                    database.block_on(executor.put_relation_controlled_with_control(
-                        database.orm_database(),
-                        &create.value,
-                        control,
-                    ))
-                }
-                (CrudKind::Relation, ThingMutation::Update(iid)) => {
-                    database.block_on(executor.update_relation_controlled_with_control(
-                        database.orm_database(),
-                        iid,
-                        &create.value,
-                        control,
-                    ))
-                }
-            })
-            .map_err(CrudFailure::Diagnostic),
-            Self::Transaction(transaction) => {
-                if transaction.is_poisoned() {
-                    return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
-                }
-                let context = transaction
-                    .context()
-                    .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
-                (match (kind, operation) {
-                    (CrudKind::Entity, ThingMutation::Insert) => transaction.block_on(
-                        executor.insert_entity_in_transaction_controlled_with_control(
-                            context,
-                            &create.value,
-                            control,
+        let executed = catch_unwind(AssertUnwindSafe(|| {
+            let (operation, row) = match operation {
+                ThingMutation::Insert => (
+                    type_bridge_orm::ProjectedBatchOperation::Insert,
+                    type_bridge_orm::ProjectedBatchRow::Create(create.value.clone()),
+                ),
+                ThingMutation::Put => (
+                    type_bridge_orm::ProjectedBatchOperation::Put,
+                    type_bridge_orm::ProjectedBatchRow::Create(create.value.clone()),
+                ),
+                ThingMutation::Update(iid) => (
+                    type_bridge_orm::ProjectedBatchOperation::Update,
+                    type_bridge_orm::ProjectedBatchRow::Update {
+                        iid: iid.to_owned(),
+                        replacement: create.value.clone(),
+                    },
+                ),
+            };
+            let batch = executor
+                .single_controlled_write_batch(create.value.type_id(), operation, row, &control)
+                .map_err(CrudFailure::Diagnostic)?;
+            match self {
+                Self::Database(database) => database
+                    .block_on(executor.execute_controlled_single_write(
+                        type_bridge_orm::projected_crud::ProjectedWriteTarget::Database(
+                            database.orm_database(),
                         ),
-                    ),
-                    (CrudKind::Entity, ThingMutation::Put) => transaction.block_on(
-                        executor.put_entity_in_transaction_controlled_with_control(
-                            context,
-                            &create.value,
+                        &batch,
+                        control,
+                        |result| legacy_single_write(result, create.value.type_id()),
+                    ))
+                    .map_err(CrudFailure::Diagnostic),
+                Self::Transaction(transaction) => {
+                    if transaction.is_poisoned() {
+                        return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
+                    }
+                    let context = transaction
+                        .context()
+                        .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
+                    transaction
+                        .block_on(executor.execute_controlled_single_write(
+                            type_bridge_orm::projected_crud::ProjectedWriteTarget::Transaction(
+                                context,
+                            ),
+                            &batch,
                             control,
-                        ),
-                    ),
-                    (CrudKind::Entity, ThingMutation::Update(iid)) => transaction.block_on(
-                        executor.update_entity_in_transaction_controlled_with_control(
-                            context,
-                            iid,
-                            &create.value,
-                            control,
-                        ),
-                    ),
-                    (CrudKind::Relation, ThingMutation::Insert) => transaction.block_on(
-                        executor.insert_relation_in_transaction_controlled_with_control(
-                            context,
-                            &create.value,
-                            control,
-                        ),
-                    ),
-                    (CrudKind::Relation, ThingMutation::Put) => transaction.block_on(
-                        executor.put_relation_in_transaction_controlled_with_control(
-                            context,
-                            &create.value,
-                            control,
-                        ),
-                    ),
-                    (CrudKind::Relation, ThingMutation::Update(iid)) => transaction.block_on(
-                        executor.update_relation_in_transaction_controlled_with_control(
-                            context,
-                            iid,
-                            &create.value,
-                            control,
-                        ),
-                    ),
-                })
-                .map_err(CrudFailure::Diagnostic)
+                            |result| legacy_single_write(result, create.value.type_id()),
+                        ))
+                        .map_err(CrudFailure::Diagnostic)
+                }
             }
         }));
         match executed {

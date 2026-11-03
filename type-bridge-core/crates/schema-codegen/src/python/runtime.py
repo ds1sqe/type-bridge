@@ -28,6 +28,7 @@ from type_bridge_core import canonical_enum_spelling
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 from type_bridge.plan import FieldToken as _AuthoringFieldToken
+from type_bridge.write_result import WriteResult
 
 if TYPE_CHECKING:
     from type_bridge_core import (
@@ -450,10 +451,10 @@ class ProjectedModelManager[ModelT: ModelBase]:
     def remove_hook(self, hook: CrudHook[ModelT]) -> None:
         self._hooks.remove(hook)
 
-    def insert(self, instance: ModelT) -> ModelT:
+    def insert(self, instance: ModelT) -> WriteResult[ModelT]:
         self._run_pre(CrudEvent.PRE_INSERT, instance)
         result = self._native.insert(instance)
-        self._run_post(CrudEvent.POST_INSERT, result)
+        self._run_post_many(CrudEvent.POST_INSERT, result.items)
         return result
 
     def insert_many(self, instances: Sequence[ModelT]) -> list[ModelT]:
@@ -463,10 +464,10 @@ class ProjectedModelManager[ModelT: ModelBase]:
         self._run_post_many(CrudEvent.POST_INSERT, result)
         return result
 
-    def put(self, instance: ModelT) -> ModelT:
+    def put(self, instance: ModelT) -> WriteResult[ModelT]:
         self._run_pre(CrudEvent.PRE_PUT, instance)
         result = self._native.put(instance)
-        self._run_post(CrudEvent.POST_PUT, result)
+        self._run_post_many(CrudEvent.POST_PUT, result.items)
         return result
 
     def put_many(self, instances: Sequence[ModelT]) -> list[ModelT]:
@@ -476,13 +477,13 @@ class ProjectedModelManager[ModelT: ModelBase]:
         self._run_post_many(CrudEvent.POST_PUT, result)
         return result
 
-    def update(self, instance: ModelT) -> ModelT:
+    def update(self, instance: ModelT) -> WriteResult[ModelT]:
         self._run_pre(CrudEvent.PRE_UPDATE, instance)
         if self._resolve_instance_iid(instance):
             result = self._native.update(instance)
         else:
-            result = instance
-        self._run_post(CrudEvent.POST_UPDATE, result)
+            result = WriteResult([])
+        self._run_post_many(CrudEvent.POST_UPDATE, result.items)
         return result
 
     def update_many(self, instances: Sequence[ModelT]) -> list[ModelT]:
@@ -521,12 +522,9 @@ class ProjectedModelManager[ModelT: ModelBase]:
         self._run_post(CrudEvent.POST_DELETE, instance_or_iid)
         return instance_or_iid
 
-    def delete_returning(self, instance: ModelT) -> ModelT:
+    def delete_returning(self, instance: ModelT) -> WriteResult[ModelT]:
         """Delete an instance and return its stored pre-delete snapshot."""
-        snapshots = self.delete_many_returning([instance])
-        if not snapshots:
-            raise ProjectedModelNotFoundError("generated model not found")
-        return snapshots[0]
+        return WriteResult(self.delete_many_returning([instance]))
 
     def delete_many_returning(self, instances: Sequence[ModelT]) -> list[ModelT]:
         """Return existing deletion snapshots in input order."""

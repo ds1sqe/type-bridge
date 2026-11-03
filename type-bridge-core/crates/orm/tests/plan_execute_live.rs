@@ -481,7 +481,13 @@ async fn helper_returning_deletes_hydrate_before_commit_on_both_execution_paths(
             vec![],
         )
         .unwrap();
-        let person = crud.insert_entity(&db, &create).await.unwrap();
+        let person = crud
+            .insert_entity(&db, &create)
+            .await
+            .unwrap()
+            .into_items()
+            .pop()
+            .expect("one written root");
         let relation = crud
             .insert_relation(
                 &db,
@@ -492,7 +498,10 @@ async fn helper_returning_deletes_hydrate_before_commit_on_both_execution_paths(
                 ),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .into_items()
+            .pop()
+            .expect("one written root");
         let deleted = if controlled {
             crud.delete_relation_by_iid_returning_controlled(
                 &db,
@@ -507,6 +516,8 @@ async fn helper_returning_deletes_hydrate_before_commit_on_both_execution_paths(
                 .await
         }
         .unwrap()
+        .into_items()
+        .pop()
         .unwrap();
         assert!(deleted.is_deleted());
         assert_eq!(deleted.fields(), relation.fields());
@@ -538,6 +549,8 @@ async fn helper_returning_deletes_hydrate_before_commit_on_both_execution_paths(
                 .await
         }
         .unwrap()
+        .into_items()
+        .pop()
         .unwrap();
         assert_eq!(deleted.type_id(), &person_type);
         assert_eq!(deleted.fields(), person.fields());
@@ -552,6 +565,8 @@ async fn helper_returning_deletes_hydrate_before_commit_on_both_execution_paths(
             crud.delete_entity_by_iid_returning(&db, &person_type, person.iid())
                 .await
                 .unwrap()
+                .into_items()
+                .pop()
                 .is_none()
         );
     }
@@ -588,7 +603,13 @@ async fn dynamic_returning_deletes_preserve_subtype_and_relation_players() {
         vec![],
     )
     .unwrap();
-    let person = crud.insert_entity(&db, &create).await.unwrap();
+    let person = crud
+        .insert_entity(&db, &create)
+        .await
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     let relation = crud
         .insert_relation(
             &db,
@@ -599,7 +620,10 @@ async fn dynamic_returning_deletes_preserve_subtype_and_relation_players() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     let relations = DynamicRelationManager::new_canonical(
         &db,
         Arc::new(
@@ -915,7 +939,10 @@ async fn helper_relation_inserts_resolve_references_inside_the_write() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     // Hydrated from the write's own fetch, equal to a separate read.
     let read = crud
         .get_relation_by_iid(&db, &membership_type, exact.iid())
@@ -938,7 +965,10 @@ async fn helper_relation_inserts_resolve_references_inside_the_write() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(
         polymorphic.roles()[&member][0].type_id(),
         &party_type(TypeKind::Entity, "company")
@@ -955,11 +985,13 @@ async fn helper_relation_inserts_resolve_references_inside_the_write() {
     let again = crud
         .insert_relation(&db, &membership(&installed, by_iid, "iid"))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(again.roles()[&member][0].iid(), ada.iid());
 
-    // Two references of one role resolving to one player: refused after
-    // the write and rolled back, as the released resolver refused it.
+    // Repeated references follow TypeQL semantics and report the actual player set.
     let party_iid = ProjectedReference::try_new(
         &installed,
         party_type(TypeKind::Entity, "party"),
@@ -977,8 +1009,13 @@ async fn helper_relation_inserts_resolve_references_inside_the_write() {
         )],
     )
     .unwrap();
-    let duplicate = crud.insert_relation(&db, &doubled).await.unwrap_err();
-    assert_eq!(duplicate.code().as_str(), "duplicate_resolved_role_player");
+    let duplicate = crud.insert_relation(&db, &doubled).await.unwrap();
+    assert_eq!(duplicate.count(), 1);
+    assert_eq!(duplicate.item().unwrap().roles()[&member].len(), 1);
+    assert_eq!(
+        duplicate.item().unwrap().roles()[&member][0].iid(),
+        ada.iid()
+    );
 
     // Missing: the write matches no row, so nothing is stored.
     let missing = crud
@@ -998,7 +1035,7 @@ async fn helper_relation_inserts_resolve_references_inside_the_write() {
     );
     assert_eq!(
         crud.count_relations(&db, &membership_type).await.unwrap(),
-        3
+        4
     );
 
     db.delete_database().await.unwrap();
@@ -1123,7 +1160,10 @@ async fn helper_put_is_one_plan_with_replace_semantics_and_key_races() {
     let created = crud
         .put_entity(&db, &person(&installed, "ada", Some("a@example.test")))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(texts(&created, "email"), ["a@example.test"]);
     db.execute_raw(
         r#"match $p isa person, has identifier "ada"; insert $p has nickname "A", has nickname "Ad";"#,
@@ -1137,7 +1177,10 @@ async fn helper_put_is_one_plan_with_replace_semantics_and_key_races() {
     let updated = crud
         .put_entity(&db, &person(&installed, "ada", Some("b@example.test")))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(updated.iid(), created.iid());
     assert_eq!(texts(&updated, "email"), ["b@example.test"]);
     let read = crud
@@ -1152,7 +1195,10 @@ async fn helper_put_is_one_plan_with_replace_semantics_and_key_races() {
     let partial = crud
         .put_entity(&db, &person(&installed, "ada", None))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(partial.iid(), created.iid());
     assert!(texts(&partial, "email").is_empty());
     assert_eq!(crud.count_entities(&db, &person_type).await.unwrap(), 1);
@@ -1163,10 +1209,16 @@ async fn helper_put_is_one_plan_with_replace_semantics_and_key_races() {
     let second = db.transaction_context(TxType::Write).await.unwrap();
     crud.put_entity_in_transaction(&first, &person(&installed, "bob", Some("1@example.test")))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     crud.put_entity_in_transaction(&second, &person(&installed, "bob", Some("2@example.test")))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     first.commit_classified().await.unwrap();
     assert!(second.commit_classified().await.is_err());
     assert_eq!(crud.count_entities(&db, &person_type).await.unwrap(), 2);
@@ -1262,7 +1314,10 @@ async fn helper_single_writes_are_one_plan_each() {
             &person_with(&installed, "ada", Some("a@x.test"), &["x", "y"]),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(sorted(texts(&inserted, "nickname")), ["x", "y"]);
     let updated = crud
         .update_entity(
@@ -1271,7 +1326,10 @@ async fn helper_single_writes_are_one_plan_each() {
             &person_with(&installed, "ada", Some("b@x.test"), &["z"]),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(texts(&updated, "email"), ["b@x.test"]);
     assert_eq!(texts(&updated, "nickname"), ["z"]);
     let read = crud
@@ -1284,7 +1342,10 @@ async fn helper_single_writes_are_one_plan_each() {
     let put = crud
         .put_entity(&db, &person_with(&installed, "ada", None, &["p", "q"]))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(put.iid(), inserted.iid());
     assert_eq!(sorted(texts(&put, "nickname")), ["p", "q"]);
     assert!(texts(&put, "email").is_empty());
@@ -1305,7 +1366,10 @@ async fn helper_single_writes_are_one_plan_each() {
     let staged = crud
         .insert_entity(&db, &person_with(&installed, "bob", None, &[]))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     let tx = db.transaction_context(TxType::Write).await.unwrap();
     for _ in 0..2 {
         crud.delete_entity_by_iid_in_transaction(&tx, &person_type, staged.iid())
@@ -1353,7 +1417,10 @@ async fn helper_single_writes_are_one_plan_each() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     // Relation update clears the role and attaches the new player.
     let moved = crud
         .update_relation(
@@ -1366,7 +1433,10 @@ async fn helper_single_writes_are_one_plan_each() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(moved.iid(), relation.iid());
     assert_eq!(moved.roles()[&member].len(), 1);
     assert_eq!(
@@ -1452,13 +1522,19 @@ async fn helper_relation_updates_with_many_players_and_none() {
     let relation = crud
         .insert_relation(&db, &two(&installed, "a"))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(relation.roles()[&member].len(), 2);
     // Two old players times two new ones: still one relation document set.
     let updated = crud
         .update_relation(&db, relation.iid(), &two(&installed, "b"))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(updated.roles()[&member].len(), 2);
     db.delete_database().await.unwrap();
 
@@ -1525,7 +1601,10 @@ async fn helper_relation_updates_with_many_players_and_none() {
             .unwrap(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     let refused =
         ProjectedCreate::try_new(&installed, tagging.clone(), vec![], vec![]).unwrap_err();
     assert_eq!(refused.code().as_str(), "relation_requires_player");
@@ -2271,7 +2350,14 @@ async fn handwritten_returning_delete_dispatches_exact_subtypes_and_preserves_re
             vec![],
         )
         .unwrap();
-        parties.push(crud.insert_entity(&db, &create).await.unwrap());
+        parties.push(
+            crud.insert_entity(&db, &create)
+                .await
+                .unwrap()
+                .into_items()
+                .pop()
+                .expect("one written root"),
+        );
     }
     let relation = crud
         .insert_relation(
@@ -2283,7 +2369,10 @@ async fn handwritten_returning_delete_dispatches_exact_subtypes_and_preserves_re
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     #[derive(Debug)]
     struct MembershipSnapshot {
         iid: Option<String>,

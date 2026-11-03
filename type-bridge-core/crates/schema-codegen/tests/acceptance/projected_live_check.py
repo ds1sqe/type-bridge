@@ -560,7 +560,8 @@ def _insert(
     created: dict[str, tuple[Any, object, str]],
     actual_order: list[str],
 ) -> object:
-    if manager.insert(value) is not value:
+    result = manager.insert(value)
+    if result.count != 1 or result.item is not value or result.items[0] is not value:
         raise ProducerError("invalid_crud_result", f"insert changed result identity for {ref}")
     iid = getattr(value, "iid", None)
     if type(iid) is not str or not iid:

@@ -23,10 +23,10 @@ use crate::projected_batch::{
     create_operation, create_rows, delete_rows, execute_borrowed_delete, execute_borrowed_things,
     prepare_batch, update_rows, validate_binding_row_count,
 };
-use crate::projected_codec::{materialize_projected, project_create};
+use crate::projected_codec::{materialize_projected, materialize_write_result, project_create};
 use crate::relation_codec::{hydrate_relation, resolve_relation_authority};
 use crate::schema::Schema;
-use crate::{Database, Result};
+use crate::{Database, Result, WriteResult};
 
 #[cfg(test)]
 mod tests;
@@ -273,7 +273,7 @@ where
 
     /// Inserts one exact entity in the open transaction and returns its
     /// complete freshly hydrated model without committing.
-    pub async fn insert(&self, input: M::Create) -> Result<M> {
+    pub async fn insert(&self, input: M::Create) -> Result<WriteResult<M>> {
         let installed = self.transaction.installed()?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
@@ -288,13 +288,13 @@ where
             .map_err(|error| {
                 Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Insert))
             })?;
-        materialize_projected(projected, installed)
+        materialize_write_result(projected, installed)
     }
 
     /// Applies the exact key-or-insert put rule in the open transaction,
     /// including complete replacement of non-key ownership for an existing
     /// exact row, without committing.
-    pub async fn put(&self, input: M::Create) -> Result<M> {
+    pub async fn put(&self, input: M::Create) -> Result<WriteResult<M>> {
         let installed = self.transaction.installed()?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
@@ -309,7 +309,7 @@ where
             .map_err(|error| {
                 Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Put))
             })?;
-        materialize_projected(projected, installed)
+        materialize_write_result(projected, installed)
     }
 
     /// Inserts each item in input order in the open transaction, returning
@@ -346,7 +346,7 @@ where
 
     /// Completely replaces non-key ownership on the exact model at canonical
     /// `iid` in the open transaction, preserving that IID, without committing.
-    pub async fn update(&self, iid: &str, input: M::Create) -> Result<M> {
+    pub async fn update(&self, iid: &str, input: M::Create) -> Result<WriteResult<M>> {
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
@@ -364,13 +364,15 @@ where
             .map_err(|error| {
                 Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Update))
             })?;
-        materialize_projected(projected, installed)
+        materialize_write_result(projected, installed)
     }
 
     /// Delete the exact model and return its pre-delete snapshot without committing.
-    /// An absent IID returns `None`.
-    pub async fn delete_returning(&self, iid: &str) -> Result<Option<M>> {
-        Ok(self.delete_many_returning(&[iid.to_owned()]).await?.pop())
+    /// An absent IID returns an empty write result.
+    pub async fn delete_returning(&self, iid: &str) -> Result<WriteResult<M>> {
+        self.delete_many_returning(&[iid.to_owned()])
+            .await
+            .map(WriteResult::new)
     }
 
     /// Delete exact models and return existing snapshots in input order without committing.
@@ -558,7 +560,7 @@ where
     /// Inserts one exact relation with its complete active role players in the
     /// open transaction and returns its complete freshly hydrated model
     /// without committing.
-    pub async fn insert(&self, input: M::Create) -> Result<M> {
+    pub async fn insert(&self, input: M::Create) -> Result<WriteResult<M>> {
         let installed = self.transaction.installed()?;
         let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
@@ -573,13 +575,13 @@ where
             .map_err(|error| {
                 Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Insert))
             })?;
-        materialize_projected(projected, installed)
+        materialize_write_result(projected, installed)
     }
 
     /// Applies the exact key-or-insert put rule in the open transaction,
     /// including complete replacement of non-key ownership and active role
     /// players for an existing exact row, without committing.
-    pub async fn put(&self, input: M::Create) -> Result<M> {
+    pub async fn put(&self, input: M::Create) -> Result<WriteResult<M>> {
         let installed = self.transaction.installed()?;
         let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
@@ -594,7 +596,7 @@ where
             .map_err(|error| {
                 Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Put))
             })?;
-        materialize_projected(projected, installed)
+        materialize_write_result(projected, installed)
     }
 
     /// Inserts each item in input order in the open transaction, returning
@@ -632,7 +634,7 @@ where
     /// Completely replaces non-key ownership and the complete effective
     /// active-role player set on the exact relation at canonical `iid` in the
     /// open transaction, preserving that IID, without committing.
-    pub async fn update(&self, iid: &str, input: M::Create) -> Result<M> {
+    pub async fn update(&self, iid: &str, input: M::Create) -> Result<WriteResult<M>> {
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
@@ -650,13 +652,15 @@ where
             .map_err(|error| {
                 Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Update))
             })?;
-        materialize_projected(projected, installed)
+        materialize_write_result(projected, installed)
     }
 
     /// Delete the exact model and return its pre-delete snapshot without committing.
-    /// An absent IID returns `None`.
-    pub async fn delete_returning(&self, iid: &str) -> Result<Option<M>> {
-        Ok(self.delete_many_returning(&[iid.to_owned()]).await?.pop())
+    /// An absent IID returns an empty write result.
+    pub async fn delete_returning(&self, iid: &str) -> Result<WriteResult<M>> {
+        self.delete_many_returning(&[iid.to_owned()])
+            .await
+            .map(WriteResult::new)
     }
 
     /// Delete exact models and return existing snapshots in input order without committing.

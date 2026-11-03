@@ -192,17 +192,22 @@ fn rejects_projection_without_exact_resource_evidence() {
 fn rejects_schema_name_colliding_with_runtime_export() {
     let emitter = TypeScriptEmitter::new();
     let resources = emitter.code_resources().unwrap();
-    let (projection, authority) = projected(
-        "format: typebridge.schema/v2\nentities:\n  cardinality: {}\n",
-        &resources,
-    );
-    let error = emitter.emit(&projection, &authority).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("typescript_emitter_name_collision")
-    );
-    assert!(error.to_string().contains("Cardinality"));
+    for (label, name) in [
+        ("cardinality", "Cardinality"),
+        ("write-result", "WriteResult"),
+    ] {
+        let (projection, authority) = projected(
+            &format!("format: typebridge.schema/v2\nentities:\n  {label}: {{}}\n"),
+            &resources,
+        );
+        let error = emitter.emit(&projection, &authority).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("typescript_emitter_name_collision")
+        );
+        assert!(error.to_string().contains(name));
+    }
 }
 
 #[test]

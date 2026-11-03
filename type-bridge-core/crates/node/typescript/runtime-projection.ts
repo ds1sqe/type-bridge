@@ -379,11 +379,24 @@ interface NativeProjectedUpdateBatchRow extends NativeProjectedCreateBatchRow {
   readonly iid: string;
 }
 
+/** Complete hydrated roots from a single-input manager write, in answer order. */
+export interface WriteResult<T> {
+  readonly count: number;
+  readonly items: readonly T[];
+  readonly item: T | null;
+}
+
+/** Build the public write result from all roots already returned by the engine. */
+export function writeResult<T>(items: readonly T[]): WriteResult<T> {
+  const retained = Object.freeze(items);
+  return Object.freeze({ count: retained.length, items: retained, item: retained.length === 1 ? retained[0]! : null });
+}
+
 export interface NativeProjectedManager {
   insertProjected(
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
-  ): NativeProjectedValueEnvelope;
+  ): NativeProjectedValueEnvelope[];
   insertJson(instanceJson: string): string;
   insertManyJson(batchJson: string): string;
   insertManyProjected<Complete>(
@@ -393,7 +406,7 @@ export interface NativeProjectedManager {
   putProjected(
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
-  ): NativeProjectedValueEnvelope;
+  ): NativeProjectedValueEnvelope[];
   putJson(instanceJson: string): string;
   putManyJson(batchJson: string): string;
   putManyProjected<Complete>(
@@ -404,14 +417,14 @@ export interface NativeProjectedManager {
     iid: string,
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
-  ): NativeProjectedValueEnvelope;
+  ): NativeProjectedValueEnvelope[];
   updateJson(iid: string, instanceJson: string): string;
   updateManyProjected<Complete>(
     rowCount: number,
     rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow,
   ): readonly Complete[];
   deleteByIid(iid: string): void;
-  deleteByIidReturning(iid: string): NativeProjectedValueEnvelope | null;
+  deleteByIidReturning(iid: string): NativeProjectedValueEnvelope[];
   deleteManyReturning(iids: string[]): NativeProjectedValueEnvelope[];
   deleteManyProjected(
     rowCount: number,

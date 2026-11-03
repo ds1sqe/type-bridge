@@ -3354,7 +3354,7 @@ impl NodeProjectedModelManager {
         &self,
         instance_json: String,
         proofs: Unknown<'env>,
-    ) -> napi::Result<NodeProjectedValueEnvelope> {
+    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
         let proofs =
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
@@ -3376,7 +3376,11 @@ impl NodeProjectedModelManager {
             _ => return Err(runtime_error("projected manager has no execution target")),
         }
         .map_err(napi_sdk_diagnostic)?;
-        projected_envelope(Arc::clone(&self.package), projected)
+        projected
+            .into_items()
+            .into_iter()
+            .map(|thing| projected_envelope(Arc::clone(&self.package), thing))
+            .collect()
     }
 
     /// Put one ordered successor value through the common projected executor.
@@ -3385,7 +3389,7 @@ impl NodeProjectedModelManager {
         &self,
         instance_json: String,
         proofs: Unknown<'env>,
-    ) -> napi::Result<NodeProjectedValueEnvelope> {
+    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
         let proofs =
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
@@ -3407,7 +3411,11 @@ impl NodeProjectedModelManager {
             _ => return Err(runtime_error("projected manager has no execution target")),
         }
         .map_err(napi_sdk_diagnostic)?;
-        projected_envelope(Arc::clone(&self.package), projected)
+        projected
+            .into_items()
+            .into_iter()
+            .map(|thing| projected_envelope(Arc::clone(&self.package), thing))
+            .collect()
     }
 
     /// Replace one ordered successor value through the common projected executor.
@@ -3417,7 +3425,7 @@ impl NodeProjectedModelManager {
         iid: String,
         instance_json: String,
         proofs: Unknown<'env>,
-    ) -> napi::Result<NodeProjectedValueEnvelope> {
+    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
         let proofs =
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
@@ -3439,7 +3447,11 @@ impl NodeProjectedModelManager {
             _ => return Err(runtime_error("projected manager has no execution target")),
         }
         .map_err(napi_sdk_diagnostic)?;
-        projected_envelope(Arc::clone(&self.package), projected)
+        projected
+            .into_items()
+            .into_iter()
+            .map(|thing| projected_envelope(Arc::clone(&self.package), thing))
+            .collect()
     }
 
     /// Insert ordered successor values atomically through the common executor.
@@ -3675,8 +3687,8 @@ impl NodeProjectedModelManager {
     pub fn delete_by_iid_returning(
         &self,
         iid: String,
-    ) -> napi::Result<Option<NodeProjectedValueEnvelope>> {
-        Ok(self.delete_many_returning(vec![iid])?.pop())
+    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+        self.delete_many_returning(vec![iid])
     }
 
     /// Delete exact values atomically and return existing snapshots in input order.

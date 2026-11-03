@@ -24,10 +24,10 @@ use crate::projected_batch::{
     execute_owned_delete, execute_owned_things, prepare_batch, project_encoded_batch_create,
     reserved_binding_vec, validate_binding_row_count,
 };
-use crate::projected_codec::{materialize_projected, project_create};
+use crate::projected_codec::{materialize_projected, materialize_write_result, project_create};
 use crate::projected_filter::ProjectedEntityFilter;
 use crate::schema::Schema;
-use crate::{Database, Result};
+use crate::{Database, Result, WriteResult};
 
 #[cfg(test)]
 mod tests;
@@ -287,7 +287,7 @@ where
 
     /// Inserts one exact entity and returns its complete freshly hydrated model. Errors may
     /// be input/schema validation, database/transaction/close, or model hydration errors.
-    pub async fn insert(&self, input: M::Create) -> Result<M> {
+    pub async fn insert(&self, input: M::Create) -> Result<WriteResult<M>> {
         if !self.hooks.has_hooks() {
             return self
                 .projected_write(input, CrudOperation::Insert, None)
@@ -312,7 +312,7 @@ where
                 M::TYPE_ID_JSON,
                 ModelKind::Entity,
                 CrudOperation::Insert,
-                Some(output.iid()),
+                output.item().map(|item| item.iid()),
                 Some(&encoded),
                 metadata,
             )
@@ -323,7 +323,7 @@ where
     /// existing exact row, the supplied create value completely replaces non-key ownership:
     /// omitted optional values and empty multivalue collections remove prior ownership. It
     /// never reuses a subtype instance, and returns a complete freshly hydrated model.
-    pub async fn put(&self, input: M::Create) -> Result<M> {
+    pub async fn put(&self, input: M::Create) -> Result<WriteResult<M>> {
         if !self.hooks.has_hooks() {
             return self.projected_write(input, CrudOperation::Put, None).await;
         }
@@ -346,7 +346,7 @@ where
                 M::TYPE_ID_JSON,
                 ModelKind::Entity,
                 CrudOperation::Put,
-                Some(output.iid()),
+                output.item().map(|item| item.iid()),
                 Some(&encoded),
                 metadata,
             )
@@ -376,7 +376,7 @@ where
     /// Completely replaces non-key ownership on the exact model at canonical `iid`, preserves
     /// that IID, and returns its complete freshly hydrated model. Omitted optional values and
     /// empty multivalue collections remove prior ownership.
-    pub async fn update(&self, iid: &str, input: M::Create) -> Result<M> {
+    pub async fn update(&self, iid: &str, input: M::Create) -> Result<WriteResult<M>> {
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
@@ -404,7 +404,7 @@ where
                 M::TYPE_ID_JSON,
                 ModelKind::Entity,
                 CrudOperation::Update,
-                Some(output.iid()),
+                output.item().map(|item| item.iid()),
                 Some(&encoded),
                 state,
             )
@@ -412,9 +412,11 @@ where
         Ok(output)
     }
 
-    /// Delete an exact model and return its pre-delete snapshot, or `None` when absent.
-    pub async fn delete_returning(&self, iid: &str) -> Result<Option<M>> {
-        Ok(self.delete_many_returning(&[iid.to_owned()]).await?.pop())
+    /// Delete an exact model and return its snapshots in a write result.
+    pub async fn delete_returning(&self, iid: &str) -> Result<WriteResult<M>> {
+        self.delete_many_returning(&[iid.to_owned()])
+            .await
+            .map(WriteResult::new)
     }
 
     /// Atomically delete exact models and return existing snapshots in input order.
@@ -636,7 +638,7 @@ where
         input: M::Create,
         operation: CrudOperation,
         iid: Option<&str>,
-    ) -> Result<M> {
+    ) -> Result<WriteResult<M>> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
@@ -685,7 +687,7 @@ where
                 return Err(mapped);
             }
         };
-        let value = match materialize_projected(projected, installed) {
+        let value = match materialize_write_result(projected, installed) {
             Ok(value) => value,
             Err(error) => {
                 let _ = tx.rollback().await;

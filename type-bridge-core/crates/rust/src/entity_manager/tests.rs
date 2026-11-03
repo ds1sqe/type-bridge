@@ -393,7 +393,10 @@ async fn public_canonical_database_and_batch_paths_select_canonical_queries() {
             value: "v".into(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     db.entities::<Record>()
         .insert_many(vec![RecordCreate {
             name: "n2".into(),
@@ -1298,7 +1301,10 @@ async fn public_insert_uses_recording_projection_and_materializes_iid() {
             value: "hello".into(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(result.iid, "0x1");
     assert_eq!(result.value, "hello");
     let s = state.lock().unwrap();
@@ -1350,7 +1356,10 @@ async fn public_put_update_delete_success_lifecycles() {
             value: "new".into(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(
         (&result.iid, &result.name, &result.value),
         (&"0x2".to_string(), &"n2".to_string(), &"new".to_string())
@@ -1383,7 +1392,10 @@ async fn public_put_update_delete_success_lifecycles() {
             },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(
         (&result.iid, &result.name, &result.value),
         (&"0x2".to_string(), &"n2".to_string(), &"upd".to_string())

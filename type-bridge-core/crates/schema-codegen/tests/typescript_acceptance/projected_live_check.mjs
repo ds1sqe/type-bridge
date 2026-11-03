@@ -43,7 +43,7 @@ export const SEMANTIC_SCHEMA_FINGERPRINT = Object.freeze({
 export const PROJECTION_FINGERPRINT = Object.freeze({
   algorithm: "sha256",
   canonicalization: "typebridge.binding-projection/v1",
-  digest: "c9465f447e028708b74a193cf1b3881b898f26bf2322f1c43a25f8d107b92ea7",
+  digest: "35fae2f6547d9f6b52b82b8c80202b1f1c9063ccb68a5bd7e60fb94c64040518",
   domain: "typebridge.binding.projection",
   semantic_profile: SEMANTIC_PROFILE,
 });
@@ -869,8 +869,10 @@ function actorIdentity(package_, actor) {
 }
 
 function insertOne(ref, manager, value, created, actualOrder) {
-  const inserted = manager.insert(value);
+  const result = manager.insert(value);
+  const inserted = result.item;
   if (
+    result.count !== 1 || result.items[0] !== inserted ||
     inserted === null ||
     typeof inserted !== "object" ||
     typeof inserted.iid !== "string" ||

@@ -527,8 +527,16 @@ where
     })
 }
 
+fn single_written<T>(result: type_bridge::WriteResult<T>) -> ProducerResult<T> {
+    let mut items = result.into_items();
+    if items.len() != 1 {
+        return Err(ProducerError::new("seed_mismatch", "single-record insert did not return one item"));
+    }
+    Ok(items.pop().expect("one written item"))
+}
+
 async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> ProducerResult<Created> {
-    let ada = live(
+    let ada = single_written(live(
         database
             .entities::<Person>()
             .insert(person_create(PersonFixture {
@@ -547,8 +555,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             })?)
             .await,
         "insert Ada",
-    )?;
-    let dana = live(
+    )?)?;
+    let dana = single_written(live(
         database
             .entities::<Person>()
             .insert(person_create(PersonFixture {
@@ -567,8 +575,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             })?)
             .await,
         "insert Dana",
-    )?;
-    let positive_robot = live(
+    )?)?;
+    let positive_robot = single_written(live(
         database
             .entities::<Robot>()
             .insert(generated(
@@ -581,8 +589,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert positive robot",
-    )?;
-    let negative_robot = live(
+    )?)?;
+    let negative_robot = single_written(live(
         database
             .entities::<Robot>()
             .insert(generated(
@@ -595,9 +603,9 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert negative robot",
-    )?;
+    )?)?;
 
-    let interaction_robot = live(
+    let interaction_robot = single_written(live(
         database
             .relations::<Interaction>()
             .insert(generated(
@@ -614,8 +622,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert robot interaction",
-    )?;
-    let interaction_absent = live(
+    )?)?;
+    let interaction_absent = single_written(live(
         database
             .relations::<Interaction>()
             .insert(generated(
@@ -632,8 +640,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert absent interaction",
-    )?;
-    let interaction_person = live(
+    )?)?;
+    let interaction_person = single_written(live(
         database
             .relations::<Interaction>()
             .insert(generated(
@@ -650,8 +658,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert person interaction",
-    )?;
-    let plain_activity = live(
+    )?)?;
+    let plain_activity = single_written(live(
         database
             .relations::<PlainActivity>()
             .insert(generated(
@@ -660,8 +668,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert plain activity",
-    )?;
-    let event = live(
+    )?)?;
+    let event = single_written(live(
         database
             .relations::<Event>()
             .insert(generated(
@@ -670,8 +678,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert event",
-    )?;
-    let container = live(
+    )?)?;
+    let container = single_written(live(
         database
             .relations::<Container>()
             .insert(generated(
@@ -680,7 +688,7 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert container",
-    )?;
+    )?)?;
 
     Ok(Created {
         ada: ada.iid().to_owned(),
