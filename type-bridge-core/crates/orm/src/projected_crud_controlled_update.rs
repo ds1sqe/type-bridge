@@ -810,10 +810,25 @@ mod tests {
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
     fn wide_single_projection() -> InstalledRuntimeProjection {
+        wide_single_projection_with_ordered(false)
+    }
+
+    fn wide_single_projection_with_ordered(ordered: bool) -> InstalledRuntimeProjection {
         let source = "format: typebridge.schema/v2\nattributes:\n  item-key: { value: string }\n  item-tag: { value: string }\nentities:\n  wide-item:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\nrelations:\n  wide-edge:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\n    relates:\n      member: { card: { min: 0, max: 4 } }\nplays:\n  wide-item:\n    wide-edge: [member]\n  wide-edge:\n    wide-edge: [member]\n";
+        let source = if ordered {
+            source.replace(
+                "item-tag: { card: { min: 0 } }",
+                "item-tag: { card: { min: 0 }, ordered: true }",
+            )
+        } else {
+            source.to_owned()
+        };
         let declared = normalize_documents(
-            &SchemaDocumentSet::parse([(DocumentId::new("single-wide.yaml").unwrap(), source)])
-                .unwrap(),
+            &SchemaDocumentSet::parse([(
+                DocumentId::new("single-wide.yaml").unwrap(),
+                source.as_str(),
+            )])
+            .unwrap(),
         )
         .unwrap();
         let resolved = resolve(
@@ -1004,6 +1019,15 @@ mod tests {
                             );
                         }
                         StagedAnswerV3::Documents { documents }
+                    } else if matches!(
+                        plan.operation(),
+                        type_bridge_contract::query_plan::v3::Operation::Write {
+                            returns: type_bridge_contract::query_plan::v3::WriteReturns::Matched,
+                        }
+                    ) {
+                        StagedAnswerV3::Matched {
+                            value: self.roots as u64,
+                        }
                     } else {
                         let type_bridge_contract::query_plan::QueryOutput::Rows { columns } =
                             plan.output()
@@ -1076,8 +1100,27 @@ mod tests {
         crate::ProxyQueryConnection,
         Arc<SingleProxyTransport>,
     ) {
+        single_proxy_fixture_with_projection(
+            model,
+            roots,
+            tags,
+            server_limits,
+            wide_single_projection(),
+        )
+    }
+
+    fn single_proxy_fixture_with_projection(
+        model: TypeId,
+        roots: usize,
+        tags: usize,
+        server_limits: type_bridge_contract::limits::QueryLimits,
+        installed: InstalledRuntimeProjection,
+    ) -> (
+        InstalledRuntimeProjection,
+        crate::ProxyQueryConnection,
+        Arc<SingleProxyTransport>,
+    ) {
         use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-        let installed = wide_single_projection();
         let schema = installed.plan_authority().unwrap().declared().clone();
         let profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
         let context = type_bridge_schema::ManagedDeltaContext::new(
@@ -1829,6 +1872,76 @@ mod tests {
                 .unwrap();
             assert_eq!(value, 7);
             assert!(transport.seen.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn ordered_proxy_single_and_many_deletes_keep_native_matched_plan_and_one_exchange() {
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            for count in [1, 3] {
+                for roots in [0, 1] {
+                    let model = TypeId::new(
+                        kind,
+                        if kind == TypeKind::Entity {
+                            "wide-item"
+                        } else {
+                            "wide-edge"
+                        },
+                    )
+                    .unwrap();
+                    let (installed, proxy, transport) = single_proxy_fixture_with_projection(
+                        model.clone(),
+                        roots,
+                        0,
+                        type_bridge_contract::limits::QueryLimits::V3,
+                        wide_single_projection_with_ordered(true),
+                    );
+                    let control = ProjectedBatchInvocationControl::capture(
+                        Default::default(),
+                        Default::default(),
+                    );
+                    let batch = ProjectedBatch::try_new_for_invocation(
+                        &installed,
+                        model,
+                        ProjectedBatchOperation::Delete,
+                        ["0x20", "0x21", "0x22"]
+                            .into_iter()
+                            .take(count)
+                            .map(|iid| ProjectedBatchRow::Delete { iid: iid.into() })
+                            .collect(),
+                        &control,
+                    )
+                    .unwrap();
+                    let direct = crate::projected_batch_executor::inline_batch_plan_bytes_for_test(
+                        &installed,
+                        &batch,
+                        proxy.execution_identity(),
+                        false,
+                    )
+                    .unwrap();
+                    let output = ProjectedBatchExecutor::new(&installed)
+                        .execute_on_target_mapped(
+                            crate::QueryTarget::Proxy(&proxy),
+                            &batch,
+                            control,
+                            None,
+                            |result| Ok(Some(result)),
+                        )
+                        .await
+                        .unwrap();
+                    assert!(matches!(output, Some(ProjectedBatchResult::Deleted)));
+                    let seen = transport.seen.lock().unwrap();
+                    assert_eq!(seen.len(), 1);
+                    assert_eq!(seen[0].plans().len(), 1);
+                    assert_eq!(seen[0].plans()[0].plan().canonical_bytes().unwrap(), direct);
+                    assert_eq!(
+                        transport
+                            .dispatched_writes
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                        1
+                    );
+                }
+            }
         }
     }
 

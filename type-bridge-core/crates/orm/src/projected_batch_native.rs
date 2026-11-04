@@ -181,6 +181,39 @@ impl BatchPlan<'_> {
         &self,
         rows: GivenRowsSpec,
     ) -> std::result::Result<BuiltPlan, SdkExecutionDiagnostic> {
+        // Ordered models retain the native literal-IID deletion plan from 06.0.
+        // Compiled field routes already exclude ordered ownership.
+        if self.field_routes.len() != self.model.create().fields().len()
+            || self
+                .model
+                .query_tokens()
+                .roles()
+                .values()
+                .any(|role| !role.multiplicity().collection_mode().is_unordered())
+        {
+            let iids = rows
+                .rows
+                .iter()
+                .map(|row| {
+                    let Some(GivenValue::String(iid)) = row.get(1) else {
+                        return Err(SdkExecutionDiagnostic::internal_failure());
+                    };
+                    Ok(iid.clone())
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let registry = self
+                .installed
+                .manager_registry()
+                .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?;
+            let manager = crate::plan_builders::manager::ManagerPlans::new(registry)
+                .with_query_limits(self.authority.shared_query_limits());
+            return if let [iid] = iids.as_slice() {
+                manager.delete(self.model.id().label().as_str(), iid, true, false)
+            } else {
+                manager.delete_many(self.model.id().label().as_str(), &iids, true, false)
+            }
+            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write));
+        }
         let columns = [(ValueTypeTag::Long, false), (ValueTypeTag::String, false)];
         let mut draft = BatchDraft::new(&self.authority, rows, &columns).map_err(diagnostic)?;
         let mut patterns = Vec::new();
@@ -538,7 +571,7 @@ impl ProjectedBatchExecutor<'_> {
                             accept_native_answer(
                                 native.local(),
                                 answer,
-                                Reply::Mutation,
+                                deletion_reply(native.local()),
                                 &mut identities,
                             )?;
                         }
@@ -946,7 +979,7 @@ impl ProjectedBatchExecutor<'_> {
             dispatch(
                 lease,
                 &native,
-                Reply::Mutation,
+                deletion_reply(native.local()),
                 prepared,
                 &mut identities,
                 &mut ledger,
@@ -1090,6 +1123,7 @@ enum DeletedRow {
 enum Reply {
     ReferenceResolution,
     Mutation,
+    MatchedDeletion,
     Hydration,
 }
 
@@ -1116,6 +1150,17 @@ fn evidence(error: Diagnostic) -> OrmError {
 impl<R: FnMut(&AnswerItem) + Send> Consumer<'_, R> {
     fn decode(&mut self, item: AnswerItem) -> crate::Result<AnswerControl> {
         let document = match self.reply {
+            Reply::MatchedDeletion => {
+                if !matches!(item, AnswerItem::Row(_)) {
+                    return Err(crate::match_request::MatchError::new(
+                        crate::match_request::MatchErrorCategory::ResultDecode,
+                        "query_plan_batch_answer",
+                        "Native matched deletion returned documents",
+                    )
+                    .into());
+                }
+                return Ok(AnswerControl::Continue);
+            }
             Reply::Hydration => {
                 let AnswerItem::Document(document) = item else {
                     return Err(crate::match_request::MatchError::new(
@@ -1332,6 +1377,8 @@ fn accept_native_answer(
         deferred: None,
     };
     match (reply, answer) {
+        (Reply::MatchedDeletion, crate::query_plan_exec::PlanAnswer::Matched(_))
+            if matched_delete(plan) => {}
         (Reply::Hydration, crate::query_plan_exec::PlanAnswer::Documents(documents)) => {
             for document in documents {
                 consumer
@@ -1352,6 +1399,23 @@ fn accept_native_answer(
         _ => return Err(SdkExecutionDiagnostic::internal_failure()),
     }
     Ok(())
+}
+
+fn deletion_reply(plan: &type_bridge_contract::query_plan::v3::QueryPlanV3) -> Reply {
+    if matched_delete(plan) {
+        Reply::MatchedDeletion
+    } else {
+        Reply::Mutation
+    }
+}
+
+fn matched_delete(plan: &type_bridge_contract::query_plan::v3::QueryPlanV3) -> bool {
+    matches!(
+        plan.operation(),
+        type_bridge_contract::query_plan::v3::Operation::Write {
+            returns: type_bridge_contract::query_plan::v3::WriteReturns::Matched,
+        }
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1496,6 +1560,172 @@ async fn dispatch_query<R: FnMut(&AnswerItem) + Send>(
 mod native_input_tests {
     use super::*;
     use type_bridge_contract::limits::{MAX_CANONICAL_STRING_BYTES, MAX_INPUT_BYTES};
+
+    #[test]
+    fn ordered_deletes_preserve_frozen_plans_and_matched_answers_in_all_projections() {
+        use type_bridge_contract::fingerprint::SemanticProfileId;
+        use type_bridge_contract::projection::{
+            BindingTarget, CSymbolPrefix, ProjectionConfig, ProjectionHandler,
+        };
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+        let source = include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml");
+        let declared = normalize_documents(
+            &SchemaDocumentSet::parse([(DocumentId::new("models.yaml").unwrap(), source)]).unwrap(),
+        )
+        .unwrap();
+        for profile in ["typedb-3.12.1/v1", "typedb-3.13.6/v1"] {
+            let resolved = resolve(&declared, &SemanticProfileId::new(profile).unwrap()).unwrap();
+            let authority = type_bridge_schema::build_schema_authority(
+                &declared,
+                declared.required_capabilities(),
+                &type_bridge_schema::ManagedDeltaContext::new(
+                    type_bridge_contract::managed_scope::ManagedScopeId::new(
+                        "schema-codegen-acceptance",
+                    )
+                    .unwrap(),
+                    SemanticProfileId::new(profile).unwrap(),
+                    type_bridge_schema::schema_authority_capability_vocabulary(),
+                ),
+            )
+            .unwrap();
+            for (target, config, handler) in [
+                (
+                    BindingTarget::Python,
+                    ProjectionConfig::python(),
+                    ProjectionHandler::python_v2(),
+                ),
+                (
+                    BindingTarget::TypeScript,
+                    ProjectionConfig::typescript(),
+                    ProjectionHandler::typescript_v2(),
+                ),
+                (
+                    BindingTarget::Rust,
+                    ProjectionConfig::rust(),
+                    ProjectionHandler::rust_v2(),
+                ),
+                (
+                    BindingTarget::C,
+                    ProjectionConfig::c(CSymbolPrefix::new("ordered_delete").unwrap()),
+                    ProjectionHandler::c_v2(),
+                ),
+            ] {
+                let installed = InstalledRuntimeProjection::try_new(
+                    project(&resolved, target, &config, &[handler], &[]).unwrap(),
+                )
+                .unwrap()
+                .with_schema_authority(&authority);
+                for (kind, label, scenario, record) in [
+                    (TypeKind::Entity, "person", "entity_delete", "data-ada"),
+                    (
+                        TypeKind::Relation,
+                        "network-link",
+                        "role_delete",
+                        "link-forward",
+                    ),
+                ] {
+                    for count in [1, 2] {
+                        let batch = ProjectedBatch::try_new(
+                            &installed,
+                            TypeId::new(kind, label).unwrap(),
+                            ProjectedBatchOperation::Delete,
+                            ["0x10", "0x11"]
+                                .into_iter()
+                                .take(count)
+                                .map(|iid| ProjectedBatchRow::Delete { iid: iid.into() })
+                                .collect(),
+                        )
+                        .unwrap();
+                        let prepared = PreparedProjectedBatchInvocation::try_new(
+                            &installed,
+                            &batch,
+                            ProjectedBatchInvocationControl::capture(
+                                Default::default(),
+                                Default::default(),
+                            ),
+                        )
+                        .unwrap();
+                        let identity = DatabaseExecutionIdentity::isolated("ordered-delete");
+                        let plan =
+                            BatchPlan::compile(&installed, &prepared, &identity, false, None)
+                                .unwrap();
+                        let native = plan.native_delete(plan.delete_rows().unwrap()).unwrap();
+                        assert!(matched_delete(native.local()));
+                        if count == 1 {
+                            assert!(native.local().given_rows().is_none());
+                            let mut actual: Value =
+                                serde_json::from_slice(&native.local().canonical_bytes().unwrap())
+                                    .unwrap();
+                            // The twin normalizer only renames this one binding and recorded IID.
+                            actual["bindings"][0]["variable"] = serde_json::json!("b0");
+                            actual["pipeline"][0]["patterns"][1]["iid"] =
+                                serde_json::json!(format!("@record/{record}"));
+                            let path = format!(
+                                "{}/../../../tests/contracts/sdk_conformance/models/plans/{}/ordered_distinct_collections.{scenario}.json",
+                                env!("CARGO_MANIFEST_DIR"),
+                                profile.replace('/', "_")
+                            );
+                            let expected: Value =
+                                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                            assert_eq!(
+                                serde_json::json!([{ "plan": actual, "rows": [] }]),
+                                expected
+                            );
+                        } else {
+                            // The native many-delete uses IID inputs without batch ordinals.
+                            assert_eq!(native.local().given_rows().unwrap().len(), 2);
+                            assert_eq!(native.local().inputs().len(), 1);
+                            assert_eq!(native.local().pipeline().len(), 2);
+                        }
+                        let mut identities = DeleteIdentityConsumer::new(count).unwrap();
+                        for matched in [0, count as u64] {
+                            accept_native_answer(
+                                native.local(),
+                                query_plan_exec::PlanAnswer::Matched(matched),
+                                Reply::MatchedDeletion,
+                                &mut identities,
+                            )
+                            .unwrap();
+                        }
+                        identities.finish(&plan).unwrap();
+                        for wrong in [
+                            query_plan_exec::PlanAnswer::Rows(vec![]),
+                            query_plan_exec::PlanAnswer::Documents(vec![]),
+                        ] {
+                            assert!(
+                                accept_native_answer(
+                                    native.local(),
+                                    wrong,
+                                    Reply::MatchedDeletion,
+                                    &mut identities
+                                )
+                                .is_err()
+                            );
+                        }
+                        let mut consumer = Consumer {
+                            record: &mut |_: &AnswerItem| {},
+                            inner: &mut identities,
+                            plan: native.local(),
+                            reply: Reply::MatchedDeletion,
+                            deferred: None,
+                        };
+                        assert_eq!(
+                            consumer
+                                .decode(AnswerItem::Row(serde_json::json!({})))
+                                .unwrap(),
+                            AnswerControl::Continue
+                        );
+                        assert!(
+                            consumer
+                                .decode(AnswerItem::Document(serde_json::json!({})))
+                                .is_err()
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     fn rows(values: Vec<(i64, String)>) -> GivenRowsSpec {
         GivenRowsSpec {

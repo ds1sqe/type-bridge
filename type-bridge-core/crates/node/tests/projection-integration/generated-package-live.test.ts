@@ -1098,6 +1098,7 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
   modelPlanMark("ordered_distinct_collections.role_delete");
   links.delete(link.iid);
   modelPlanMark();
+  assert.equal(links.count(), 0n);
   modelPlanMark("entity_batch_insert_put.put");
   const putPeople = people.putMany([person(), person(false, "data-dana")]).items;
   modelPlanMark();
@@ -1137,6 +1138,7 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
   modelPlanMark("ordered_distinct_collections.entity_delete");
   people.delete(ada.iid);
   modelPlanMark();
+  assert.equal(people.count(), 0n);
 }
 
 class FixturePlanWitness {

@@ -6893,6 +6893,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("ordered_distinct_collections.role_delete");
     links.delete(link.iid()).await.unwrap();
     model_plan_mark("");
+    assert_eq!(links.count().await.unwrap(), 0);
     model_plan_mark("entity_batch_insert_put.put");
     let put_people = people
         .put_many(vec![person(false, "data-ada"), person(false, "data-dana")])
@@ -7016,6 +7017,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("ordered_distinct_collections.entity_delete");
     people.delete(ada.iid()).await.unwrap();
     model_plan_mark("");
+    assert_eq!(people.count().await.unwrap(), 0);
 }
 
 #[tokio::test]

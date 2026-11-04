@@ -2475,6 +2475,7 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
     _model_plan_mark("ordered_distinct_collections.role_delete")
     links.delete(link)
     _model_plan_mark()
+    assert links.count() == 0
     _model_plan_mark("entity_batch_insert_put.put")
     put_people = people.put_many([person(), person(identifier="data-dana")]).items
     _model_plan_mark()
@@ -2534,6 +2535,7 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
     _model_plan_mark("ordered_distinct_collections.entity_delete")
     people.delete(ada)
     _model_plan_mark()
+    assert people.count() == 0
 
 
 def sdk_models_data_model_runtime_live(
