@@ -20,6 +20,7 @@ use serde::Serialize;
 use type_bridge_contract::codec::to_canonical_json_with_limits;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::limits::REMOTE_ENVELOPE_CODEC_LIMITS;
+use type_bridge_contract::query_model_evidence::ModelOutcome;
 use type_bridge_contract::query_model_limits::{ModelReplyDecodeLimits, RemoteModelLimits};
 use type_bridge_contract::query_plan::{QueryInvocation, QueryOperation, QueryPlanFingerprint};
 use type_bridge_contract::query_remote::{
@@ -27,8 +28,8 @@ use type_bridge_contract::query_remote::{
     RemoteValue,
 };
 use type_bridge_contract::query_remote_v2::{
-    RemoteOutcomeV2, RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteQueryResponseV2,
-    RemoteReplyV2, RemoteRequestFingerprintV2, RemoteResultKindV2, decode_remote_reply_v2,
+    RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteReplyV2,
+    RemoteRequestFingerprintV2, RemoteResultKindV2, decode_remote_reply_v2,
     validate_remote_outcome_v2,
 };
 use type_bridge_query::{
@@ -61,7 +62,7 @@ impl RemoteResponseWireMeterV2 {
         advertisement: &RemoteCapabilitiesFingerprint,
         signer: &RemoteReplySigningKey,
         result: RemoteResultKindV2,
-        outcome: RemoteOutcomeV2,
+        outcome: ModelOutcome,
         max_bytes: u64,
     ) -> Result<Self, Diagnostic> {
         let response = RemoteQueryResponseV2::new(nonce, plan, request, result, outcome)?;
@@ -227,7 +228,7 @@ pub fn decode_remote_outcome_v2(
     advertisement: &RemoteCapabilitiesFingerprint,
     trusted_key: RemoteSigningPublicKey,
     limits: ModelReplyDecodeLimits,
-) -> Result<RemoteOutcomeV2, Diagnostic> {
+) -> Result<ModelOutcome, Diagnostic> {
     let plan = validated.plan().fingerprint()?;
     match decode_remote_reply_v2(
         bytes,
@@ -717,8 +718,8 @@ async fn run_admitted_request_v2(
     let plan = validated.plan().clone();
 
     let empty = match result {
-        RemoteResultKindV2::Rows => Some(RemoteOutcomeV2::Rows { rows: Vec::new() }),
-        RemoteResultKindV2::Documents => Some(RemoteOutcomeV2::Documents {
+        RemoteResultKindV2::Rows => Some(ModelOutcome::Rows { rows: Vec::new() }),
+        RemoteResultKindV2::Documents => Some(ModelOutcome::Documents {
             documents: Vec::new(),
         }),
         RemoteResultKindV2::Count
@@ -859,13 +860,13 @@ fn minimum_signed_success_response_len_v2(
     max_items: u64,
 ) -> Result<u64, Diagnostic> {
     let outcome = match result {
-        RemoteResultKindV2::Rows => RemoteOutcomeV2::Rows { rows: Vec::new() },
-        RemoteResultKindV2::Documents => RemoteOutcomeV2::Documents {
+        RemoteResultKindV2::Rows => ModelOutcome::Rows { rows: Vec::new() },
+        RemoteResultKindV2::Documents => ModelOutcome::Documents {
             documents: Vec::new(),
         },
-        RemoteResultKindV2::Count => RemoteOutcomeV2::Count { value: 0 },
-        RemoteResultKindV2::Exists if max_items == 0 => RemoteOutcomeV2::Exists { value: false },
-        RemoteResultKindV2::Exists => RemoteOutcomeV2::Exists { value: true },
+        RemoteResultKindV2::Count => ModelOutcome::Count { value: 0 },
+        RemoteResultKindV2::Exists if max_items == 0 => ModelOutcome::Exists { value: false },
+        RemoteResultKindV2::Exists => ModelOutcome::Exists { value: true },
         RemoteResultKindV2::HydratedRows
         | RemoteResultKindV2::HydratedPage
         | RemoteResultKindV2::DistinctCount
@@ -977,22 +978,22 @@ fn unix_time_ms() -> Result<u64, Diagnostic> {
 /// The wire form of a local low-level outcome: what a reply carries for the
 /// same result, so a direct and a remote execution can be compared exactly.
 #[must_use]
-pub fn remote_outcome_v2(outcome: &QueryV2Outcome) -> RemoteOutcomeV2 {
+pub fn remote_outcome_v2(outcome: &QueryV2Outcome) -> ModelOutcome {
     match outcome {
-        QueryV2Outcome::Rows(rows) => RemoteOutcomeV2::Rows {
+        QueryV2Outcome::Rows(rows) => ModelOutcome::Rows {
             rows: rows
                 .iter()
                 .map(|row| row.values().iter().map(remote_value).collect())
                 .collect(),
         },
-        QueryV2Outcome::Documents(documents) => RemoteOutcomeV2::Documents {
+        QueryV2Outcome::Documents(documents) => ModelOutcome::Documents {
             documents: documents
                 .iter()
                 .map(|document| document.values().iter().map(remote_field_value).collect())
                 .collect(),
         },
-        QueryV2Outcome::Count(value) => RemoteOutcomeV2::Count { value: *value },
-        QueryV2Outcome::Exists(value) => RemoteOutcomeV2::Exists { value: *value },
+        QueryV2Outcome::Count(value) => ModelOutcome::Count { value: *value },
+        QueryV2Outcome::Exists(value) => ModelOutcome::Exists { value: *value },
     }
 }
 

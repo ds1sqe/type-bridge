@@ -11,6 +11,7 @@ use type_bridge_contract::limits::{MAX_CANONICAL_DEPTH, MAX_REMOTE_ENVELOPE_BYTE
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
+use type_bridge_contract::query_model_evidence::ModelOutcome;
 use type_bridge_contract::query_model_limits::{ModelReplyDecodeLimits, RemoteModelLimits};
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryInvocation, QueryOperand, QueryOperation,
@@ -24,8 +25,8 @@ use type_bridge_contract::query_remote::{
 };
 use type_bridge_contract::query_remote_v2::{
     CAP_QUERY_PLAN_V2, CAP_QUERY_REMOTE_ENVELOPE_V2, CAP_QUERY_REMOTE_STRUCTURED_DIAGNOSTIC,
-    RemoteOutcomeV2, RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteQueryResponseV2,
-    RemoteReplyV2, RemoteRequestFingerprintV2, RemoteResultKindV2, decode_remote_reply_v2,
+    RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteReplyV2,
+    RemoteRequestFingerprintV2, RemoteResultKindV2, decode_remote_reply_v2,
     decode_signed_remote_failure_v2,
 };
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
@@ -132,7 +133,7 @@ fn signed_count_response(
         plan,
         &request_fingerprint(request),
         RemoteResultKindV2::Count,
-        RemoteOutcomeV2::Count { value: 1 },
+        ModelOutcome::Count { value: 1 },
     )
     .expect("response")
     .encode_signed(
@@ -519,7 +520,7 @@ fn signed_responses_reject_nested_scalar_normalization() {
         &plan,
         &request_fingerprint(&request),
         RemoteResultKindV2::Rows,
-        RemoteOutcomeV2::Rows {
+        ModelOutcome::Rows {
             rows: vec![vec![
                 RemoteValue::Thing {
                     iid: "0x1".to_owned(),
@@ -719,7 +720,7 @@ fn caller_success_byte_budget_does_not_hide_authenticated_failures() {
         &plan,
         &foreign_request,
         RemoteResultKindV2::Count,
-        RemoteOutcomeV2::Count { value: 1 },
+        ModelOutcome::Count { value: 1 },
     )
     .expect("wrong-request response")
     .encode_signed(

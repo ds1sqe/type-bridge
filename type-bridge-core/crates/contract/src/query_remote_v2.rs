@@ -5,6 +5,13 @@
 //! exact format discriminators. The authenticated outer reply and executor
 //! advertisement remain the existing open V1 containers.
 
+use crate::query_model_evidence::{
+    HydratedRow, HydrationGraph, HydrationNode, HydrationNodeId, HydrationReference, HydrationSlot,
+    remote_evidence_mismatch,
+};
+use crate::query_model_evidence::{
+    ModelOutcome, ModelReducedValue, ModelReductionGroup, ModelReductionRow,
+};
 use crate::query_model_limits::{
     DEFAULT_MODEL_MAX_STATEMENTS, ModelReplyDecodeLimits, RemoteModelLimits,
 };
@@ -21,10 +28,10 @@ use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode, Diagnost
 use crate::fingerprint::{
     CanonicalizationVersion, Fingerprint, FingerprintDigest, FingerprintDomain,
 };
-use crate::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
+use crate::id::{AttributeId, TypeId, TypeKind, is_canonical_thing_iid};
 use crate::limits::{
-    CodecLimits, MAX_DIAGNOSTIC_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
-    MAX_SELECTED_SLOTS, QueryLimits, REMOTE_ENVELOPE_CODEC_LIMITS,
+    CodecLimits, MAX_DIAGNOSTIC_BYTES, MAX_REMOTE_ENVELOPE_BYTES, MAX_SELECTED_SLOTS, QueryLimits,
+    REMOTE_ENVELOPE_CODEC_LIMITS,
 };
 use crate::migration_assertion::BindingId;
 use crate::query_plan::{
@@ -472,515 +479,13 @@ impl RemoteRequestFingerprintV2 {
     }
 }
 
-/// Dense zero-based node identity in one hydration graph.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
-pub struct HydrationNodeIdV2(u32);
-
-impl HydrationNodeIdV2 {
-    /// Construct one node identity.
-    #[must_use]
-    pub const fn new(value: u32) -> Self {
-        Self(value)
-    }
-
-    /// Return the dense ordinal.
-    #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-}
-
-/// One reference to a canonical graph node under a declared model type.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydrationReferenceV2 {
-    declared: TypeId,
-    node: HydrationNodeIdV2,
-}
-
-impl HydrationReferenceV2 {
-    /// Construct one declared occurrence of a graph node.
-    #[must_use]
-    pub const fn new(declared: TypeId, node: HydrationNodeIdV2) -> Self {
-        Self { declared, node }
-    }
-
-    /// Return the declared type under which the occurrence was selected.
-    #[must_use]
-    pub const fn declared(&self) -> &TypeId {
-        &self.declared
-    }
-
-    /// Return the referenced dense node.
-    #[must_use]
-    pub const fn node(&self) -> HydrationNodeIdV2 {
-        self.node
-    }
-}
-
-/// Complete values for one provider attribute in a hydrated concrete model.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydrationAttributeEvidenceV2 {
-    attribute: AttributeId,
-    values: Vec<CompatibilityValueV2>,
-}
-
-impl HydrationAttributeEvidenceV2 {
-    /// Construct one descriptor-qualified attribute evidence entry.
-    #[must_use]
-    pub const fn new(attribute: AttributeId, values: Vec<CompatibilityValueV2>) -> Self {
-        Self { attribute, values }
-    }
-
-    /// Return the provider attribute descriptor.
-    #[must_use]
-    pub const fn attribute(&self) -> &AttributeId {
-        &self.attribute
-    }
-
-    /// Return canonical or released-only compatibility values in field order.
-    #[must_use]
-    pub fn values(&self) -> &[CompatibilityValueV2] {
-        &self.values
-    }
-}
-
-/// Complete players for one descriptor-qualified hydrated relation role.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydrationRoleEvidenceV2 {
-    players: Vec<HydrationReferenceV2>,
-    role: RoleId,
-}
-
-impl HydrationRoleEvidenceV2 {
-    /// Construct one ordered role-player evidence entry.
-    #[must_use]
-    pub const fn new(role: RoleId, players: Vec<HydrationReferenceV2>) -> Self {
-        Self { players, role }
-    }
-
-    /// Return the exact descriptor-qualified role.
-    #[must_use]
-    pub const fn role(&self) -> &RoleId {
-        &self.role
-    }
-
-    /// Return player occurrences in provider/materializer order.
-    #[must_use]
-    pub fn players(&self) -> &[HydrationReferenceV2] {
-        &self.players
-    }
-}
-
-/// Materializable concept kind of one hydration node.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HydrationNodeKindV2 {
-    /// Entity model.
-    Entity,
-    /// Relation model.
-    Relation,
-}
-
-/// One canonical provider identity and its complete concrete model evidence.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydrationNodeV2 {
-    attributes: Vec<HydrationAttributeEvidenceV2>,
-    concrete: TypeId,
-    id: HydrationNodeIdV2,
-    iid: String,
-    kind: HydrationNodeKindV2,
-    roles: Vec<HydrationRoleEvidenceV2>,
-}
-
-impl HydrationNodeV2 {
-    /// Construct one node. Whole-graph ordering, uniqueness, and references
-    /// are checked by [`HydrationGraphV2::new`].
-    #[must_use]
-    pub const fn new(
-        id: HydrationNodeIdV2,
-        iid: String,
-        concrete: TypeId,
-        kind: HydrationNodeKindV2,
-        attributes: Vec<HydrationAttributeEvidenceV2>,
-        roles: Vec<HydrationRoleEvidenceV2>,
-    ) -> Self {
-        Self {
-            attributes,
-            concrete,
-            id,
-            iid,
-            kind,
-            roles,
-        }
-    }
-
-    /// Return this node's dense identity.
-    #[must_use]
-    pub const fn id(&self) -> HydrationNodeIdV2 {
-        self.id
-    }
-
-    /// Return the exact provider IID.
-    #[must_use]
-    pub fn iid(&self) -> &str {
-        &self.iid
-    }
-
-    /// Return the exact concrete descriptor.
-    #[must_use]
-    pub const fn concrete(&self) -> &TypeId {
-        &self.concrete
-    }
-
-    /// Return entity or relation materialization kind.
-    #[must_use]
-    pub const fn kind(&self) -> HydrationNodeKindV2 {
-        self.kind
-    }
-
-    /// Return complete ordered attribute evidence.
-    #[must_use]
-    pub fn attributes(&self) -> &[HydrationAttributeEvidenceV2] {
-        &self.attributes
-    }
-
-    /// Return complete ordered relation-role evidence.
-    #[must_use]
-    pub fn roles(&self) -> &[HydrationRoleEvidenceV2] {
-        &self.roles
-    }
-}
-
-/// One dense, provider-identity-deduplicated hydration graph.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydrationGraphV2 {
-    nodes: Vec<HydrationNodeV2>,
-}
-
-impl HydrationGraphV2 {
-    /// Validate and construct one complete hydration graph.
-    pub fn new(nodes: Vec<HydrationNodeV2>) -> Result<Self, Diagnostic> {
-        let graph = Self { nodes };
-        graph.validate()?;
-        Ok(graph)
-    }
-
-    /// Return dense nodes in canonical identity order.
-    #[must_use]
-    pub fn nodes(&self) -> &[HydrationNodeV2] {
-        &self.nodes
-    }
-
-    // Structure only. How many nodes a graph may hold is the caller's
-    // budget, checked where a budget is known
-    // (`validate_hydration_graph_budget`), not a property of the container.
-    fn validate(&self) -> Result<(), Diagnostic> {
-        let mut iids = BTreeSet::new();
-        let mut previous_iid = None;
-        for (index, node) in self.nodes.iter().enumerate() {
-            if usize::try_from(node.id.get()).ok() != Some(index) {
-                return Err(remote_evidence_mismatch_v2(
-                    "hydration graph node IDs must be dense zero-based ordinals",
-                ));
-            }
-            if !is_canonical_thing_iid(&node.iid) || !iids.insert(node.iid.as_str()) {
-                return Err(remote_evidence_mismatch_v2(
-                    "hydration graph provider IIDs must be canonical and unique",
-                ));
-            }
-            if previous_iid.is_some_and(|previous| previous >= node.iid.as_str()) {
-                return Err(remote_evidence_mismatch_v2(
-                    "hydration graph nodes must be strictly ordered by provider IID",
-                ));
-            }
-            previous_iid = Some(node.iid.as_str());
-            let expected_kind = match node.kind {
-                HydrationNodeKindV2::Entity => TypeKind::Entity,
-                HydrationNodeKindV2::Relation => TypeKind::Relation,
-            };
-            if node.concrete.kind() != expected_kind {
-                return Err(remote_evidence_mismatch_v2(
-                    "hydration node kind contradicts its concrete descriptor",
-                ));
-            }
-            if node.kind == HydrationNodeKindV2::Entity && !node.roles.is_empty() {
-                return Err(remote_evidence_mismatch_v2(
-                    "hydrated entities must not carry relation roles",
-                ));
-            }
-            if node.attributes.windows(2).any(|pair| {
-                pair[0].attribute().label().as_str() >= pair[1].attribute().label().as_str()
-            }) {
-                return Err(remote_evidence_mismatch_v2(
-                    "hydration attributes must be strictly descriptor-ordered",
-                ));
-            }
-            if node
-                .roles
-                .windows(2)
-                .any(|pair| pair[0].role >= pair[1].role)
-            {
-                return Err(remote_evidence_mismatch_v2(
-                    "hydration roles must be strictly descriptor-ordered",
-                ));
-            }
-        }
-        for node in &self.nodes {
-            for role in &node.roles {
-                for player in &role.players {
-                    let player_index = usize::try_from(player.node.get()).map_err(|_| {
-                        remote_evidence_mismatch_v2(
-                            "hydration role player references an unknown graph node",
-                        )
-                    })?;
-                    let Some(player_node) = self.nodes.get(player_index) else {
-                        return Err(remote_evidence_mismatch_v2(
-                            "hydration role player references an unknown graph node",
-                        ));
-                    };
-                    if player.declared.kind() != player_node.concrete.kind() {
-                        return Err(remote_evidence_mismatch_v2(
-                            "hydration role-player declared and concrete kinds disagree",
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-/// One hydrated model-result slot.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum HydrationSlotV2 {
-    /// One singular model occurrence.
-    Singular {
-        /// Exact graph reference.
-        value: HydrationReferenceV2,
-    },
-    /// One ordered model collection preserving multiplicity.
-    Collection {
-        /// Ordered graph references.
-        values: Vec<HydrationReferenceV2>,
-    },
-}
-
-impl HydrationSlotV2 {
-    fn references(&self) -> &[HydrationReferenceV2] {
-        match self {
-            Self::Singular { value } => std::slice::from_ref(value),
-            Self::Collection { values } => values,
-        }
-    }
-}
-
-/// One ordered hydrated output row.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydratedRowV2 {
-    slots: Vec<HydrationSlotV2>,
-}
-
-impl HydratedRowV2 {
-    /// Construct one ordered row.
-    #[must_use]
-    pub const fn new(slots: Vec<HydrationSlotV2>) -> Self {
-        Self { slots }
-    }
-
-    /// Return output slots in public order.
-    #[must_use]
-    pub fn slots(&self) -> &[HydrationSlotV2] {
-        &self.slots
-    }
-}
-
-/// One typed group key in a model-compatible reduction row.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RemoteReductionGroupV2 {
-    /// One attached thing identity and its complete graph projection.
-    Thing {
-        /// Declared-to-concrete graph reference.
-        value: HydrationReferenceV2,
-    },
-    /// One scalar field value.
-    Field {
-        /// Exact compatibility scalar.
-        value: CompatibilityValueV2,
-    },
-    /// One ordered Cartesian field-value tuple.
-    Fields {
-        /// Exact compatibility scalars in request field order.
-        values: Vec<CompatibilityValueV2>,
-    },
-}
-
-impl RemoteReductionGroupV2 {
-    /// Construct a thing group key.
-    #[must_use]
-    pub const fn thing(value: HydrationReferenceV2) -> Self {
-        Self::Thing { value }
-    }
-
-    /// Construct a field group key.
-    #[must_use]
-    pub const fn field(value: CompatibilityValueV2) -> Self {
-        Self::Field { value }
-    }
-
-    /// Construct a tuple-field group key.
-    #[must_use]
-    pub const fn fields(values: Vec<CompatibilityValueV2>) -> Self {
-        Self::Fields { values }
-    }
-}
-
-/// One exact typed reducer cell.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RemoteReducedValueV2 {
-    /// Lossless distinct-root count.
-    Count {
-        /// Exact unsigned count.
-        value: u64,
-    },
-    /// Optional long-domain reducer result.
-    Long {
-        /// `None` for reducers undefined on the observed stream.
-        value: Option<i64>,
-    },
-    /// Optional finite double-domain reducer result with exact IEEE bits.
-    DoubleBits {
-        /// `None` for reducers undefined on the observed stream.
-        value: Option<u64>,
-    },
-}
-
-/// One ordered typed reduction row.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RemoteReductionRowV2 {
-    group: Option<RemoteReductionGroupV2>,
-    values: Vec<RemoteReducedValueV2>,
-}
-
-impl RemoteReductionRowV2 {
-    /// Construct one reduction row.
-    #[must_use]
-    pub const fn new(
-        group: Option<RemoteReductionGroupV2>,
-        values: Vec<RemoteReducedValueV2>,
-    ) -> Self {
-        Self { group, values }
-    }
-
-    /// Return the optional typed group key.
-    #[must_use]
-    pub const fn group(&self) -> Option<&RemoteReductionGroupV2> {
-        self.group.as_ref()
-    }
-
-    /// Return reducer cells in exact request order.
-    #[must_use]
-    pub fn values(&self) -> &[RemoteReducedValueV2] {
-        &self.values
-    }
-}
-
-/// The typed terminal outcome of one V2 remote invocation.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RemoteOutcomeV2 {
-    /// Evidence-validated low-level positional rows.
-    Rows {
-        /// Positional row values.
-        rows: Vec<Vec<RemoteValue>>,
-    },
-    /// Evidence-validated low-level fetched documents.
-    Documents {
-        /// Positional document fields.
-        documents: Vec<Vec<RemoteFieldValue>>,
-    },
-    /// Low-level answer count.
-    Count {
-        /// Exact unsigned count.
-        value: u64,
-    },
-    /// Low-level existence verdict.
-    Exists {
-        /// Exact existence verdict.
-        value: bool,
-    },
-    /// Model-oriented rows sharing one validated hydration graph.
-    HydratedRows {
-        /// Dense graph used by every row.
-        graph: HydrationGraphV2,
-        /// Ordered result rows.
-        rows: Vec<HydratedRowV2>,
-    },
-    /// One distinct-root model page and optional same-snapshot total.
-    HydratedPage {
-        /// Ordered page entries.
-        entries: Vec<HydratedRowV2>,
-        /// Dense graph used by every entry.
-        graph: HydrationGraphV2,
-        /// Exact requested page limit.
-        limit: u64,
-        /// Exact requested page offset.
-        offset: u64,
-        /// Exact distinct root binding.
-        #[serde(deserialize_with = "deserialize_binding_id_v2")]
-        root: BindingId,
-        /// Optional same-snapshot total.
-        total: Option<u64>,
-    },
-    /// Lossless distinct-root count.
-    DistinctCount {
-        /// Exact counted root binding.
-        #[serde(deserialize_with = "deserialize_binding_id_v2")]
-        root: BindingId,
-        /// Exact unsigned count.
-        value: u64,
-    },
-    /// Distinct-root existence verdict.
-    DistinctExists {
-        /// Exact tested root binding.
-        #[serde(deserialize_with = "deserialize_binding_id_v2")]
-        root: BindingId,
-        /// Exact existence verdict.
-        value: bool,
-    },
-    /// Model-oriented typed reduction rows and optional group hydration.
-    ModelReduction {
-        /// Dense graph rooted only by thing-group keys.
-        graph: HydrationGraphV2,
-        /// Exact reduced root binding echoed from the model terminal.
-        #[serde(deserialize_with = "deserialize_binding_id_v2")]
-        root: BindingId,
-        /// Exact grouping contract echoed from the model terminal.
-        group: Option<QueryReductionGroupV2>,
-        /// Exact reducer contract echoed from the model terminal.
-        reducers: Vec<QueryReductionTermV2>,
-        /// Deterministically ordered typed reduction rows.
-        rows: Vec<RemoteReductionRowV2>,
-    },
-}
-
 /// One successful V2 remote execution bound to its request and plan.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteQueryResponseV2 {
     format: String,
     nonce: String,
-    outcome: RemoteOutcomeV2,
+    outcome: ModelOutcome,
     plan: String,
     request: String,
     // The codec limits this reply is encoded and decoded under; never wire
@@ -1012,7 +517,7 @@ impl RemoteQueryResponseV2 {
         plan: &QueryPlan,
         request: &RemoteRequestFingerprintV2,
         expected_result: RemoteResultKindV2,
-        outcome: RemoteOutcomeV2,
+        outcome: ModelOutcome,
     ) -> Result<Self, Diagnostic> {
         let mut response = Self::new_with_limits(
             nonce,
@@ -1034,7 +539,7 @@ impl RemoteQueryResponseV2 {
         plan: &QueryPlan,
         request: &RemoteRequestFingerprintV2,
         expected_result: RemoteResultKindV2,
-        outcome: RemoteOutcomeV2,
+        outcome: ModelOutcome,
         limits: ModelReplyDecodeLimits,
     ) -> Result<Self, Diagnostic> {
         let nonce = nonce.into();
@@ -1102,33 +607,31 @@ impl RemoteQueryResponseV2 {
         validate_v2_plan_and_result(plan, expected_result)?;
         let root = BindingId::new(0)?;
         let outcome = match expected_result {
-            RemoteResultKindV2::Rows => RemoteOutcomeV2::Rows { rows: Vec::new() },
-            RemoteResultKindV2::Documents => RemoteOutcomeV2::Documents {
+            RemoteResultKindV2::Rows => ModelOutcome::Rows { rows: Vec::new() },
+            RemoteResultKindV2::Documents => ModelOutcome::Documents {
                 documents: Vec::new(),
             },
-            RemoteResultKindV2::Count => RemoteOutcomeV2::Count { value: 0 },
-            RemoteResultKindV2::Exists if max_items == 0 => {
-                RemoteOutcomeV2::Exists { value: false }
-            }
-            RemoteResultKindV2::Exists => RemoteOutcomeV2::Exists { value: true },
-            RemoteResultKindV2::HydratedRows => RemoteOutcomeV2::HydratedRows {
-                graph: HydrationGraphV2 { nodes: Vec::new() },
+            RemoteResultKindV2::Count => ModelOutcome::Count { value: 0 },
+            RemoteResultKindV2::Exists if max_items == 0 => ModelOutcome::Exists { value: false },
+            RemoteResultKindV2::Exists => ModelOutcome::Exists { value: true },
+            RemoteResultKindV2::HydratedRows => ModelOutcome::HydratedRows {
+                graph: HydrationGraph { nodes: Vec::new() },
                 rows: Vec::new(),
             },
-            RemoteResultKindV2::HydratedPage => RemoteOutcomeV2::HydratedPage {
+            RemoteResultKindV2::HydratedPage => ModelOutcome::HydratedPage {
                 entries: Vec::new(),
-                graph: HydrationGraphV2 { nodes: Vec::new() },
+                graph: HydrationGraph { nodes: Vec::new() },
                 limit: 0,
                 offset: 0,
                 root,
                 total: Some(0),
             },
-            RemoteResultKindV2::DistinctCount => RemoteOutcomeV2::DistinctCount { root, value: 0 },
+            RemoteResultKindV2::DistinctCount => ModelOutcome::DistinctCount { root, value: 0 },
             RemoteResultKindV2::DistinctExists if max_items == 0 => {
-                RemoteOutcomeV2::DistinctExists { root, value: false }
+                ModelOutcome::DistinctExists { root, value: false }
             }
             RemoteResultKindV2::DistinctExists => {
-                RemoteOutcomeV2::DistinctExists { root, value: true }
+                ModelOutcome::DistinctExists { root, value: true }
             }
             RemoteResultKindV2::ModelReduction => {
                 let (root, group, reducers) = plan
@@ -1144,12 +647,12 @@ impl RemoteQueryResponseV2 {
                         _ => None,
                     })
                     .ok_or_else(|| {
-                        remote_evidence_mismatch_v2(
+                        remote_evidence_mismatch(
                             "model reduction framing lacks its exact terminal contract",
                         )
                     })?;
-                RemoteOutcomeV2::ModelReduction {
-                    graph: HydrationGraphV2 { nodes: Vec::new() },
+                ModelOutcome::ModelReduction {
+                    graph: HydrationGraph { nodes: Vec::new() },
                     root,
                     group,
                     reducers,
@@ -1215,13 +718,13 @@ impl RemoteQueryResponseV2 {
 
     /// Return the typed outcome.
     #[must_use]
-    pub const fn outcome(&self) -> &RemoteOutcomeV2 {
+    pub const fn outcome(&self) -> &ModelOutcome {
         &self.outcome
     }
 
     /// Consume the response and return its typed outcome.
     #[must_use]
-    pub fn into_outcome(self) -> RemoteOutcomeV2 {
+    pub fn into_outcome(self) -> ModelOutcome {
         self.outcome
     }
 }
@@ -1633,18 +1136,6 @@ fn require_format(
     Ok(())
 }
 
-#[derive(Deserialize)]
-#[serde(transparent)]
-struct BindingIdV2Wire(u16);
-
-fn deserialize_binding_id_v2<'de, D>(deserializer: D) -> Result<BindingId, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let wire = BindingIdV2Wire::deserialize(deserializer)?;
-    BindingId::new(wire.0).map_err(serde::de::Error::custom)
-}
-
 fn validate_v2_plan_and_result(
     plan: &QueryPlan,
     result: RemoteResultKindV2,
@@ -1873,19 +1364,19 @@ fn verify_failure_binding_v2(
 }
 
 fn validate_outcome_kind_v2(
-    outcome: &RemoteOutcomeV2,
+    outcome: &ModelOutcome,
     expected: RemoteResultKindV2,
 ) -> Result<(), Diagnostic> {
     let actual = match outcome {
-        RemoteOutcomeV2::Rows { .. } => RemoteResultKindV2::Rows,
-        RemoteOutcomeV2::Documents { .. } => RemoteResultKindV2::Documents,
-        RemoteOutcomeV2::Count { .. } => RemoteResultKindV2::Count,
-        RemoteOutcomeV2::Exists { .. } => RemoteResultKindV2::Exists,
-        RemoteOutcomeV2::HydratedRows { .. } => RemoteResultKindV2::HydratedRows,
-        RemoteOutcomeV2::HydratedPage { .. } => RemoteResultKindV2::HydratedPage,
-        RemoteOutcomeV2::DistinctCount { .. } => RemoteResultKindV2::DistinctCount,
-        RemoteOutcomeV2::DistinctExists { .. } => RemoteResultKindV2::DistinctExists,
-        RemoteOutcomeV2::ModelReduction { .. } => RemoteResultKindV2::ModelReduction,
+        ModelOutcome::Rows { .. } => RemoteResultKindV2::Rows,
+        ModelOutcome::Documents { .. } => RemoteResultKindV2::Documents,
+        ModelOutcome::Count { .. } => RemoteResultKindV2::Count,
+        ModelOutcome::Exists { .. } => RemoteResultKindV2::Exists,
+        ModelOutcome::HydratedRows { .. } => RemoteResultKindV2::HydratedRows,
+        ModelOutcome::HydratedPage { .. } => RemoteResultKindV2::HydratedPage,
+        ModelOutcome::DistinctCount { .. } => RemoteResultKindV2::DistinctCount,
+        ModelOutcome::DistinctExists { .. } => RemoteResultKindV2::DistinctExists,
+        ModelOutcome::ModelReduction { .. } => RemoteResultKindV2::ModelReduction,
     };
     if actual == expected {
         Ok(())
@@ -1908,7 +1399,7 @@ fn validate_outcome_kind_v2(
 /// remains a property of the final signed response and is checked by
 /// [`RemoteQueryResponseV2::encode_signed`] consumers.
 pub fn validate_remote_outcome_v2(
-    outcome: &RemoteOutcomeV2,
+    outcome: &ModelOutcome,
     expected: RemoteResultKindV2,
     limits: ModelReplyDecodeLimits,
     plan: &QueryPlan,
@@ -1917,19 +1408,19 @@ pub fn validate_remote_outcome_v2(
 }
 
 fn validate_outcome_evidence_v2(
-    outcome: &RemoteOutcomeV2,
+    outcome: &ModelOutcome,
     expected: RemoteResultKindV2,
     limits: ModelReplyDecodeLimits,
     plan: Option<&QueryPlan>,
 ) -> Result<(), Diagnostic> {
     validate_outcome_kind_v2(outcome, expected)?;
     match outcome {
-        RemoteOutcomeV2::Rows { rows } => {
+        ModelOutcome::Rows { rows } => {
             check_item_budget(rows.len(), limits.max_items)?;
             let expected_width = plan.and_then(low_level_output_width);
             validate_low_level_rows(rows, expected_width)?;
         }
-        RemoteOutcomeV2::Documents { documents } => {
+        ModelOutcome::Documents { documents } => {
             check_item_budget(documents.len(), limits.max_items)?;
             let expected_width = plan.and_then(low_level_output_width);
             let mut members = 0_u64;
@@ -1939,7 +1430,7 @@ fn validate_outcome_evidence_v2(
                     || document.is_empty()
                     || document.len() > MAX_SELECTED_SLOTS
                 {
-                    return Err(remote_evidence_mismatch_v2(
+                    return Err(remote_evidence_mismatch(
                         "V2 document width contradicts the validated output",
                     ));
                 }
@@ -1948,7 +1439,7 @@ fn validate_outcome_evidence_v2(
                         field,
                         RemoteFieldValue::Document { .. } | RemoteFieldValue::Documents { .. }
                     ) {
-                        return Err(remote_evidence_mismatch_v2(
+                        return Err(remote_evidence_mismatch(
                             "V2 documents cannot contain nested fields",
                         ));
                     }
@@ -1963,22 +1454,22 @@ fn validate_outcome_evidence_v2(
                 }
             }
         }
-        RemoteOutcomeV2::Count { value } => {
+        ModelOutcome::Count { value } => {
             if *value > limits.max_items {
                 return Err(remote_item_limit_v2());
             }
         }
-        RemoteOutcomeV2::Exists { value } => {
+        ModelOutcome::Exists { value } => {
             if *value && limits.max_items == 0 {
                 return Err(remote_item_limit_v2());
             }
         }
-        RemoteOutcomeV2::HydratedRows { graph, rows } => {
+        ModelOutcome::HydratedRows { graph, rows } => {
             check_item_budget(rows.len(), limits.max_items)?;
             validate_hydration_graph_budget(graph, limits)?;
             validate_hydrated_rows(graph, rows, limits, plan, expected)?;
         }
-        RemoteOutcomeV2::HydratedPage {
+        ModelOutcome::HydratedPage {
             entries,
             graph,
             limit,
@@ -1988,7 +1479,7 @@ fn validate_outcome_evidence_v2(
         } => {
             check_item_budget(entries.len(), limits.max_items)?;
             if u64::try_from(entries.len()).unwrap_or(u64::MAX) > *limit {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "V2 page contains more entries than its exact limit",
                 ));
             }
@@ -1996,7 +1487,7 @@ fn validate_outcome_evidence_v2(
                 let remaining = total.saturating_sub(*offset);
                 let exact_len = remaining.min(*limit);
                 if u64::try_from(entries.len()).unwrap_or(u64::MAX) != exact_len {
-                    return Err(remote_evidence_mismatch_v2(
+                    return Err(remote_evidence_mismatch(
                         "V2 page entries contradict its same-snapshot total and window",
                     ));
                 }
@@ -2006,19 +1497,19 @@ fn validate_outcome_evidence_v2(
             validate_page_root_distinct(entries, *root, plan)?;
             validate_page_contract(plan, *root, *offset, *limit, total.is_some())?;
         }
-        RemoteOutcomeV2::DistinctCount { root, value } => {
+        ModelOutcome::DistinctCount { root, value } => {
             validate_scalar_root(plan, expected, *root)?;
             if *value > limits.max_items {
                 return Err(remote_item_limit_v2());
             }
         }
-        RemoteOutcomeV2::DistinctExists { root, value } => {
+        ModelOutcome::DistinctExists { root, value } => {
             validate_scalar_root(plan, expected, *root)?;
             if *value && limits.max_items == 0 {
                 return Err(remote_item_limit_v2());
             }
         }
-        RemoteOutcomeV2::ModelReduction {
+        ModelOutcome::ModelReduction {
             graph,
             root,
             group,
@@ -2031,17 +1522,17 @@ fn validate_outcome_evidence_v2(
 
 #[allow(clippy::too_many_arguments)]
 fn validate_model_reduction(
-    graph: &HydrationGraphV2,
+    graph: &HydrationGraph,
     root: BindingId,
     group: &Option<QueryReductionGroupV2>,
     reducers: &[QueryReductionTermV2],
-    rows: &[RemoteReductionRowV2],
+    rows: &[ModelReductionRow],
     limits: ModelReplyDecodeLimits,
     plan: Option<&QueryPlan>,
     expected: RemoteResultKindV2,
 ) -> Result<(), Diagnostic> {
     if expected != RemoteResultKindV2::ModelReduction {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "typed reduction outcome has the wrong terminal family",
         ));
     }
@@ -2054,18 +1545,18 @@ fn validate_model_reduction(
         .and_then(QueryPlan::v2_compatibility)
         .and_then(|compatibility| compatibility.model_query())
     else {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "typed reduction outcome has no request-bound terminal contract",
         ));
     };
     if root != *expected_root || group != expected_group || reducers != expected_reducers {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "typed reduction outcome does not echo its exact root, group, and reducer contract",
         ));
     }
     check_item_budget(rows.len(), limits.max_items)?;
     if group.is_none() && rows.len() != 1 {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "ungrouped reduction must carry exactly one total row",
         ));
     }
@@ -2075,24 +1566,24 @@ fn validate_model_reduction(
             (None, None) => 0,
             (
                 Some(QueryReductionGroupV2::Binding { .. }),
-                Some(RemoteReductionGroupV2::Thing { .. }),
+                Some(ModelReductionGroup::Thing { .. }),
             )
             | (
                 Some(QueryReductionGroupV2::Field { .. }),
-                Some(RemoteReductionGroupV2::Field { .. }),
+                Some(ModelReductionGroup::Field { .. }),
             ) => 1,
             (
                 Some(QueryReductionGroupV2::Fields { fields }),
-                Some(RemoteReductionGroupV2::Fields { values }),
+                Some(ModelReductionGroup::Fields { values }),
             ) if fields.len() == values.len() => u64::try_from(values.len()).unwrap_or(u64::MAX),
             _ => {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "typed reduction row group shape contradicts its exact contract",
                 ));
             }
         };
         if row.values().len() != reducers.len() {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "typed reduction row width contradicts its exact reducer contract",
             ));
         }
@@ -2117,21 +1608,20 @@ fn validate_model_reduction(
 
 fn validate_reduction_group_value(
     contract: Option<&QueryReductionGroupV2>,
-    value: Option<&RemoteReductionGroupV2>,
+    value: Option<&ModelReductionGroup>,
 ) -> Result<(), Diagnostic> {
     match (contract, value) {
         (None, None)
-        | (
-            Some(QueryReductionGroupV2::Binding { .. }),
-            Some(RemoteReductionGroupV2::Thing { .. }),
-        ) => Ok(()),
+        | (Some(QueryReductionGroupV2::Binding { .. }), Some(ModelReductionGroup::Thing { .. })) => {
+            Ok(())
+        }
         (
             Some(QueryReductionGroupV2::Field { field }),
-            Some(RemoteReductionGroupV2::Field { value }),
+            Some(ModelReductionGroup::Field { value }),
         ) if value.value_type() == field.value_type() => validate_reduction_group_scalar(value),
         (
             Some(QueryReductionGroupV2::Fields { fields }),
-            Some(RemoteReductionGroupV2::Fields { values }),
+            Some(ModelReductionGroup::Fields { values }),
         ) if fields.len() == values.len()
             && fields
                 .iter()
@@ -2143,7 +1633,7 @@ fn validate_reduction_group_value(
             }
             Ok(())
         }
-        _ => Err(remote_evidence_mismatch_v2(
+        _ => Err(remote_evidence_mismatch(
             "typed reduction group value contradicts its exact scalar domain",
         )),
     }
@@ -2155,7 +1645,7 @@ fn validate_reduction_group_scalar(value: &CompatibilityValueV2) -> Result<(), D
         Some(crate::value::CanonicalValue::Double(value))
             if value.bits() == (-0.0_f64).to_bits()
     ) {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "typed double zero reduction groups must use the canonical positive-zero representative",
         ));
     }
@@ -2164,26 +1654,22 @@ fn validate_reduction_group_scalar(value: &CompatibilityValueV2) -> Result<(), D
 
 fn validate_reduced_value(
     term: &QueryReductionTermV2,
-    value: &RemoteReducedValueV2,
+    value: &ModelReducedValue,
     max_items: u64,
 ) -> Result<(), Diagnostic> {
     let valid = match (term.reduction(), term.input(), value) {
-        (
-            crate::query_plan::QueryReductionKindV2::Count,
-            _,
-            RemoteReducedValueV2::Count { value },
-        ) => {
+        (crate::query_plan::QueryReductionKindV2::Count, _, ModelReducedValue::Count { value }) => {
             if *value > max_items {
                 return Err(remote_item_limit_v2());
             }
             true
         }
-        (reduction, Some(field), RemoteReducedValueV2::Long { .. }) => {
+        (reduction, Some(field), ModelReducedValue::Long { .. }) => {
             field.value_type() == crate::value::ValueTypeTag::Long && !reduction.widens_to_double()
         }
-        (reduction, Some(field), RemoteReducedValueV2::DoubleBits { value }) => {
+        (reduction, Some(field), ModelReducedValue::DoubleBits { value }) => {
             if value.is_some_and(|bits| !f64::from_bits(bits).is_finite()) {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "typed double reducer bits must encode a finite IEEE value",
                 ));
             }
@@ -2194,32 +1680,32 @@ fn validate_reduced_value(
     if valid {
         Ok(())
     } else {
-        Err(remote_evidence_mismatch_v2(
+        Err(remote_evidence_mismatch(
             "typed reducer value contradicts its exact operation and scalar domain",
         ))
     }
 }
 
-fn validate_reduction_group_order(rows: &[RemoteReductionRowV2]) -> Result<(), Diagnostic> {
+fn validate_reduction_group_order(rows: &[ModelReductionRow]) -> Result<(), Diagnostic> {
     for pair in rows.windows(2) {
         let ordered = match (pair[0].group(), pair[1].group()) {
             (None, None) => false,
             (
-                Some(RemoteReductionGroupV2::Thing { value: left }),
-                Some(RemoteReductionGroupV2::Thing { value: right }),
+                Some(ModelReductionGroup::Thing { value: left }),
+                Some(ModelReductionGroup::Thing { value: right }),
             ) => left.node() < right.node(),
             (
-                Some(RemoteReductionGroupV2::Field { value: left }),
-                Some(RemoteReductionGroupV2::Field { value: right }),
+                Some(ModelReductionGroup::Field { value: left }),
+                Some(ModelReductionGroup::Field { value: right }),
             ) => left.semantic_cmp_same_domain(right) == Some(Ordering::Less),
             (
-                Some(RemoteReductionGroupV2::Fields { values: left }),
-                Some(RemoteReductionGroupV2::Fields { values: right }),
+                Some(ModelReductionGroup::Fields { values: left }),
+                Some(ModelReductionGroup::Fields { values: right }),
             ) => semantic_tuple_cmp(left, right)? == Ordering::Less,
             _ => false,
         };
         if !ordered {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "typed reduction groups must be semantically sorted and unique",
             ));
         }
@@ -2232,9 +1718,9 @@ fn semantic_tuple_cmp(
     right: &[CompatibilityValueV2],
 ) -> Result<Ordering, Diagnostic> {
     for (left, right) in left.iter().zip(right) {
-        let ordering = left.semantic_cmp_same_domain(right).ok_or_else(|| {
-            remote_evidence_mismatch_v2("tuple reduction groups are not comparable")
-        })?;
+        let ordering = left
+            .semantic_cmp_same_domain(right)
+            .ok_or_else(|| remote_evidence_mismatch("tuple reduction groups are not comparable"))?;
         if ordering != Ordering::Equal {
             return Ok(ordering);
         }
@@ -2259,7 +1745,7 @@ fn validate_low_level_rows(
             || row.is_empty()
             || row.len() > MAX_SELECTED_SLOTS
         {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "V2 row width contradicts the validated output",
             ));
         }
@@ -2269,14 +1755,14 @@ fn validate_low_level_rows(
                     if !is_canonical_thing_iid(iid)
                         || !matches!(type_id.kind(), TypeKind::Entity | TypeKind::Relation)
                     {
-                        return Err(remote_evidence_mismatch_v2(
+                        return Err(remote_evidence_mismatch(
                             "V2 thing evidence has an invalid IID or type kind",
                         ));
                     }
                 }
                 RemoteValue::Attribute { type_id, .. } => {
                     if type_id.kind() != TypeKind::Attribute {
-                        return Err(remote_evidence_mismatch_v2(
+                        return Err(remote_evidence_mismatch(
                             "V2 attribute evidence has a non-attribute type",
                         ));
                     }
@@ -2289,7 +1775,7 @@ fn validate_low_level_rows(
 }
 
 fn validate_hydration_graph_budget(
-    graph: &HydrationGraphV2,
+    graph: &HydrationGraph,
     limits: ModelReplyDecodeLimits,
 ) -> Result<(), Diagnostic> {
     graph.validate()?;
@@ -2320,8 +1806,8 @@ fn validate_hydration_graph_budget(
 }
 
 fn validate_hydrated_rows(
-    graph: &HydrationGraphV2,
-    rows: &[HydratedRowV2],
+    graph: &HydrationGraph,
+    rows: &[HydratedRow],
     limits: ModelReplyDecodeLimits,
     plan: Option<&QueryPlan>,
     result: RemoteResultKindV2,
@@ -2335,17 +1821,17 @@ fn validate_hydrated_rows(
             || row.slots.is_empty()
             || row.slots.len() > MAX_SELECTED_SLOTS
         {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydrated row width contradicts the model output contract",
             ));
         }
         if !seen_rows.insert(row.clone()) {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydrated rows must be distinct selected-identity tuples",
             ));
         }
         for slot in &row.slots {
-            if let HydrationSlotV2::Collection { values } = slot {
+            if let HydrationSlot::Collection { values } = slot {
                 add_budgeted(
                     &mut collection_members,
                     values.len(),
@@ -2364,18 +1850,18 @@ fn validate_hydrated_rows(
 }
 
 fn validate_graph_reference(
-    graph: &HydrationGraphV2,
-    reference: &HydrationReferenceV2,
+    graph: &HydrationGraph,
+    reference: &HydrationReference,
 ) -> Result<(), Diagnostic> {
     let index = usize::try_from(reference.node.get())
-        .map_err(|_| remote_evidence_mismatch_v2("hydration slot references an unknown node"))?;
+        .map_err(|_| remote_evidence_mismatch("hydration slot references an unknown node"))?;
     let Some(node) = graph.nodes.get(index) else {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydration slot references an unknown node",
         ));
     };
     if reference.declared.kind() != node.concrete.kind() {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydration slot declared and concrete kinds disagree",
         ));
     }
@@ -3016,7 +2502,7 @@ fn model_output_width(plan: Option<&QueryPlan>, result: RemoteResultKindV2) -> O
 }
 
 fn validate_model_rows_against_plan(
-    rows: &[HydratedRowV2],
+    rows: &[HydratedRow],
     plan: Option<&QueryPlan>,
     result: RemoteResultKindV2,
 ) -> Result<(), Diagnostic> {
@@ -3027,7 +2513,7 @@ fn validate_model_rows_against_plan(
         .v2_compatibility()
         .and_then(|compatibility| compatibility.model_query())
     else {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydrated result has no model-query contract",
         ));
     };
@@ -3042,12 +2528,12 @@ fn validate_model_rows_against_plan(
             },
         ) => {
             if cardinality.is_exactly_one() && rows.len() != 1 {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "exactly-one terminal must carry exactly one hydrated row",
                 ));
             }
             if u64::try_from(rows.len()).unwrap_or(u64::MAX) > window.limit() {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "hydrated rows exceed the request-bound row window",
                 ));
             }
@@ -3057,15 +2543,15 @@ fn validate_model_rows_against_plan(
             RemoteResultKindV2::HydratedPage,
             crate::query_plan::ModelQueryV2::Page { output, .. },
         ) => validate_slot_shapes(rows, output),
-        _ => Err(remote_evidence_mismatch_v2(
+        _ => Err(remote_evidence_mismatch(
             "hydrated outcome contradicts the model-query terminal",
         )),
     }
 }
 
 fn validate_graph_against_model_plan(
-    graph: &HydrationGraphV2,
-    rows: &[HydratedRowV2],
+    graph: &HydrationGraph,
+    rows: &[HydratedRow],
     plan: Option<&QueryPlan>,
     result: RemoteResultKindV2,
 ) -> Result<(), Diagnostic> {
@@ -3076,7 +2562,7 @@ fn validate_graph_against_model_plan(
         .v2_compatibility()
         .and_then(|compatibility| compatibility.model_query())
     else {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydration graph has no request-bound projection",
         ));
     };
@@ -3094,7 +2580,7 @@ fn validate_graph_against_model_plan(
             },
         ) => (output, hydration),
         _ => {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydration graph contradicts the model-query terminal",
             ));
         }
@@ -3116,23 +2602,23 @@ fn validate_graph_against_model_plan(
     for row in rows {
         for (slot, slot_contract) in row.slots.iter().zip(&slots) {
             let Some(binding) = binding_projections.get(&slot_contract.binding()) else {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "hydrated output binding is absent from the projection",
                 ));
             };
             for reference in slot.references() {
                 let node_index = usize::try_from(reference.node.get()).map_err(|_| {
-                    remote_evidence_mismatch_v2("hydrated output references an unknown node")
+                    remote_evidence_mismatch("hydrated output references an unknown node")
                 })?;
                 let Some(node) = graph.nodes.get(node_index) else {
-                    return Err(remote_evidence_mismatch_v2(
+                    return Err(remote_evidence_mismatch(
                         "hydrated output references an unknown node",
                     ));
                 };
                 if reference.declared != *binding.declared_descriptor()
                     || !binding.concrete_descriptors().contains(&node.concrete)
                 {
-                    return Err(remote_evidence_mismatch_v2(
+                    return Err(remote_evidence_mismatch(
                         "hydrated output violates declared-to-concrete authority",
                     ));
                 }
@@ -3143,7 +2629,7 @@ fn validate_graph_against_model_plan(
     }
     for node in &graph.nodes {
         let Some(projection) = descriptors.get(&node.concrete) else {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydration node concrete descriptor is outside the projection",
             ));
         };
@@ -3152,7 +2638,7 @@ fn validate_graph_against_model_plan(
     let mut unique_values = BTreeMap::<(TypeId, AttributeId), Vec<&CompatibilityValueV2>>::new();
     for node in &graph.nodes {
         let Some(projection) = descriptors.get(&node.concrete) else {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydration node concrete descriptor is outside the projection",
             ));
         };
@@ -3163,7 +2649,7 @@ fn validate_graph_against_model_plan(
             .collect::<BTreeMap<_, _>>();
         for evidence in &node.attributes {
             let Some(field) = fields.get(&evidence.attribute) else {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "hydration attribute is outside the concrete projection",
                 ));
             };
@@ -3180,7 +2666,7 @@ fn validate_graph_against_model_plan(
     }
     for values in unique_values.values() {
         if contains_semantic_duplicate(values.iter().copied())? {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "unique hydration field repeats one value across provider identities",
             ));
         }
@@ -3192,10 +2678,10 @@ fn validate_graph_against_model_plan(
             continue;
         }
         let node_index = usize::try_from(node_id.get()).map_err(|_| {
-            remote_evidence_mismatch_v2("hydration graph traversal reached an unknown node")
+            remote_evidence_mismatch("hydration graph traversal reached an unknown node")
         })?;
         let node = graph.nodes.get(node_index).ok_or_else(|| {
-            remote_evidence_mismatch_v2("hydration graph traversal reached an unknown node")
+            remote_evidence_mismatch("hydration graph traversal reached an unknown node")
         })?;
         if full_nodes.contains(&node_id) {
             for role in &node.roles {
@@ -3206,7 +2692,7 @@ fn validate_graph_against_model_plan(
         }
     }
     if referenced.len() != graph.nodes.len() {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydration graph contains unreferenced provider identities",
         ));
     }
@@ -3214,8 +2700,8 @@ fn validate_graph_against_model_plan(
 }
 
 fn validate_reduction_graph(
-    graph: &HydrationGraphV2,
-    rows: &[RemoteReductionRowV2],
+    graph: &HydrationGraph,
+    rows: &[ModelReductionRow],
     group: Option<&QueryReductionGroupV2>,
     hydration: &crate::query_plan::HydrationProjectionV2,
 ) -> Result<(), Diagnostic> {
@@ -3223,7 +2709,7 @@ fn validate_reduction_graph(
         return if graph.nodes().is_empty() {
             Ok(())
         } else {
-            Err(remote_evidence_mismatch_v2(
+            Err(remote_evidence_mismatch(
                 "non-thing reduction groups must not carry a hydration graph",
             ))
         };
@@ -3233,7 +2719,7 @@ fn validate_reduction_graph(
         .iter()
         .find(|authority| authority.binding() == *binding)
         .ok_or_else(|| {
-            remote_evidence_mismatch_v2(
+            remote_evidence_mismatch(
                 "thing reduction group lacks request-bound descriptor authority",
             )
         })?;
@@ -3245,21 +2731,21 @@ fn validate_reduction_graph(
     let mut full_nodes = BTreeSet::new();
     let mut frontier = Vec::new();
     for row in rows {
-        let Some(RemoteReductionGroupV2::Thing { value }) = row.group() else {
-            return Err(remote_evidence_mismatch_v2(
+        let Some(ModelReductionGroup::Thing { value }) = row.group() else {
+            return Err(remote_evidence_mismatch(
                 "thing reduction row lacks its graph reference",
             ));
         };
         let index = usize::try_from(value.node().get()).map_err(|_| {
-            remote_evidence_mismatch_v2("thing reduction group references an unknown node")
+            remote_evidence_mismatch("thing reduction group references an unknown node")
         })?;
         let node = graph.nodes().get(index).ok_or_else(|| {
-            remote_evidence_mismatch_v2("thing reduction group references an unknown node")
+            remote_evidence_mismatch("thing reduction group references an unknown node")
         })?;
         if value.declared() != authority.declared_descriptor()
             || !authority.concrete_descriptors().contains(node.concrete())
         {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "thing reduction group violates declared-to-concrete authority",
             ));
         }
@@ -3268,9 +2754,7 @@ fn validate_reduction_graph(
     }
     for node in graph.nodes() {
         let projection = descriptors.get(node.concrete()).ok_or_else(|| {
-            remote_evidence_mismatch_v2(
-                "reduction hydration node is outside the request projection",
-            )
+            remote_evidence_mismatch("reduction hydration node is outside the request projection")
         })?;
         validate_node_projection(graph, node, projection, full_nodes.contains(&node.id()))?;
     }
@@ -3280,19 +2764,19 @@ fn validate_reduction_graph(
             continue;
         }
         let index = usize::try_from(node_id.get()).map_err(|_| {
-            remote_evidence_mismatch_v2("reduction graph traversal reached an unknown node")
+            remote_evidence_mismatch("reduction graph traversal reached an unknown node")
         })?;
         let node = graph.nodes().get(index).ok_or_else(|| {
-            remote_evidence_mismatch_v2("reduction graph traversal reached an unknown node")
+            remote_evidence_mismatch("reduction graph traversal reached an unknown node")
         })?;
         if full_nodes.contains(&node_id) {
             for role in node.roles() {
-                frontier.extend(role.players().iter().map(HydrationReferenceV2::node));
+                frontier.extend(role.players().iter().map(HydrationReference::node));
             }
         }
     }
     if referenced.len() != graph.nodes().len() {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "reduction hydration graph contains unreferenced provider identities",
         ));
     }
@@ -3300,8 +2784,8 @@ fn validate_reduction_graph(
 }
 
 fn validate_model_order_against_plan(
-    graph: &HydrationGraphV2,
-    rows: &[HydratedRowV2],
+    graph: &HydrationGraph,
+    rows: &[HydratedRow],
     plan: Option<&QueryPlan>,
     result: RemoteResultKindV2,
 ) -> Result<(), Diagnostic> {
@@ -3321,7 +2805,7 @@ fn validate_model_order_against_plan(
             crate::query_plan::ModelQueryV2::Page { order, output, .. },
         ) => (output, Some(order)),
         _ => {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydrated result has no request-bound order contract",
             ));
         }
@@ -3338,7 +2822,7 @@ fn validate_model_order_against_plan(
 }
 
 fn validate_selected_row_identities(
-    rows: &[HydratedRowV2],
+    rows: &[HydratedRow],
     output: &crate::query_plan::ModelOutputV2,
 ) -> Result<(), Diagnostic> {
     let singular_bindings = output
@@ -3351,7 +2835,7 @@ fn validate_selected_row_identities(
     for row in rows {
         let identity = row_identity(row, output, &singular_bindings)?;
         if !identities.insert(identity) {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydrated rows repeat one selected singular-identity tuple",
             ));
         }
@@ -3360,15 +2844,15 @@ fn validate_selected_row_identities(
 }
 
 fn validate_row_order(
-    graph: &HydrationGraphV2,
-    rows: &[HydratedRowV2],
+    graph: &HydrationGraph,
+    rows: &[HydratedRow],
     output: &crate::query_plan::ModelOutputV2,
     order: &crate::query_plan::QueryStableOrderV2,
 ) -> Result<(), Diagnostic> {
     for pair in rows.windows(2) {
         let ordering = compare_rows_by_order(graph, &pair[0], &pair[1], output, order)?;
         if ordering == Ordering::Greater {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydrated rows are not in the request-bound stable order",
             ));
         }
@@ -3376,7 +2860,7 @@ fn validate_row_order(
             && row_identity(&pair[0], output, order.identity_tiebreakers())?
                 != row_identity(&pair[1], output, order.identity_tiebreakers())?
         {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydrated row order does not distinguish two selected identities",
             ));
         }
@@ -3385,9 +2869,9 @@ fn validate_row_order(
 }
 
 fn compare_rows_by_order(
-    graph: &HydrationGraphV2,
-    left: &HydratedRowV2,
-    right: &HydratedRowV2,
+    graph: &HydrationGraph,
+    left: &HydratedRow,
+    right: &HydratedRow,
     output: &crate::query_plan::ModelOutputV2,
     order: &crate::query_plan::QueryStableOrderV2,
 ) -> Result<Ordering, Diagnostic> {
@@ -3407,15 +2891,15 @@ fn compare_rows_by_order(
 }
 
 fn validate_collection_orders(
-    graph: &HydrationGraphV2,
-    rows: &[HydratedRowV2],
+    graph: &HydrationGraph,
+    rows: &[HydratedRow],
     output: &crate::query_plan::ModelOutputV2,
 ) -> Result<(), Diagnostic> {
     let output_slots = output.slots();
     for row in rows {
         for (slot, contract) in row.slots().iter().zip(&output_slots) {
             let (
-                HydrationSlotV2::Collection { values },
+                HydrationSlot::Collection { values },
                 crate::query_plan::QueryModelOutputSlotV2::Collect { order, .. },
             ) = (slot, *contract)
             else {
@@ -3424,12 +2908,12 @@ fn validate_collection_orders(
             for pair in values.windows(2) {
                 let ordering = compare_references_by_order(graph, &pair[0], &pair[1], order)?;
                 if ordering == Ordering::Greater {
-                    return Err(remote_evidence_mismatch_v2(
+                    return Err(remote_evidence_mismatch(
                         "hydrated collection members are not in the request-bound stable order",
                     ));
                 }
                 if ordering == Ordering::Equal && pair[0].node() != pair[1].node() {
-                    return Err(remote_evidence_mismatch_v2(
+                    return Err(remote_evidence_mismatch(
                         "hydrated collection order does not distinguish two provider identities",
                     ));
                 }
@@ -3440,9 +2924,9 @@ fn validate_collection_orders(
 }
 
 fn compare_references_by_order(
-    graph: &HydrationGraphV2,
-    left: &HydrationReferenceV2,
-    right: &HydrationReferenceV2,
+    graph: &HydrationGraph,
+    left: &HydrationReference,
+    right: &HydrationReference,
     order: &crate::query_plan::QueryStableOrderV2,
 ) -> Result<Ordering, Diagnostic> {
     for term in order.terms() {
@@ -3459,10 +2943,10 @@ fn compare_references_by_order(
 }
 
 fn row_identity(
-    row: &HydratedRowV2,
+    row: &HydratedRow,
     output: &crate::query_plan::ModelOutputV2,
     bindings: &[BindingId],
-) -> Result<Vec<(BindingId, HydrationNodeIdV2)>, Diagnostic> {
+) -> Result<Vec<(BindingId, HydrationNodeId)>, Diagnostic> {
     let mut identity = bindings
         .iter()
         .map(|binding| {
@@ -3475,47 +2959,47 @@ fn row_identity(
 }
 
 fn row_binding_reference<'row>(
-    row: &'row HydratedRowV2,
+    row: &'row HydratedRow,
     output: &crate::query_plan::ModelOutputV2,
     binding: BindingId,
-) -> Result<&'row HydrationReferenceV2, Diagnostic> {
+) -> Result<&'row HydrationReference, Diagnostic> {
     let output_slots = output.slots();
     let Some(index) = output_slots
         .iter()
         .position(|slot| slot.binding() == binding)
     else {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "stable order references a binding absent from the public output",
         ));
     };
     match row.slots().get(index) {
-        Some(HydrationSlotV2::Singular { value }) => Ok(value),
-        _ => Err(remote_evidence_mismatch_v2(
+        Some(HydrationSlot::Singular { value }) => Ok(value),
+        _ => Err(remote_evidence_mismatch(
             "stable row order requires a singular public binding",
         )),
     }
 }
 
 fn order_value<'graph>(
-    graph: &'graph HydrationGraphV2,
-    reference: &HydrationReferenceV2,
+    graph: &'graph HydrationGraph,
+    reference: &HydrationReference,
     term: &crate::query_plan::QueryOrderTermV2,
 ) -> Result<Option<&'graph CompatibilityValueV2>, Diagnostic> {
     let index = usize::try_from(reference.node().get()).map_err(|_| {
-        remote_evidence_mismatch_v2("stable order references an unknown hydration node")
+        remote_evidence_mismatch("stable order references an unknown hydration node")
     })?;
     let node = graph.nodes.get(index).ok_or_else(|| {
-        remote_evidence_mismatch_v2("stable order references an unknown hydration node")
+        remote_evidence_mismatch("stable order references an unknown hydration node")
     })?;
     let evidence = node
         .attributes
         .iter()
         .find(|evidence| evidence.attribute() == term.field().attribute())
         .ok_or_else(|| {
-            remote_evidence_mismatch_v2("stable order attribute is absent from hydration evidence")
+            remote_evidence_mismatch("stable order attribute is absent from hydration evidence")
         })?;
     if evidence.values().len() > 1 {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "stable order attribute carries non-scalar hydration evidence",
         ));
     }
@@ -3533,7 +3017,7 @@ fn compare_order_values(
             crate::query_plan::QueryMissingOrderV2::First => Ordering::Less,
             crate::query_plan::QueryMissingOrderV2::Last => Ordering::Greater,
             crate::query_plan::QueryMissingOrderV2::Reject => {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "stable order rejects a missing hydration value",
                 ));
             }
@@ -3542,14 +3026,14 @@ fn compare_order_values(
             crate::query_plan::QueryMissingOrderV2::First => Ordering::Greater,
             crate::query_plan::QueryMissingOrderV2::Last => Ordering::Less,
             crate::query_plan::QueryMissingOrderV2::Reject => {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "stable order rejects a missing hydration value",
                 ));
             }
         },
         (Some(left), Some(right)) => {
             let ordering = left.semantic_cmp_same_domain(right).ok_or_else(|| {
-                remote_evidence_mismatch_v2("stable order values are not semantically comparable")
+                remote_evidence_mismatch("stable order values are not semantically comparable")
             })?;
             if term.direction() == crate::query_plan::QueryOrderDirectionV2::Descending {
                 ordering.reverse()
@@ -3562,8 +3046,8 @@ fn compare_order_values(
 }
 
 fn validate_node_projection(
-    graph: &HydrationGraphV2,
-    node: &HydrationNodeV2,
+    graph: &HydrationGraph,
+    node: &HydrationNode,
     projection: &crate::query_plan::HydrationDescriptorV2,
     full_output: bool,
 ) -> Result<(), Diagnostic> {
@@ -3571,7 +3055,7 @@ fn validate_node_projection(
         || (full_output && node.roles.len() != projection.roles().len())
         || (!full_output && !node.roles.is_empty())
     {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydration node contradicts its full-output or shallow-player projection",
         ));
     }
@@ -3582,7 +3066,7 @@ fn validate_node_projection(
         .collect::<BTreeMap<_, _>>();
     for evidence in &node.attributes {
         let Some(field) = fields.get(&evidence.attribute) else {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydration attribute is outside the concrete projection",
             ));
         };
@@ -3592,19 +3076,19 @@ fn validate_node_projection(
                 .iter()
                 .any(|value| value.value_type() != field.value_type())
         {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydration attribute violates its value type or cardinality",
             ));
         }
         if !field.ordered() {
             for pair in evidence.values.windows(2) {
                 let ordering = pair[0].semantic_cmp_same_domain(&pair[1]).ok_or_else(|| {
-                    remote_evidence_mismatch_v2(
+                    remote_evidence_mismatch(
                         "hydration attribute values are not semantically comparable",
                     )
                 })?;
                 if ordering != Ordering::Less {
-                    return Err(remote_evidence_mismatch_v2(
+                    return Err(remote_evidence_mismatch(
                         "unordered hydration attribute values must be semantically sorted and unique",
                     ));
                 }
@@ -3614,7 +3098,7 @@ fn validate_node_projection(
             && field.distinct()
             && contains_semantic_duplicate(evidence.values.iter())?
         {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "distinct ordered hydration attribute contains duplicate values",
             ));
         }
@@ -3629,12 +3113,12 @@ fn validate_node_projection(
         .collect::<BTreeMap<_, _>>();
     for evidence in &node.roles {
         let Some(role) = roles.get(&evidence.role) else {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydration role is outside the concrete projection",
             ));
         };
         if !cardinality_allows(role.cardinality(), evidence.players.len()) {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydration role violates its effective cardinality",
             ));
         }
@@ -3643,7 +3127,7 @@ fn validate_node_projection(
                 (pair[0].node(), pair[0].declared()) > (pair[1].node(), pair[1].declared())
             })
         {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "unordered hydration role players must be in canonical order",
             ));
         }
@@ -3651,20 +3135,20 @@ fn validate_node_projection(
             let distinct_players = evidence
                 .players
                 .iter()
-                .map(HydrationReferenceV2::node)
+                .map(HydrationReference::node)
                 .collect::<BTreeSet<_>>();
             if distinct_players.len() != evidence.players.len() {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "distinct hydration role contains a repeated provider identity",
                 ));
             }
         }
         for player in &evidence.players {
             let index = usize::try_from(player.node.get()).map_err(|_| {
-                remote_evidence_mismatch_v2("hydration role references an unknown player")
+                remote_evidence_mismatch("hydration role references an unknown player")
             })?;
             let Some(player_node) = graph.nodes.get(index) else {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "hydration role references an unknown player",
                 ));
             };
@@ -3673,7 +3157,7 @@ fn validate_node_projection(
                 .iter()
                 .find(|authority| authority.declared_descriptor() == &player.declared)
             else {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "hydration role player uses an undeclared descriptor",
                 ));
             };
@@ -3681,7 +3165,7 @@ fn validate_node_projection(
                 .concrete_descriptors()
                 .contains(&player_node.concrete)
             {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "hydration role player violates descriptor compatibility",
                 ));
             }
@@ -3697,7 +3181,7 @@ fn contains_semantic_duplicate<'value>(
     if let Some(first) = values.first().copied() {
         for value in &values[1..] {
             first.semantic_cmp_same_domain(value).ok_or_else(|| {
-                remote_evidence_mismatch_v2(
+                remote_evidence_mismatch(
                     "hydration attribute values are not semantically comparable",
                 )
             })?;
@@ -3712,7 +3196,7 @@ fn contains_semantic_duplicate<'value>(
         }
     });
     if incomparable {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydration attribute values are not semantically comparable",
         ));
     }
@@ -3745,7 +3229,7 @@ fn validate_page_contract(
         .v2_compatibility()
         .and_then(|compatibility| compatibility.model_query())
     else {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydrated page has no request-bound page contract",
         ));
     };
@@ -3754,7 +3238,7 @@ fn validate_page_contract(
         || limit != window.limit()
         || has_total != *include_total
     {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydrated page root, window, or total presence contradicts the request",
         ));
     }
@@ -3762,37 +3246,37 @@ fn validate_page_contract(
 }
 
 fn validate_slot_shapes(
-    rows: &[HydratedRowV2],
+    rows: &[HydratedRow],
     output: &crate::query_plan::ModelOutputV2,
 ) -> Result<(), Diagnostic> {
     for row in rows {
         if row.slots.len() != output.slots().len() {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydrated row arity contradicts the model output",
             ));
         }
         for (slot, expected) in row.slots.iter().zip(output.slots()) {
             let shape_matches = match (slot, expected.collection()) {
-                (HydrationSlotV2::Singular { value }, false) => {
+                (HydrationSlot::Singular { value }, false) => {
                     value.declared() == expected.declared()
                 }
-                (HydrationSlotV2::Collection { values }, true) => values
+                (HydrationSlot::Collection { values }, true) => values
                     .iter()
                     .all(|value| value.declared() == expected.declared()),
                 _ => false,
             };
             if !shape_matches {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "hydrated slot shape or declared descriptor contradicts the model output",
                 ));
             }
             if expected.distinct()
-                && matches!(slot, HydrationSlotV2::Collection { values } if {
+                && matches!(slot, HydrationSlot::Collection { values } if {
                     let unique = values.iter().collect::<BTreeSet<_>>();
                     unique.len() != values.len()
                 })
             {
-                return Err(remote_evidence_mismatch_v2(
+                return Err(remote_evidence_mismatch(
                     "distinct hydrated collection contains duplicate identities",
                 ));
             }
@@ -3802,7 +3286,7 @@ fn validate_slot_shapes(
 }
 
 fn validate_page_root_distinct(
-    entries: &[HydratedRowV2],
+    entries: &[HydratedRow],
     root: BindingId,
     plan: Option<&QueryPlan>,
 ) -> Result<(), Diagnostic> {
@@ -3817,12 +3301,12 @@ fn validate_page_root_distinct(
         .v2_compatibility()
         .and_then(|compatibility| compatibility.model_query())
     else {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydrated page has no page contract",
         ));
     };
     if root != *expected_root {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydrated page root binding contradicts the request",
         ));
     }
@@ -3831,19 +3315,19 @@ fn validate_page_root_distinct(
         .iter()
         .position(|slot| slot.binding() == root)
     else {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "hydrated page root is absent from its output",
         ));
     };
     let mut roots = BTreeSet::new();
     for entry in entries {
-        let Some(HydrationSlotV2::Singular { value }) = entry.slots.get(root_index) else {
-            return Err(remote_evidence_mismatch_v2(
+        let Some(HydrationSlot::Singular { value }) = entry.slots.get(root_index) else {
+            return Err(remote_evidence_mismatch(
                 "hydrated page root slot must be singular",
             ));
         };
         if !roots.insert(value.node()) {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "hydrated page root identities must be distinct",
             ));
         }
@@ -3873,13 +3357,13 @@ fn validate_scalar_root(
             Some(crate::query_plan::ModelQueryV2::DistinctExists { root, .. }),
         ) => *root,
         _ => {
-            return Err(remote_evidence_mismatch_v2(
+            return Err(remote_evidence_mismatch(
                 "distinct-root scalar contradicts the model-query terminal",
             ));
         }
     };
     if root != expected {
-        return Err(remote_evidence_mismatch_v2(
+        return Err(remote_evidence_mismatch(
             "distinct-root scalar binds the wrong root",
         ));
     }
@@ -3923,14 +3407,6 @@ fn remote_role_player_limit_v2() -> Diagnostic {
         DiagnosticCategory::ResourceLimit,
         "query_remote_v2_role_player_limit",
         "V2 hydration graph exceeds the role-player budget",
-    )
-}
-
-fn remote_evidence_mismatch_v2(message: &'static str) -> Diagnostic {
-    remote_v2_failure(
-        DiagnosticCategory::Integrity,
-        "query_remote_v2_evidence_mismatch",
-        message,
     )
 }
 

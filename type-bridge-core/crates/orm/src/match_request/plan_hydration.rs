@@ -11,16 +11,15 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
+use type_bridge_contract::query_model_evidence::{
+    HydratedRow, HydrationAttributeEvidence, HydrationGraph, HydrationNode, HydrationNodeId,
+    HydrationNodeKind, HydrationReference, HydrationRoleEvidence, HydrationSlot,
+};
 use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
 use type_bridge_contract::query_plan::{
     CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
     HydrationProjectionV2, HydrationRoleV2, QueryComparatorV2, QueryFieldV2, QueryPatternV2,
     QueryStableOrderV2,
-};
-use type_bridge_contract::query_remote_v2::{
-    HydratedRowV2, HydrationAttributeEvidenceV2, HydrationGraphV2, HydrationNodeIdV2,
-    HydrationNodeKindV2, HydrationNodeV2, HydrationReferenceV2, HydrationRoleEvidenceV2,
-    HydrationSlotV2,
 };
 use type_bridge_contract::value::ValueTypeTag;
 use unicase::UniCase;
@@ -128,7 +127,7 @@ pub(crate) struct RoleDraft {
 pub(crate) struct NodeDraft {
     pub(crate) iid: String,
     pub(crate) concrete: TypeId,
-    pub(crate) kind: HydrationNodeKindV2,
+    pub(crate) kind: HydrationNodeKind,
     pub(crate) attributes: Vec<(AttributeId, Vec<CompatibilityValueV2>)>,
     pub(crate) roles: Vec<RoleDraft>,
     pub(crate) full: bool,
@@ -293,7 +292,7 @@ impl GraphBuilder {
                         "hydration graph ordinal exceeds the contract range",
                     )
                 })?;
-                Ok((iid.clone(), HydrationNodeIdV2::new(index)))
+                Ok((iid.clone(), HydrationNodeId::new(index)))
             })
             .collect::<ExecResult<BTreeMap<_, _>>>()?;
         let mut nodes = Vec::with_capacity(retained.len());
@@ -303,7 +302,7 @@ impl GraphBuilder {
                 .attributes
                 .iter()
                 .map(|(attribute, values)| {
-                    HydrationAttributeEvidenceV2::new(attribute.clone(), values.clone())
+                    HydrationAttributeEvidence::new(attribute.clone(), values.clone())
                 })
                 .collect::<Vec<_>>();
             // Registry field aliases determine model-member order, while the
@@ -323,7 +322,7 @@ impl GraphBuilder {
                                 ids.get(&player.iid)
                                     .copied()
                                     .map(|node| {
-                                        HydrationReferenceV2::new(player.declared.clone(), node)
+                                        HydrationReference::new(player.declared.clone(), node)
                                     })
                                     .ok_or_else(|| {
                                         evidence_error(
@@ -333,14 +332,14 @@ impl GraphBuilder {
                                     })
                             })
                             .collect::<ExecResult<Vec<_>>>()?;
-                        Ok(HydrationRoleEvidenceV2::new(role.role.clone(), players))
+                        Ok(HydrationRoleEvidence::new(role.role.clone(), players))
                     })
                     .collect::<ExecResult<Vec<_>>>()?
             } else {
                 Vec::new()
             };
             roles.sort_by(|left, right| left.role().cmp(right.role()));
-            nodes.push(HydrationNodeV2::new(
+            nodes.push(HydrationNode::new(
                 ids[&iid],
                 iid,
                 draft.concrete.clone(),
@@ -349,26 +348,22 @@ impl GraphBuilder {
                 roles,
             ));
         }
-        let graph = HydrationGraphV2::new(nodes).map_err(PlanExecutionError::Validation)?;
+        let graph = HydrationGraph::new(nodes).map_err(PlanExecutionError::Validation)?;
         Ok(FinishedGraph { graph, ids })
     }
 }
 
 pub(crate) struct FinishedGraph {
-    pub(crate) graph: HydrationGraphV2,
-    pub(crate) ids: BTreeMap<String, HydrationNodeIdV2>,
+    pub(crate) graph: HydrationGraph,
+    pub(crate) ids: BTreeMap<String, HydrationNodeId>,
 }
 
 impl FinishedGraph {
-    pub(crate) fn reference(
-        &self,
-        declared: &TypeId,
-        iid: &str,
-    ) -> ExecResult<HydrationReferenceV2> {
+    pub(crate) fn reference(&self, declared: &TypeId, iid: &str) -> ExecResult<HydrationReference> {
         self.ids
             .get(iid)
             .copied()
-            .map(|node| HydrationReferenceV2::new(declared.clone(), node))
+            .map(|node| HydrationReference::new(declared.clone(), node))
             .ok_or_else(|| {
                 evidence_error(
                     "query_v2_model_hydration_missing",
@@ -963,10 +958,10 @@ pub(crate) fn validate_wire_kind(kind: WireThingKind, expected: TypeKind) -> Exe
     }
 }
 
-pub(crate) fn node_kind(kind: TypeKind) -> ExecResult<HydrationNodeKindV2> {
+pub(crate) fn node_kind(kind: TypeKind) -> ExecResult<HydrationNodeKind> {
     match kind {
-        TypeKind::Entity => Ok(HydrationNodeKindV2::Entity),
-        TypeKind::Relation => Ok(HydrationNodeKindV2::Relation),
+        TypeKind::Entity => Ok(HydrationNodeKind::Entity),
+        TypeKind::Relation => Ok(HydrationNodeKind::Relation),
         TypeKind::Attribute | TypeKind::Struct => Err(validation_error(
             "query_v2_model_hydration_kind",
             "model hydration projection contains a non-thing descriptor",
@@ -1014,7 +1009,7 @@ pub(crate) enum SlotDraft {
 pub(crate) fn finish_hydrated_rows(
     graph: GraphBuilder,
     drafts: Vec<Vec<SlotDraft>>,
-) -> ExecResult<(HydrationGraphV2, Vec<HydratedRowV2>)> {
+) -> ExecResult<(HydrationGraph, Vec<HydratedRow>)> {
     let roots = drafts
         .iter()
         .flat_map(|row| row.iter())
@@ -1031,10 +1026,10 @@ pub(crate) fn finish_hydrated_rows(
             let slots = row
                 .into_iter()
                 .map(|slot| match slot {
-                    SlotDraft::Singular { declared, iid } => Ok(HydrationSlotV2::Singular {
+                    SlotDraft::Singular { declared, iid } => Ok(HydrationSlot::Singular {
                         value: finished.reference(&declared, &iid)?,
                     }),
-                    SlotDraft::Collection { declared, iids } => Ok(HydrationSlotV2::Collection {
+                    SlotDraft::Collection { declared, iids } => Ok(HydrationSlot::Collection {
                         values: iids
                             .into_iter()
                             .map(|iid| finished.reference(&declared, &iid))
@@ -1042,7 +1037,7 @@ pub(crate) fn finish_hydrated_rows(
                     }),
                 })
                 .collect::<ExecResult<Vec<_>>>()?;
-            Ok(HydratedRowV2::new(slots))
+            Ok(HydratedRow::new(slots))
         })
         .collect::<ExecResult<Vec<_>>>()?;
     Ok((finished.graph, rows))
@@ -1681,7 +1676,7 @@ pub(crate) fn graph_from_verified_plan_documents(
     plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
     documents: &[JsonValue],
     limits: crate::QueryExecutionResourceLimits,
-) -> ExecResult<(HydrationGraphV2, Vec<HydrationReferenceV2>)> {
+) -> ExecResult<(HydrationGraph, Vec<HydrationReference>)> {
     use super::descriptor_plan::{MatchRequestAdapterAuthority, build_hydration};
     let metadata = MatchRequestAdapterAuthority::from_registry(registry)
         .map_err(PlanExecutionError::Validation)?;
@@ -1923,7 +1918,7 @@ mod predicate_recheck_tests {
             .insert(NodeDraft {
                 iid: "0x01".into(),
                 concrete: person.clone(),
-                kind: HydrationNodeKindV2::Entity,
+                kind: HydrationNodeKind::Entity,
                 attributes: vec![(field.clone(), vec![value("Ada")])],
                 roles: vec![],
                 full: true,

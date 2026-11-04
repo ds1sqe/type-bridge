@@ -1513,7 +1513,7 @@ mod tests {
     use crate::OrmError;
     use crate::ProjectedCrudExecutor;
     use crate::match_request::result::{ConceptId, HydratedRole, ReductionRow};
-    use crate::match_request::result_validation::validated_match_result_from_v2;
+    use crate::match_request::result_validation::validated_match_result_from_model;
     use crate::match_request::v2_outcome_fixture::{
         distinct_count, distinct_exists, hydrated_page, hydrated_rows, model_reduction,
     };
@@ -1696,7 +1696,7 @@ plays:
     ) -> (ValidatedMatchRequest, ValidatedMatchResult) {
         let request = validate_match_request(registry, request).unwrap();
         let result =
-            validated_match_result_from_v2(registry, &request, hydrated_rows(registry, rows))
+            validated_match_result_from_model(registry, &request, hydrated_rows(registry, rows))
                 .unwrap();
         (request, result)
     }
@@ -1785,7 +1785,7 @@ plays:
         let (installed, registry) = fixture();
         let request_a = validate_match_request(&registry, one_rows_request(&registry)).unwrap();
         let result_for_a = || {
-            validated_match_result_from_v2(
+            validated_match_result_from_model(
                 &registry,
                 &request_a,
                 hydrated_rows(&registry, Vec::new()),
@@ -1918,7 +1918,7 @@ plays:
                 RowCardinality::ExactlyOne,
             )
             .unwrap();
-        let result = validated_match_result_from_v2(
+        let result = validated_match_result_from_model(
             &registry,
             &request,
             hydrated_rows(
@@ -2186,7 +2186,7 @@ plays:
                     SlotValue::Many(vec![member.clone(), member]),
                 ]],
             );
-            let result = validated_match_result_from_v2(&registry, &request, outcome).unwrap();
+            let result = validated_match_result_from_model(&registry, &request, outcome).unwrap();
             (request, result)
         };
         let (request, result) = make();
@@ -2370,7 +2370,7 @@ plays:
             )
         };
         let result_for = |request: &ValidatedMatchRequest| {
-            validated_match_result_from_v2(
+            validated_match_result_from_model(
                 &registry,
                 request,
                 hydrated_rows(
@@ -2652,7 +2652,7 @@ plays:
 
         let count_request =
             reduction_request(&registry, |root, _| MatchOperation::CountBy { root });
-        let count_result = validated_match_result_from_v2(
+        let count_result = validated_match_result_from_model(
             &registry,
             &count_request,
             distinct_count(root, u64::MAX),
@@ -2677,9 +2677,12 @@ plays:
 
         let exists_request =
             reduction_request(&registry, |root, _| MatchOperation::ExistsBy { root });
-        let exists_result =
-            validated_match_result_from_v2(&registry, &exists_request, distinct_exists(root, true))
-                .unwrap();
+        let exists_result = validated_match_result_from_model(
+            &registry,
+            &exists_request,
+            distinct_exists(root, true),
+        )
+        .unwrap();
         let exists = materialize_projected_query_result(
             &installed,
             &registry,
@@ -2709,7 +2712,7 @@ plays:
                     },
                 ],
             });
-        let ungrouped_result = validated_match_result_from_v2(
+        let ungrouped_result = validated_match_result_from_model(
             &registry,
             &ungrouped_request,
             model_reduction(
@@ -2772,7 +2775,7 @@ plays:
             ),
         )
         .unwrap();
-        let grouped_result = validated_match_result_from_v2(
+        let grouped_result = validated_match_result_from_model(
             &registry,
             &grouped_request,
             model_reduction(
@@ -2818,7 +2821,7 @@ plays:
                 },
             ],
         });
-        let result = validated_match_result_from_v2(
+        let result = validated_match_result_from_model(
             &registry,
             &request,
             model_reduction(
@@ -2879,7 +2882,7 @@ plays:
             ),
         )
         .unwrap();
-        let tuple_result = validated_match_result_from_v2(
+        let tuple_result = validated_match_result_from_model(
             &registry,
             &tuple_request,
             model_reduction(
@@ -2936,7 +2939,7 @@ plays:
             ),
         )
         .unwrap();
-        let tuple_result = validated_match_result_from_v2(
+        let tuple_result = validated_match_result_from_model(
             &registry,
             &tuple_request,
             model_reduction(
@@ -3038,7 +3041,7 @@ plays:
         let wide = "x".repeat(1024 * 1024 + 1);
         let rows = vec![one(employee(&registry, "0xaa", "person", &wide, i64::MAX))];
         let result =
-            validated_match_result_from_v2(&registry, &request, hydrated_rows(&registry, rows))
+            validated_match_result_from_model(&registry, &request, hydrated_rows(&registry, rows))
                 .unwrap();
         let value = materialize_projected_query_result(
             &installed,

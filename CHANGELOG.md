@@ -200,6 +200,14 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust hydration evidence moves from `query_remote_v2` to `query_model_evidence`:
+  `HydrationNodeIdV2`, `HydrationReferenceV2`, `HydrationAttributeEvidenceV2`,
+  `HydrationRoleEvidenceV2`, `HydrationNodeKindV2`, `HydrationNodeV2`,
+  `HydrationGraphV2`, `HydrationSlotV2`, and `HydratedRowV2` drop their `V2` suffix.
+  `RemoteOutcomeV2`, `RemoteReducedValueV2`, `RemoteReductionGroupV2`, and
+  `RemoteReductionRowV2` become `ModelOutcome`, `ModelReducedValue`,
+  `ModelReductionGroup`, and `ModelReductionRow`. Their wire shapes are unchanged.
+
 - Rust `query_remote_v2::{RemoteLimitsV2, RemoteReplyDecodeLimitsV2,
   DEFAULT_REMOTE_MAX_STATEMENTS_V2}` move to `query_model_limits` as
   `RemoteModelLimits`, `ModelReplyDecodeLimits`, and `DEFAULT_MODEL_MAX_STATEMENTS`.

@@ -21,7 +21,8 @@ use type_bridge_contract::query_plan::CompatibilityValueV2;
 use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
 use type_bridge_contract::query_remote_v3::{StagedRequestV3,StagedReplyV3,StagedOutcomeV3,StagedAnswerV3};
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding, RemoteFieldValue};
-use type_bridge_contract::query_remote_v2::{HydrationAttributeEvidenceV2, HydrationGraphV2, HydrationNodeIdV2, HydrationNodeKindV2, HydrationNodeV2, HydrationReferenceV2, HydrationRoleEvidenceV2, query_remote_v2_required_capabilities};
+use type_bridge_contract::query_remote_v2::{query_remote_v2_required_capabilities};
+use type_bridge_contract::query_model_evidence::{HydrationAttributeEvidence, HydrationGraph, HydrationNodeId, HydrationNodeKind, HydrationNode, HydrationReference, HydrationRoleEvidence};
 use type_bridge_contract::query_model_limits::{RemoteModelLimits};
 use type_bridge_contract::schema::{DocumentId, OwnsFactId, encode_declared_schema};
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
@@ -56,8 +57,8 @@ const MAX_AUTHORITY_BYTES: u64 = 1024 * 1024;
 #[derive(Clone)]
 struct GraphReply {
     declared: TypeId,
-    graph: HydrationGraphV2,
-    root: HydrationNodeIdV2,
+    graph: HydrationGraph,
+    root: HydrationNodeId,
 }
 
 struct HydrationTransport {
@@ -107,7 +108,7 @@ fn native_graph_documents(reply:&GraphReply, plan:&type_bridge_contract::query_p
     let root=reply.graph.nodes().iter().find(|node|node.id()==reply.root).unwrap();
     let scalar=|value|RemoteFieldValue::Scalar {value};
     let text=|value:&str|scalar(CanonicalValue::String(CanonicalString::new(value).unwrap()));
-    let attributes=|node:&HydrationNodeV2|RemoteFieldValue::Document {fields:node.attributes().iter().map(|attribute|(attribute.attribute().label().as_str().to_owned(),if attribute.attribute().label().as_str() == "aliases" {RemoteFieldValue::List {values:attribute.values().iter().map(|value|value.canonical_value().unwrap().clone()).collect()}} else if let Some(value)=attribute.values().first() {scalar(value.canonical_value().unwrap().clone())} else {RemoteFieldValue::Absent})).collect()};
+    let attributes=|node:&HydrationNode|RemoteFieldValue::Document {fields:node.attributes().iter().map(|attribute|(attribute.attribute().label().as_str().to_owned(),if attribute.attribute().label().as_str() == "aliases" {RemoteFieldValue::List {values:attribute.values().iter().map(|value|value.canonical_value().unwrap().clone()).collect()}} else if let Some(value)=attribute.values().first() {scalar(value.canonical_value().unwrap().clone())} else {RemoteFieldValue::Absent})).collect()};
     let mut documents=vec![BTreeMap::from([("_iid".into(),text(root.iid())),("_type".into(),text(root.concrete().label().as_str())),("attributes".into(),attributes(root))])];
     let fetch=plan.pipeline().iter().find_map(|stage| if let type_bridge_contract::query_plan::v3::Stage::Fetch(fetch)=stage {Some(fetch)} else {None}).unwrap();
     for (index,listed) in fetch.roles.iter().enumerate() {
@@ -170,23 +171,23 @@ fn relation(label: &str) -> TypeId {
     type_id(TypeKind::Relation, label)
 }
 
-fn attribute(label: &str, values: Vec<CompatibilityValueV2>) -> HydrationAttributeEvidenceV2 {
-    HydrationAttributeEvidenceV2::new(
+fn attribute(label: &str, values: Vec<CompatibilityValueV2>) -> HydrationAttributeEvidence {
+    HydrationAttributeEvidence::new(
         AttributeId::new(label).expect("static Projected attribute is canonical"),
         values,
     )
 }
 
-fn reference(kind: TypeKind, label: &str, node: u32) -> HydrationReferenceV2 {
-    HydrationReferenceV2::new(type_id(kind, label), HydrationNodeIdV2::new(node))
+fn reference(kind: TypeKind, label: &str, node: u32) -> HydrationReference {
+    HydrationReference::new(type_id(kind, label), HydrationNodeId::new(node))
 }
 
 fn role(
     relation_label: &str,
     role_label: &str,
-    players: Vec<HydrationReferenceV2>,
-) -> HydrationRoleEvidenceV2 {
-    HydrationRoleEvidenceV2::new(
+    players: Vec<HydrationReference>,
+) -> HydrationRoleEvidence {
+    HydrationRoleEvidence::new(
         RoleId::new(relation_label, role_label).expect("static Projected role is canonical"),
         players,
     )
@@ -230,12 +231,12 @@ fn person_node(
     score: i64,
     foo_bar: Option<i64>,
     score_gte: Option<i64>,
-) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         entity("person"),
-        HydrationNodeKindV2::Entity,
+        HydrationNodeKind::Entity,
         vec![
             attribute(
                 "aliases",
@@ -287,12 +288,12 @@ fn person_node(
     )
 }
 
-fn robot_node(id: u32, iid: &str, key: i64) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+fn robot_node(id: u32, iid: &str, key: i64) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         entity("robot"),
-        HydrationNodeKindV2::Entity,
+        HydrationNodeKind::Entity,
         vec![
             attribute("nickname", vec![]),
             attribute("robot_id", vec![long(key)]),
@@ -306,28 +307,28 @@ fn relation_node(
     id: u32,
     iid: &str,
     label: &str,
-    attributes: Vec<HydrationAttributeEvidenceV2>,
-    roles: Vec<HydrationRoleEvidenceV2>,
-) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+    attributes: Vec<HydrationAttributeEvidence>,
+    roles: Vec<HydrationRoleEvidence>,
+) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         relation(label),
-        HydrationNodeKindV2::Relation,
+        HydrationNodeKind::Relation,
         attributes,
         roles,
     )
 }
 
-fn graph_reply(declared: TypeId, nodes: Vec<HydrationNodeV2>, root: u32) -> GraphReply {
+fn graph_reply(declared: TypeId, nodes: Vec<HydrationNode>, root: u32) -> GraphReply {
     GraphReply {
         declared,
-        graph: HydrationGraphV2::new(nodes).expect("fixture hydration graph is canonical"),
-        root: HydrationNodeIdV2::new(root),
+        graph: HydrationGraph::new(nodes).expect("fixture hydration graph is canonical"),
+        root: HydrationNodeId::new(root),
     }
 }
 
-fn ada_node(id: u32, iid: &str) -> HydrationNodeV2 {
+fn ada_node(id: u32, iid: &str) -> HydrationNode {
     person_node(
         id,
         iid,
@@ -340,7 +341,7 @@ fn ada_node(id: u32, iid: &str) -> HydrationNodeV2 {
     )
 }
 
-fn dana_node(id: u32, iid: &str) -> HydrationNodeV2 {
+fn dana_node(id: u32, iid: &str) -> HydrationNode {
     person_node(id, iid, "data-dana", "Dana", &[], 41, None, None)
 }
 

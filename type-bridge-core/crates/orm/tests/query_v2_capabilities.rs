@@ -9,6 +9,7 @@ use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+use type_bridge_contract::query_model_evidence::ModelOutcome;
 use type_bridge_contract::query_model_limits::{ModelReplyDecodeLimits, RemoteModelLimits};
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryInvocation, QueryOperation, QueryOutput,
@@ -18,8 +19,8 @@ use type_bridge_contract::query_remote::{
     MAX_REMOTE_CLOCK_SKEW_MS, RemoteCapabilities, RemoteExecutorBinding, RemoteValue,
 };
 use type_bridge_contract::query_remote_v2::{
-    RemoteOutcomeV2, RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteRequestFingerprintV2,
-    RemoteResultKindV2, query_remote_v2_required_capabilities,
+    RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteRequestFingerprintV2, RemoteResultKindV2,
+    query_remote_v2_required_capabilities,
 };
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
@@ -269,7 +270,7 @@ fn v2_preparation_decodes_one_reply_and_replays_the_second() {
         &plan,
         &request,
         request_envelope.result_kind(),
-        RemoteOutcomeV2::Rows { rows: Vec::new() },
+        ModelOutcome::Rows { rows: Vec::new() },
     )
     .expect("V2 response")
     .encode_signed(
@@ -316,7 +317,7 @@ fn reply_claim_rejects_a_forged_signer_before_outcome_materialization() {
         &plan,
         &request,
         request_envelope.result_kind(),
-        RemoteOutcomeV2::Rows {
+        ModelOutcome::Rows {
             rows: vec![vec![RemoteValue::Absent, RemoteValue::Absent]],
         },
     )
@@ -830,7 +831,7 @@ fn request_bound_scalar_evidence_cannot_exceed_the_caller_item_budget() {
         &plan,
         &count_request,
         RemoteResultKindV2::Count,
-        RemoteOutcomeV2::Count { value: 2 },
+        ModelOutcome::Count { value: 2 },
     )
     .expect("bound forged response")
     .encode_signed(&advertisement_fingerprint, &signer)
@@ -868,7 +869,7 @@ fn request_bound_scalar_evidence_cannot_exceed_the_caller_item_budget() {
         &plan,
         &exists_request,
         RemoteResultKindV2::Exists,
-        RemoteOutcomeV2::Exists { value: true },
+        ModelOutcome::Exists { value: true },
     )
     .expect("bound forged response")
     .encode_signed(&advertisement_fingerprint, &signer)
@@ -911,7 +912,7 @@ fn one_shot_claim_authenticates_before_applying_a_tiny_success_budget() {
         &plan,
         &request,
         request_envelope.result_kind(),
-        RemoteOutcomeV2::Rows { rows: Vec::new() },
+        ModelOutcome::Rows { rows: Vec::new() },
     )
     .expect("response")
     .encode_signed(
@@ -1043,7 +1044,7 @@ fn remote_row_evidence_rejects_noncanonical_thing_iids() {
             &plan,
             &request,
             request_envelope.result_kind(),
-            RemoteOutcomeV2::Rows {
+            ModelOutcome::Rows {
                 rows: vec![vec![
                     RemoteValue::Thing {
                         iid: malformed.to_owned(),

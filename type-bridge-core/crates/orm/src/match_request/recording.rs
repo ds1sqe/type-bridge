@@ -10,10 +10,11 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use type_bridge_contract::migration_assertion::BindingId as ContractBindingId;
-use type_bridge_contract::query_plan::QueryReductionGroupV2;
-use type_bridge_contract::query_remote_v2::{
-    HydrationGraphV2, RemoteOutcomeV2, RemoteReducedValueV2, RemoteReductionRowV2,
+use type_bridge_contract::query_model_evidence::HydrationGraph;
+use type_bridge_contract::query_model_evidence::{
+    ModelOutcome, ModelReducedValue, ModelReductionRow,
 };
+use type_bridge_contract::query_plan::QueryReductionGroupV2;
 
 use super::descriptor_plan::{adapt_field, adapt_reducers};
 use crate::_registry::DescriptorRegistry;
@@ -122,13 +123,13 @@ impl RecordingMatchExecutor {
         })?;
 
         let outcome = match response {
-            RecordingMatchResponse::EmptyRows => RemoteOutcomeV2::HydratedRows {
+            RecordingMatchResponse::EmptyRows => ModelOutcome::HydratedRows {
                 graph: empty_graph()?,
                 rows: Vec::new(),
             },
             RecordingMatchResponse::EmptyPage { total } => {
                 let (root, window) = page_contract(validated);
-                RemoteOutcomeV2::HydratedPage {
+                ModelOutcome::HydratedPage {
                     entries: Vec::new(),
                     graph: empty_graph()?,
                     limit: window.limit,
@@ -137,11 +138,11 @@ impl RecordingMatchExecutor {
                     total,
                 }
             }
-            RecordingMatchResponse::Count(value) => RemoteOutcomeV2::DistinctCount {
+            RecordingMatchResponse::Count(value) => ModelOutcome::DistinctCount {
                 root: contract_binding(operation_root(validated))?,
                 value,
             },
-            RecordingMatchResponse::Exists(value) => RemoteOutcomeV2::DistinctExists {
+            RecordingMatchResponse::Exists(value) => ModelOutcome::DistinctExists {
                 root: contract_binding(operation_root(validated))?,
                 value,
             },
@@ -149,7 +150,7 @@ impl RecordingMatchExecutor {
                 &self.registry,
                 validated,
                 empty_graph()?,
-                vec![RemoteReductionRowV2::new(
+                vec![ModelReductionRow::new(
                     None,
                     values.iter().map(remote_reduced_value).collect(),
                 )],
@@ -176,16 +177,16 @@ impl RecordingMatchExecutor {
 pub(crate) fn model_reduction_outcome(
     registry: &DescriptorRegistry,
     validated: &ValidatedMatchRequest,
-    graph: HydrationGraphV2,
-    rows: Vec<RemoteReductionRowV2>,
-) -> Result<RemoteOutcomeV2, MatchError> {
+    graph: HydrationGraph,
+    rows: Vec<ModelReductionRow>,
+) -> Result<ModelOutcome, MatchError> {
     if !matches!(
         validated.request().operation,
         MatchOperation::ReduceBy { .. }
             | MatchOperation::ReduceByField { .. }
             | MatchOperation::ReduceByFields { .. }
     ) {
-        return Ok(RemoteOutcomeV2::ModelReduction {
+        return Ok(ModelOutcome::ModelReduction {
             graph,
             root: contract_binding(operation_root(validated))?,
             group: None,
@@ -233,7 +234,7 @@ pub(crate) fn model_reduction_outcome(
         ),
         _ => unreachable!("reduction operation checked above"),
     };
-    Ok(RemoteOutcomeV2::ModelReduction {
+    Ok(ModelOutcome::ModelReduction {
         graph,
         root: contract_binding(root)?,
         group,
@@ -243,19 +244,19 @@ pub(crate) fn model_reduction_outcome(
     })
 }
 
-fn empty_graph() -> Result<HydrationGraphV2, MatchError> {
-    HydrationGraphV2::new(Vec::new()).map_err(adapter_match_error)
+fn empty_graph() -> Result<HydrationGraph, MatchError> {
+    HydrationGraph::new(Vec::new()).map_err(adapter_match_error)
 }
 
 fn contract_binding(binding: BindingId) -> Result<ContractBindingId, MatchError> {
     ContractBindingId::new(binding.get()).map_err(adapter_match_error)
 }
 
-pub(super) fn remote_reduced_value(value: &ReducedValue) -> RemoteReducedValueV2 {
+pub(super) fn remote_reduced_value(value: &ReducedValue) -> ModelReducedValue {
     match value {
-        ReducedValue::Count(value) => RemoteReducedValueV2::Count { value: *value },
-        ReducedValue::Long(value) => RemoteReducedValueV2::Long { value: *value },
-        ReducedValue::Double(value) => RemoteReducedValueV2::DoubleBits {
+        ReducedValue::Count(value) => ModelReducedValue::Count { value: *value },
+        ReducedValue::Long(value) => ModelReducedValue::Long { value: *value },
+        ReducedValue::Double(value) => ModelReducedValue::DoubleBits {
             value: value.map(f64::to_bits),
         },
     }

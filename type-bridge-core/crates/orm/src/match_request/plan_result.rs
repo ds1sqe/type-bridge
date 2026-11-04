@@ -13,10 +13,10 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::TypeId;
+use type_bridge_contract::query_model_evidence::ModelOutcome;
 use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
 use type_bridge_contract::query_plan::{QueryModelOutputSlotV2, QueryOutput};
 use type_bridge_contract::query_remote::RemoteValue;
-use type_bridge_contract::query_remote_v2::RemoteOutcomeV2;
 use type_bridge_contract::query_remote_v3::StagedAnswerV3;
 use type_bridge_contract::value::CanonicalValue;
 
@@ -224,7 +224,7 @@ pub(crate) fn resolve(
     request: &ValidatedMatchRequest,
     answers: &[PlanAnswer],
     limits: QueryExecutionResourceLimits,
-) -> Result<RemoteOutcomeV2, Diagnostic> {
+) -> Result<ModelOutcome, Diagnostic> {
     if stack.plans.len() != answers.len() {
         return Err(failure(
             "query_plan_result_stack",
@@ -233,7 +233,7 @@ pub(crate) fn resolve(
     }
     match &stack.layout {
         Layout::Count { root, answer } => {
-            return Ok(RemoteOutcomeV2::DistinctCount {
+            return Ok(ModelOutcome::DistinctCount {
                 root: type_bridge_contract::migration_assertion::BindingId::new(root.get())?,
                 value: count(stack, answers, *answer)?,
             });
@@ -245,7 +245,7 @@ pub(crate) fn resolve(
                     "existence plan returned the wrong answer kind",
                 ));
             };
-            return Ok(RemoteOutcomeV2::DistinctExists {
+            return Ok(ModelOutcome::DistinctExists {
                 root: type_bridge_contract::migration_assertion::BindingId::new(root.get())?,
                 value: *value,
             });
@@ -652,8 +652,8 @@ pub(crate) fn resolve(
     }
     let (graph, rows) = finish_hydrated_rows(graph, drafts).map_err(shared)?;
     match &request.request().operation {
-        MatchOperation::FetchRows { .. } => Ok(RemoteOutcomeV2::HydratedRows { graph, rows }),
-        MatchOperation::PageBy { root, window, .. } => Ok(RemoteOutcomeV2::HydratedPage {
+        MatchOperation::FetchRows { .. } => Ok(ModelOutcome::HydratedRows { graph, rows }),
+        MatchOperation::PageBy { root, window, .. } => Ok(ModelOutcome::HydratedPage {
             graph,
             entries: rows,
             root: type_bridge_contract::migration_assertion::BindingId::new(root.get())?,
@@ -716,9 +716,9 @@ fn reduced_cell(
     value: Option<&RemoteValue>,
     size: u64,
     term: &type_bridge_contract::query_plan::QueryReductionTermV2,
-) -> Result<type_bridge_contract::query_remote_v2::RemoteReducedValueV2, Diagnostic> {
+) -> Result<type_bridge_contract::query_model_evidence::ModelReducedValue, Diagnostic> {
+    use type_bridge_contract::query_model_evidence::ModelReducedValue as Cell;
     use type_bridge_contract::query_plan::QueryReductionKindV2 as Kind;
-    use type_bridge_contract::query_remote_v2::RemoteReducedValueV2 as Cell;
     use type_bridge_contract::value::ValueTypeTag;
     if term.reduction() == Kind::Count {
         return Ok(Cell::Count { value: size });
@@ -789,7 +789,7 @@ fn checked_long_sum(
     low: Option<&RemoteValue>,
     high: Option<&RemoteValue>,
     count: u64,
-) -> Result<type_bridge_contract::query_remote_v2::RemoteReducedValueV2, Diagnostic> {
+) -> Result<type_bridge_contract::query_model_evidence::ModelReducedValue, Diagnostic> {
     let value = i64::try_from(exact_long_total(low, high, count)?).map_err(|_| {
         crate::plan_lowering::failure(
             DiagnosticCategory::ResourceLimit,
@@ -797,16 +797,16 @@ fn checked_long_sum(
             "integer sum left the canonical long domain",
         )
     })?;
-    Ok(type_bridge_contract::query_remote_v2::RemoteReducedValueV2::Long { value: Some(value) })
+    Ok(type_bridge_contract::query_model_evidence::ModelReducedValue::Long { value: Some(value) })
 }
 
 fn resolve_reduction(
     stack: &AdaptedMatchRequest,
     answers: &[PlanAnswer],
     limits: QueryExecutionResourceLimits,
-) -> Result<RemoteOutcomeV2, Diagnostic> {
+) -> Result<ModelOutcome, Diagnostic> {
+    use type_bridge_contract::query_model_evidence::{ModelReductionGroup, ModelReductionRow};
     use type_bridge_contract::query_plan::{CompatibilityValueV2, QueryReductionGroupV2};
-    use type_bridge_contract::query_remote_v2::{RemoteReductionGroupV2, RemoteReductionRowV2};
     let Layout::Reduction {
         root,
         group,
@@ -875,7 +875,9 @@ fn resolve_reduction(
     for (term, source) in reducers.iter().zip(terms) {
         for (_, count, values) in groups.values_mut() {
             values.push(if source.is_none() {
-                type_bridge_contract::query_remote_v2::RemoteReducedValueV2::Count { value: *count }
+                type_bridge_contract::query_model_evidence::ModelReducedValue::Count {
+                    value: *count,
+                }
             } else {
                 reduced_cell(None, 0, term)?
             });
@@ -918,7 +920,7 @@ fn resolve_reduction(
                 if term.reduction() == type_bridge_contract::query_plan::QueryReductionKindV2::Mean
                 {
                     let total = exact_long_total(row.get(source.value), row.get(high), size)?;
-                    type_bridge_contract::query_remote_v2::RemoteReducedValueV2::DoubleBits {
+                    type_bridge_contract::query_model_evidence::ModelReducedValue::DoubleBits {
                         value: (size > 0).then(|| (total as f64 / size as f64).to_bits()),
                     }
                 } else {
@@ -990,7 +992,7 @@ fn resolve_reduction(
                         "group key is not a thing",
                     ));
                 };
-                Some(RemoteReductionGroupV2::thing(
+                Some(ModelReductionGroup::thing(
                     finished
                         .reference(
                             authority
@@ -1015,29 +1017,29 @@ fn resolve_reduction(
                     .collect::<Result<Vec<_>, _>>()?;
                 Some(
                     if matches!(group, Some(QueryReductionGroupV2::Field { .. })) {
-                        RemoteReductionGroupV2::field(keys.into_iter().next().unwrap())
+                        ModelReductionGroup::field(keys.into_iter().next().unwrap())
                     } else {
-                        RemoteReductionGroupV2::fields(keys)
+                        ModelReductionGroup::fields(keys)
                     },
                 )
             }
         };
-        rows.push(RemoteReductionRowV2::new(key, values));
+        rows.push(ModelReductionRow::new(key, values));
     }
     rows.sort_by(|left, right| match (left.group(), right.group()) {
         (
-            Some(RemoteReductionGroupV2::Thing { value: left }),
-            Some(RemoteReductionGroupV2::Thing { value: right }),
+            Some(ModelReductionGroup::Thing { value: left }),
+            Some(ModelReductionGroup::Thing { value: right }),
         ) => left.node().cmp(&right.node()),
         (
-            Some(RemoteReductionGroupV2::Field { value: left }),
-            Some(RemoteReductionGroupV2::Field { value: right }),
+            Some(ModelReductionGroup::Field { value: left }),
+            Some(ModelReductionGroup::Field { value: right }),
         ) => left
             .semantic_cmp_same_domain(right)
             .unwrap_or(std::cmp::Ordering::Equal),
         (
-            Some(RemoteReductionGroupV2::Fields { values: left }),
-            Some(RemoteReductionGroupV2::Fields { values: right }),
+            Some(ModelReductionGroup::Fields { values: left }),
+            Some(ModelReductionGroup::Fields { values: right }),
         ) => left
             .iter()
             .zip(right)
@@ -1049,7 +1051,7 @@ fn resolve_reduction(
             .unwrap_or(std::cmp::Ordering::Equal),
         _ => std::cmp::Ordering::Equal,
     });
-    Ok(RemoteOutcomeV2::ModelReduction {
+    Ok(ModelOutcome::ModelReduction {
         graph: finished.graph,
         root: *root,
         group: group.clone(),
@@ -1085,7 +1087,7 @@ mod sum_tests {
             let value = checked_long_sum(Some(&long(low)), Some(&long(high)), count).unwrap();
             assert_eq!(
                 value,
-                type_bridge_contract::query_remote_v2::RemoteReducedValueV2::Long {
+                type_bridge_contract::query_model_evidence::ModelReducedValue::Long {
                     value: Some(expected)
                 }
             );

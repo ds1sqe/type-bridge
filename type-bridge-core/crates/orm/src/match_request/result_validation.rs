@@ -1,8 +1,8 @@
-//! The one result-validation path from a V2 outcome to a released result.
+//! The one result-validation path from model evidence to a released result.
 //!
 //! This module performs no I/O and owns no provider. Every live query, direct
-//! or remote, ends in [`validated_match_result_from_v2`], which maps one
-//! contract-validated [`RemoteOutcomeV2`] onto the exact
+//! or remote, ends in [`validated_match_result_from_model`], which maps one
+//! contract-validated [`ModelOutcome`] onto the exact
 //! [`ValidatedMatchRequest`] it answers and atomically constructs
 //! [`ValidatedMatchResult`]. No partial rows escape on failure.
 
@@ -11,13 +11,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use regex::Regex;
 use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::query_model_evidence::{
+    HydrationGraph, HydrationNodeKind, HydrationReference, HydrationSlot,
+};
+use type_bridge_contract::query_model_evidence::{
+    ModelOutcome, ModelReducedValue, ModelReductionGroup, ModelReductionRow,
+};
 use type_bridge_contract::query_plan::{
     CompatibilityValueV2, QueryFieldV2, QueryReductionGroupV2, QueryReductionKindV2,
     QueryReductionTermV2, ReleasedValueKindV2,
-};
-use type_bridge_contract::query_remote_v2::{
-    HydrationGraphV2, HydrationNodeKindV2, HydrationReferenceV2, HydrationSlotV2, RemoteOutcomeV2,
-    RemoteReducedValueV2, RemoteReductionGroupV2, RemoteReductionRowV2,
 };
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
@@ -330,10 +332,10 @@ fn reduction_group_value_key(value: &AttributeValue) -> Result<String, MatchErro
 /// contract (root, window, total, cardinality, reduction echo and values) and
 /// performs the lossless released representation mapping.
 #[cfg(test)]
-pub(crate) fn validated_match_result_from_v2(
+pub(crate) fn validated_match_result_from_model(
     registry: &DescriptorRegistry,
     validated: &ValidatedMatchRequest,
-    outcome: RemoteOutcomeV2,
+    outcome: ModelOutcome,
 ) -> Result<ValidatedMatchResult, MatchError> {
     validated_match_result_from_outcome(registry, validated, outcome)
 }
@@ -357,7 +359,7 @@ pub(crate) fn validated_match_result_from_plan_stack(
 pub(crate) fn validated_match_result_from_outcome(
     registry: &DescriptorRegistry,
     validated: &ValidatedMatchRequest,
-    outcome: RemoteOutcomeV2,
+    outcome: ModelOutcome,
 ) -> Result<ValidatedMatchResult, MatchError> {
     validated.recheck_schema(registry)?;
     let result = match (&validated.request().operation, outcome) {
@@ -368,7 +370,7 @@ pub(crate) fn validated_match_result_from_outcome(
                 cardinality,
                 ..
             },
-            RemoteOutcomeV2::HydratedRows { graph, rows },
+            ModelOutcome::HydratedRows { graph, rows },
         ) => {
             let rows = rows
                 .iter()
@@ -395,7 +397,7 @@ pub(crate) fn validated_match_result_from_outcome(
                 include_total,
                 ..
             },
-            RemoteOutcomeV2::HydratedPage {
+            ModelOutcome::HydratedPage {
                 entries,
                 graph,
                 limit,
@@ -462,7 +464,7 @@ pub(crate) fn validated_match_result_from_outcome(
         }
         (
             MatchOperation::CountBy { root: expected },
-            RemoteOutcomeV2::DistinctCount { root, value },
+            ModelOutcome::DistinctCount { root, value },
         ) => {
             let actual = BindingId::new(root.get());
             require_root(*expected, actual, "count_root_mismatch")?;
@@ -473,7 +475,7 @@ pub(crate) fn validated_match_result_from_outcome(
         }
         (
             MatchOperation::ExistsBy { root: expected },
-            RemoteOutcomeV2::DistinctExists { root, value },
+            ModelOutcome::DistinctExists { root, value },
         ) => {
             let actual = BindingId::new(root.get());
             require_root(*expected, actual, "exists_root_mismatch")?;
@@ -486,7 +488,7 @@ pub(crate) fn validated_match_result_from_outcome(
             operation @ (MatchOperation::ReduceBy { .. }
             | MatchOperation::ReduceByField { .. }
             | MatchOperation::ReduceByFields { .. }),
-            RemoteOutcomeV2::ModelReduction {
+            ModelOutcome::ModelReduction {
                 graph,
                 root,
                 group,
@@ -700,11 +702,11 @@ fn released_reduction_result(
     registry: &DescriptorRegistry,
     validated: &ValidatedMatchRequest,
     operation: &MatchOperation,
-    graph: &HydrationGraphV2,
+    graph: &HydrationGraph,
     root: type_bridge_contract::migration_assertion::BindingId,
     group: Option<QueryReductionGroupV2>,
     reducers: Vec<QueryReductionTermV2>,
-    rows: Vec<RemoteReductionRowV2>,
+    rows: Vec<ModelReductionRow>,
 ) -> Result<MatchResult, MatchError> {
     let actual_root = BindingId::new(root.get());
     let echoed_reducers = reducers
@@ -839,8 +841,8 @@ fn released_query_field(
 
 fn released_reduction_rows(
     registry: &DescriptorRegistry,
-    graph: &HydrationGraphV2,
-    rows: Vec<RemoteReductionRowV2>,
+    graph: &HydrationGraph,
+    rows: Vec<ModelReductionRow>,
 ) -> Result<Vec<ReductionRow>, MatchError> {
     rows.into_iter()
         .map(|row| {
@@ -851,15 +853,15 @@ fn released_reduction_rows(
                 .collect::<Result<Vec<_>, _>>()?;
             match row.group() {
                 None => Ok(ReductionRow::new(None, values)),
-                Some(RemoteReductionGroupV2::Thing { value }) => Ok(ReductionRow::new(
+                Some(ModelReductionGroup::Thing { value }) => Ok(ReductionRow::new(
                     Some(released_thing(registry, graph, value)?),
                     values,
                 )),
-                Some(RemoteReductionGroupV2::Field { value }) => Ok(ReductionRow::new_field(
+                Some(ModelReductionGroup::Field { value }) => Ok(ReductionRow::new_field(
                     released_attribute_value(value)?,
                     values,
                 )),
-                Some(RemoteReductionGroupV2::Fields { values: group }) => {
+                Some(ModelReductionGroup::Fields { values: group }) => {
                     Ok(ReductionRow::new_fields(
                         group
                             .iter()
@@ -873,11 +875,11 @@ fn released_reduction_rows(
         .collect()
 }
 
-fn released_reduced_value(value: &RemoteReducedValueV2) -> Result<ReducedValue, MatchError> {
+fn released_reduced_value(value: &ModelReducedValue) -> Result<ReducedValue, MatchError> {
     Ok(match value {
-        RemoteReducedValueV2::Count { value } => ReducedValue::Count(*value),
-        RemoteReducedValueV2::Long { value } => ReducedValue::Long(*value),
-        RemoteReducedValueV2::DoubleBits { value } => {
+        ModelReducedValue::Count { value } => ReducedValue::Count(*value),
+        ModelReducedValue::Long { value } => ReducedValue::Long(*value),
+        ModelReducedValue::DoubleBits { value } => {
             let value = value.map(f64::from_bits);
             if value.is_some_and(|value| !value.is_finite()) {
                 return Err(result_error(
@@ -892,16 +894,16 @@ fn released_reduced_value(value: &RemoteReducedValueV2) -> Result<ReducedValue, 
 
 fn released_row(
     registry: &DescriptorRegistry,
-    graph: &HydrationGraphV2,
-    slots: &[HydrationSlotV2],
+    graph: &HydrationGraph,
+    slots: &[HydrationSlot],
 ) -> Result<MatchRow, MatchError> {
     let slots = slots
         .iter()
         .map(|slot| match slot {
-            HydrationSlotV2::Singular { value } => {
+            HydrationSlot::Singular { value } => {
                 released_thing(registry, graph, value).map(SlotValue::One)
             }
-            HydrationSlotV2::Collection { values } => values
+            HydrationSlot::Collection { values } => values
                 .iter()
                 .map(|value| released_thing(registry, graph, value))
                 .collect::<Result<Vec<_>, _>>()
@@ -913,8 +915,8 @@ fn released_row(
 
 fn released_row_for_output(
     registry: &DescriptorRegistry,
-    graph: &HydrationGraphV2,
-    slots: &[HydrationSlotV2],
+    graph: &HydrationGraph,
+    slots: &[HydrationSlot],
     output: &FetchShape,
 ) -> Result<MatchRow, MatchError> {
     let expected = output_slots(output).collect::<Vec<_>>();
@@ -922,8 +924,8 @@ fn released_row_for_output(
         || slots.iter().zip(expected).any(|(actual, expected)| {
             matches!(
                 (actual, expected),
-                (HydrationSlotV2::Singular { .. }, FetchSlot::Collect { .. })
-                    | (HydrationSlotV2::Collection { .. }, FetchSlot::One { .. })
+                (HydrationSlot::Singular { .. }, FetchSlot::Collect { .. })
+                    | (HydrationSlot::Collection { .. }, FetchSlot::One { .. })
             )
         })
     {
@@ -937,8 +939,8 @@ fn released_row_for_output(
 
 fn released_thing(
     registry: &DescriptorRegistry,
-    graph: &HydrationGraphV2,
-    reference: &HydrationReferenceV2,
+    graph: &HydrationGraph,
+    reference: &HydrationReference,
 ) -> Result<HydratedThing, MatchError> {
     let node = graph_node(graph, reference)?;
     let declared = released_descriptor(registry, reference.declared())?;
@@ -984,8 +986,8 @@ fn released_thing(
 
 fn released_role_player(
     registry: &DescriptorRegistry,
-    graph: &HydrationGraphV2,
-    reference: &HydrationReferenceV2,
+    graph: &HydrationGraph,
+    reference: &HydrationReference,
 ) -> Result<HydratedRolePlayer, MatchError> {
     let node = graph_node(graph, reference)?;
     let declared = released_descriptor(registry, reference.declared())?;
@@ -1001,9 +1003,9 @@ fn released_role_player(
 }
 
 fn graph_node<'graph>(
-    graph: &'graph HydrationGraphV2,
-    reference: &HydrationReferenceV2,
-) -> Result<&'graph type_bridge_contract::query_remote_v2::HydrationNodeV2, MatchError> {
+    graph: &'graph HydrationGraph,
+    reference: &HydrationReference,
+) -> Result<&'graph type_bridge_contract::query_model_evidence::HydrationNode, MatchError> {
     usize::try_from(reference.node().get())
         .ok()
         .and_then(|index| graph.nodes().get(index))
@@ -1063,7 +1065,7 @@ fn released_descriptor(
 fn released_attributes(
     registry: &DescriptorRegistry,
     concrete: &DescriptorId,
-    attributes: &[type_bridge_contract::query_remote_v2::HydrationAttributeEvidenceV2],
+    attributes: &[type_bridge_contract::query_model_evidence::HydrationAttributeEvidence],
 ) -> Result<Vec<HydratedAttribute>, MatchError> {
     attributes
         .iter()
@@ -1198,10 +1200,10 @@ fn normalize_provider_fraction(value: String) -> String {
     normalized
 }
 
-const fn released_kind(kind: HydrationNodeKindV2) -> ThingKind {
+const fn released_kind(kind: HydrationNodeKind) -> ThingKind {
     match kind {
-        HydrationNodeKindV2::Entity => ThingKind::Entity,
-        HydrationNodeKindV2::Relation => ThingKind::Relation,
+        HydrationNodeKind::Entity => ThingKind::Entity,
+        HydrationNodeKind::Relation => ThingKind::Relation,
     }
 }
 
@@ -2665,7 +2667,7 @@ mod tests {
         let alice = person(&registry, "0x01", "Alice");
         let bob = person(&registry, "0x02", "Bob");
 
-        let result = validated_match_result_from_v2(
+        let result = validated_match_result_from_model(
             &registry,
             &validated,
             hydrated_rows(&registry, vec![vec![SlotValue::One(alice.clone())]]),
@@ -2683,12 +2685,12 @@ mod tests {
                 vec![SlotValue::One(bob.clone())],
             ],
         );
-        let error = validated_match_result_from_v2(&registry, &validated, multiple).unwrap_err();
+        let error = validated_match_result_from_model(&registry, &validated, multiple).unwrap_err();
         assert_eq!(error.category(), MatchErrorCategory::Cardinality);
         assert_eq!(error_code(&error), "not_unique");
 
         let empty = hydrated_rows(&registry, vec![]);
-        let error = validated_match_result_from_v2(&registry, &validated, empty).unwrap_err();
+        let error = validated_match_result_from_model(&registry, &validated, empty).unwrap_err();
         assert_eq!(error.category(), MatchErrorCategory::Cardinality);
         assert_eq!(error_code(&error), "no_result");
 
@@ -2722,7 +2724,7 @@ mod tests {
             &registry,
             vec![vec![SlotValue::One(alice)], vec![SlotValue::One(bob)]],
         );
-        let error = validated_match_result_from_v2(&registry, &bounded, oversized).unwrap_err();
+        let error = validated_match_result_from_model(&registry, &bounded, oversized).unwrap_err();
         assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
         assert_eq!(error_code(&error), "row_window_exceeded");
     }
@@ -2799,7 +2801,7 @@ mod tests {
         };
 
         let result =
-            validated_match_result_from_v2(&registry, &validated, page(0, window, Some(1)))
+            validated_match_result_from_model(&registry, &validated, page(0, window, Some(1)))
                 .unwrap();
         let MatchResult::Page { entries, total, .. } = result.result() else {
             panic!("expected page")
@@ -2824,7 +2826,8 @@ mod tests {
                 "page_window_mismatch",
             ),
         ] {
-            let error = validated_match_result_from_v2(&registry, &validated, outcome).unwrap_err();
+            let error =
+                validated_match_result_from_model(&registry, &validated, outcome).unwrap_err();
             assert_eq!(error_code(&error), code);
         }
     }
@@ -2853,7 +2856,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let result = validated_match_result_from_v2(
+        let result = validated_match_result_from_model(
             &registry,
             &count,
             distinct_count(BindingId::new(0), u64::MAX),
@@ -2869,7 +2872,7 @@ mod tests {
 
         assert_eq!(
             error_code(
-                &validated_match_result_from_v2(
+                &validated_match_result_from_model(
                     &registry,
                     &count,
                     distinct_count(BindingId::new(1), 0)
@@ -2889,7 +2892,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let result = validated_match_result_from_v2(
+        let result = validated_match_result_from_model(
             &registry,
             &exists,
             distinct_exists(BindingId::new(0), true),
@@ -2904,7 +2907,7 @@ mod tests {
         ));
         assert_eq!(
             error_code(
-                &validated_match_result_from_v2(
+                &validated_match_result_from_model(
                     &registry,
                     &exists,
                     distinct_exists(BindingId::new(1), true)
@@ -3033,7 +3036,7 @@ mod tests {
         };
         let validated = request_for(age.clone());
         let map = |rows| {
-            validated_match_result_from_v2(
+            validated_match_result_from_model(
                 &registry,
                 &validated,
                 model_reduction(&registry, &validated, rows),
@@ -3147,7 +3150,7 @@ mod tests {
             reduced.clone(),
         )];
         let map = |rows| {
-            validated_match_result_from_v2(
+            validated_match_result_from_model(
                 &registry,
                 &validated,
                 model_reduction(&registry, &validated, rows),
@@ -3176,7 +3179,7 @@ mod tests {
         );
 
         let mut wrong_order = model_reduction(&registry, &validated, valid);
-        let RemoteOutcomeV2::ModelReduction {
+        let ModelOutcome::ModelReduction {
             group: Some(QueryReductionGroupV2::Fields { fields }),
             ..
         } = &mut wrong_order
@@ -3186,7 +3189,7 @@ mod tests {
         fields.reverse();
         assert_eq!(
             error_code(
-                &validated_match_result_from_v2(&registry, &validated, wrong_order).unwrap_err()
+                &validated_match_result_from_model(&registry, &validated, wrong_order).unwrap_err()
             ),
             "field_tuple_reduction_contract_mismatch"
         );

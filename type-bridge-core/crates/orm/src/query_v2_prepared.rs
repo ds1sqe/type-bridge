@@ -800,7 +800,7 @@ impl ClaimedRemoteReplyV2 {
     pub fn decode_outcome(
         self,
         response_bytes: &[u8],
-    ) -> Result<type_bridge_contract::query_remote_v2::RemoteOutcomeV2, Diagnostic> {
+    ) -> Result<type_bridge_contract::query_model_evidence::ModelOutcome, Diagnostic> {
         if self.is_closed() {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,

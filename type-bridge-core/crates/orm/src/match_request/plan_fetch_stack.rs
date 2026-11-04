@@ -943,11 +943,10 @@ impl PlanFetchStack {
     ) -> Result<PlanFetchResult<'a>, Diagnostic> {
         use super::plan_hydration::{GraphBuilder, HydrationAuthority, insert_plan_documents};
         use crate::query_plan_exec::PlanAnswer;
+        use type_bridge_contract::query_model_evidence::ModelOutcome;
+        use type_bridge_contract::query_model_evidence::{HydratedRow, HydrationSlot};
         use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
         use type_bridge_contract::query_remote::RemoteValue;
-        use type_bridge_contract::query_remote_v2::{
-            HydratedRowV2, HydrationSlotV2, RemoteOutcomeV2,
-        };
         use type_bridge_contract::query_remote_v3::StagedAnswerV3;
         let fail = || {
             integrity(
@@ -1106,10 +1105,10 @@ impl PlanFetchStack {
                     .map(|(iid, declared)| {
                         finished
                             .reference(declared, iid)
-                            .map(|value| HydrationSlotV2::Singular { value })
+                            .map(|value| HydrationSlot::Singular { value })
                     })
                     .collect::<Result<Vec<_>, _>>()
-                    .map(HydratedRowV2::new)
+                    .map(HydratedRow::new)
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(shared)?;
@@ -1168,7 +1167,7 @@ impl PlanFetchStack {
         let result = super::result_validation::validated_match_result_from_outcome(
             registry,
             &request,
-            RemoteOutcomeV2::HydratedRows {
+            ModelOutcome::HydratedRows {
                 graph: finished.graph,
                 rows,
             },

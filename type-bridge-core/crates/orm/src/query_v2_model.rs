@@ -17,16 +17,17 @@ use type_bridge_contract::id::{
 };
 use type_bridge_contract::limits::MAX_SUPPORTED_BINDINGS;
 use type_bridge_contract::migration_assertion::BindingId;
+use type_bridge_contract::query_model_evidence::{HydrationGraph, HydrationNodeKind};
+use type_bridge_contract::query_model_evidence::{
+    ModelOutcome, ModelReducedValue, ModelReductionGroup, ModelReductionRow,
+};
 use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
 use type_bridge_contract::query_plan::{
     HydrationDescriptorV2, HydrationProjectionV2, ModelQueryV2, QueryFieldV2, QueryInvocation,
     QueryModelOutputSlotV2, QueryModelOutputV2, QueryReductionGroupV2, QueryReductionKindV2,
     QueryReductionTermV2, QueryRowCardinalityV2, QueryStableOrderV2,
 };
-use type_bridge_contract::query_remote_v2::{
-    HydrationGraphV2, HydrationNodeKindV2, RemoteOutcomeV2, RemoteReducedValueV2,
-    RemoteReductionGroupV2, RemoteReductionRowV2, RemoteResultKindV2, validate_remote_outcome_v2,
-};
+use type_bridge_contract::query_remote_v2::{RemoteResultKindV2, validate_remote_outcome_v2};
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedHydrationDescriptor, TypedHydrationField,
@@ -78,7 +79,7 @@ pub(crate) async fn execute_validated_model_query_with_statement_limit(
     limits: AnswerLimits,
     reply_limits: ModelReplyDecodeLimits,
     max_statements: u8,
-) -> ExecResult<RemoteOutcomeV2> {
+) -> ExecResult<ModelOutcome> {
     execute_validated_model_query_in_target(
         transaction,
         validated,
@@ -97,7 +98,7 @@ async fn execute_validated_model_query_in_target(
     limits: AnswerLimits,
     reply_limits: ModelReplyDecodeLimits,
     max_statements: u8,
-) -> ExecResult<RemoteOutcomeV2> {
+) -> ExecResult<ModelOutcome> {
     preflight_invocation_transport(validated.plan(), invocation)
         .map_err(PlanExecutionError::Validation)?;
     let model = validated
@@ -189,7 +190,7 @@ async fn execute_validated_model_query_in_target(
             ModelQueryV2::DistinctCount { root, .. },
             CompatibilityProviderPlan::DistinctCount { scan },
         ) => (
-            RemoteOutcomeV2::DistinctCount {
+            ModelOutcome::DistinctCount {
                 root: *root,
                 value: execute_count(&mut transaction, *root, scan, &mut budget).await?,
             },
@@ -199,7 +200,7 @@ async fn execute_validated_model_query_in_target(
             ModelQueryV2::DistinctExists { root, .. },
             CompatibilityProviderPlan::DistinctExists { scan },
         ) => (
-            RemoteOutcomeV2::DistinctExists {
+            ModelOutcome::DistinctExists {
                 root: *root,
                 value: execute_exists(&mut transaction, *root, scan, &mut budget).await?,
             },
@@ -1210,7 +1211,7 @@ async fn execute_rows(
     tuple_proof: Option<TypedFetchRows>,
     budget: &mut ExecutionBudget,
     reply_limits: ModelReplyDecodeLimits,
-) -> ExecResult<RemoteOutcomeV2> {
+) -> ExecResult<ModelOutcome> {
     if output.slots().iter().any(|slot| slot.collection()) {
         return Err(validation_error(
             "query_v2_model_rows_collection",
@@ -1218,8 +1219,8 @@ async fn execute_rows(
         ));
     }
     if cardinality == QueryRowCardinalityV2::BoundedMany && limit == 0 {
-        let graph = HydrationGraphV2::new(Vec::new()).map_err(PlanExecutionError::Validation)?;
-        return Ok(RemoteOutcomeV2::HydratedRows {
+        let graph = HydrationGraph::new(Vec::new()).map_err(PlanExecutionError::Validation)?;
+        return Ok(ModelOutcome::HydratedRows {
             graph,
             rows: Vec::new(),
         });
@@ -1357,7 +1358,7 @@ async fn execute_rows(
         })
         .collect::<ExecResult<Vec<_>>>()?;
     let (graph, rows) = finish_hydrated_rows(graph, rows)?;
-    Ok(RemoteOutcomeV2::HydratedRows { graph, rows })
+    Ok(ModelOutcome::HydratedRows { graph, rows })
 }
 
 struct PageRematchConsumer<'a, 'plan> {
@@ -1505,7 +1506,7 @@ async fn execute_page(
     mut rematch: TypedPageRematch,
     budget: &mut ExecutionBudget,
     reply_limits: ModelReplyDecodeLimits,
-) -> ExecResult<RemoteOutcomeV2> {
+) -> ExecResult<ModelOutcome> {
     let total = match (include_total, total_scan) {
         (true, Some(scan)) => Some(execute_count(transaction, root, scan, budget).await?),
         (false, None) => None,
@@ -1538,8 +1539,8 @@ async fn execute_page(
         ));
     }
     if roots.is_empty() {
-        let graph = HydrationGraphV2::new(Vec::new()).map_err(PlanExecutionError::Validation)?;
-        return Ok(RemoteOutcomeV2::HydratedPage {
+        let graph = HydrationGraph::new(Vec::new()).map_err(PlanExecutionError::Validation)?;
+        return Ok(ModelOutcome::HydratedPage {
             entries: Vec::new(),
             graph,
             limit,
@@ -1639,7 +1640,7 @@ async fn execute_page(
         }
     }
     let (graph, entries) = finish_hydrated_rows(graph, entries)?;
-    Ok(RemoteOutcomeV2::HydratedPage {
+    Ok(ModelOutcome::HydratedPage {
         entries,
         graph,
         limit,
@@ -1661,7 +1662,7 @@ async fn execute_reduction(
     mut rematch: Option<TypedPageRematch>,
     budget: &mut ExecutionBudget,
     reply_limits: ModelReplyDecodeLimits,
-) -> ExecResult<RemoteOutcomeV2> {
+) -> ExecResult<ModelOutcome> {
     let scan_limit = budget.remaining_items();
     let (roots, stats) = execute_root_scan(transaction, root, scan, budget, scan_limit).await?;
     if stats.processed_items >= scan_limit {
@@ -1757,7 +1758,7 @@ async fn execute_reduction(
         .iter()
         .map(|row| encode_reduction_row(row, group, &authority, &finished))
         .collect::<ExecResult<Vec<_>>>()?;
-    Ok(RemoteOutcomeV2::ModelReduction {
+    Ok(ModelOutcome::ModelReduction {
         graph: finished.graph,
         root,
         group: group.cloned(),
@@ -1827,8 +1828,8 @@ fn provider_reduction_solution(
                 descriptor_id(declared)?,
                 descriptor_id(&node.concrete)?,
                 match node.kind {
-                    HydrationNodeKindV2::Entity => ThingKind::Entity,
-                    HydrationNodeKindV2::Relation => ThingKind::Relation,
+                    HydrationNodeKind::Entity => ThingKind::Entity,
+                    HydrationNodeKind::Relation => ThingKind::Relation,
                 },
                 attributes,
                 Vec::new(),
@@ -1930,7 +1931,7 @@ fn encode_reduction_row(
     group: Option<&QueryReductionGroupV2>,
     authority: &HydrationAuthority<'_>,
     graph: &FinishedGraph,
-) -> ExecResult<RemoteReductionRowV2> {
+) -> ExecResult<ModelReductionRow> {
     let group_value = match group {
         None => None,
         Some(QueryReductionGroupV2::Binding { binding }) => {
@@ -1941,11 +1942,11 @@ fn encode_reduction_row(
                 )
             })?;
             let declared = authority.binding(binding.get())?.declared_descriptor();
-            Some(RemoteReductionGroupV2::thing(
+            Some(ModelReductionGroup::thing(
                 graph.reference(declared, thing.concept_id().as_str())?,
             ))
         }
-        Some(QueryReductionGroupV2::Field { .. }) => Some(RemoteReductionGroupV2::field(
+        Some(QueryReductionGroupV2::Field { .. }) => Some(ModelReductionGroup::field(
             adapt_value(row.field_group().ok_or_else(|| {
                 evidence_error(
                     "query_v2_model_reduction_group",
@@ -1954,7 +1955,7 @@ fn encode_reduction_row(
             })?)
             .map_err(PlanExecutionError::Validation)?,
         )),
-        Some(QueryReductionGroupV2::Fields { .. }) => Some(RemoteReductionGroupV2::fields(
+        Some(QueryReductionGroupV2::Fields { .. }) => Some(ModelReductionGroup::fields(
             row.field_groups()
                 .ok_or_else(|| {
                     evidence_error(
@@ -1972,14 +1973,14 @@ fn encode_reduction_row(
         .values()
         .iter()
         .map(|value| match value {
-            ReducedValue::Count(value) => RemoteReducedValueV2::Count { value: *value },
-            ReducedValue::Long(value) => RemoteReducedValueV2::Long { value: *value },
-            ReducedValue::Double(value) => RemoteReducedValueV2::DoubleBits {
+            ReducedValue::Count(value) => ModelReducedValue::Count { value: *value },
+            ReducedValue::Long(value) => ModelReducedValue::Long { value: *value },
+            ReducedValue::Double(value) => ModelReducedValue::DoubleBits {
                 value: value.map(f64::to_bits),
             },
         })
         .collect();
-    Ok(RemoteReductionRowV2::new(group_value, values))
+    Ok(ModelReductionRow::new(group_value, values))
 }
 
 fn validate_solution_predicate(
@@ -2052,7 +2053,7 @@ mod tests {
             .insert(NodeDraft {
                 iid: iid.clone(),
                 concrete: TypeId::new(TypeKind::Entity, "person").expect("type"),
-                kind: HydrationNodeKindV2::Entity,
+                kind: HydrationNodeKind::Entity,
                 // A generated-model alias order may be the reverse of the
                 // provider attribute-descriptor order.
                 attributes: vec![(second.clone(), Vec::new()), (first.clone(), Vec::new())],

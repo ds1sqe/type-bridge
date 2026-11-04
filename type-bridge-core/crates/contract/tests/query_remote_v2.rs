@@ -6,6 +6,13 @@ use type_bridge_contract::diagnostic::{
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+use type_bridge_contract::query_model_evidence::{
+    HydratedRow, HydrationAttributeEvidence, HydrationGraph, HydrationNode, HydrationNodeId,
+    HydrationNodeKind, HydrationReference, HydrationRoleEvidence, HydrationSlot,
+};
+use type_bridge_contract::query_model_evidence::{
+    ModelOutcome, ModelReducedValue, ModelReductionGroup, ModelReductionRow,
+};
 use type_bridge_contract::query_model_limits::{
     DEFAULT_MODEL_MAX_STATEMENTS, ModelReplyDecodeLimits, RemoteModelLimits,
 };
@@ -24,14 +31,10 @@ use type_bridge_contract::query_remote::{
 use type_bridge_contract::query_remote_v2::{
     CAP_QUERY_OUTPUT_HYDRATED, CAP_QUERY_PLAN_V2, CAP_QUERY_REMOTE_ENVELOPE_V2,
     CAP_QUERY_REMOTE_STATEMENT_LIMIT, CAP_QUERY_REMOTE_STRUCTURED_DIAGNOSTIC,
-    CAP_QUERY_SAME_SNAPSHOT_HYDRATION, HydratedRowV2, HydrationAttributeEvidenceV2,
-    HydrationGraphV2, HydrationNodeIdV2, HydrationNodeKindV2, HydrationNodeV2,
-    HydrationReferenceV2, HydrationRoleEvidenceV2, HydrationSlotV2,
-    QUERY_REMOTE_REQUEST_CANONICALIZATION_V2, RemoteOutcomeV2, RemoteQueryFailureV2,
-    RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteReducedValueV2, RemoteReductionGroupV2,
-    RemoteReductionRowV2, RemoteReplyV2, RemoteResultKindV2, decode_remote_reply_v2,
-    decode_signed_remote_failure_v2, query_remote_v2_required_capabilities,
-    validate_remote_outcome_v2,
+    CAP_QUERY_SAME_SNAPSHOT_HYDRATION, QUERY_REMOTE_REQUEST_CANONICALIZATION_V2,
+    RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteReplyV2,
+    RemoteResultKindV2, decode_remote_reply_v2, decode_signed_remote_failure_v2,
+    query_remote_v2_required_capabilities, validate_remote_outcome_v2,
 };
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::value::{
@@ -656,8 +659,8 @@ fn count_reducer() -> QueryReductionTermV2 {
     QueryReductionTermV2::new(QueryReductionKindV2::Count, None)
 }
 
-fn empty_reduction_graph() -> HydrationGraphV2 {
-    HydrationGraphV2::new(vec![]).expect("empty reduction graph")
+fn empty_reduction_graph() -> HydrationGraph {
+    HydrationGraph::new(vec![]).expect("empty reduction graph")
 }
 
 fn inherited_rows_plan(order_owner: TypeId) -> Result<QueryPlan, Diagnostic> {
@@ -1095,26 +1098,26 @@ fn shallow_relation_player_plan() -> QueryPlan {
     .expect("shallow relation-player plan")
 }
 
-fn person_node(id: u32, iid: &str) -> HydrationNodeV2 {
+fn person_node(id: u32, iid: &str) -> HydrationNode {
     person_node_named(id, iid, "Alice")
 }
 
-fn reduction_person_node(id: u32, iid: &str) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+fn reduction_person_node(id: u32, iid: &str) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         person(),
-        HydrationNodeKindV2::Entity,
+        HydrationNodeKind::Entity,
         vec![
-            HydrationAttributeEvidenceV2::new(
+            HydrationAttributeEvidence::new(
                 AttributeId::new("balance").expect("balance attribute"),
                 vec![],
             ),
-            HydrationAttributeEvidenceV2::new(
+            HydrationAttributeEvidence::new(
                 AttributeId::new("ratio").expect("ratio attribute"),
                 vec![],
             ),
-            HydrationAttributeEvidenceV2::new(
+            HydrationAttributeEvidence::new(
                 AttributeId::new("score").expect("score attribute"),
                 vec![],
             ),
@@ -1123,13 +1126,13 @@ fn reduction_person_node(id: u32, iid: &str) -> HydrationNodeV2 {
     )
 }
 
-fn employee_node(id: u32, iid: &str, name: &str) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+fn employee_node(id: u32, iid: &str, name: &str) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         employee(),
-        HydrationNodeKindV2::Entity,
-        vec![HydrationAttributeEvidenceV2::new(
+        HydrationNodeKind::Entity,
+        vec![HydrationAttributeEvidence::new(
             AttributeId::new("name").expect("attribute"),
             vec![string_value(name)],
         )],
@@ -1137,13 +1140,13 @@ fn employee_node(id: u32, iid: &str, name: &str) -> HydrationNodeV2 {
     )
 }
 
-fn person_node_named(id: u32, iid: &str, name: &str) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+fn person_node_named(id: u32, iid: &str, name: &str) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         person(),
-        HydrationNodeKindV2::Entity,
-        vec![HydrationAttributeEvidenceV2::new(
+        HydrationNodeKind::Entity,
+        vec![HydrationAttributeEvidence::new(
             AttributeId::new("name").expect("attribute"),
             vec![string_value(name)],
         )],
@@ -1156,18 +1159,18 @@ fn optional_order_person_node(
     iid: &str,
     nickname: Option<&str>,
     person_id: &str,
-) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         person(),
-        HydrationNodeKindV2::Entity,
+        HydrationNodeKind::Entity,
         vec![
-            HydrationAttributeEvidenceV2::new(
+            HydrationAttributeEvidence::new(
                 AttributeId::new("nickname").expect("attribute"),
                 nickname.into_iter().map(string_value).collect(),
             ),
-            HydrationAttributeEvidenceV2::new(
+            HydrationAttributeEvidence::new(
                 AttributeId::new("person-id").expect("attribute"),
                 vec![string_value(person_id)],
             ),
@@ -1181,18 +1184,18 @@ fn decimal_person_node(
     iid: &str,
     balances: Vec<CompatibilityValueV2>,
     person_id: &str,
-) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         person(),
-        HydrationNodeKindV2::Entity,
+        HydrationNodeKind::Entity,
         vec![
-            HydrationAttributeEvidenceV2::new(
+            HydrationAttributeEvidence::new(
                 AttributeId::new("balance").expect("attribute"),
                 balances,
             ),
-            HydrationAttributeEvidenceV2::new(
+            HydrationAttributeEvidence::new(
                 AttributeId::new("person-id").expect("attribute"),
                 vec![string_value(person_id)],
             ),
@@ -1201,12 +1204,12 @@ fn decimal_person_node(
     )
 }
 
-fn empty_entity_node(id: u32, iid: &str, concrete: TypeId) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+fn empty_entity_node(id: u32, iid: &str, concrete: TypeId) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         concrete,
-        HydrationNodeKindV2::Entity,
+        HydrationNodeKind::Entity,
         vec![],
         vec![],
     )
@@ -1216,24 +1219,24 @@ fn employment_node(
     id: u32,
     iid: &str,
     assignment_id: &str,
-    players: Vec<HydrationReferenceV2>,
-) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+    players: Vec<HydrationReference>,
+) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         employment(),
-        HydrationNodeKindV2::Relation,
+        HydrationNodeKind::Relation,
         vec![
-            HydrationAttributeEvidenceV2::new(
+            HydrationAttributeEvidence::new(
                 AttributeId::new("assignment-id").expect("attribute"),
                 vec![string_value(assignment_id)],
             ),
-            HydrationAttributeEvidenceV2::new(
+            HydrationAttributeEvidence::new(
                 AttributeId::new("start-date").expect("attribute"),
                 vec![],
             ),
         ],
-        vec![HydrationRoleEvidenceV2::new(
+        vec![HydrationRoleEvidence::new(
             RoleId::new("employment", "employee").expect("role"),
             players,
         )],
@@ -1258,35 +1261,32 @@ fn double_value(value: f64) -> CompatibilityValueV2 {
     ))
 }
 
-fn page_graph() -> HydrationGraphV2 {
-    HydrationGraphV2::new(vec![
+fn page_graph() -> HydrationGraph {
+    HydrationGraph::new(vec![
         person_node(0, "0x01"),
         employment_node(
             1,
             "0x02",
             "assignment-1",
-            vec![HydrationReferenceV2::new(
-                person(),
-                HydrationNodeIdV2::new(0),
-            )],
+            vec![HydrationReference::new(person(), HydrationNodeId::new(0))],
         ),
     ])
     .expect("page graph")
 }
 
-fn page_row() -> HydratedRowV2 {
+fn page_row() -> HydratedRow {
     page_row_for(0, &[1])
 }
 
-fn page_row_for(person_id: u32, employment_ids: &[u32]) -> HydratedRowV2 {
-    HydratedRowV2::new(vec![
-        HydrationSlotV2::Singular {
-            value: HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(person_id)),
+fn page_row_for(person_id: u32, employment_ids: &[u32]) -> HydratedRow {
+    HydratedRow::new(vec![
+        HydrationSlot::Singular {
+            value: HydrationReference::new(person(), HydrationNodeId::new(person_id)),
         },
-        HydrationSlotV2::Collection {
+        HydrationSlot::Collection {
             values: employment_ids
                 .iter()
-                .map(|id| HydrationReferenceV2::new(employment(), HydrationNodeIdV2::new(*id)))
+                .map(|id| HydrationReference::new(employment(), HydrationNodeId::new(*id)))
                 .collect(),
         },
     ])
@@ -1457,7 +1457,7 @@ fn reply_decoder_rejects_incoherent_trusted_request_bindings() {
         &plan,
         &request_fingerprint,
         RemoteResultKindV2::Rows,
-        RemoteOutcomeV2::Rows { rows: vec![] },
+        ModelOutcome::Rows { rows: vec![] },
     )
     .expect("response");
     let advertisement = advertisement(&plan, false);
@@ -1587,7 +1587,7 @@ fn low_level_signed_response_round_trips_and_preflights_item_budget() {
         &plan,
         &request_fingerprint,
         RemoteResultKindV2::Rows,
-        RemoteOutcomeV2::Rows {
+        ModelOutcome::Rows {
             rows: vec![row.clone(), row],
         },
     )
@@ -1656,7 +1656,7 @@ fn a_reply_past_the_default_ceilings_needs_both_peers_to_raise_them() {
         &plan,
         &request_fingerprint,
         RemoteResultKindV2::Rows,
-        RemoteOutcomeV2::Rows { rows: rows() },
+        ModelOutcome::Rows { rows: rows() },
     )
     .and_then(|response| response.encode_signed(&advertisement_fingerprint, &TestSigner));
     assert!(
@@ -1671,7 +1671,7 @@ fn a_reply_past_the_default_ceilings_needs_both_peers_to_raise_them() {
         &plan,
         &request_fingerprint,
         RemoteResultKindV2::Rows,
-        RemoteOutcomeV2::Rows { rows: rows() },
+        ModelOutcome::Rows { rows: rows() },
         raised,
     )
     .expect("a response under raised budgets")
@@ -1693,7 +1693,7 @@ fn a_reply_past_the_default_ceilings_needs_both_peers_to_raise_them() {
     else {
         panic!("expected a response")
     };
-    let RemoteOutcomeV2::Rows { rows } = response.outcome() else {
+    let ModelOutcome::Rows { rows } = response.outcome() else {
         panic!("expected rows")
     };
     assert_eq!(rows.len(), ROWS);
@@ -1725,7 +1725,7 @@ fn scalar_count_remains_lossless_above_collection_ceiling() {
         &plan,
         &request_fingerprint,
         RemoteResultKindV2::Count,
-        RemoteOutcomeV2::Count { value: COUNT },
+        ModelOutcome::Count { value: COUNT },
     )
     .expect("lossless scalar response");
     let advertisement = advertisement(&plan, false);
@@ -1783,12 +1783,12 @@ fn hydrated_evidence_round_trips_released_strings_above_canonical_string_limit()
     );
     let request_fingerprint = request.fingerprint().expect("request fingerprint");
     let released = "x".repeat((1 << 20) + 1);
-    let graph = HydrationGraphV2::new(vec![HydrationNodeV2::new(
-        HydrationNodeIdV2::new(0),
+    let graph = HydrationGraph::new(vec![HydrationNode::new(
+        HydrationNodeId::new(0),
         "0x01".to_owned(),
         person(),
-        HydrationNodeKindV2::Entity,
-        vec![HydrationAttributeEvidenceV2::new(
+        HydrationNodeKind::Entity,
+        vec![HydrationAttributeEvidence::new(
             AttributeId::new("name").expect("attribute"),
             vec![
                 CompatibilityValueV2::released_string(released.clone())
@@ -1803,10 +1803,10 @@ fn hydrated_evidence_round_trips_released_strings_above_canonical_string_limit()
         &plan,
         &request_fingerprint,
         RemoteResultKindV2::HydratedRows,
-        RemoteOutcomeV2::HydratedRows {
+        ModelOutcome::HydratedRows {
             graph,
-            rows: vec![HydratedRowV2::new(vec![HydrationSlotV2::Singular {
-                value: HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(0)),
+            rows: vec![HydratedRow::new(vec![HydrationSlot::Singular {
+                value: HydrationReference::new(person(), HydrationNodeId::new(0)),
             }])],
         },
     )
@@ -1833,7 +1833,7 @@ fn hydrated_evidence_round_trips_released_strings_above_canonical_string_limit()
     .expect("decode") else {
         panic!("expected response");
     };
-    let RemoteOutcomeV2::HydratedRows { graph, .. } = decoded.into_outcome() else {
+    let ModelOutcome::HydratedRows { graph, .. } = decoded.into_outcome() else {
         panic!("expected hydrated rows");
     };
     assert_eq!(
@@ -1852,7 +1852,7 @@ fn hydrated_page_validates_graph_projection_window_total_and_budgets() {
         &plan,
         &request_fingerprint,
         RemoteResultKindV2::HydratedPage,
-        RemoteOutcomeV2::HydratedPage {
+        ModelOutcome::HydratedPage {
             entries: vec![page_row()],
             graph: page_graph(),
             limit: 25,
@@ -1919,7 +1919,7 @@ fn hydrated_page_validates_graph_projection_window_total_and_budgets() {
 #[test]
 fn local_compatibility_outcomes_use_the_same_plan_and_budget_gate_as_wire_decode() {
     let plan = page_plan();
-    let outcome = RemoteOutcomeV2::HydratedPage {
+    let outcome = ModelOutcome::HydratedPage {
         entries: vec![page_row()],
         graph: page_graph(),
         limit: 25,
@@ -1972,17 +1972,17 @@ fn model_reduction_requires_the_exact_echo_and_enforces_cells_and_finite_bits() 
         ),
     ];
     let plan = reduction_plan(None, reducers.clone());
-    let outcome = RemoteOutcomeV2::ModelReduction {
+    let outcome = ModelOutcome::ModelReduction {
         graph: empty_reduction_graph(),
         root: binding_id(0),
         group: None,
         reducers: reducers.clone(),
-        rows: vec![RemoteReductionRowV2::new(
+        rows: vec![ModelReductionRow::new(
             None,
             vec![
-                RemoteReducedValueV2::Count { value: 0 },
-                RemoteReducedValueV2::Long { value: Some(0) },
-                RemoteReducedValueV2::DoubleBits { value: None },
+                ModelReducedValue::Count { value: 0 },
+                ModelReducedValue::Long { value: Some(0) },
+                ModelReducedValue::DoubleBits { value: None },
             ],
         )],
     };
@@ -2008,7 +2008,7 @@ fn model_reduction_requires_the_exact_echo_and_enforces_cells_and_finite_bits() 
     );
 
     let mut wrong_root = outcome.clone();
-    let RemoteOutcomeV2::ModelReduction { root, .. } = &mut wrong_root else {
+    let ModelOutcome::ModelReduction { root, .. } = &mut wrong_root else {
         unreachable!()
     };
     *root = binding_id(1);
@@ -2026,7 +2026,7 @@ fn model_reduction_requires_the_exact_echo_and_enforces_cells_and_finite_bits() 
     );
 
     let mut wrong_reducers = outcome.clone();
-    let RemoteOutcomeV2::ModelReduction { reducers, .. } = &mut wrong_reducers else {
+    let ModelOutcome::ModelReduction { reducers, .. } = &mut wrong_reducers else {
         unreachable!()
     };
     reducers.swap(0, 1);
@@ -2044,15 +2044,15 @@ fn model_reduction_requires_the_exact_echo_and_enforces_cells_and_finite_bits() 
     );
 
     let mut non_finite = outcome;
-    let RemoteOutcomeV2::ModelReduction { rows, .. } = &mut non_finite else {
+    let ModelOutcome::ModelReduction { rows, .. } = &mut non_finite else {
         unreachable!()
     };
-    rows[0] = RemoteReductionRowV2::new(
+    rows[0] = ModelReductionRow::new(
         None,
         vec![
-            RemoteReducedValueV2::Count { value: 0 },
-            RemoteReducedValueV2::Long { value: Some(0) },
-            RemoteReducedValueV2::DoubleBits {
+            ModelReducedValue::Count { value: 0 },
+            ModelReducedValue::Long { value: Some(0) },
+            ModelReducedValue::DoubleBits {
                 value: Some(f64::INFINITY.to_bits()),
             },
         ],
@@ -2079,21 +2079,21 @@ fn model_reduction_groups_use_semantic_order_positive_zero_and_tuple_cell_limits
     let double_plan = reduction_plan(Some(double_group.clone()), count.clone());
     let double_rows = |zero: f64| {
         vec![
-            RemoteReductionRowV2::new(
-                Some(RemoteReductionGroupV2::field(double_value(-2.0))),
-                vec![RemoteReducedValueV2::Count { value: 1 }],
+            ModelReductionRow::new(
+                Some(ModelReductionGroup::field(double_value(-2.0))),
+                vec![ModelReducedValue::Count { value: 1 }],
             ),
-            RemoteReductionRowV2::new(
-                Some(RemoteReductionGroupV2::field(double_value(-1.0))),
-                vec![RemoteReducedValueV2::Count { value: 1 }],
+            ModelReductionRow::new(
+                Some(ModelReductionGroup::field(double_value(-1.0))),
+                vec![ModelReducedValue::Count { value: 1 }],
             ),
-            RemoteReductionRowV2::new(
-                Some(RemoteReductionGroupV2::field(double_value(zero))),
-                vec![RemoteReducedValueV2::Count { value: 1 }],
+            ModelReductionRow::new(
+                Some(ModelReductionGroup::field(double_value(zero))),
+                vec![ModelReducedValue::Count { value: 1 }],
             ),
         ]
     };
-    let double_outcome = RemoteOutcomeV2::ModelReduction {
+    let double_outcome = ModelOutcome::ModelReduction {
         graph: empty_reduction_graph(),
         root: binding_id(0),
         group: Some(double_group.clone()),
@@ -2108,7 +2108,7 @@ fn model_reduction_groups_use_semantic_order_positive_zero_and_tuple_cell_limits
     )
     .expect("negative double groups use numeric rather than bit ordering");
 
-    let negative_zero = RemoteOutcomeV2::ModelReduction {
+    let negative_zero = ModelOutcome::ModelReduction {
         graph: empty_reduction_graph(),
         root: binding_id(0),
         group: Some(double_group),
@@ -2136,16 +2136,16 @@ fn model_reduction_groups_use_semantic_order_positive_zero_and_tuple_cell_limits
     let tuple_rows = [("-2", -2.0), ("-2", -1.0), ("2", -2.0), ("2", -1.0)]
         .into_iter()
         .map(|(decimal, double)| {
-            RemoteReductionRowV2::new(
-                Some(RemoteReductionGroupV2::fields(vec![
+            ModelReductionRow::new(
+                Some(ModelReductionGroup::fields(vec![
                     decimal_value(decimal),
                     double_value(double),
                 ])),
-                vec![RemoteReducedValueV2::Count { value: 1 }],
+                vec![ModelReducedValue::Count { value: 1 }],
             )
         })
         .collect::<Vec<_>>();
-    let tuple_outcome = RemoteOutcomeV2::ModelReduction {
+    let tuple_outcome = ModelOutcome::ModelReduction {
         graph: empty_reduction_graph(),
         root: binding_id(0),
         group: Some(tuple_group),
@@ -2182,30 +2182,30 @@ fn model_reduction_binding_groups_are_graph_bound_and_budgeted_per_edge_and_cell
     let group = QueryReductionGroupV2::binding(binding_id(1));
     let reducers = vec![count_reducer()];
     let plan = reduction_plan(Some(group.clone()), reducers.clone());
-    let graph = HydrationGraphV2::new(vec![
+    let graph = HydrationGraph::new(vec![
         reduction_person_node(0, "0x10"),
         reduction_person_node(1, "0x11"),
     ])
     .expect("binding-group graph");
-    let outcome = RemoteOutcomeV2::ModelReduction {
+    let outcome = ModelOutcome::ModelReduction {
         graph,
         root: binding_id(0),
         group: Some(group),
         reducers,
         rows: vec![
-            RemoteReductionRowV2::new(
-                Some(RemoteReductionGroupV2::thing(HydrationReferenceV2::new(
+            ModelReductionRow::new(
+                Some(ModelReductionGroup::thing(HydrationReference::new(
                     person(),
-                    HydrationNodeIdV2::new(0),
+                    HydrationNodeId::new(0),
                 ))),
-                vec![RemoteReducedValueV2::Count { value: 2 }],
+                vec![ModelReducedValue::Count { value: 2 }],
             ),
-            RemoteReductionRowV2::new(
-                Some(RemoteReductionGroupV2::thing(HydrationReferenceV2::new(
+            ModelReductionRow::new(
+                Some(ModelReductionGroup::thing(HydrationReference::new(
                     person(),
-                    HydrationNodeIdV2::new(1),
+                    HydrationNodeId::new(1),
                 ))),
-                vec![RemoteReducedValueV2::Count { value: 1 }],
+                vec![ModelReducedValue::Count { value: 1 }],
             ),
         ],
     };
@@ -2262,7 +2262,7 @@ fn request_bound_v2_limits_cannot_be_widened_and_each_graph_budget_preflights() 
         &plan,
         &request_fingerprint,
         RemoteResultKindV2::HydratedPage,
-        RemoteOutcomeV2::HydratedPage {
+        ModelOutcome::HydratedPage {
             entries: vec![page_row()],
             graph: page_graph(),
             limit: 25,
@@ -2331,26 +2331,20 @@ fn hydrated_page_and_collection_order_are_proved_from_graph_values() {
     let plan = page_plan();
     let page_request = request(&plan, RemoteResultKindV2::HydratedPage, true);
     let fingerprint = page_request.fingerprint().expect("fingerprint");
-    let graph = HydrationGraphV2::new(vec![
+    let graph = HydrationGraph::new(vec![
         person_node_named(0, "0x01", "Alice"),
         employment_node(
             1,
             "0x02",
             "assignment-1",
-            vec![HydrationReferenceV2::new(
-                person(),
-                HydrationNodeIdV2::new(0),
-            )],
+            vec![HydrationReference::new(person(), HydrationNodeId::new(0))],
         ),
         person_node_named(2, "0x03", "Bob"),
         employment_node(
             3,
             "0x04",
             "assignment-2",
-            vec![HydrationReferenceV2::new(
-                person(),
-                HydrationNodeIdV2::new(2),
-            )],
+            vec![HydrationReference::new(person(), HydrationNodeId::new(2))],
         ),
     ])
     .expect("graph");
@@ -2359,7 +2353,7 @@ fn hydrated_page_and_collection_order_are_proved_from_graph_values() {
         &plan,
         &fingerprint,
         RemoteResultKindV2::HydratedPage,
-        RemoteOutcomeV2::HydratedPage {
+        ModelOutcome::HydratedPage {
             entries: vec![page_row_for(0, &[1]), page_row_for(2, &[3])],
             graph: graph.clone(),
             limit: 25,
@@ -2375,7 +2369,7 @@ fn hydrated_page_and_collection_order_are_proved_from_graph_values() {
             &plan,
             &fingerprint,
             RemoteResultKindV2::HydratedPage,
-            RemoteOutcomeV2::HydratedPage {
+            ModelOutcome::HydratedPage {
                 entries: vec![page_row_for(2, &[3]), page_row_for(0, &[1])],
                 graph,
                 limit: 25,
@@ -2388,25 +2382,19 @@ fn hydrated_page_and_collection_order_are_proved_from_graph_values() {
         "reversed page rows must fail stable-order validation",
     );
 
-    let collection_graph = HydrationGraphV2::new(vec![
+    let collection_graph = HydrationGraph::new(vec![
         person_node_named(0, "0x01", "Alice"),
         employment_node(
             1,
             "0x02",
             "assignment-1",
-            vec![HydrationReferenceV2::new(
-                person(),
-                HydrationNodeIdV2::new(0),
-            )],
+            vec![HydrationReference::new(person(), HydrationNodeId::new(0))],
         ),
         employment_node(
             2,
             "0x03",
             "assignment-2",
-            vec![HydrationReferenceV2::new(
-                person(),
-                HydrationNodeIdV2::new(0),
-            )],
+            vec![HydrationReference::new(person(), HydrationNodeId::new(0))],
         ),
     ])
     .expect("collection graph");
@@ -2416,7 +2404,7 @@ fn hydrated_page_and_collection_order_are_proved_from_graph_values() {
             &plan,
             &fingerprint,
             RemoteResultKindV2::HydratedPage,
-            RemoteOutcomeV2::HydratedPage {
+            ModelOutcome::HydratedPage {
                 entries: vec![page_row_for(0, &[2, 1])],
                 graph: collection_graph.clone(),
                 limit: 25,
@@ -2434,7 +2422,7 @@ fn hydrated_page_and_collection_order_are_proved_from_graph_values() {
             &plan,
             &fingerprint,
             RemoteResultKindV2::HydratedPage,
-            RemoteOutcomeV2::HydratedPage {
+            ModelOutcome::HydratedPage {
                 entries: vec![page_row_for(0, &[1, 1])],
                 graph: collection_graph,
                 limit: 25,
@@ -2454,8 +2442,8 @@ fn reject_missing_order_matches_v1_pairwise_semantics() {
     let request = request(&plan, RemoteResultKindV2::HydratedRows, true);
     let fingerprint = request.fingerprint().expect("fingerprint");
     let row = |node| {
-        HydratedRowV2::new(vec![HydrationSlotV2::Singular {
-            value: HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(node)),
+        HydratedRow::new(vec![HydrationSlot::Singular {
+            value: HydrationReference::new(person(), HydrationNodeId::new(node)),
         }])
     };
 
@@ -2464,8 +2452,8 @@ fn reject_missing_order_matches_v1_pairwise_semantics() {
         &plan,
         &fingerprint,
         RemoteResultKindV2::HydratedRows,
-        RemoteOutcomeV2::HydratedRows {
-            graph: HydrationGraphV2::new(vec![
+        ModelOutcome::HydratedRows {
+            graph: HydrationGraph::new(vec![
                 optional_order_person_node(0, "0x01", None, "person-1"),
                 optional_order_person_node(1, "0x02", None, "person-2"),
             ])
@@ -2483,8 +2471,8 @@ fn reject_missing_order_matches_v1_pairwise_semantics() {
         &plan,
         &fingerprint,
         RemoteResultKindV2::HydratedRows,
-        RemoteOutcomeV2::HydratedRows {
-            graph: HydrationGraphV2::new(vec![optional_order_person_node(
+        ModelOutcome::HydratedRows {
+            graph: HydrationGraph::new(vec![optional_order_person_node(
                 0, "0x01", None, "person-1",
             )])
             .expect("graph"),
@@ -2501,8 +2489,8 @@ fn reject_missing_order_matches_v1_pairwise_semantics() {
         &plan,
         &fingerprint,
         RemoteResultKindV2::HydratedRows,
-        RemoteOutcomeV2::HydratedRows {
-            graph: HydrationGraphV2::new(vec![
+        ModelOutcome::HydratedRows {
+            graph: HydrationGraph::new(vec![
                 optional_order_person_node(0, "0x01", None, "person-1"),
                 optional_order_person_node(1, "0x02", Some("Bob"), "person-2"),
             ])
@@ -2538,20 +2526,20 @@ fn released_decimal_aliases_cannot_forge_distinct_or_unique_hydration_evidence()
     let canonical = || decimal_value("1");
     let released = || CompatibilityValueV2::released_decimal("1.0dec").expect("released decimal");
     let row = |node| {
-        HydratedRowV2::new(vec![HydrationSlotV2::Singular {
-            value: HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(node)),
+        HydratedRow::new(vec![HydrationSlot::Singular {
+            value: HydrationReference::new(person(), HydrationNodeId::new(node)),
         }])
     };
     let assert_rejected =
-        |plan: QueryPlan, nodes: Vec<HydrationNodeV2>, rows: Vec<HydratedRowV2>, expected: &str| {
+        |plan: QueryPlan, nodes: Vec<HydrationNode>, rows: Vec<HydratedRow>, expected: &str| {
             let request = request(&plan, RemoteResultKindV2::HydratedRows, true);
-            let graph = HydrationGraphV2::new(nodes).expect("structurally canonical forged graph");
+            let graph = HydrationGraph::new(nodes).expect("structurally canonical forged graph");
             let error = RemoteQueryResponseV2::new(
                 NONCE,
                 &plan,
                 &request.fingerprint().expect("fingerprint"),
                 RemoteResultKindV2::HydratedRows,
-                RemoteOutcomeV2::HydratedRows { graph, rows },
+                ModelOutcome::HydratedRows { graph, rows },
             )
             .expect_err("semantic decimal duplicate must fail closed");
             assert_eq!(error.code().as_str(), "query_remote_v2_evidence_mismatch");
@@ -2595,17 +2583,17 @@ fn released_decimal_aliases_cannot_forge_distinct_or_unique_hydration_evidence()
 fn inherited_order_field_uses_reference_owner_authority_not_occurrence_equality() {
     let plan = inherited_rows_plan(person()).expect("inherited field plan");
     let request = request(&plan, RemoteResultKindV2::HydratedRows, true);
-    let graph = HydrationGraphV2::new(vec![
+    let graph = HydrationGraph::new(vec![
         employee_node(0, "0x01", "Alice"),
         employee_node(1, "0x02", "Bob"),
     ])
     .expect("subtype graph");
     let rows = vec![
-        HydratedRowV2::new(vec![HydrationSlotV2::Singular {
-            value: HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(0)),
+        HydratedRow::new(vec![HydrationSlot::Singular {
+            value: HydrationReference::new(person(), HydrationNodeId::new(0)),
         }]),
-        HydratedRowV2::new(vec![HydrationSlotV2::Singular {
-            value: HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(1)),
+        HydratedRow::new(vec![HydrationSlot::Singular {
+            value: HydrationReference::new(person(), HydrationNodeId::new(1)),
         }]),
     ];
     assert!(
@@ -2614,7 +2602,7 @@ fn inherited_order_field_uses_reference_owner_authority_not_occurrence_equality(
             &plan,
             &request.fingerprint().expect("fingerprint"),
             RemoteResultKindV2::HydratedRows,
-            RemoteOutcomeV2::HydratedRows { graph, rows },
+            ModelOutcome::HydratedRows { graph, rows },
         )
         .is_ok(),
         "a parent-owned inherited field must order concrete subtype occurrences",
@@ -2697,24 +2685,24 @@ fn unrelated_unique_field_owners_may_share_one_attribute_value() {
         semantics(),
     )
     .expect("unrelated-owner plan");
-    let graph = HydrationGraphV2::new(vec![
-        HydrationNodeV2::new(
-            HydrationNodeIdV2::new(0),
+    let graph = HydrationGraph::new(vec![
+        HydrationNode::new(
+            HydrationNodeId::new(0),
             "0x01".to_owned(),
             person.clone(),
-            HydrationNodeKindV2::Entity,
-            vec![HydrationAttributeEvidenceV2::new(
+            HydrationNodeKind::Entity,
+            vec![HydrationAttributeEvidence::new(
                 AttributeId::new("name").expect("attribute"),
                 vec![string_value("Shared")],
             )],
             vec![],
         ),
-        HydrationNodeV2::new(
-            HydrationNodeIdV2::new(1),
+        HydrationNode::new(
+            HydrationNodeId::new(1),
             "0x02".to_owned(),
             animal.clone(),
-            HydrationNodeKindV2::Entity,
-            vec![HydrationAttributeEvidenceV2::new(
+            HydrationNodeKind::Entity,
+            vec![HydrationAttributeEvidence::new(
                 AttributeId::new("name").expect("attribute"),
                 vec![string_value("Shared")],
             )],
@@ -2722,12 +2710,12 @@ fn unrelated_unique_field_owners_may_share_one_attribute_value() {
         ),
     ])
     .expect("graph");
-    let rows = vec![HydratedRowV2::new(vec![
-        HydrationSlotV2::Singular {
-            value: HydrationReferenceV2::new(person, HydrationNodeIdV2::new(0)),
+    let rows = vec![HydratedRow::new(vec![
+        HydrationSlot::Singular {
+            value: HydrationReference::new(person, HydrationNodeId::new(0)),
         },
-        HydrationSlotV2::Singular {
-            value: HydrationReferenceV2::new(animal, HydrationNodeIdV2::new(1)),
+        HydrationSlot::Singular {
+            value: HydrationReference::new(animal, HydrationNodeId::new(1)),
         },
     ])];
     let request = request(&plan, RemoteResultKindV2::HydratedRows, true);
@@ -2737,7 +2725,7 @@ fn unrelated_unique_field_owners_may_share_one_attribute_value() {
             &plan,
             &request.fingerprint().expect("fingerprint"),
             RemoteResultKindV2::HydratedRows,
-            RemoteOutcomeV2::HydratedRows { graph, rows },
+            ModelOutcome::HydratedRows { graph, rows },
         )
         .is_ok(),
         "owner-scoped unique claims must not collide by attribute label alone",
@@ -2750,15 +2738,15 @@ fn role_player_authority_and_ordering_fail_closed() {
     let page_request = request(&plan, RemoteResultKindV2::HydratedPage, true);
     let fingerprint = page_request.fingerprint().expect("fingerprint");
     let forged_declared = type_id(TypeKind::Entity, "animal");
-    let forged_graph = HydrationGraphV2::new(vec![
+    let forged_graph = HydrationGraph::new(vec![
         person_node(0, "0x01"),
         employment_node(
             1,
             "0x02",
             "assignment-1",
-            vec![HydrationReferenceV2::new(
+            vec![HydrationReference::new(
                 forged_declared,
-                HydrationNodeIdV2::new(0),
+                HydrationNodeId::new(0),
             )],
         ),
     ])
@@ -2769,7 +2757,7 @@ fn role_player_authority_and_ordering_fail_closed() {
             &plan,
             &fingerprint,
             RemoteResultKindV2::HydratedPage,
-            RemoteOutcomeV2::HydratedPage {
+            ModelOutcome::HydratedPage {
                 entries: vec![page_row()],
                 graph: forged_graph,
                 limit: 25,
@@ -2782,26 +2770,20 @@ fn role_player_authority_and_ordering_fail_closed() {
         "same-kind role declarations still require exact declared-to-concrete authority",
     );
 
-    let disconnected_graph = HydrationGraphV2::new(vec![
+    let disconnected_graph = HydrationGraph::new(vec![
         person_node_named(0, "0x01", "Alice"),
         employment_node(
             1,
             "0x02",
             "assignment-1",
-            vec![HydrationReferenceV2::new(
-                person(),
-                HydrationNodeIdV2::new(0),
-            )],
+            vec![HydrationReference::new(person(), HydrationNodeId::new(0))],
         ),
         person_node_named(2, "0x03", "Bob"),
         employment_node(
             3,
             "0x04",
             "assignment-2",
-            vec![HydrationReferenceV2::new(
-                person(),
-                HydrationNodeIdV2::new(2),
-            )],
+            vec![HydrationReference::new(person(), HydrationNodeId::new(2))],
         ),
     ])
     .expect("structurally valid disconnected graph");
@@ -2811,7 +2793,7 @@ fn role_player_authority_and_ordering_fail_closed() {
             &plan,
             &fingerprint,
             RemoteResultKindV2::HydratedPage,
-            RemoteOutcomeV2::HydratedPage {
+            ModelOutcome::HydratedPage {
                 entries: vec![page_row()],
                 graph: disconnected_graph,
                 limit: 25,
@@ -2824,7 +2806,7 @@ fn role_player_authority_and_ordering_fail_closed() {
         "a detached role-owner/player component must not mark itself reachable",
     );
 
-    let unordered_graph = HydrationGraphV2::new(vec![
+    let unordered_graph = HydrationGraph::new(vec![
         person_node_named(0, "0x01", "Alice"),
         person_node_named(1, "0x02", "Bob"),
         employment_node(
@@ -2832,8 +2814,8 @@ fn role_player_authority_and_ordering_fail_closed() {
             "0x03",
             "assignment-1",
             vec![
-                HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(1)),
-                HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(0)),
+                HydrationReference::new(person(), HydrationNodeId::new(1)),
+                HydrationReference::new(person(), HydrationNodeId::new(0)),
             ],
         ),
     ])
@@ -2844,7 +2826,7 @@ fn role_player_authority_and_ordering_fail_closed() {
             &plan,
             &fingerprint,
             RemoteResultKindV2::HydratedPage,
-            RemoteOutcomeV2::HydratedPage {
+            ModelOutcome::HydratedPage {
                 entries: vec![page_row_for(0, &[2])],
                 graph: unordered_graph,
                 limit: 25,
@@ -2861,14 +2843,14 @@ fn role_player_authority_and_ordering_fail_closed() {
     let mixed_request = request(&mixed_plan, RemoteResultKindV2::HydratedPage, true);
     let animal = type_id(TypeKind::Entity, "animal");
     let mixed_graph = |players| {
-        HydrationGraphV2::new(vec![
+        HydrationGraph::new(vec![
             person_node(0, "0x01"),
             empty_entity_node(1, "0x02", animal.clone()),
             employment_node(2, "0x03", "assignment-1", players),
         ])
         .expect("mixed-declared graph")
     };
-    let mixed_outcome = |graph| RemoteOutcomeV2::HydratedPage {
+    let mixed_outcome = |graph| ModelOutcome::HydratedPage {
         entries: vec![page_row_for(0, &[2])],
         graph,
         limit: 25,
@@ -2883,8 +2865,8 @@ fn role_player_authority_and_ordering_fail_closed() {
             &mixed_request.fingerprint().expect("fingerprint"),
             RemoteResultKindV2::HydratedPage,
             mixed_outcome(mixed_graph(vec![
-                HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(0)),
-                HydrationReferenceV2::new(animal.clone(), HydrationNodeIdV2::new(1)),
+                HydrationReference::new(person(), HydrationNodeId::new(0)),
+                HydrationReference::new(animal.clone(), HydrationNodeId::new(1)),
             ])),
         )
         .is_ok(),
@@ -2897,8 +2879,8 @@ fn role_player_authority_and_ordering_fail_closed() {
             &mixed_request.fingerprint().expect("fingerprint"),
             RemoteResultKindV2::HydratedPage,
             mixed_outcome(mixed_graph(vec![
-                HydrationReferenceV2::new(animal.clone(), HydrationNodeIdV2::new(1)),
-                HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(0)),
+                HydrationReference::new(animal.clone(), HydrationNodeId::new(1)),
+                HydrationReference::new(person(), HydrationNodeId::new(0)),
             ])),
         )
         .is_err(),
@@ -2907,15 +2889,15 @@ fn role_player_authority_and_ordering_fail_closed() {
 
     let distinct_plan = page_plan_with_hydration(model_hydration_with_role_flags(true, true));
     let distinct_request = request(&distinct_plan, RemoteResultKindV2::HydratedPage, true);
-    let duplicate_graph = HydrationGraphV2::new(vec![
+    let duplicate_graph = HydrationGraph::new(vec![
         person_node(0, "0x01"),
         employment_node(
             1,
             "0x02",
             "assignment-1",
             vec![
-                HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(0)),
-                HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(0)),
+                HydrationReference::new(person(), HydrationNodeId::new(0)),
+                HydrationReference::new(person(), HydrationNodeId::new(0)),
             ],
         ),
     ])
@@ -2926,7 +2908,7 @@ fn role_player_authority_and_ordering_fail_closed() {
             &distinct_plan,
             &distinct_request.fingerprint().expect("fingerprint"),
             RemoteResultKindV2::HydratedPage,
-            RemoteOutcomeV2::HydratedPage {
+            ModelOutcome::HydratedPage {
                 entries: vec![page_row()],
                 graph: duplicate_graph,
                 limit: 25,
@@ -2945,27 +2927,27 @@ fn relation_role_players_are_shallow_and_cannot_smuggle_recursive_roles() {
     let plan = shallow_relation_player_plan();
     let request = request(&plan, RemoteResultKindV2::HydratedRows, true);
     let fingerprint = request.fingerprint().expect("fingerprint");
-    let row = HydratedRowV2::new(vec![HydrationSlotV2::Singular {
-        value: HydrationReferenceV2::new(employment(), HydrationNodeIdV2::new(0)),
+    let row = HydratedRow::new(vec![HydrationSlot::Singular {
+        value: HydrationReference::new(employment(), HydrationNodeId::new(0)),
     }]);
     let employment_node = || {
-        HydrationNodeV2::new(
-            HydrationNodeIdV2::new(0),
+        HydrationNode::new(
+            HydrationNodeId::new(0),
             "0x01".to_owned(),
             employment(),
-            HydrationNodeKindV2::Relation,
+            HydrationNodeKind::Relation,
             vec![],
-            vec![HydrationRoleEvidenceV2::new(
+            vec![HydrationRoleEvidence::new(
                 RoleId::new("employment", "assignment").expect("role"),
-                vec![HydrationReferenceV2::new(team(), HydrationNodeIdV2::new(1))],
+                vec![HydrationReference::new(team(), HydrationNodeId::new(1))],
             )],
         )
     };
-    let shallow_team = HydrationNodeV2::new(
-        HydrationNodeIdV2::new(1),
+    let shallow_team = HydrationNode::new(
+        HydrationNodeId::new(1),
         "0x02".to_owned(),
         team(),
-        HydrationNodeKindV2::Relation,
+        HydrationNodeKind::Relation,
         vec![],
         vec![],
     );
@@ -2975,8 +2957,8 @@ fn relation_role_players_are_shallow_and_cannot_smuggle_recursive_roles() {
             &plan,
             &fingerprint,
             RemoteResultKindV2::HydratedRows,
-            RemoteOutcomeV2::HydratedRows {
-                graph: HydrationGraphV2::new(vec![employment_node(), shallow_team])
+            ModelOutcome::HydratedRows {
+                graph: HydrationGraph::new(vec![employment_node(), shallow_team])
                     .expect("shallow graph"),
                 rows: vec![row.clone()],
             },
@@ -2985,21 +2967,21 @@ fn relation_role_players_are_shallow_and_cannot_smuggle_recursive_roles() {
         "released materializers admit relation players with attributes but no recursive roles",
     );
 
-    let recursive_team = HydrationNodeV2::new(
-        HydrationNodeIdV2::new(1),
+    let recursive_team = HydrationNode::new(
+        HydrationNodeId::new(1),
         "0x02".to_owned(),
         team(),
-        HydrationNodeKindV2::Relation,
+        HydrationNodeKind::Relation,
         vec![],
-        vec![HydrationRoleEvidenceV2::new(
+        vec![HydrationRoleEvidence::new(
             RoleId::new("team", "parent").expect("role"),
-            vec![HydrationReferenceV2::new(
+            vec![HydrationReference::new(
                 employment(),
-                HydrationNodeIdV2::new(0),
+                HydrationNodeId::new(0),
             )],
         )],
     );
-    let recursive_graph = HydrationGraphV2::new(vec![employment_node(), recursive_team])
+    let recursive_graph = HydrationGraph::new(vec![employment_node(), recursive_team])
         .expect("structurally closed cyclic graph");
     assert!(
         RemoteQueryResponseV2::new(
@@ -3007,7 +2989,7 @@ fn relation_role_players_are_shallow_and_cannot_smuggle_recursive_roles() {
             &plan,
             &fingerprint,
             RemoteResultKindV2::HydratedRows,
-            RemoteOutcomeV2::HydratedRows {
+            ModelOutcome::HydratedRows {
                 graph: recursive_graph,
                 rows: vec![row],
             },
@@ -3020,40 +3002,37 @@ fn relation_role_players_are_shallow_and_cannot_smuggle_recursive_roles() {
 #[test]
 fn hydration_graph_rejects_dense_iid_kind_role_and_reference_contradictions() {
     assert_eq!(
-        HydrationGraphV2::new(vec![person_node(1, "0x01")])
+        HydrationGraph::new(vec![person_node(1, "0x01")])
             .expect_err("not dense")
             .code()
             .as_str(),
         "query_remote_v2_evidence_mismatch",
     );
-    assert!(HydrationGraphV2::new(vec![person_node(0, "0x01"), person_node(1, "0x01")]).is_err());
-    let entity_with_role = HydrationNodeV2::new(
-        HydrationNodeIdV2::new(0),
+    assert!(HydrationGraph::new(vec![person_node(0, "0x01"), person_node(1, "0x01")]).is_err());
+    let entity_with_role = HydrationNode::new(
+        HydrationNodeId::new(0),
         "0x01".to_owned(),
         person(),
-        HydrationNodeKindV2::Entity,
+        HydrationNodeKind::Entity,
         vec![],
-        vec![HydrationRoleEvidenceV2::new(
+        vec![HydrationRoleEvidence::new(
             RoleId::new("employment", "employee").expect("role"),
             vec![],
         )],
     );
-    assert!(HydrationGraphV2::new(vec![entity_with_role]).is_err());
-    let relation_with_foreign_ref = HydrationNodeV2::new(
-        HydrationNodeIdV2::new(0),
+    assert!(HydrationGraph::new(vec![entity_with_role]).is_err());
+    let relation_with_foreign_ref = HydrationNode::new(
+        HydrationNodeId::new(0),
         "0x02".to_owned(),
         employment(),
-        HydrationNodeKindV2::Relation,
+        HydrationNodeKind::Relation,
         vec![],
-        vec![HydrationRoleEvidenceV2::new(
+        vec![HydrationRoleEvidence::new(
             RoleId::new("employment", "employee").expect("role"),
-            vec![HydrationReferenceV2::new(
-                person(),
-                HydrationNodeIdV2::new(9),
-            )],
+            vec![HydrationReference::new(person(), HydrationNodeId::new(9))],
         )],
     );
-    assert!(HydrationGraphV2::new(vec![relation_with_foreign_ref]).is_err());
+    assert!(HydrationGraph::new(vec![relation_with_foreign_ref]).is_err());
 }
 
 #[test]
@@ -3061,14 +3040,14 @@ fn projection_rejects_declared_type_cardinality_and_exactly_one_mismatches() {
     let page_plan = page_plan();
     let page_request = request(&page_plan, RemoteResultKindV2::HydratedPage, true);
     let page_fingerprint = page_request.fingerprint().expect("fingerprint");
-    let wrong_declared = HydratedRowV2::new(vec![
-        HydrationSlotV2::Singular {
-            value: HydrationReferenceV2::new(employment(), HydrationNodeIdV2::new(0)),
+    let wrong_declared = HydratedRow::new(vec![
+        HydrationSlot::Singular {
+            value: HydrationReference::new(employment(), HydrationNodeId::new(0)),
         },
-        HydrationSlotV2::Collection {
-            values: vec![HydrationReferenceV2::new(
+        HydrationSlot::Collection {
+            values: vec![HydrationReference::new(
                 employment(),
-                HydrationNodeIdV2::new(1),
+                HydrationNodeId::new(1),
             )],
         },
     ]);
@@ -3078,7 +3057,7 @@ fn projection_rejects_declared_type_cardinality_and_exactly_one_mismatches() {
             &page_plan,
             &page_fingerprint,
             RemoteResultKindV2::HydratedPage,
-            RemoteOutcomeV2::HydratedPage {
+            ModelOutcome::HydratedPage {
                 entries: vec![wrong_declared],
                 graph: page_graph(),
                 limit: 25,
@@ -3090,12 +3069,12 @@ fn projection_rejects_declared_type_cardinality_and_exactly_one_mismatches() {
         .is_err()
     );
 
-    let incomplete_graph = HydrationGraphV2::new(vec![
-        HydrationNodeV2::new(
-            HydrationNodeIdV2::new(0),
+    let incomplete_graph = HydrationGraph::new(vec![
+        HydrationNode::new(
+            HydrationNodeId::new(0),
             "0x01".to_owned(),
             person(),
-            HydrationNodeKindV2::Entity,
+            HydrationNodeKind::Entity,
             vec![],
             vec![],
         ),
@@ -3108,7 +3087,7 @@ fn projection_rejects_declared_type_cardinality_and_exactly_one_mismatches() {
             &page_plan,
             &page_fingerprint,
             RemoteResultKindV2::HydratedPage,
-            RemoteOutcomeV2::HydratedPage {
+            ModelOutcome::HydratedPage {
                 entries: vec![page_row()],
                 graph: incomplete_graph,
                 limit: 25,
@@ -3128,8 +3107,8 @@ fn projection_rejects_declared_type_cardinality_and_exactly_one_mismatches() {
             &one_plan,
             &one_request.fingerprint().expect("fingerprint"),
             RemoteResultKindV2::HydratedRows,
-            RemoteOutcomeV2::HydratedRows {
-                graph: HydrationGraphV2::new(vec![]).expect("empty graph"),
+            ModelOutcome::HydratedRows {
+                graph: HydrationGraph::new(vec![]).expect("empty graph"),
                 rows: vec![],
             },
         )
@@ -3148,7 +3127,7 @@ fn v2_wire_goldens_are_independent_from_v1() {
         &plan,
         &request_fingerprint,
         RemoteResultKindV2::Rows,
-        RemoteOutcomeV2::Rows { rows: vec![] },
+        ModelOutcome::Rows { rows: vec![] },
     )
     .expect("response");
     let diagnostic = Diagnostic::new(
