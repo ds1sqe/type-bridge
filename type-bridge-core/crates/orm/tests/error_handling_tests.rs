@@ -145,25 +145,20 @@ async fn entity_insert_returns_rows_instead_of_documents() {
 }
 
 #[tokio::test]
-async fn entity_insert_empty_documents_response() {
+async fn entity_insert_empty_documents_returns_zero_written_roots() {
     let backend = MockBackend::new(vec![QueryResult::Documents(vec![])]);
+    let queries = backend.queries.clone();
     let db = Database::with_backend(Box::new(backend), "testdb");
 
     let mut person = make_person("Alice", 30);
     let manager = EntityManager::<Person>::from_registry(&db, manager_registry()).unwrap();
-    let result = manager.insert(&mut person).await;
+    let result = manager.insert(&mut person).await.unwrap();
 
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        OrmError::Hydration { type_name, message } => {
-            assert_eq!(type_name, "person");
-            assert!(
-                message == "Manager answer has invalid identity evidence",
-                "Expected message about empty documents, got: {message}"
-            );
-        }
-        other => panic!("Expected Hydration error, got: {other}"),
-    }
+    assert_eq!(result.count(), 0);
+    assert!(result.items().is_empty());
+    assert!(result.item().is_none());
+    assert!(person.iid.is_none());
+    assert_eq!(queries.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
