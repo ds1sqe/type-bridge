@@ -73,6 +73,7 @@ function verifyInstalledPackage(installedRoot) {
     "installRuntimeProjection",
     "projectedBatchDeleted",
     "projectedManagerNativeCall",
+    "writeResult",
   ]);
 
   assert.equal(packageJson.main, "dist/public.js");

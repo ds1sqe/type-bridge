@@ -219,6 +219,7 @@ assert.deepEqual(Object.keys(runtimeProjection).sort(), [
   "installRuntimeProjection",
   "projectedBatchDeleted",
   "projectedManagerNativeCall",
+  "writeResult",
 ]);
 // Query execution enters through one connection-bound executor per kind.
 for (const name of ["direct", "remote"]) {
