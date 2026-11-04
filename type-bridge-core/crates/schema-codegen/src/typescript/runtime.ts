@@ -1363,7 +1363,7 @@ function projectedManager<Complete>(
   }
   return orderedProjectedManagerForNative(
     typeKey,
-    projection.manager(typeKey, connection),
+    projectedManagerNativeCall(() => projection.manager(typeKey, connection)),
   );
 }
 
@@ -4607,43 +4607,43 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
   return Object.freeze({
     insert(instance: Complete): WriteResult<Complete> {
       const wire = exactWire(instance, "insert");
-      return native.insertProjected<Complete>(
+      return projectedManagerNativeCall(() => native.insertProjected<Complete>(
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, instance),
-        );
+        ));
     },
     insertMany(instances: readonly Complete[]): BatchWriteResult<Complete> {
       if (!Array.isArray(instances)) {
         throw new TypeError("projected manager insertMany requires an array");
       }
-      return native.insertManyProjected<Complete>(instances.length, (index) => {
+      return projectedManagerNativeCall(() => native.insertManyProjected<Complete>(instances.length, (index) => {
         const instance = instances[index] as Complete;
         const wire = exactWire(instance, "insertMany");
         return {
           instanceJson: JSON.stringify(wire),
           proofs: orderedRoleProofs(typeKey, instance),
         };
-      });
+      }));
     },
     put(instance: Complete): WriteResult<Complete> {
       const wire = exactWire(instance, "put");
-      return native.putProjected<Complete>(
+      return projectedManagerNativeCall(() => native.putProjected<Complete>(
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, instance),
-        );
+        ));
     },
     putMany(instances: readonly Complete[]): BatchWriteResult<Complete> {
       if (!Array.isArray(instances)) {
         throw new TypeError("projected manager putMany requires an array");
       }
-      return native.putManyProjected<Complete>(instances.length, (index) => {
+      return projectedManagerNativeCall(() => native.putManyProjected<Complete>(instances.length, (index) => {
         const instance = instances[index] as Complete;
         const wire = exactWire(instance, "putMany");
         return {
           instanceJson: JSON.stringify(wire),
           proofs: orderedRoleProofs(typeKey, instance),
         };
-      });
+      }));
     },
     update(iid: string, replacement: Complete): WriteResult<Complete> {
       if (typeof iid !== "string" || iid.length === 0) {
@@ -4652,11 +4652,11 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
         );
       }
       const wire = exactWire(replacement, "update");
-      return native.updateProjected<Complete>(
+      return projectedManagerNativeCall(() => native.updateProjected<Complete>(
           iid,
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, replacement),
-        );
+        ));
     },
     updateMany(
       updates: readonly ProjectedBatchUpdate<Complete>[],
@@ -4664,7 +4664,7 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       if (!Array.isArray(updates)) {
         throw new TypeError("projected manager updateMany requires an array");
       }
-      return native.updateManyProjected<Complete>(updates.length, (index) => {
+      return projectedManagerNativeCall(() => native.updateManyProjected<Complete>(updates.length, (index) => {
         const update = updates[index] as ProjectedBatchUpdate<Complete>;
         if (!Array.isArray(update) || update.length !== 2) {
           throw new TypeError(
@@ -4681,7 +4681,7 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
           instanceJson: JSON.stringify(wire),
           proofs: orderedRoleProofs(typeKey, replacement),
         };
-      });
+      }));
     },
     delete(instanceOrIid: Complete | string): void {
       requireLiveSnapshot(instanceOrIid);
@@ -4691,25 +4691,25 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       if (iid === null) {
         throw new TypeError("projected manager delete requires an attached TypeDB IID");
       }
-      native.deleteByIid(iid);
+      projectedManagerNativeCall(() => native.deleteByIid(iid));
     },
     deleteReturning(iid: string): WriteResult<Complete> {
-      return native.deleteByIidReturning<Complete>(iid);
+      return projectedManagerNativeCall(() => native.deleteByIidReturning<Complete>(iid));
     },
     deleteManyReturning(iids: readonly string[]): BatchWriteResult<Complete> {
-      return native.deleteManyReturning<Complete>([...iids]);
+      return projectedManagerNativeCall(() => native.deleteManyReturning<Complete>([...iids]));
     },
     deleteMany(iids: readonly string[]): void {
       if (!Array.isArray(iids)) {
         throw new TypeError("projected manager deleteMany requires an array");
       }
-      native.deleteManyProjected(iids.length, (index) => {
+      projectedManagerNativeCall(() => native.deleteManyProjected(iids.length, (index) => {
         const iid = iids[index];
         if (typeof iid !== "string") {
           throw new TypeError("projected manager deleteMany requires string IIDs");
         }
         return iid;
-      });
+      }));
     },
     filter(
       filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
@@ -4745,7 +4745,7 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       }
       return orderedProjectedManagerForNative(
         typeKey,
-        native.filterEntriesJson(JSON.stringify(lowered)),
+        projectedManagerNativeCall(() => native.filterEntriesJson(JSON.stringify(lowered))),
         nextCompatibility,
       );
     },
@@ -4772,14 +4772,14 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       return filter.where(field, comparison, value as Value);
     },
     getByIid(iid: string): Complete | null {
-      const envelope = native.getByIidProjected(iid);
+      const envelope = projectedManagerNativeCall(() => native.getByIidProjected(iid));
       return envelope === null
         ? null
         : hydrateOrderedProjectedEnvelope(envelope, typeKey);
     },
     all(): readonly Complete[] {
       return compatibilityFilter === null
-        ? Object.freeze(native.allProjected().map((envelope) =>
+        ? Object.freeze(projectedManagerNativeCall(() => native.allProjected()).map((envelope) =>
             hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey),
           ))
         : orderedProjectedFilterForNative<Complete, Owner>(
@@ -4788,17 +4788,17 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
           ).all();
     },
     first(): Complete | null {
-      const envelope = native.firstProjected();
+      const envelope = projectedManagerNativeCall(() => native.firstProjected());
       return envelope === null ? null : hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey);
     },
     count(): bigint {
       return compatibilityFilter === null
-        ? native.count()
+        ? projectedManagerNativeCall(() => native.count())
         : projectedManagerNativeCall(() => compatibilityFilter.count());
     },
     exists(): boolean {
       return compatibilityFilter === null
-        ? native.exists()
+        ? projectedManagerNativeCall(() => native.exists())
         : projectedManagerNativeCall(() => compatibilityFilter.exists());
     },
   });

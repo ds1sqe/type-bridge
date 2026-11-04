@@ -85,7 +85,7 @@ fn emits_exact_deterministic_es_module_package() {
     assert!(runtime.contains("HYDRATE_COMPLETE_BRAND"));
     assert!(runtime.contains("ProjectedModelManager"));
     let index = String::from_utf8(first.get("src/index.ts").unwrap().to_vec()).unwrap();
-    assert!(index.contains("__installRuntimeProjectionPackage"));
+    assert!(index.contains("__installOrderedRuntimeProjectionPackage"));
     assert!(index.contains("export function openMigrationCatalog(): MigrationCatalog"));
     assert!(index.contains("../${MIGRATION_HISTORY_RESOURCE}"));
     assert!(index.contains("RUNTIME_PROJECTION_JSON"));
