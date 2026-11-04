@@ -6,8 +6,8 @@ use support::*;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+use type_bridge_contract::query_plan::QueryPattern;
 use type_bridge_contract::query_plan::v3::{InsertThing, QueryPlanV3, Set, Stage};
-use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
 use type_bridge_contract::schema::*;
 
 #[test]

@@ -4,6 +4,7 @@
 //! references here. Rust owns every transition, semantic check, canonical
 //! byte, fingerprint, and capability.
 
+use crate::plan_runtime::node_scalar;
 use napi::ValueType;
 use napi::bindgen_prelude::{
     BigInt, Buffer, Env, FromNapiValue, JsObjectValue, JsValue, Object, Reference, TypeName,
@@ -14,14 +15,17 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{
     AttributeId, FunctionId, MAX_LABEL_BYTES, RoleId, TypeId, TypeKind,
 };
-use type_bridge_contract::limits::{MAX_CANONICAL_STRING_BYTES, MAX_OUTPUT_NAME_BYTES};
-use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use type_bridge_contract::limits::MAX_OUTPUT_NAME_BYTES;
+use type_bridge_contract::value::CanonicalValue;
 use type_bridge_orm::plan_authority::QueryAuthorityIdentity;
+use type_bridge_orm::plan_scalar::{
+    host_string_type_error, host_string_unicode_error, plan_value_type,
+};
 use type_bridge_orm::query_v2_builder::{
-    AuthoredQueryInvocation, AuthoredQueryPlan, QueryBindingHandle, QueryBuilderScalarInput,
-    QueryDocumentFieldHandle, QueryInputHandle, QueryInvocationRowBudget, QueryLocalFunctionHandle,
-    QueryLocalReturnHandle, QueryOperandHandle, QueryOrderHandle, QueryPatternHandle,
-    QueryPlanBuilder, QueryReduceAssignmentHandle, query_builder_binding_limit_error,
+    AuthoredQueryInvocation, AuthoredQueryPlan, QueryBindingHandle, QueryDocumentFieldHandle,
+    QueryInputHandle, QueryInvocationRowBudget, QueryLocalFunctionHandle, QueryLocalReturnHandle,
+    QueryOperandHandle, QueryOrderHandle, QueryPatternHandle, QueryPlanBuilder,
+    QueryReduceAssignmentHandle, query_builder_binding_limit_error,
     query_builder_boolean_host_type_error, query_builder_bounded_len, query_builder_comparator,
     query_builder_depth, query_builder_depth_error, query_builder_disjunction_term_limit_error,
     query_builder_document_output_limit_error, query_builder_function_argument_limit_error,
@@ -31,18 +35,12 @@ use type_bridge_orm::query_v2_builder::{
     query_builder_order_direction, query_builder_reduce_term_limit_error, query_builder_reducer,
     query_builder_role_player_limit_error, query_builder_role_players,
     query_builder_root_pattern_limit_error, query_builder_row_output_limit_error,
-    query_builder_scalar, query_builder_scalar_host_type_error,
-    query_builder_scalar_integer_range_error, query_builder_scalar_unicode_error,
     query_builder_sort_term_limit_error, query_builder_try_term_limit_error,
-    query_builder_type_kind, query_builder_unsigned_error, query_builder_value_type,
-};
-use type_bridge_orm::query_v2_prepared::{
-    query_v2_host_string_type_error, query_v2_host_string_unicode_error,
+    query_builder_type_kind, query_builder_unsigned_error,
 };
 
 use crate::plan_runtime::{
-    BoundedNodeString, NodePlanAuthority, bounded_node_string_snapshot,
-    bounded_string_with_unicode_error, napi_error,
+    BoundedNodeString, NodePlanAuthority, bounded_node_string_snapshot, napi_error,
 };
 
 fn diagnostic<T>(result: Result<T, Diagnostic>) -> napi::Result<T> {
@@ -55,13 +53,13 @@ unsafe fn node_host_string(
     limit: usize,
 ) -> napi::Result<String> {
     if napi::type_of!(env, napi_value)? != ValueType::String {
-        return Err(napi_error(&query_v2_host_string_type_error()));
+        return Err(napi_error(&host_string_type_error()));
     }
 
     match unsafe { bounded_node_string_snapshot(env, napi_value, limit) }? {
         BoundedNodeString::Value(value) => Ok(value),
         BoundedNodeString::Oversized => Ok(" ".repeat(limit.saturating_add(1))),
-        BoundedNodeString::InvalidUnicode => Err(napi_error(&query_v2_host_string_unicode_error())),
+        BoundedNodeString::InvalidUnicode => Err(napi_error(&host_string_unicode_error())),
     }
 }
 
@@ -106,58 +104,6 @@ macro_rules! define_node_host_string {
 define_node_host_string!(NodeVariableString, MAX_OUTPUT_NAME_BYTES);
 define_node_host_string!(NodeLabelString, MAX_LABEL_BYTES);
 define_node_host_string!(NodeVocabularyString, MAX_OUTPUT_NAME_BYTES);
-
-fn oversized_scalar(value_type: ValueTypeTag) -> Diagnostic {
-    query_builder_scalar(
-        value_type,
-        QueryBuilderScalarInput::Text(" ".repeat(MAX_CANONICAL_STRING_BYTES.saturating_add(1))),
-    )
-    .expect_err("oversized text marker cannot be canonical")
-}
-
-pub(crate) fn node_scalar(
-    env: &Env,
-    value_type: ValueTypeTag,
-    value: Unknown,
-) -> napi::Result<CanonicalValue> {
-    let input = match value_type {
-        ValueTypeTag::String
-        | ValueTypeTag::Date
-        | ValueTypeTag::DateTime
-        | ValueTypeTag::DateTimeTz
-        | ValueTypeTag::Decimal
-        | ValueTypeTag::Duration => {
-            if value.get_type()? != ValueType::String {
-                return Err(napi_error(&query_builder_scalar_host_type_error()));
-            }
-            QueryBuilderScalarInput::Text(bounded_string_with_unicode_error(
-                env,
-                value,
-                MAX_CANONICAL_STRING_BYTES,
-                || oversized_scalar(value_type),
-                query_builder_scalar_unicode_error,
-            )?)
-        }
-        ValueTypeTag::Long => {
-            let integer = BigInt::from_unknown(value)
-                .map_err(|_| napi_error(&query_builder_scalar_host_type_error()))?;
-            let (integer, lossless) = integer.get_i64();
-            if !lossless {
-                return Err(napi_error(&query_builder_scalar_integer_range_error()));
-            }
-            QueryBuilderScalarInput::Long(integer)
-        }
-        ValueTypeTag::Double => QueryBuilderScalarInput::Double(
-            f64::from_unknown(value)
-                .map_err(|_| napi_error(&query_builder_scalar_host_type_error()))?,
-        ),
-        ValueTypeTag::Boolean => QueryBuilderScalarInput::Boolean(
-            bool::from_unknown(value)
-                .map_err(|_| napi_error(&query_builder_scalar_host_type_error()))?,
-        ),
-    };
-    diagnostic(query_builder_scalar(value_type, input))
-}
 
 fn node_boolean(value: Unknown) -> napi::Result<bool> {
     bool::from_unknown(value).map_err(|_| napi_error(&query_builder_boolean_host_type_error()))
@@ -513,7 +459,7 @@ impl NodeQueryPlanBuilder {
         value_type: NodeVocabularyString,
         optional: Unknown,
     ) -> napi::Result<NodeQueryV2InputHandle> {
-        let value_type = diagnostic(query_builder_value_type(value_type.as_str()))?;
+        let value_type = diagnostic(plan_value_type(value_type.as_str()))?;
         let optional = node_boolean(optional)?;
         diagnostic(
             self.inner
@@ -540,7 +486,7 @@ impl NodeQueryPlanBuilder {
         value_type: NodeVocabularyString,
         value: Unknown,
     ) -> napi::Result<NodeQueryV2OperandHandle> {
-        let value_type = diagnostic(query_builder_value_type(value_type.as_str()))?;
+        let value_type = diagnostic(plan_value_type(value_type.as_str()))?;
         let value = node_scalar(&env, value_type, value)?;
         diagnostic(self.inner.literal_operand(value))
             .map(|inner| NodeQueryV2OperandHandle { inner })
@@ -762,7 +708,7 @@ impl NodeQueryPlanBuilder {
         value_type: NodeVocabularyString,
     ) -> napi::Result<NodeQueryV2LocalReturnHandle> {
         let reducer = diagnostic(query_builder_reducer(reducer.as_str()))?;
-        let value_type = diagnostic(query_builder_value_type(value_type.as_str()))?;
+        let value_type = diagnostic(plan_value_type(value_type.as_str()))?;
         diagnostic(self.inner.local_return(reducer, &input.inner, value_type))
             .map(|inner| NodeQueryV2LocalReturnHandle { inner })
     }

@@ -1,5 +1,13 @@
 //! Shared Node plan authority, diagnostics and bounded host values.
 
+use napi::ValueType;
+use napi::bindgen_prelude::BigInt;
+use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use type_bridge_orm::plan_scalar::{
+    PlanScalarInput, plan_scalar, plan_scalar_host_type_error, plan_scalar_integer_range_error,
+    plan_scalar_unicode_error,
+};
+
 use std::sync::Arc;
 
 use napi::bindgen_prelude::{Buffer, Env, FromNapiValue, JsValue, Unknown};
@@ -10,7 +18,7 @@ use type_bridge_contract::fingerprint::{Fingerprint, MAX_FINGERPRINT_IDENTIFIER_
 use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES};
 use type_bridge_contract::schema::encode_declared_schema;
 use type_bridge_orm::plan_authority::QueryAuthority;
-use type_bridge_orm::query_v2_prepared::query_v2_host_string_unicode_error;
+use type_bridge_orm::plan_scalar::host_string_unicode_error;
 use type_bridge_schema::{
     MAX_SCHEMA_AUTHORITY_BYTES, SchemaAuthorityError, SchemaAuthorityErrorCode,
     decode_schema_authority, schema_authority_capability_vocabulary,
@@ -188,13 +196,7 @@ pub(crate) fn bounded_string(
     limit: usize,
     oversized: impl FnOnce() -> Diagnostic,
 ) -> napi::Result<String> {
-    bounded_string_with_unicode_error(
-        env,
-        value,
-        limit,
-        oversized,
-        query_v2_host_string_unicode_error,
-    )
+    bounded_string_with_unicode_error(env, value, limit, oversized, host_string_unicode_error)
 }
 
 /// Copy one bounded JavaScript string while rejecting lone UTF-16 surrogates
@@ -582,4 +584,54 @@ mod tests {
         assert!(!local.contains("AsyncTask"));
         assert!(!local.contains("block_on"));
     }
+}
+
+fn oversized_scalar(value_type: ValueTypeTag) -> Diagnostic {
+    plan_scalar(
+        value_type,
+        PlanScalarInput::Text(" ".repeat(MAX_CANONICAL_STRING_BYTES.saturating_add(1))),
+    )
+    .expect_err("oversized text marker cannot be canonical")
+}
+
+pub(crate) fn node_scalar(
+    env: &Env,
+    value_type: ValueTypeTag,
+    value: Unknown,
+) -> napi::Result<CanonicalValue> {
+    let input = match value_type {
+        ValueTypeTag::String
+        | ValueTypeTag::Date
+        | ValueTypeTag::DateTime
+        | ValueTypeTag::DateTimeTz
+        | ValueTypeTag::Decimal
+        | ValueTypeTag::Duration => {
+            if value.get_type()? != ValueType::String {
+                return Err(napi_error(&plan_scalar_host_type_error()));
+            }
+            PlanScalarInput::Text(bounded_string_with_unicode_error(
+                env,
+                value,
+                MAX_CANONICAL_STRING_BYTES,
+                || oversized_scalar(value_type),
+                plan_scalar_unicode_error,
+            )?)
+        }
+        ValueTypeTag::Long => {
+            let integer = BigInt::from_unknown(value)
+                .map_err(|_| napi_error(&plan_scalar_host_type_error()))?;
+            let (integer, lossless) = integer.get_i64();
+            if !lossless {
+                return Err(napi_error(&plan_scalar_integer_range_error()));
+            }
+            PlanScalarInput::Long(integer)
+        }
+        ValueTypeTag::Double => PlanScalarInput::Double(
+            f64::from_unknown(value).map_err(|_| napi_error(&plan_scalar_host_type_error()))?,
+        ),
+        ValueTypeTag::Boolean => PlanScalarInput::Boolean(
+            bool::from_unknown(value).map_err(|_| napi_error(&plan_scalar_host_type_error()))?,
+        ),
+    };
+    plan_scalar(value_type, input).map_err(|error| napi_error(&error))
 }

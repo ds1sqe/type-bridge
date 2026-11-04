@@ -55,6 +55,7 @@ mod plan_builders;
 pub mod plan_explain;
 mod plan_lowering;
 mod plan_model_remote;
+pub mod plan_scalar;
 pub mod projected_batch;
 mod projected_batch_executor;
 pub mod projected_codec;

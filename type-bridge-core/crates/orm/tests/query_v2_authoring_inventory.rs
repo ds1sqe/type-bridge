@@ -29,6 +29,7 @@ use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
 };
 use type_bridge_orm::plan_authority::QueryAuthority;
+use type_bridge_orm::plan_scalar::plan_value_type;
 use type_bridge_orm::query_v2_builder::{
     AuthoredQueryInvocation, AuthoredQueryPlan, QUERY_BUILDER_COMPARATORS,
     QUERY_BUILDER_LOCAL_RETURNS, QUERY_BUILDER_ORDER_DIRECTIONS, QUERY_BUILDER_REDUCERS,
@@ -39,7 +40,7 @@ use type_bridge_orm::query_v2_builder::{
     query_builder_comparator_name, query_builder_function_target, query_builder_local_parameters,
     query_builder_order_direction, query_builder_order_direction_name, query_builder_reducer,
     query_builder_reducer_name, query_builder_role_players, query_builder_type_kind,
-    query_builder_type_kind_name, query_builder_value_type, query_builder_value_type_name,
+    query_builder_type_kind_name, query_builder_value_type_name,
 };
 
 const FACADE_TERMINALS: &[&str] = &["documents"];
@@ -686,7 +687,7 @@ fn execute_step(
         )),
         "input" => Some(InventoryHandle::Input(builder.input(
             text(step, "name"),
-            query_builder_value_type(text(step, "value_type"))?,
+            plan_value_type(text(step, "value_type"))?,
             flag(step, "optional"),
         )?)),
         "binding_operand" => Some(InventoryHandle::Operand(
@@ -816,7 +817,7 @@ fn execute_step(
         "local_return" => Some(InventoryHandle::LocalReturn(builder.local_return(
             query_builder_reducer(text(step, "reducer"))?,
             &binding(handles, text(step, "input")),
-            query_builder_value_type(text(step, "value_type"))?,
+            plan_value_type(text(step, "value_type"))?,
         )?)),
         "local_function" => {
             let parameters = query_builder_local_parameters(
@@ -1044,7 +1045,7 @@ fn snake_case_variant(name: &str) -> String {
 }
 
 fn source_contract_enum_spellings(name: &str) -> BTreeSet<String> {
-    let source = include_str!("../../contract/src/query_plan.rs");
+    let source = include_str!("../../contract/src/query_plan_types.rs");
     let marker = format!("pub enum {name} {{");
     let declaration = source
         .split_once(&marker)
@@ -1082,6 +1083,7 @@ fn source_contract_enum_spellings(name: &str) -> BTreeSet<String> {
 fn source_authoring_diagnostic_codes() -> BTreeSet<String> {
     let authoring_sources = [
         include_str!("../src/query_v2_builder.rs"),
+        include_str!("../src/plan_scalar.rs"),
         include_str!("../../query/src/query_validation.rs"),
         include_str!("../../python/src/query_v2_builder_runtime.rs"),
         include_str!("../../node/src/query_v2_builder_runtime.rs"),
@@ -1100,12 +1102,11 @@ fn source_authoring_diagnostic_codes() -> BTreeSet<String> {
                 .any(|prefix| candidate.starts_with(prefix))
         })
         .chain(
-            include_str!("../src/query_v2_prepared.rs")
+            include_str!("../src/plan_scalar.rs")
                 .split_once("\n#[cfg(test)]")
-                .map_or(
-                    include_str!("../src/query_v2_prepared.rs"),
-                    |(production, _)| production,
-                )
+                .map_or(include_str!("../src/plan_scalar.rs"), |(production, _)| {
+                    production
+                })
                 .split('"')
                 .filter(|candidate| candidate.starts_with("query_v2_host_")),
         )

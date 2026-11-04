@@ -54,28 +54,6 @@ use crate::session::database::Database;
 
 const PREPARED_CLOSE_GRACE: Duration = Duration::from_secs(1);
 
-/// Return the binding-neutral diagnostic for a host string that cannot be
-/// represented as a Rust/JSON Unicode scalar sequence.
-#[doc(hidden)]
-pub fn query_v2_host_string_unicode_error() -> Diagnostic {
-    failure(
-        DiagnosticCategory::InvalidContract,
-        "query_v2_host_string_unicode",
-        "host string input must be valid Unicode without surrogate code points",
-    )
-}
-
-/// Return the stable diagnostic for a non-string value at a host text boundary.
-#[doc(hidden)]
-#[must_use]
-pub fn query_v2_host_string_type_error() -> Diagnostic {
-    failure(
-        DiagnosticCategory::InvalidContract,
-        "query_v2_host_string_type",
-        "host string input must be a string value",
-    )
-}
-
 impl QueryAuthority {
     fn validate(&self, plan_bytes: &[u8]) -> Result<(QueryPlan, ValidatedQuery), Diagnostic> {
         let plan = decode_query_plan_with_limits(plan_bytes, self.limits())?;

@@ -23,7 +23,7 @@ use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, Que
 use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
-use type_bridge_orm::query_v2_builder::query_builder_value_type;
+use type_bridge_orm::plan_scalar::plan_value_type;
 
 use crate::plan_runtime::{NodePlanAuthority, napi_error};
 
@@ -55,7 +55,7 @@ fn invocation_rows(
                 )));
             }
             if value.get_type()? != napi::ValueType::Null {
-                values[column] = Some(crate::query_v2_builder_runtime::node_scalar(
+                values[column] = Some(crate::plan_runtime::node_scalar(
                     env,
                     input.value_type(),
                     value,
@@ -381,9 +381,9 @@ impl NodePlanBuilder {
         value: Unknown,
     ) -> u32 {
         let owner = self.binding(owner);
-        let parsed = query_builder_value_type(&value_type)
+        let parsed = plan_value_type(&value_type)
             .map_err(|error| napi_error(&error))
-            .and_then(|kind| crate::query_v2_builder_runtime::node_scalar(&env, kind, value));
+            .and_then(|kind| crate::plan_runtime::node_scalar(&env, kind, value));
         match parsed {
             Ok(value) => match self.core.bind_value(Site::new(owner, &field), value) {
                 QueryOperand::Input { column } => u32::from(column.get()),
@@ -420,7 +420,7 @@ impl NodePlanBuilder {
             let Some(field) = self.owns_id(&column.field) else {
                 return;
             };
-            let Some(kind) = self.check(query_builder_value_type(&column.value_type)) else {
+            let Some(kind) = self.check(plan_value_type(&column.value_type)) else {
                 return;
             };
             fields.push(field);
@@ -439,8 +439,7 @@ impl NodePlanBuilder {
             for (value, kind) in row.into_iter().zip(&kinds) {
                 let value = match value.get_type() {
                     Ok(napi::ValueType::Undefined) => None,
-                    Ok(_) => match crate::query_v2_builder_runtime::node_scalar(&env, *kind, value)
-                    {
+                    Ok(_) => match crate::plan_runtime::node_scalar(&env, *kind, value) {
                         Ok(value) => Some(value),
                         Err(error) => {
                             self.fail(error);
@@ -465,7 +464,7 @@ impl NodePlanBuilder {
         let mut typed = Vec::with_capacity(columns.len());
         for column in columns {
             let owner = self.binding(column.owner);
-            let Some(kind) = self.check(query_builder_value_type(&column.value_type)) else {
+            let Some(kind) = self.check(plan_value_type(&column.value_type)) else {
                 return vec![];
             };
             typed.push((Site::new(owner, column.field), kind));
@@ -518,7 +517,7 @@ impl NodePlanBuilder {
     /// Declare a typed input column; returns its column index.
     #[napi]
     pub fn input(&mut self, name: String, value_type: String, optional: bool) -> u32 {
-        match self.check(query_builder_value_type(&value_type)) {
+        match self.check(plan_value_type(&value_type)) {
             Some(value_type) => u32::from(self.core.input(&name, value_type, optional).get()),
             None => 0,
         }
@@ -527,11 +526,9 @@ impl NodePlanBuilder {
     /// Register one canonical literal of `value_type`; returns its index.
     #[napi]
     pub fn literal(&mut self, env: Env, value_type: String, value: Unknown) -> u32 {
-        let literal = query_builder_value_type(&value_type)
+        let literal = plan_value_type(&value_type)
             .map_err(|diagnostic| napi_error(&diagnostic))
-            .and_then(|value_type| {
-                crate::query_v2_builder_runtime::node_scalar(&env, value_type, value)
-            });
+            .and_then(|value_type| crate::plan_runtime::node_scalar(&env, value_type, value));
         let literal = match literal {
             Ok(literal) => literal,
             Err(error) => {

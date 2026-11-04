@@ -24,12 +24,7 @@ use type_bridge_contract::query_plan::{
     QueryOutput, QueryPattern, QueryPlan, QueryPlanFingerprint, QueryPlanV2Compatibility,
     ReadStage, ReduceAssignment, Reducer,
 };
-use type_bridge_contract::temporal::{
-    CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
-};
-use type_bridge_contract::value::{
-    CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
-};
+use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_query::{
     MigrationAssertionValidationContext, ValidatedQuery, validate_query_local_function,
     validate_query_plan,
@@ -70,22 +65,6 @@ pub const QUERY_PLAN_BUILDER_OPERATIONS: &[&str] = &[
     "finalize_rows",
     "finalize_documents",
 ];
-
-/// Primitive host value accepted by the binding-neutral scalar converter.
-///
-/// Python and Node inspect only the host primitive kind, then delegate all
-/// canonical-domain parsing and validation to this shared conversion.
-#[doc(hidden)]
-pub enum QueryBuilderScalarInput {
-    /// A host string, including canonical temporal/decimal/duration text.
-    Text(String),
-    /// An exact signed 64-bit integer.
-    Long(i64),
-    /// A host binary64 number.
-    Double(f64),
-    /// A host boolean.
-    Boolean(bool),
-}
 
 macro_rules! define_closed_builder_vocabulary {
     (
@@ -228,12 +207,6 @@ pub const QUERY_BUILDER_LOCAL_RETURNS: &[(Reducer, ValueTypeTag)] = &[
     (Reducer::Sum, ValueTypeTag::Double),
 ];
 
-/// Parse the exact low-level scalar-domain spelling shared by both bindings.
-#[doc(hidden)]
-pub fn query_builder_value_type(value: &str) -> Result<ValueTypeTag, Diagnostic> {
-    value.parse().map_err(Diagnostic::from)
-}
-
 /// Parse the exact low-level schema-kind spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_type_kind(value: &str) -> Result<TypeKind, Diagnostic> {
@@ -280,59 +253,6 @@ pub fn query_builder_reducer(value: &str) -> Result<Reducer, Diagnostic> {
     value.parse().map_err(Diagnostic::from)
 }
 
-/// Convert one checked host primitive into its exact canonical scalar.
-#[doc(hidden)]
-pub fn query_builder_scalar(
-    value_type: ValueTypeTag,
-    value: QueryBuilderScalarInput,
-) -> Result<CanonicalValue, Diagnostic> {
-    match (value_type, value) {
-        (ValueTypeTag::String, QueryBuilderScalarInput::Text(value)) => {
-            CanonicalString::new(value).map(CanonicalValue::String)
-        }
-        (ValueTypeTag::Long, QueryBuilderScalarInput::Long(value)) => {
-            Ok(CanonicalValue::Long(value))
-        }
-        (ValueTypeTag::Double, QueryBuilderScalarInput::Double(value)) => {
-            CanonicalDouble::new(value).map(CanonicalValue::Double)
-        }
-        (ValueTypeTag::Boolean, QueryBuilderScalarInput::Boolean(value)) => {
-            Ok(CanonicalValue::Boolean(value))
-        }
-        (ValueTypeTag::Date, QueryBuilderScalarInput::Text(value)) => {
-            value.parse::<CanonicalDate>().map(CanonicalValue::Date)
-        }
-        (ValueTypeTag::DateTime, QueryBuilderScalarInput::Text(value)) => value
-            .parse::<CanonicalDateTime>()
-            .map(CanonicalValue::DateTime),
-        (ValueTypeTag::DateTimeTz, QueryBuilderScalarInput::Text(value)) => value
-            .parse::<CanonicalDateTimeTz>()
-            .map(CanonicalValue::DateTimeTz),
-        (ValueTypeTag::Decimal, QueryBuilderScalarInput::Text(value)) => {
-            DecimalValue::new(value).map(CanonicalValue::Decimal)
-        }
-        (ValueTypeTag::Duration, QueryBuilderScalarInput::Text(value)) => value
-            .parse::<CanonicalDuration>()
-            .map(CanonicalValue::Duration),
-        _ => Err(builder_failure(
-            DiagnosticCategory::InvalidContract,
-            "query_builder_scalar_host_type",
-            "host scalar kind does not match the declared canonical value type",
-        )),
-    }
-}
-
-/// Return the stable diagnostic for a host primitive of the wrong kind.
-#[doc(hidden)]
-#[must_use]
-pub fn query_builder_scalar_host_type_error() -> Diagnostic {
-    builder_failure(
-        DiagnosticCategory::InvalidContract,
-        "query_builder_scalar_host_type",
-        "host scalar kind does not match the declared canonical value type",
-    )
-}
-
 /// Return the stable diagnostic for a semantic flag that is not an exact host
 /// boolean.
 #[doc(hidden)]
@@ -342,29 +262,6 @@ pub fn query_builder_boolean_host_type_error() -> Diagnostic {
         DiagnosticCategory::InvalidContract,
         "query_builder_boolean_host_type",
         "query authoring flags require an exact host boolean",
-    )
-}
-
-/// Return the stable diagnostic for an integer outside signed 64-bit range.
-#[doc(hidden)]
-#[must_use]
-pub fn query_builder_scalar_integer_range_error() -> Diagnostic {
-    builder_failure(
-        DiagnosticCategory::InvalidContract,
-        "query_builder_scalar_integer_range",
-        "long scalar must fit the exact signed 64-bit domain",
-    )
-}
-
-/// Return the stable diagnostic for host text that cannot be represented as
-/// one unchanged Unicode scalar sequence.
-#[doc(hidden)]
-#[must_use]
-pub fn query_builder_scalar_unicode_error() -> Diagnostic {
-    builder_failure(
-        DiagnosticCategory::InvalidContract,
-        "query_builder_scalar_unicode",
-        "string scalar must be valid Unicode without surrogate code points",
     )
 }
 

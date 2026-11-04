@@ -327,7 +327,7 @@ fn relation_insert_seeds_require_a_later_player_attachment() {
 }
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryOutput, QueryPattern,
-    QueryPlan, ReadStage, ReduceAssignment, Reducer, decode_query_plan,
+    QueryPlan, ReadStage, ReduceAssignment, Reducer,
 };
 
 fn stage_plans() -> BTreeMap<&'static str, QueryPlanV3> {

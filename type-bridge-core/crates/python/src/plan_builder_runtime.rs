@@ -22,10 +22,10 @@ use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, Que
 use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
-use type_bridge_orm::query_v2_builder::query_builder_value_type;
+use type_bridge_orm::plan_scalar::plan_value_type;
 
+use crate::plan_runtime::python_scalar;
 use crate::plan_runtime::{PyPlanAuthority, value_error};
-use crate::query_v2_builder_runtime::python_scalar;
 
 type ModelBulkCell<'py> = Option<(String, Bound<'py, PyAny>)>;
 
@@ -336,7 +336,7 @@ impl PyPlanBuilderCore {
 
     /// Declare a typed input column; returns its column index.
     fn input(&mut self, name: &str, value_type: &str, optional: bool) -> u32 {
-        match self.check(query_builder_value_type(value_type)) {
+        match self.check(plan_value_type(value_type)) {
             Some(value_type) => u32::from(self.core.input(name, value_type, optional).get()),
             None => 0,
         }
@@ -361,7 +361,7 @@ impl PyPlanBuilderCore {
         value: &Bound<'_, PyAny>,
     ) -> u32 {
         let owner = self.binding(owner);
-        let value = query_builder_value_type(value_type)
+        let value = plan_value_type(value_type)
             .map_err(|error| value_error(&error))
             .and_then(|value_type| plan_scalar(value_type, value));
         match value {
@@ -385,7 +385,7 @@ impl PyPlanBuilderCore {
         let mut typed = Vec::with_capacity(columns.len());
         for (owner, field, value_type) in columns {
             let owner = self.binding(owner);
-            let Some(value_type) = self.check(query_builder_value_type(&value_type)) else {
+            let Some(value_type) = self.check(plan_value_type(&value_type)) else {
                 return vec![];
             };
             typed.push((Site::new(owner, field), value_type));
@@ -438,7 +438,7 @@ impl PyPlanBuilderCore {
                 let value = match cell {
                     None => None,
                     Some((value_type, value)) => {
-                        let value = query_builder_value_type(&value_type)
+                        let value = plan_value_type(&value_type)
                             .map_err(|error| value_error(&error))
                             .and_then(|kind| plan_scalar(kind, &value));
                         match value {
@@ -459,7 +459,7 @@ impl PyPlanBuilderCore {
 
     /// Register one canonical literal of `value_type`; returns its index.
     fn literal(&mut self, value_type: &str, value: &Bound<'_, PyAny>) -> u32 {
-        let literal = query_builder_value_type(value_type)
+        let literal = plan_value_type(value_type)
             .map_err(|diagnostic| value_error(&diagnostic))
             .and_then(|value_type| plan_scalar(value_type, value));
         let literal = literal.unwrap_or_else(|error| {

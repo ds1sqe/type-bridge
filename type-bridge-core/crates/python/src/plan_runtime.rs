@@ -1,5 +1,12 @@
 //! Shared Python plan authority, diagnostics and bounded host values.
 
+use pyo3::types::{PyBool, PyFloat};
+use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use type_bridge_orm::plan_scalar::{
+    PlanScalarInput, plan_scalar, plan_scalar_host_type_error, plan_scalar_integer_range_error,
+    plan_scalar_unicode_error,
+};
+
 use std::sync::Arc;
 
 use pyo3::exceptions::{PyTypeError, PyUnicodeEncodeError, PyValueError};
@@ -14,7 +21,7 @@ use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYT
 use type_bridge_contract::query_remote::remote_limit_invalid;
 use type_bridge_contract::schema::encode_declared_schema;
 use type_bridge_orm::plan_authority::QueryAuthority;
-use type_bridge_orm::query_v2_prepared::query_v2_host_string_unicode_error;
+use type_bridge_orm::plan_scalar::host_string_unicode_error;
 use type_bridge_schema::{
     MAX_SCHEMA_AUTHORITY_BYTES, SchemaAuthorityError, SchemaAuthorityErrorCode,
     decode_schema_authority, schema_authority_capability_vocabulary,
@@ -160,7 +167,7 @@ impl<'py> PythonString<'py> {
     /// beyond it so the Rust-owned semantic engine emits its canonical limit
     /// diagnostic before parsing.
     pub(crate) fn bounded_snapshot(&self, max_bytes: usize) -> PyResult<String> {
-        self.bounded_snapshot_with_unicode_error(max_bytes, query_v2_host_string_unicode_error)
+        self.bounded_snapshot_with_unicode_error(max_bytes, host_string_unicode_error)
     }
 
     pub(crate) fn bounded_snapshot_with_unicode_error(
@@ -715,4 +722,48 @@ mod tests {
             );
         });
     }
+}
+
+pub(crate) fn python_scalar(
+    value_type: ValueTypeTag,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<CanonicalValue> {
+    let input = match value_type {
+        ValueTypeTag::String
+        | ValueTypeTag::Date
+        | ValueTypeTag::DateTime
+        | ValueTypeTag::DateTimeTz
+        | ValueTypeTag::Decimal
+        | ValueTypeTag::Duration => {
+            let value = PythonString::extract(value, "value")
+                .map_err(|_| value_error(&plan_scalar_host_type_error()))?
+                .bounded_snapshot_with_unicode_error(
+                    MAX_CANONICAL_STRING_BYTES,
+                    plan_scalar_unicode_error,
+                )?;
+            PlanScalarInput::Text(value)
+        }
+        ValueTypeTag::Long => {
+            let integer = value
+                .cast_exact::<PyInt>()
+                .map_err(|_| value_error(&plan_scalar_host_type_error()))?;
+            let integer = integer
+                .extract::<i64>()
+                .map_err(|_| value_error(&plan_scalar_integer_range_error()))?;
+            PlanScalarInput::Long(integer)
+        }
+        ValueTypeTag::Double => {
+            let number = value
+                .cast_exact::<PyFloat>()
+                .map_err(|_| value_error(&plan_scalar_host_type_error()))?;
+            PlanScalarInput::Double(number.extract::<f64>()?)
+        }
+        ValueTypeTag::Boolean => {
+            let boolean = value
+                .cast_exact::<PyBool>()
+                .map_err(|_| value_error(&plan_scalar_host_type_error()))?;
+            PlanScalarInput::Boolean(boolean.extract::<bool>()?)
+        }
+    };
+    plan_scalar(value_type, input).map_err(|error| value_error(&error))
 }

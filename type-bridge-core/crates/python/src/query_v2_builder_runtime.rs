@@ -4,24 +4,26 @@
 //! transition, semantic check, canonical byte, fingerprint, and capability
 //! remains owned by `type-bridge-orm`.
 
+use crate::plan_runtime::python_scalar;
 use std::thread::{self, ThreadId};
 
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyByteArray, PyBytes, PyFloat, PyInt, PyString, PyTuple};
+use pyo3::types::{PyAny, PyBool, PyByteArray, PyBytes, PyInt, PyString, PyTuple};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{
     AttributeId, FunctionId, MAX_LABEL_BYTES, RoleId, TypeId, TypeKind,
 };
-use type_bridge_contract::limits::{MAX_CANONICAL_STRING_BYTES, MAX_OUTPUT_NAME_BYTES};
-use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use type_bridge_contract::limits::MAX_OUTPUT_NAME_BYTES;
+use type_bridge_contract::value::CanonicalValue;
 use type_bridge_orm::plan_authority::QueryAuthorityIdentity;
+use type_bridge_orm::plan_scalar::plan_value_type;
 use type_bridge_orm::query_v2_builder::{
-    AuthoredQueryInvocation, AuthoredQueryPlan, QueryBindingHandle, QueryBuilderScalarInput,
-    QueryDocumentFieldHandle, QueryInputHandle, QueryInvocationRowBudget, QueryLocalFunctionHandle,
-    QueryLocalReturnHandle, QueryOperandHandle, QueryOrderHandle, QueryPatternHandle,
-    QueryPlanBuilder, QueryReduceAssignmentHandle, query_builder_binding_limit_error,
+    AuthoredQueryInvocation, AuthoredQueryPlan, QueryBindingHandle, QueryDocumentFieldHandle,
+    QueryInputHandle, QueryInvocationRowBudget, QueryLocalFunctionHandle, QueryLocalReturnHandle,
+    QueryOperandHandle, QueryOrderHandle, QueryPatternHandle, QueryPlanBuilder,
+    QueryReduceAssignmentHandle, query_builder_binding_limit_error,
     query_builder_boolean_host_type_error, query_builder_bounded_len, query_builder_comparator,
     query_builder_depth, query_builder_depth_error, query_builder_disjunction_term_limit_error,
     query_builder_document_output_limit_error, query_builder_function_argument_limit_error,
@@ -31,15 +33,12 @@ use type_bridge_orm::query_v2_builder::{
     query_builder_order_direction, query_builder_reduce_term_limit_error, query_builder_reducer,
     query_builder_role_player_limit_error, query_builder_role_players,
     query_builder_root_pattern_limit_error, query_builder_row_output_limit_error,
-    query_builder_scalar, query_builder_scalar_host_type_error,
-    query_builder_scalar_integer_range_error, query_builder_scalar_unicode_error,
     query_builder_sort_term_limit_error, query_builder_try_term_limit_error,
     query_builder_type_kind, query_builder_unsigned, query_builder_unsigned_error,
-    query_builder_value_type,
 };
 
 use crate::plan_runtime::{PyPlanAuthority, PythonString, value_error};
-use type_bridge_orm::query_v2_prepared::query_v2_host_string_type_error;
+use type_bridge_orm::plan_scalar::host_string_type_error;
 
 fn diagnostic<T>(result: Result<T, Diagnostic>) -> PyResult<T> {
     result.map_err(|diagnostic| value_error(&diagnostic))
@@ -47,7 +46,7 @@ fn diagnostic<T>(result: Result<T, Diagnostic>) -> PyResult<T> {
 
 fn python_host_string(value: &Bound<'_, PyAny>, limit: usize) -> PyResult<String> {
     PythonString::extract(value, "text")
-        .map_err(|_| value_error(&query_v2_host_string_type_error()))?
+        .map_err(|_| value_error(&host_string_type_error()))?
         .bounded_snapshot(limit)
 }
 
@@ -79,50 +78,6 @@ macro_rules! define_python_host_string {
 define_python_host_string!(PythonVariableString, MAX_OUTPUT_NAME_BYTES);
 define_python_host_string!(PythonLabelString, MAX_LABEL_BYTES);
 define_python_host_string!(PythonVocabularyString, MAX_OUTPUT_NAME_BYTES);
-
-pub(crate) fn python_scalar(
-    value_type: ValueTypeTag,
-    value: &Bound<'_, PyAny>,
-) -> PyResult<CanonicalValue> {
-    let input = match value_type {
-        ValueTypeTag::String
-        | ValueTypeTag::Date
-        | ValueTypeTag::DateTime
-        | ValueTypeTag::DateTimeTz
-        | ValueTypeTag::Decimal
-        | ValueTypeTag::Duration => {
-            let value = PythonString::extract(value, "value")
-                .map_err(|_| value_error(&query_builder_scalar_host_type_error()))?
-                .bounded_snapshot_with_unicode_error(
-                    MAX_CANONICAL_STRING_BYTES,
-                    query_builder_scalar_unicode_error,
-                )?;
-            QueryBuilderScalarInput::Text(value)
-        }
-        ValueTypeTag::Long => {
-            let integer = value
-                .cast_exact::<PyInt>()
-                .map_err(|_| value_error(&query_builder_scalar_host_type_error()))?;
-            let integer = integer
-                .extract::<i64>()
-                .map_err(|_| value_error(&query_builder_scalar_integer_range_error()))?;
-            QueryBuilderScalarInput::Long(integer)
-        }
-        ValueTypeTag::Double => {
-            let number = value
-                .cast_exact::<PyFloat>()
-                .map_err(|_| value_error(&query_builder_scalar_host_type_error()))?;
-            QueryBuilderScalarInput::Double(number.extract::<f64>()?)
-        }
-        ValueTypeTag::Boolean => {
-            let boolean = value
-                .cast_exact::<PyBool>()
-                .map_err(|_| value_error(&query_builder_scalar_host_type_error()))?;
-            QueryBuilderScalarInput::Boolean(boolean.extract::<bool>()?)
-        }
-    };
-    diagnostic(query_builder_scalar(value_type, input))
-}
 
 fn python_boolean(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     value
@@ -536,7 +491,7 @@ impl PyQueryPlanBuilder {
         optional: &Bound<'_, PyAny>,
     ) -> PyResult<PyQueryV2InputHandle> {
         self.ensure_owner_thread()?;
-        let value_type = diagnostic(query_builder_value_type(value_type.as_str()))?;
+        let value_type = diagnostic(plan_value_type(value_type.as_str()))?;
         let optional = python_boolean(optional)?;
         diagnostic(
             self.inner
@@ -560,7 +515,7 @@ impl PyQueryPlanBuilder {
         value: &Bound<'_, PyAny>,
     ) -> PyResult<PyQueryV2OperandHandle> {
         self.ensure_owner_thread()?;
-        let value_type = diagnostic(query_builder_value_type(value_type.as_str()))?;
+        let value_type = diagnostic(plan_value_type(value_type.as_str()))?;
         let value = python_scalar(value_type, value)?;
         diagnostic(self.inner.literal_operand(value)).map(|inner| PyQueryV2OperandHandle { inner })
     }
@@ -782,7 +737,7 @@ impl PyQueryPlanBuilder {
     ) -> PyResult<PyQueryV2LocalReturnHandle> {
         self.ensure_owner_thread()?;
         let reducer = diagnostic(query_builder_reducer(reducer.as_str()))?;
-        let value_type = diagnostic(query_builder_value_type(value_type.as_str()))?;
+        let value_type = diagnostic(plan_value_type(value_type.as_str()))?;
         diagnostic(self.inner.local_return(reducer, &input.inner, value_type))
             .map(|inner| PyQueryV2LocalReturnHandle { inner })
     }
@@ -1024,6 +979,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use type_bridge_contract::value::ValueTypeTag;
 
     use pyo3::ffi;
     use pyo3::types::PyAnyMethods;
@@ -1038,7 +994,7 @@ mod tests {
         DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
         encode_declared_schema,
     };
-    use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue};
     use type_bridge_orm::plan_authority::QueryAuthority;
     use type_bridge_orm::query_v2_builder::QUERY_PLAN_BUILDER_OPERATIONS;
     use type_bridge_orm::query_v2_builder::QueryPlanBuilder;

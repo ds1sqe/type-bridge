@@ -200,6 +200,13 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust binding scalar helpers move from `query_v2_builder` to `plan_scalar`:
+  `QueryBuilderScalarInput` becomes `PlanScalarInput`, `query_builder_scalar`
+  becomes `plan_scalar`, `query_builder_value_type` becomes `plan_value_type`,
+  and scalar error helper prefixes change from `query_builder_` to `plan_`.
+  `query_v2_prepared::query_v2_host_string_{type,unicode}_error` become
+  `plan_scalar::host_string_{type,unicode}_error`. Diagnostic codes are unchanged.
+
 - Rust live-authority helpers `acquire_live_authority_rebuild_permit` and
   `verify_managed_query_control_scope` move from `query_v2_prepared` to
   `plan_authority`, shared by native staged execution and the server.
