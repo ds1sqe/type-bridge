@@ -18,10 +18,7 @@ use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, TypeKind};
 use crate::plan_builders::bulk_write::WriteKind;
 use crate::query::RelationQuery;
 use crate::session::Database;
-use crate::session::backend::{QueryResult, TxType};
-
-use super::hydration::{extract_count, hydrate_relation};
-use super::query_builder;
+use crate::session::backend::TxType;
 
 /// Generic CRUD manager for a specific relation type.
 ///
@@ -41,7 +38,7 @@ use super::query_builder;
 pub struct RelationManager<'db, R: TypeBridgeRelation> {
     db: &'db Database,
     hooks: HookRunner,
-    dynamic: Option<DynamicRelationManager<'db>>,
+    dynamic: DynamicRelationManager<'db>,
     _marker: PhantomData<R>,
 }
 
@@ -58,9 +55,7 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
         Ok(Self {
             db,
             hooks: HookRunner::new(),
-            dynamic: Some(DynamicRelationManager::from_registry(
-                db, registry, descriptor,
-            )),
+            dynamic: DynamicRelationManager::from_registry(db, registry, descriptor),
             _marker: PhantomData,
         })
     }
@@ -89,7 +84,7 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
             );
             self.hooks.run_pre_hooks(&mut context).await?;
         }
-        let manager = self.dynamic.as_ref().expect("registry-backed manager");
+        let manager = &self.dynamic;
         let attributes = relation
             .to_attribute_values()
             .into_iter()
@@ -137,30 +132,13 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     /// Fetch relations matching the given filters.
     #[tracing::instrument(skip(self, filters), fields(relation_type = R::TYPE_NAME))]
     pub async fn get(&self, filters: &[Filter]) -> Result<Vec<R>> {
-        if let Some(manager) = &self.dynamic {
-            return manager
-                .get(filters)
-                .await?
-                .into_iter()
-                .map(materialize_relation_row::<R>)
-                .collect();
-        }
-
-        let typeql = query_builder::build_relation_fetch::<R>(filters, "$r")?;
-        tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "FETCH RELATION");
-
-        // raw remainder: no registry authority; removed in 06
-        let result = self.db.execute_raw(&typeql, TxType::Read).await?;
-        match result {
-            QueryResult::Documents(docs) => {
-                docs.iter().map(|doc| hydrate_relation::<R>(doc)).collect()
-            }
-            QueryResult::Ok => Ok(vec![]),
-            QueryResult::Rows(_) => Err(OrmError::Hydration {
-                type_name: R::TYPE_NAME.into(),
-                message: "Expected Documents from fetch query, got Rows".into(),
-            }),
-        }
+        let manager = &self.dynamic;
+        return manager
+            .get(filters)
+            .await?
+            .into_iter()
+            .map(materialize_relation_row::<R>)
+            .collect();
     }
 
     /// Fetch exactly one relation matching the filters.
@@ -200,33 +178,27 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
             self.hooks.run_pre_hooks(&mut ctx).await?;
         }
 
-        if let Some(manager) = &self.dynamic {
-            manager
-                .delete_identity(
-                    relation.iid(),
-                    &relation
-                        .to_attribute_values()
-                        .into_iter()
-                        .map(|(name, value)| (name.into(), value))
-                        .collect::<DynamicAttributeMap>(),
-                    &relation
-                        .to_role_player_refs()
-                        .into_iter()
-                        .map(|player| crate::_dynamic::DynamicRolePlayerInput {
-                            role_name: player.role.into(),
-                            player_type_name: player.entity_type_name.into(),
-                            iid: player.iid,
-                            key: player.key.map(|(name, value)| (name.into(), value)),
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .await?;
-        } else {
-            let typeql = query_builder::build_relation_delete::<R>(relation, "$r")?;
-            tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "DELETE RELATION");
-            // raw remainder: no registry authority; removed in 06
-            self.db.execute_raw(&typeql, TxType::Write).await?;
-        }
+        let manager = &self.dynamic;
+        manager
+            .delete_identity(
+                relation.iid(),
+                &relation
+                    .to_attribute_values()
+                    .into_iter()
+                    .map(|(name, value)| (name.into(), value))
+                    .collect::<DynamicAttributeMap>(),
+                &relation
+                    .to_role_player_refs()
+                    .into_iter()
+                    .map(|player| crate::_dynamic::DynamicRolePlayerInput {
+                        role_name: player.role.into(),
+                        player_type_name: player.entity_type_name.into(),
+                        iid: player.iid,
+                        key: player.key.map(|(name, value)| (name.into(), value)),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
 
         if self.hooks.has_hooks() {
             let ctx = HookRunner::build_context(
@@ -258,12 +230,7 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     /// decoding finishes before commit; post-hooks run only after commit succeeds.
     /// Requires [`Self::from_registry`].
     pub async fn delete_many_returning(&self, relations: &[R]) -> Result<Vec<R>> {
-        let manager = self.dynamic.as_ref().ok_or_else(|| {
-            crate::plan_builders::manager::invalid(
-                "manager_plan_authority_unavailable",
-                "Deletion snapshots require a registry-backed manager",
-            )
-        })?;
+        let manager = &self.dynamic;
         if relations.is_empty() {
             return Ok(Vec::new());
         }
@@ -375,25 +342,14 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     ///     .execute().await?;
     /// ```
     pub fn query(&self) -> RelationQuery<'db, R> {
-        let query = RelationQuery::new(self.db);
-        match &self.dynamic {
-            Some(manager) => query.with_manager(manager.clone()),
-            None => query,
-        }
+        RelationQuery::new(self.db).with_manager(self.dynamic.clone())
     }
 
     /// Count relations matching the given filters.
     #[tracing::instrument(skip(self, filters), fields(relation_type = R::TYPE_NAME))]
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
-        if let Some(manager) = &self.dynamic {
-            return manager.count_with_filters(filters).await;
-        }
-
-        let typeql = query_builder::build_relation_count::<R>(filters, "$r")?;
-        tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "COUNT RELATION");
-        // raw remainder: no registry authority; removed in 06
-        let result = self.db.execute_raw(&typeql, TxType::Read).await?;
-        extract_count(&result)
+        let manager = &self.dynamic;
+        return manager.count_with_filters(filters).await;
     }
 
     /// Insert multiple relations in a single transaction.
@@ -417,77 +373,40 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
         }
 
         let tx = self.db.transaction_context(TxType::Write).await?;
-        let dynamic = self
-            .dynamic
-            .as_ref()
-            .map(|manager| manager.in_transaction(tx.clone()));
-        let mut iids = Vec::with_capacity(relations.len());
+        let dynamic = self.dynamic.in_transaction(tx.clone());
 
-        if let Some(manager) = &dynamic {
-            let items = relations
-                .iter()
-                .map(|relation| {
-                    (
-                        relation
-                            .to_attribute_values()
-                            .into_iter()
-                            .map(|(name, value)| (name.into(), value))
-                            .collect::<DynamicAttributeMap>(),
-                        relation
-                            .to_role_player_refs()
-                            .into_iter()
-                            .map(|player| crate::_dynamic::DynamicRolePlayerInput {
-                                role_name: player.role.into(),
-                                player_type_name: player.entity_type_name.into(),
-                                iid: player.iid,
-                                key: player.key.map(|(name, value)| (name.into(), value)),
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            iids = match manager.insert_many(&items).await {
-                Ok(iids) => iids,
-                Err(error) => {
-                    let _ = tx.rollback().await;
-                    return Err(error);
-                }
-            };
-            for (relation, iid) in relations.iter_mut().zip(&iids) {
-                relation.set_iid(iid.clone());
+        let manager = &dynamic;
+        let items = relations
+            .iter()
+            .map(|relation| {
+                (
+                    relation
+                        .to_attribute_values()
+                        .into_iter()
+                        .map(|(name, value)| (name.into(), value))
+                        .collect::<DynamicAttributeMap>(),
+                    relation
+                        .to_role_player_refs()
+                        .into_iter()
+                        .map(|player| crate::_dynamic::DynamicRolePlayerInput {
+                            role_name: player.role.into(),
+                            player_type_name: player.entity_type_name.into(),
+                            iid: player.iid,
+                            key: player.key.map(|(name, value)| (name.into(), value)),
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let iids = match manager.insert_many(&items).await {
+            Ok(iids) => iids,
+            Err(error) => {
+                let _ = tx.rollback().await;
+                return Err(error);
             }
-        } else {
-            for relation in relations.iter_mut() {
-                let typeql = query_builder::build_relation_insert_with_iid::<R>(relation, "$r")?;
-                tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "INSERT RELATION BATCH");
-
-                // raw remainder: no registry authority; removed in 06
-                let result = tx.query(&typeql).await?;
-                match result {
-                    QueryResult::Documents(docs) => {
-                        let doc = docs.first().ok_or_else(|| OrmError::Hydration {
-                            type_name: R::TYPE_NAME.into(),
-                            message: "Insert returned no documents".into(),
-                        })?;
-                        let iid = doc
-                            .get("iid")
-                            .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
-                            .ok_or_else(|| OrmError::Hydration {
-                                type_name: R::TYPE_NAME.into(),
-                                message: "No IID in insert response".into(),
-                            })?
-                            .to_string();
-                        relation.set_iid(iid.clone());
-                        iids.push(iid);
-                    }
-                    _ => {
-                        return Err(OrmError::Hydration {
-                            type_name: R::TYPE_NAME.into(),
-                            message: "Expected Documents from insert+fetch".into(),
-                        });
-                    }
-                }
-            }
+        };
+        for (relation, iid) in relations.iter_mut().zip(&iids) {
+            relation.set_iid(iid.clone());
         }
 
         tx.commit().await?;
@@ -528,45 +447,34 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
         }
 
         let tx = self.db.transaction_context(TxType::Write).await?;
-        let dynamic = self
-            .dynamic
-            .as_ref()
-            .map(|manager| manager.in_transaction(tx.clone()));
-        if let Some(manager) = &dynamic {
-            let items = relations
-                .iter()
-                .map(|relation| {
-                    (
-                        relation.iid().map(str::to_owned),
-                        relation
-                            .to_attribute_values()
-                            .into_iter()
-                            .map(|(name, value)| (name.into(), value))
-                            .collect::<DynamicAttributeMap>(),
-                        relation
-                            .to_role_player_refs()
-                            .into_iter()
-                            .map(|player| crate::_dynamic::DynamicRolePlayerInput {
-                                role_name: player.role.into(),
-                                player_type_name: player.entity_type_name.into(),
-                                iid: player.iid,
-                                key: player.key.map(|(name, value)| (name.into(), value)),
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            if let Err(error) = manager.delete_many_identities(&items).await {
-                let _ = tx.rollback().await;
-                return Err(error);
-            }
-        } else {
-            for relation in relations {
-                let typeql = query_builder::build_relation_delete::<R>(relation, "$r")?;
-                tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "DELETE RELATION BATCH");
-                // raw remainder: no registry authority; removed in 06
-                tx.query(&typeql).await?;
-            }
+        let dynamic = self.dynamic.in_transaction(tx.clone());
+        let manager = &dynamic;
+        let items = relations
+            .iter()
+            .map(|relation| {
+                (
+                    relation.iid().map(str::to_owned),
+                    relation
+                        .to_attribute_values()
+                        .into_iter()
+                        .map(|(name, value)| (name.into(), value))
+                        .collect::<DynamicAttributeMap>(),
+                    relation
+                        .to_role_player_refs()
+                        .into_iter()
+                        .map(|player| crate::_dynamic::DynamicRolePlayerInput {
+                            role_name: player.role.into(),
+                            player_type_name: player.entity_type_name.into(),
+                            iid: player.iid,
+                            key: player.key.map(|(name, value)| (name.into(), value)),
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = manager.delete_many_identities(&items).await {
+            let _ = tx.rollback().await;
+            return Err(error);
         }
         tx.commit().await?;
 

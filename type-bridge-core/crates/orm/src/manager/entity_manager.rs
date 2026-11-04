@@ -18,10 +18,7 @@ use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, TypeKind};
 use crate::plan_builders::bulk_write::WriteKind;
 use crate::query::EntityQuery;
 use crate::session::Database;
-use crate::session::backend::{QueryResult, TxType};
-
-use super::hydration::{extract_count, hydrate_entity};
-use super::query_builder;
+use crate::session::backend::TxType;
 
 /// Generic CRUD manager for a specific entity type.
 ///
@@ -41,7 +38,7 @@ use super::query_builder;
 pub struct EntityManager<'db, T: TypeBridgeEntity> {
     db: &'db Database,
     hooks: HookRunner,
-    dynamic: Option<DynamicEntityManager<'db>>,
+    dynamic: DynamicEntityManager<'db>,
     _marker: PhantomData<T>,
 }
 
@@ -58,9 +55,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
         Ok(Self {
             db,
             hooks: HookRunner::new(),
-            dynamic: Some(DynamicEntityManager::from_registry(
-                db, registry, descriptor,
-            )),
+            dynamic: DynamicEntityManager::from_registry(db, registry, descriptor),
             _marker: PhantomData,
         })
     }
@@ -89,7 +84,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
             );
             self.hooks.run_pre_hooks(&mut context).await?;
         }
-        let manager = self.dynamic.as_ref().expect("registry-backed manager");
+        let manager = &self.dynamic;
         let attributes = entity
             .to_attribute_values()
             .into_iter()
@@ -129,30 +124,13 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     /// Returns an empty vec if no entities match.
     #[tracing::instrument(skip(self, filters), fields(entity_type = T::TYPE_NAME))]
     pub async fn get(&self, filters: &[Filter]) -> Result<Vec<T>> {
-        if let Some(manager) = &self.dynamic {
-            return manager
-                .get(filters)
-                .await?
-                .into_iter()
-                .map(materialize_entity_row::<T>)
-                .collect();
-        }
-
-        let typeql = query_builder::build_fetch::<T>(filters, "$e")?;
-        tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "FETCH");
-
-        // raw remainder: no registry authority; removed in 06
-        let result = self.db.execute_raw(&typeql, TxType::Read).await?;
-        match result {
-            QueryResult::Documents(docs) => {
-                docs.iter().map(|doc| hydrate_entity::<T>(doc)).collect()
-            }
-            QueryResult::Ok => Ok(vec![]),
-            QueryResult::Rows(_) => Err(OrmError::Hydration {
-                type_name: T::TYPE_NAME.into(),
-                message: "Expected Documents from fetch query, got Rows".into(),
-            }),
-        }
+        let manager = &self.dynamic;
+        return manager
+            .get(filters)
+            .await?
+            .into_iter()
+            .map(materialize_entity_row::<T>)
+            .collect();
     }
 
     /// Fetch exactly one entity matching the filters.
@@ -198,23 +176,17 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
             self.hooks.run_pre_hooks(&mut ctx).await?;
         }
 
-        if let Some(manager) = &self.dynamic {
-            manager
-                .delete_identity(
-                    entity.iid(),
-                    &entity
-                        .to_attribute_values()
-                        .into_iter()
-                        .map(|(name, value)| (name.into(), value))
-                        .collect::<DynamicAttributeMap>(),
-                )
-                .await?;
-        } else {
-            let typeql = query_builder::build_delete::<T>(entity, "$e")?;
-            tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "DELETE");
-            // raw remainder: no registry authority; removed in 06
-            self.db.execute_raw(&typeql, TxType::Write).await?;
-        }
+        let manager = &self.dynamic;
+        manager
+            .delete_identity(
+                entity.iid(),
+                &entity
+                    .to_attribute_values()
+                    .into_iter()
+                    .map(|(name, value)| (name.into(), value))
+                    .collect::<DynamicAttributeMap>(),
+            )
+            .await?;
 
         if self.hooks.has_hooks() {
             let ctx = HookRunner::build_context(
@@ -246,12 +218,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     /// decoding finishes before commit; post-hooks run only after commit succeeds.
     /// Requires [`Self::from_registry`].
     pub async fn delete_many_returning(&self, entities: &[T]) -> Result<Vec<T>> {
-        let manager = self.dynamic.as_ref().ok_or_else(|| {
-            crate::plan_builders::manager::invalid(
-                "manager_plan_authority_unavailable",
-                "Deletion snapshots require a registry-backed manager",
-            )
-        })?;
+        let manager = &self.dynamic;
         if entities.is_empty() {
             return Ok(Vec::new());
         }
@@ -350,7 +317,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
             );
             self.hooks.run_pre_hooks(&mut context).await?;
         }
-        let manager = self.dynamic.as_ref().expect("registry-backed manager");
+        let manager = &self.dynamic;
         let attributes = entity
             .to_attribute_values()
             .into_iter()
@@ -401,7 +368,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
             );
             self.hooks.run_pre_hooks(&mut context).await?;
         }
-        let manager = self.dynamic.as_ref().expect("registry-backed manager");
+        let manager = &self.dynamic;
         let attributes = entity
             .to_attribute_values()
             .into_iter()
@@ -451,25 +418,14 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     ///     .execute().await?;
     /// ```
     pub fn query(&self) -> EntityQuery<'db, T> {
-        let query = EntityQuery::new(self.db);
-        match &self.dynamic {
-            Some(manager) => query.with_manager(manager.clone()),
-            None => query,
-        }
+        EntityQuery::new(self.db).with_manager(self.dynamic.clone())
     }
 
     /// Count entities matching the given filters.
     #[tracing::instrument(skip(self, filters), fields(entity_type = T::TYPE_NAME))]
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
-        if let Some(manager) = &self.dynamic {
-            return manager.count_with_filters(filters).await;
-        }
-
-        let typeql = query_builder::build_count::<T>(filters, "$e")?;
-        tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "COUNT");
-        // raw remainder: no registry authority; removed in 06
-        let result = self.db.execute_raw(&typeql, TxType::Read).await?;
-        extract_count(&result)
+        let manager = &self.dynamic;
+        return manager.count_with_filters(filters).await;
     }
 
     /// Insert multiple entities in a single transaction.
@@ -494,65 +450,28 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
         }
 
         let tx = self.db.transaction_context(TxType::Write).await?;
-        let dynamic = self
-            .dynamic
-            .as_ref()
-            .map(|manager| manager.in_transaction(tx.clone()));
-        let mut iids = Vec::with_capacity(entities.len());
+        let dynamic = self.dynamic.in_transaction(tx.clone());
 
-        if let Some(manager) = &dynamic {
-            let items = entities
-                .iter()
-                .map(|entity| {
-                    entity
-                        .to_attribute_values()
-                        .into_iter()
-                        .map(|(name, value)| (name.into(), value))
-                        .collect::<DynamicAttributeMap>()
-                })
-                .collect::<Vec<_>>();
-            iids = match manager.insert_many(&items).await {
-                Ok(iids) => iids,
-                Err(error) => {
-                    let _ = tx.rollback().await;
-                    return Err(error);
-                }
-            };
-            for (entity, iid) in entities.iter_mut().zip(&iids) {
-                entity.set_iid(iid.clone());
+        let manager = &dynamic;
+        let items = entities
+            .iter()
+            .map(|entity| {
+                entity
+                    .to_attribute_values()
+                    .into_iter()
+                    .map(|(name, value)| (name.into(), value))
+                    .collect::<DynamicAttributeMap>()
+            })
+            .collect::<Vec<_>>();
+        let iids = match manager.insert_many(&items).await {
+            Ok(iids) => iids,
+            Err(error) => {
+                let _ = tx.rollback().await;
+                return Err(error);
             }
-        } else {
-            for entity in entities.iter_mut() {
-                let typeql = query_builder::build_insert_with_iid::<T>(entity, "$e")?;
-                tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "INSERT BATCH");
-
-                // raw remainder: no registry authority; removed in 06
-                let result = tx.query(&typeql).await?;
-                match result {
-                    QueryResult::Documents(docs) => {
-                        let doc = docs.first().ok_or_else(|| OrmError::Hydration {
-                            type_name: T::TYPE_NAME.into(),
-                            message: "Insert returned no documents".into(),
-                        })?;
-                        let iid = doc
-                            .get("iid")
-                            .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
-                            .ok_or_else(|| OrmError::Hydration {
-                                type_name: T::TYPE_NAME.into(),
-                                message: "No IID in insert response".into(),
-                            })?
-                            .to_string();
-                        entity.set_iid(iid.clone());
-                        iids.push(iid);
-                    }
-                    _ => {
-                        return Err(OrmError::Hydration {
-                            type_name: T::TYPE_NAME.into(),
-                            message: "Expected Documents from insert+fetch".into(),
-                        });
-                    }
-                }
-            }
+        };
+        for (entity, iid) in entities.iter_mut().zip(&iids) {
+            entity.set_iid(iid.clone());
         }
 
         tx.commit().await?;
@@ -594,38 +513,27 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
         }
 
         let tx = self.db.transaction_context(TxType::Write).await?;
-        let dynamic = self
-            .dynamic
-            .as_ref()
-            .map(|manager| manager.in_transaction(tx.clone()));
-        if let Some(manager) = &dynamic {
-            let items = entities
-                .iter()
-                .map(|entity| {
-                    (
-                        entity.iid().map(str::to_owned),
-                        entity
-                            .to_attribute_values()
-                            .into_iter()
-                            .map(|(name, value)| (name.into(), value))
-                            .collect::<DynamicAttributeMap>(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            if let Err(error) = manager
-                .mutate_many_identities(&items, crate::plan_builders::bulk_write::WriteKind::Delete)
-                .await
-            {
-                let _ = tx.rollback().await;
-                return Err(error);
-            }
-        } else {
-            for entity in entities {
-                let typeql = query_builder::build_delete::<T>(entity, "$e")?;
-                tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "DELETE BATCH");
-                // raw remainder: no registry authority; removed in 06
-                tx.query(&typeql).await?;
-            }
+        let dynamic = self.dynamic.in_transaction(tx.clone());
+        let manager = &dynamic;
+        let items = entities
+            .iter()
+            .map(|entity| {
+                (
+                    entity.iid().map(str::to_owned),
+                    entity
+                        .to_attribute_values()
+                        .into_iter()
+                        .map(|(name, value)| (name.into(), value))
+                        .collect::<DynamicAttributeMap>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = manager
+            .mutate_many_identities(&items, crate::plan_builders::bulk_write::WriteKind::Delete)
+            .await
+        {
+            let _ = tx.rollback().await;
+            return Err(error);
         }
         tx.commit().await?;
 
@@ -665,41 +573,30 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
         }
 
         let tx = self.db.transaction_context(TxType::Write).await?;
-        let dynamic = self
-            .dynamic
-            .as_ref()
-            .map(|manager| manager.in_transaction(tx.clone()));
-        if let Some(manager) = &dynamic {
-            let items = entities
-                .iter()
-                .map(|entity| {
-                    (
-                        entity.iid().map(str::to_owned),
-                        entity
-                            .to_attribute_values()
-                            .into_iter()
-                            .map(|(name, value)| (name.into(), value))
-                            .collect::<DynamicAttributeMap>(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            if let Err(error) = manager
-                .mutate_many_identities(
-                    &items,
-                    crate::plan_builders::bulk_write::WriteKind::PartialUpdate,
+        let dynamic = self.dynamic.in_transaction(tx.clone());
+        let manager = &dynamic;
+        let items = entities
+            .iter()
+            .map(|entity| {
+                (
+                    entity.iid().map(str::to_owned),
+                    entity
+                        .to_attribute_values()
+                        .into_iter()
+                        .map(|(name, value)| (name.into(), value))
+                        .collect::<DynamicAttributeMap>(),
                 )
-                .await
-            {
-                let _ = tx.rollback().await;
-                return Err(error);
-            }
-        } else {
-            for entity in entities {
-                let typeql = query_builder::build_update::<T>(entity, "$e")?;
-                tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "UPDATE BATCH");
-                // raw remainder: no registry authority; removed in 06
-                tx.query(&typeql).await?;
-            }
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = manager
+            .mutate_many_identities(
+                &items,
+                crate::plan_builders::bulk_write::WriteKind::PartialUpdate,
+            )
+            .await
+        {
+            let _ = tx.rollback().await;
+            return Err(error);
         }
         tx.commit().await?;
 
