@@ -1071,9 +1071,10 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
     modelPlanMark("ordered_distinct_collections.refused_nonempty");
     assert.throws(() => oneWritten(manager.insert(value)), (error: unknown) => {
       assert.ok(error instanceof Error);
-      const diagnostic = JSON.parse(error.message);
+      assert.equal(error.name, "QueryV2Error");
+      const diagnostic = error as QueryV2Error;
       assert.equal(diagnostic.code, "query_plan_ordered_collection_unsupported");
-      assert.equal(diagnostic.sdk_category, "unsupported_capability");
+      assert.equal(diagnostic.sdkCategory, "unsupported_capability");
       return true;
     });
     modelPlanMark();
