@@ -151,23 +151,104 @@ impl<'db> SchemaManager<'db> {
     /// Tries a simple match query for the first registered entity or relation type.
     #[tracing::instrument(skip(self))]
     pub async fn has_existing_schema(&self) -> Result<bool> {
-        // Try matching the first entity type
-        if let Some(entity_name) = self.info.entities.keys().next() {
-            let typeql = existence_query(entity_name).map_err(query_error)?;
-            match self.db.execute_raw(&typeql, TxType::Read).await {
-                Ok(_) => return Ok(true),
-                Err(_) => return Ok(false),
-            }
-        }
-        // Try matching the first relation type
-        if let Some(relation_name) = self.info.relations.keys().next() {
-            let typeql = existence_query(relation_name).map_err(query_error)?;
-            match self.db.execute_raw(&typeql, TxType::Read).await {
-                Ok(_) => return Ok(true),
-                Err(_) => return Ok(false),
-            }
-        }
-        Ok(false)
+        use type_bridge_contract::id::TypeKind;
+        let candidate = self
+            .info
+            .entities
+            .keys()
+            .next()
+            .map(|name| (TypeKind::Entity, name))
+            .or_else(|| {
+                self.info
+                    .relations
+                    .keys()
+                    .next()
+                    .map(|name| (TypeKind::Relation, name))
+            });
+        let Some((kind, name)) = candidate else {
+            return Ok(false);
+        };
+        let plan = self.existence_plan(kind, name)?;
+        // Success proves the type exists even when it has no instances.
+        Ok(self
+            .db
+            .execute_plans(
+                &[plan],
+                &crate::QueryExecutionResourceLimits::default(),
+                &crate::session::backend::AnswerCancellation::default(),
+                crate::QueryExecutionDeadline::from_timeout_milliseconds(0),
+            )
+            .await
+            .is_ok())
+    }
+
+    fn existence_plan(
+        &self,
+        kind: type_bridge_contract::id::TypeKind,
+        name: &str,
+    ) -> Result<type_bridge_contract::query_plan::v3::QueryPlanV3> {
+        use type_bridge_contract::capability::CapabilitySet;
+        use type_bridge_contract::codec::FormatVersion;
+        use type_bridge_contract::fingerprint::SemanticProfileId;
+        use type_bridge_contract::id::TypeId;
+        use type_bridge_contract::migration_assertion::{
+            AssertionBinding, BindingId, QueryVariable,
+        };
+        use type_bridge_contract::query_plan::v3::{Operation, PlanSpec, QueryPlanV3, Stage};
+        use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
+        use type_bridge_contract::schema::{
+            DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
+        };
+        use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
+        let build = || -> std::result::Result<_, type_bridge_contract::diagnostic::Diagnostic> {
+            let type_id = TypeId::new(kind, name)?;
+            // This probe needs only the registered type's existence. Partial
+            // registrations need not include its parents or role-player types.
+            let schema = DeclaredSchema::from_facts(
+                FormatVersion::V1,
+                CapabilitySet::new(),
+                [SourcedSchemaFact::new(
+                    SchemaFact::Type(TypeFact::new(type_id.clone())?),
+                    SourceSpan::new(DocumentId::new("schema-existence")?, 0, 0, 1, 1, 1, 1)?,
+                )],
+            )
+            .map_err(|_| {
+                crate::plan_lowering::failure(
+                    type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+                    "query_plan_schema_existence",
+                    "registered type cannot form existence authority",
+                )
+            })?;
+            let root = BindingId::new(0)?;
+            QueryPlanV3::new(
+                PlanSpec {
+                    bindings: vec![AssertionBinding::new(root, QueryVariable::new("x")?)],
+                    inputs: vec![],
+                    given_rows: None,
+                    operation: Operation::Exists,
+                    pipeline: vec![Stage::Match {
+                        patterns: vec![
+                            QueryPattern::Isa {
+                                binding: root,
+                                type_id,
+                                include_subtypes: true,
+                            }
+                            .into(),
+                        ],
+                    }],
+                    output: QueryOutput::Rows {
+                        columns: vec![root],
+                    },
+                    managed_semantics: ManagedSemanticSchemaFingerprint::compute(
+                        SemanticProfileId::new("typedb-3.12.1/v1")?,
+                        &schema.canonical_identity_bytes()?,
+                    )?,
+                    functions: vec![],
+                },
+                &schema,
+            )
+        };
+        build().map_err(crate::query_plan_exec::plan_diagnostic_error)
     }
 
     /// Read the existing schema from the database and return it as [`SchemaInfo`].
@@ -410,12 +491,6 @@ fn parse_value_type(s: &str) -> Option<crate::_attribute::ValueType> {
     }
 }
 
-fn existence_query(name: &str) -> std::result::Result<String, tql::TqlError> {
-    tql::render(&tql::pipeline(vec![
-        tql::match_stage(vec![tql::thing("x", vec![tql::isa(name, false)?])?]),
-        tql::limit(1),
-    ]))
-}
 fn schema_scan_query(kind: &str) -> std::result::Result<String, tql::TqlError> {
     let mut fetch = vec![(
         "name",
@@ -462,10 +537,6 @@ mod ast_query_tests {
     #[test]
     fn introspection_queries_preserve_valid_ast_semantics() {
         for (new, old) in [
-            (
-                existence_query("person").unwrap(),
-                "match $x isa person; limit 1;",
-            ),
             (
                 schema_scan_query("attribute").unwrap(),
                 r#"match $t sub! attribute; fetch {"name":label($t),"value_type":value_type($t)};"#,

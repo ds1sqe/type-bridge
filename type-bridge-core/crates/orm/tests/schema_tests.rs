@@ -827,6 +827,33 @@ fn generate_schema_with_cardinality() {
 // ── Schema sync tests ───────────────────────────────────────────────
 
 #[tokio::test]
+async fn schema_existence_preserves_empty_types_and_one_read() {
+    for relation in [false, true] {
+        let backend = MockBackend::new(vec![QueryResult::Rows(vec![])]);
+        let queries = Arc::clone(&backend.queries);
+        let db = Database::with_backend(Box::new(backend), "testdb");
+        let mut schema = SchemaManager::new(&db);
+        assert!(!schema.has_existing_schema().await.unwrap());
+        assert!(queries.lock().unwrap().is_empty());
+        if relation {
+            schema.register_relation::<Employment>();
+        } else {
+            schema.register_entity::<Person>();
+        }
+        assert!(schema.has_existing_schema().await.unwrap());
+        let queries = queries.lock().unwrap();
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0].1, TxType::Read);
+        assert!(queries[0].0.contains(if relation {
+            "isa employment"
+        } else {
+            "isa person"
+        }));
+        assert!(queries[0].0.contains("limit 1"));
+    }
+}
+
+#[tokio::test]
 async fn sync_schema_sends_typeql_to_backend() {
     let db = Database::with_backend(Box::new(MockBackend::new(vec![QueryResult::Ok])), "testdb");
     let mut schema = SchemaManager::new(&db);
@@ -839,8 +866,8 @@ async fn sync_schema_sends_typeql_to_backend() {
 
 #[tokio::test]
 async fn sync_schema_detects_existing_types() {
-    // has_existing_schema will run a query that returns documents → schema exists
-    let backend = MockBackend::new(vec![QueryResult::Documents(vec![serde_json::json!({})])]);
+    // A successful native existence query proves the type exists even with no rows.
+    let backend = MockBackend::new(vec![QueryResult::Rows(vec![])]);
     let db = Database::with_backend(Box::new(backend), "testdb");
     let mut schema = SchemaManager::new(&db);
     schema.register_entity::<Person>();
@@ -873,7 +900,7 @@ async fn sync_schema_force_skips_check() {
 #[tokio::test]
 async fn sync_schema_skip_if_exists_no_error() {
     // has_existing_schema returns true, but skip_if_exists suppresses the error
-    let backend = MockBackend::new(vec![QueryResult::Documents(vec![serde_json::json!({})])]);
+    let backend = MockBackend::new(vec![QueryResult::Rows(vec![])]);
     let db = Database::with_backend(Box::new(backend), "testdb");
     let mut schema = SchemaManager::new(&db);
     schema.register_entity::<Person>();
