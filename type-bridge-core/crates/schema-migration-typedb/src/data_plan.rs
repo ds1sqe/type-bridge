@@ -108,13 +108,14 @@ impl Builder {
         kind: &str,
         fixed: &[(&str, &str)],
         bound: &[(&str, &str)],
+        include_subtypes: bool,
     ) -> Result<(BindingId, Vec<BindingId>), Diagnostic> {
         let root = self.bind("root")?;
         let mut patterns = vec![
             QueryPattern::Isa {
                 binding: root,
                 type_id: type_id(kind)?,
-                include_subtypes: false,
+                include_subtypes,
             }
             .into(),
         ];
@@ -176,6 +177,15 @@ impl Builder {
         columns: Vec<BindingId>,
     ) -> Result<QueryPlanV3, Diagnostic> {
         let (schema, semantics) = AUTHORITY.as_ref().map_err(Clone::clone)?;
+        self.finish_with(operation, columns, schema, semantics)
+    }
+    fn finish_with(
+        self,
+        operation: Operation,
+        columns: Vec<BindingId>,
+        schema: &DeclaredSchema,
+        semantics: &ManagedSemanticSchemaFingerprint,
+    ) -> Result<QueryPlanV3, Diagnostic> {
         QueryPlanV3::new(
             PlanSpec {
                 bindings: self.bindings,
@@ -200,7 +210,7 @@ pub(crate) fn read(
         bindings: vec![],
         stages: vec![],
     };
-    let (root, mut columns) = builder.matched(kind, fixed, bound)?;
+    let (root, mut columns) = builder.matched(kind, fixed, bound, false)?;
     if columns.is_empty() {
         columns.push(root);
     }
@@ -209,6 +219,37 @@ pub(crate) fn read(
         aliases: bound.iter().map(|(_, name)| (*name).to_owned()).collect(),
     })
 }
+pub(crate) fn read_managed_anchor(bound: &[(&str, &str)]) -> Result<DataQuery, Diagnostic> {
+    use crate::control_schema::{LEGACY_CUTOVER_ENTITY, MANAGED_FENCE_SCHEMA_TYPEQL};
+    static MANAGED_AUTHORITY: std::sync::LazyLock<
+        Result<(DeclaredSchema, ManagedSemanticSchemaFingerprint), Diagnostic>,
+    > = std::sync::LazyLock::new(|| {
+        let schema = type_bridge_schema_compat::typeql_to_declared(
+            DocumentId::new("managed-anchor-data-plan.typeql")?,
+            MANAGED_FENCE_SCHEMA_TYPEQL,
+        )
+        .map_err(|_| shape())?;
+        let semantics = ManagedSemanticSchemaFingerprint::compute(
+            SemanticProfileId::new("typedb-3.12.1/v1")?,
+            MANAGED_FENCE_SCHEMA_TYPEQL.as_bytes(),
+        )?;
+        Ok((schema, semantics))
+    });
+    let (schema, semantics) = MANAGED_AUTHORITY.as_ref().map_err(Clone::clone)?;
+    let mut builder = Builder {
+        bindings: vec![],
+        stages: vec![],
+    };
+    let (root, mut columns) = builder.matched(LEGACY_CUTOVER_ENTITY, &[], bound, true)?;
+    if columns.is_empty() {
+        columns.push(root);
+    }
+    Ok(DataQuery {
+        plan: builder.finish_with(Operation::Rows, columns, schema, semantics)?,
+        aliases: bound.iter().map(|(_, name)| (*name).to_owned()).collect(),
+    })
+}
+
 pub(crate) fn insert(kind: &str, fields: &[(&str, &str)]) -> Result<QueryPlanV3, Diagnostic> {
     let mut builder = Builder {
         bindings: vec![],
@@ -233,8 +274,12 @@ pub(crate) fn delete_kinds(
         bindings: vec![],
         stages: vec![],
     };
-    let (root, columns) =
-        builder.matched(kind, &[(scope_field, scope)], &[(kind_field, "kind")])?;
+    let (root, columns) = builder.matched(
+        kind,
+        &[(scope_field, scope)],
+        &[(kind_field, "kind")],
+        false,
+    )?;
     builder.stages.push(Stage::Match {
         patterns: vec![
             QueryPattern::Or {
@@ -275,7 +320,7 @@ pub(crate) fn replace_and_insert(
         bindings: vec![],
         stages: vec![],
     };
-    let (root, _) = builder.matched(kind, expected, &[])?;
+    let (root, _) = builder.matched(kind, expected, &[], false)?;
     builder.stages.push(Stage::Delete {
         items: vec![DeleteItem::Thing { binding: root }],
     });

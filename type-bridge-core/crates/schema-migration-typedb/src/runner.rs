@@ -1756,6 +1756,7 @@ async fn observe_legacy_cutover_anchor(
     transaction: &mut type_bridge_orm::OwnedTransaction,
     managed_scope: &str,
 ) -> Result<Option<String>, LegacyAnchorObservationError> {
+    // Schema-only read, excepted like define/undefine (06.8).
     let schema_query = anchor_typeql_query(|| {
         Ok(tql::pipeline(vec![
             tql::match_stage(vec![tql::schema_kind_pattern("$t", "entity")?]),
@@ -1786,39 +1787,18 @@ async fn observe_legacy_cutover_anchor(
         return Ok(None);
     }
 
-    let existence_query = anchor_typeql_query(|| {
-        Ok(tql::pipeline(vec![
-            tql::match_stage(vec![tql::entity("anchor", LEGACY_CUTOVER_ENTITY, vec![])?]),
-            tql::fetch(vec![(
-                "exists",
-                tql::fetch_expr(tql::literal_source("true")?),
-            )])?,
-        ]))
-    })
-    .map_err(LegacyAnchorObservationError::Infrastructure)?;
-    let existence = legacy_anchor_query_values(transaction, &existence_query)
+    let existence_query = crate::data_plan::read_managed_anchor(&[])
+        .map_err(LegacyAnchorObservationError::Infrastructure)?;
+    let existence = legacy_anchor_plan_values(transaction, existence_query)
         .await
         .map_err(LegacyAnchorObservationError::Infrastructure)?;
-    let detail_query = anchor_typeql_query(|| {
-        Ok(tql::pipeline(vec![
-            tql::match_stage(vec![tql::entity(
-                "anchor",
-                LEGACY_CUTOVER_ENTITY,
-                vec![
-                    (LEGACY_CUTOVER_KEY, tql::var("key")?),
-                    (LEGACY_CUTOVER_SCOPE, tql::var("scope")?),
-                    (LEGACY_CUTOVER_FINGERPRINT, tql::var("fingerprint")?),
-                ],
-            )?]),
-            tql::fetch(vec![
-                ("key", tql::fetch_expr(tql::var("key")?)),
-                ("scope", tql::fetch_expr(tql::var("scope")?)),
-                ("fingerprint", tql::fetch_expr(tql::var("fingerprint")?)),
-            ])?,
-        ]))
-    })
+    let detail_query = crate::data_plan::read_managed_anchor(&[
+        (LEGACY_CUTOVER_KEY, "key"),
+        (LEGACY_CUTOVER_SCOPE, "scope"),
+        (LEGACY_CUTOVER_FINGERPRINT, "fingerprint"),
+    ])
     .map_err(LegacyAnchorObservationError::Infrastructure)?;
-    let values = legacy_anchor_query_values(transaction, &detail_query)
+    let values = legacy_anchor_plan_values(transaction, detail_query)
         .await
         .map_err(LegacyAnchorObservationError::Infrastructure)?;
     parse_legacy_cutover_anchor(existence, values, managed_scope)
@@ -1882,6 +1862,40 @@ fn parse_legacy_cutover_anchor(
         ));
     }
     Ok(Some(value.to_owned()))
+}
+
+async fn legacy_anchor_plan_values(
+    transaction: &mut type_bridge_orm::OwnedTransaction,
+    query: crate::data_plan::DataQuery,
+) -> Result<Vec<serde_json::Value>, Diagnostic> {
+    let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
+    let answers = transaction
+        .execute_plans(
+            std::slice::from_ref(&query.plan),
+            &limits,
+            &type_bridge_orm::AnswerCancellation::default(),
+            type_bridge_orm::QueryExecutionDeadline::for_limits(limits),
+        )
+        .await
+        .map_err(|error| {
+            legacy_import_failure(
+                "migration_legacy_import_anchor_unreadable",
+                "managed legacy cutover anchor cannot be read",
+            )
+            .with_detail("provider", error.to_string())
+        })?;
+    let answer = answers.into_iter().next().ok_or_else(|| {
+        legacy_import_failure(
+            "migration_legacy_import_anchor_provider_contract",
+            "legacy cutover anchor plan returned no result",
+        )
+    })?;
+    query.documents(answer).map_err(|_| {
+        legacy_import_failure(
+            "migration_legacy_import_anchor_provider_contract",
+            "legacy cutover anchor plan returned malformed scalar values",
+        )
+    })
 }
 
 async fn legacy_anchor_query_values(
@@ -2558,17 +2572,26 @@ mod tests {
 
     #[tokio::test]
     async fn verify_binding_distinguishes_semantic_drift_from_provider_failure() {
+        use type_bridge_contract::id::{TypeId, TypeKind};
+        use type_bridge_contract::query_remote::RemoteValue;
+        use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+        let scalar = |text: &str| RemoteValue::Value {
+            value: CanonicalValue::String(CanonicalString::new(text).unwrap()),
+        };
         let exact_anchor = serde_json::json!({
-            "key": LEGACY_CUTOVER_SINGLETON_KEY,
-            "scope": "scope",
-            "fingerprint": "a".repeat(64),
+            "key1": scalar(LEGACY_CUTOVER_SINGLETON_KEY),
+            "scope2": scalar("scope"),
+            "fingerprint3": scalar(&"a".repeat(64)),
         });
         let (drift_database, _, _) = inspection_database(vec![
             QueryResult::Documents(vec![serde_json::json!({
                 "label": LEGACY_CUTOVER_ENTITY,
             })]),
-            QueryResult::Documents(vec![serde_json::json!({"exists": true})]),
-            QueryResult::Documents(vec![exact_anchor]),
+            QueryResult::Rows(vec![serde_json::json!({"root0": RemoteValue::Thing {
+                iid: "0x00000000000000000000000000000001".to_owned(),
+                type_id: TypeId::new(TypeKind::Entity, LEGACY_CUTOVER_ENTITY).unwrap(),
+            }})]),
+            QueryResult::Rows(vec![exact_anchor]),
         ]);
         let drift = inspect_legacy_binding_read_only(
             &drift_database,
