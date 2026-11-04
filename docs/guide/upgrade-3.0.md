@@ -49,6 +49,11 @@ accessors.
 
 ## Core manager construction
 
+Construct core query builders through a registry-backed manager’s `.query()`.
+The database-only `EntityQuery::new` and `RelationQuery::new` constructors are
+removed. Use `.group_by()` on those queries instead of
+`GroupByEntityQuery::new` or `GroupByRelationQuery::new`.
+
 Core descriptor managers require registry authority. Replace
 `DynamicEntityManager::new` / `new_canonical` and
 `DynamicRelationManager::new` / `new_canonical` with `::from_registry`.

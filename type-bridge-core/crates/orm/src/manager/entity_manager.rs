@@ -418,7 +418,7 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     ///     .execute().await?;
     /// ```
     pub fn query(&self) -> EntityQuery<'db, T> {
-        EntityQuery::new(self.db).with_manager(self.dynamic.clone())
+        EntityQuery::from_manager(self.dynamic.clone())
     }
 
     /// Count entities matching the given filters.

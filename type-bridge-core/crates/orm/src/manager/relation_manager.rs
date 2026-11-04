@@ -342,7 +342,7 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     ///     .execute().await?;
     /// ```
     pub fn query(&self) -> RelationQuery<'db, R> {
-        RelationQuery::new(self.db).with_manager(self.dynamic.clone())
+        RelationQuery::from_manager(self.dynamic.clone())
     }
 
     /// Count relations matching the given filters.

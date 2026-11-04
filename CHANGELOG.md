@@ -200,6 +200,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Removed `EntityQuery::new`, `RelationQuery::new`,
+  `GroupByEntityQuery::new` and `GroupByRelationQuery::new`, which accepted
+  a database without schema authority. Use `EntityManager::from_registry`
+  or `RelationManager::from_registry`, then `.query()` and `.group_by()`.
+
 - Removed the V1/V2 plan executor: `QueryPlan`, `QueryInvocation`,
   `QueryOperation`, `decode_query_plan`, `decode_query_plan_with_limits`,
   `decode_query_invocation`, `QueryPlanFingerprint::compute`, the V1/V2

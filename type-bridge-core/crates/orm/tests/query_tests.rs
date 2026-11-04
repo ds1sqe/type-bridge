@@ -7,6 +7,23 @@ use type_bridge_orm::*;
 #[path = "support/internal.rs"]
 mod internal;
 use internal::*;
+use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue};
+
+mod common;
+
+fn query_registry() -> Arc<DescriptorRegistry> {
+    common::manager_registry_for_schema(
+        &common::MANAGER_SCHEMA
+            .replace(
+                "  age: { value: integer }",
+                "  age: { value: integer }\n  department: { value: string }",
+            )
+            .replace(
+                "      age: { card: 1 }",
+                "      age: { card: 1 }\n      department: { card: { min: 0, max: 1 } }",
+            ),
+    )
+}
 
 // ── Test entity ──────────────────────────────────────────────────────
 
@@ -220,19 +237,24 @@ impl TransactionOps for MockTransaction {
 
 fn person_doc(name: &str, age: i64) -> serde_json::Value {
     serde_json::json!({
-        "_iid": format!("0x{name}"),
+        "_iid": format!("0x{:x}", name.bytes().map(u64::from).sum::<u64>()),
+        "_type": "person",
         "attributes": {
-            "name": [{"value": name}],
-            "age": [{"value": age}]
+            "name": name,
+            "age": age
         }
     })
 }
 
 fn friendship_doc(since: &str) -> serde_json::Value {
     serde_json::json!({
-        "_iid": format!("0xfr_{since}"),
+        "_iid": format!("0x{:x}", since.bytes().map(u64::from).sum::<u64>()),
+        "_type": "friendship",
+        "_role_0_iid": "0x01",
+        "_role_0_type": "person",
+        "_role_0_attributes": {"name":"Alice","age":35},
         "attributes": {
-            "since": [{"value": since}]
+            "since": since
         }
     })
 }
@@ -245,7 +267,9 @@ async fn query_with_gt_filter() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .filter(Expr::gt("age", AttributeValue::Long(18)))
         .execute()
@@ -264,7 +288,9 @@ async fn query_with_string_contains() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .filter(Expr::contains("name", "Ali"))
         .execute()
@@ -286,7 +312,9 @@ async fn query_with_and_expression() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .filter(Expr::And(vec![
             Expr::gte("age", AttributeValue::Long(18)),
@@ -308,7 +336,9 @@ async fn query_with_or_expression() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .filter(Expr::Or(vec![
             Expr::eq("name", AttributeValue::String("Alice".into())),
@@ -329,7 +359,9 @@ async fn query_with_not_expression() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .filter(Expr::not(Expr::eq(
             "name",
@@ -353,7 +385,9 @@ async fn query_with_sort() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .order_by("name", SortDir::Asc)
         .execute()
@@ -372,7 +406,9 @@ async fn query_with_limit_offset() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager.limit(10).offset(5).execute().await.unwrap();
 
     let recorded = queries.lock().unwrap();
@@ -389,7 +425,9 @@ async fn query_execute_returns_entities() {
     ])]);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let people = manager
         .filter(Expr::gte("age", AttributeValue::Long(20)))
         .execute()
@@ -407,7 +445,9 @@ async fn query_first_returns_single() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let person = manager
         .filter(Expr::eq("name", AttributeValue::String("Alice".into())))
         .first()
@@ -427,7 +467,9 @@ async fn query_first_returns_none_when_empty() {
     let backend = MockBackend::new(vec![QueryResult::Documents(vec![])]);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let person = manager.first().await.unwrap();
 
     assert!(person.is_none());
@@ -436,12 +478,14 @@ async fn query_first_returns_none_when_empty() {
 #[tokio::test]
 async fn query_count_returns_value() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$count": 42}),
+        serde_json::json!({"count2":{"kind":"value","value":CanonicalValue::Long(42)}}),
     ])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let count = manager
         .filter(Expr::gte("age", AttributeValue::Long(18)))
         .count()
@@ -459,12 +503,14 @@ async fn query_count_returns_value() {
 #[tokio::test]
 async fn query_aggregate_sum() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$sum": 1500}),
+        serde_json::json!({"reduced2":{"kind":"value","value":CanonicalValue::Long(1500)}}),
     ])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let result = manager
         .aggregate(&[Agg::Sum("age".to_string())])
         .await
@@ -484,7 +530,9 @@ async fn query_chain_all_modifiers() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let people = manager
         .filter(Expr::gte("age", AttributeValue::Long(18)))
         .filter(Expr::lte("age", AttributeValue::Long(65)))
@@ -516,7 +564,9 @@ async fn relation_query_with_filter() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationQuery::<Friendship>::new(&db);
+    let manager = RelationManager::<Friendship>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let results = manager
         .filter(Expr::eq(
             "since",
@@ -547,7 +597,9 @@ async fn relation_query_with_sort_and_limit() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationQuery::<Friendship>::new(&db);
+    let manager = RelationManager::<Friendship>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .order_by("since", SortDir::Desc)
         .limit(5)
@@ -565,11 +617,13 @@ async fn relation_query_with_sort_and_limit() {
 #[tokio::test]
 async fn relation_query_count() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$count": 7}),
+        serde_json::json!({"count1":{"kind":"value","value":CanonicalValue::Long(7)}}),
     ])]);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationQuery::<Friendship>::new(&db);
+    let manager = RelationManager::<Friendship>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let count = manager.count().await.unwrap();
 
     assert_eq!(count, 7);
@@ -583,7 +637,9 @@ async fn relation_query_first() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationQuery::<Friendship>::new(&db);
+    let manager = RelationManager::<Friendship>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let result = manager.first().await.unwrap();
 
     assert!(result.is_some());
@@ -597,12 +653,14 @@ async fn relation_query_first() {
 #[tokio::test]
 async fn relation_query_aggregate() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$count": 10}),
+        serde_json::json!({"reduced1":{"kind":"value","value":CanonicalValue::Long(10)}}),
     ])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationQuery::<Friendship>::new(&db);
+    let manager = RelationManager::<Friendship>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let result = manager.aggregate(&[Agg::Count]).await.unwrap();
 
     assert_eq!(result.count(), Some(10));
@@ -619,7 +677,9 @@ async fn query_with_like_filter() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .filter(Expr::like("name", "Ali.*"))
         .execute()
@@ -641,7 +701,9 @@ async fn query_multiple_sort_fields() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .order_by("age", SortDir::Desc)
         .order_by("name", SortDir::Asc)
@@ -664,7 +726,9 @@ async fn query_with_in_range() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .filter(Expr::in_range(
             "age",
@@ -687,7 +751,9 @@ async fn query_with_startswith() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .filter(Expr::startswith("name", "Ali"))
         .execute()
@@ -709,7 +775,9 @@ async fn query_with_endswith() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .filter(Expr::endswith("name", "ice"))
         .execute()
@@ -730,13 +798,15 @@ async fn query_with_endswith() {
 #[tokio::test]
 async fn entity_group_by_aggregate() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$group0": "Engineering", "$mean": 35.5}),
-        serde_json::json!({"$group0": "Sales", "$mean": 28.3}),
+        serde_json::json!({"field1":{"kind":"attribute","type_id":{"kind":"attribute","label":"department"},"value":CanonicalValue::String(CanonicalString::new("Engineering").unwrap())},"reduced3":{"kind":"value","value":CanonicalValue::Double(CanonicalDouble::new(35.5).unwrap())}}),
+        serde_json::json!({"field1":{"kind":"attribute","type_id":{"kind":"attribute","label":"department"},"value":CanonicalValue::String(CanonicalString::new("Sales").unwrap())},"reduced3":{"kind":"value","value":CanonicalValue::Double(CanonicalDouble::new(28.3).unwrap())}}),
     ])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let result = manager
         .group_by("department")
         .aggregate(&[Agg::Mean("age".into())])
@@ -756,7 +826,10 @@ async fn entity_group_by_aggregate() {
     let recorded = queries.lock().unwrap();
     let q = &recorded[0];
     assert!(q.contains("groupby"), "should contain 'groupby': {q}");
-    assert!(q.contains("$group0"), "should contain '$group0': {q}");
+    assert!(
+        q.contains("groupby $field1"),
+        "should group by the department binding: {q}"
+    );
     assert!(
         q.contains("has department"),
         "should contain 'has department': {q}"
@@ -767,12 +840,14 @@ async fn entity_group_by_aggregate() {
 #[tokio::test]
 async fn entity_group_by_with_filter() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$group0": "Engineering", "$count": 5}),
+        serde_json::json!({"field2":{"kind":"attribute","type_id":{"kind":"attribute","label":"department"},"value":CanonicalValue::String(CanonicalString::new("Engineering").unwrap())},"reduced3":{"kind":"value","value":CanonicalValue::Long(5)}}),
     ])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = EntityQuery::<Person>::new(&db);
+    let manager = EntityManager::<Person>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let result = manager
         .filter(Expr::gte("age", AttributeValue::Long(18)))
         .group_by("department")
@@ -792,12 +867,14 @@ async fn entity_group_by_with_filter() {
 #[tokio::test]
 async fn relation_group_by_aggregate() {
     let backend = MockBackend::new(vec![QueryResult::Rows(vec![
-        serde_json::json!({"$group0": "2024", "$count": 3}),
+        serde_json::json!({"field1":{"kind":"attribute","type_id":{"kind":"attribute","label":"since"},"value":CanonicalValue::String(CanonicalString::new("2024").unwrap())},"reduced2":{"kind":"value","value":CanonicalValue::Long(3)}}),
     ])]);
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationQuery::<Friendship>::new(&db);
+    let manager = RelationManager::<Friendship>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let result = manager
         .group_by("since")
         .aggregate(&[Agg::Count])
@@ -822,7 +899,9 @@ async fn relation_query_with_role_player_filter() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationQuery::<Friendship>::new(&db);
+    let manager = RelationManager::<Friendship>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .filter(Expr::role_player(
             "friend",
@@ -836,13 +915,13 @@ async fn relation_query_with_role_player_filter() {
     let q = &recorded[0];
     // Should bind role player in the relation pattern
     assert!(
-        q.contains("friend: $friend"),
-        "should contain role binding 'friend: $friend': {q}"
+        q.contains("friend: $player1"),
+        "should contain role binding 'friend: $player1': {q}"
     );
     // Inner expression should target the role player variable
     assert!(
-        q.contains("$friend has age"),
-        "should contain '$friend has age': {q}"
+        q.contains("$player1 has age"),
+        "should contain '$player1 has age': {q}"
     );
     assert!(q.contains("> 30"), "should contain '> 30': {q}");
 }
@@ -855,7 +934,9 @@ async fn relation_query_with_multiple_role_player_filters() {
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
 
-    let manager = RelationQuery::<Friendship>::new(&db);
+    let manager = RelationManager::<Friendship>::from_registry(&db, query_registry())
+        .unwrap()
+        .query();
     let _ = manager
         .filter(Expr::role_player(
             "friend",
@@ -872,12 +953,12 @@ async fn relation_query_with_multiple_role_player_filters() {
     let recorded = queries.lock().unwrap();
     let q = &recorded[0];
     assert!(
-        q.contains("friend: $friend"),
+        q.contains("friend: $player1"),
         "should bind role player: {q}"
     );
     assert!(
-        q.contains("$friend has age"),
-        "role player filter should target $friend: {q}"
+        q.contains("$player1 has age"),
+        "role player filter should target $player1: {q}"
     );
     // Also has a direct relation attribute filter
     assert!(q.contains("has since"), "should have direct filter: {q}");
