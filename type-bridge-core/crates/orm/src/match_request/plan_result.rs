@@ -22,7 +22,7 @@ use type_bridge_contract::value::CanonicalValue;
 type Types = BTreeMap<(u16, String), TypeId>;
 
 fn failure(code: &'static str, message: &'static str) -> Diagnostic {
-    crate::query_v2::failure(DiagnosticCategory::Integrity, code, message)
+    crate::plan_lowering::failure(DiagnosticCategory::Integrity, code, message)
 }
 
 fn shared(error: crate::query_v2::QueryV2ExecutionError) -> Diagnostic {
@@ -621,7 +621,7 @@ pub(crate) fn resolve(
                     try_sort_iids(&mut iids, order, &graph).map_err(shared)?;
                     collection_members = collection_members.saturating_add(iids.len() as u64);
                     if collection_members > limits.collection_members {
-                        return Err(crate::query_v2::failure(
+                        return Err(crate::plan_lowering::failure(
                             DiagnosticCategory::ResourceLimit,
                             "query_v2_model_collection_limit",
                             "collected slots exceed the collection budget",
@@ -643,7 +643,7 @@ pub(crate) fn resolve(
     } = &request.request().operation
         && selected.len() as u64 > window.limit
     {
-        return Err(crate::query_v2::failure(
+        return Err(crate::plan_lowering::failure(
             DiagnosticCategory::ResourceLimit,
             "query_v2_model_complete_rows_exceeded",
             "more distinct rows matched than the complete fetch accepts",
@@ -763,7 +763,7 @@ fn exact_long_total(
 ) -> Result<i128, Diagnostic> {
     use super::plan_adapter::{LONG_SUM_BASE, LONG_SUM_MAX_INPUTS};
     if count > LONG_SUM_MAX_INPUTS {
-        return Err(crate::query_v2::failure(
+        return Err(crate::plan_lowering::failure(
             DiagnosticCategory::ResourceLimit,
             "reduction_input_bound",
             "integer sum exceeds its exact native input bound",
@@ -790,7 +790,7 @@ fn checked_long_sum(
     count: u64,
 ) -> Result<type_bridge_contract::query_remote_v2::RemoteReducedValueV2, Diagnostic> {
     let value = i64::try_from(exact_long_total(low, high, count)?).map_err(|_| {
-        crate::query_v2::failure(
+        crate::plan_lowering::failure(
             DiagnosticCategory::ResourceLimit,
             "reduction_overflow",
             "integer sum left the canonical long domain",

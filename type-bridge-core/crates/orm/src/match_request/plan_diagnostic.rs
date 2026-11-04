@@ -496,7 +496,7 @@ mod tests {
                 })
                 .unwrap_or_else(|| panic!("missing diagnostic migration for {code}"));
             let diagnostic =
-                crate::query_v2::failure(DiagnosticCategory::Integrity, code, "mapping probe");
+                crate::plan_lowering::failure(DiagnosticCategory::Integrity, code, "mapping probe");
             let (category, released, _) = released_execution_diagnostic(&diagnostic);
             assert_eq!(entry["new_code"], released);
             assert_eq!(entry["category"], category.as_str());

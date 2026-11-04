@@ -1,7 +1,8 @@
 //! Shared pure hydration, coalescing, order and predicate validation.
 
 use crate::match_request::descriptor_plan::adapt_value;
-use crate::query_v2::{QueryV2ExecutionError, failure};
+use crate::plan_lowering::failure;
+use crate::query_v2::QueryV2ExecutionError;
 use crate::value::AttributeValue;
 use regex::Regex;
 use serde::Deserialize;

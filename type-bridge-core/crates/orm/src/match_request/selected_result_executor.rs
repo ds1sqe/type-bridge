@@ -1569,7 +1569,7 @@ mod tests {
                 continue;
             }
             let diagnostic =
-                crate::query_v2::failure(DiagnosticCategory::Integrity, code, "mapping probe");
+                crate::plan_lowering::failure(DiagnosticCategory::Integrity, code, "mapping probe");
             let (_, mapped, _) = released_execution_diagnostic(&diagnostic);
             assert_ne!(
                 mapped, "unmapped_model_execution_diagnostic",
@@ -1577,7 +1577,7 @@ mod tests {
             );
         }
 
-        let future = crate::query_v2::failure(
+        let future = crate::plan_lowering::failure(
             DiagnosticCategory::Integrity,
             "query_v2_model_future_unmapped_code",
             "mapping probe",
@@ -1587,7 +1587,7 @@ mod tests {
             "unmapped_model_execution_diagnostic"
         );
 
-        let role_players = crate::query_v2::failure(
+        let role_players = crate::plan_lowering::failure(
             DiagnosticCategory::ResourceLimit,
             "query_v2_model_role_player_limit",
             "mapping probe",
@@ -1621,17 +1621,21 @@ mod tests {
         }
 
         let integrity = |code| {
-            crate::query_v2::failure(DiagnosticCategory::Integrity, code, "untrusted detail")
+            crate::plan_lowering::failure(DiagnosticCategory::Integrity, code, "untrusted detail")
         };
         let invalid = |code| {
-            crate::query_v2::failure(
+            crate::plan_lowering::failure(
                 DiagnosticCategory::InvalidContract,
                 code,
                 "untrusted detail",
             )
         };
         let resource = |code| {
-            crate::query_v2::failure(DiagnosticCategory::ResourceLimit, code, "untrusted detail")
+            crate::plan_lowering::failure(
+                DiagnosticCategory::ResourceLimit,
+                code,
+                "untrusted detail",
+            )
         };
 
         for code in [

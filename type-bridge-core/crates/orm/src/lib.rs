@@ -52,6 +52,7 @@ pub mod match_request;
 pub mod migration_assertion;
 mod plan_builders;
 pub mod plan_explain;
+mod plan_lowering;
 pub mod projected_batch;
 mod projected_batch_executor;
 pub mod projected_codec;

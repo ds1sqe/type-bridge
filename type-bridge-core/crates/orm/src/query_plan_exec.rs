@@ -28,7 +28,7 @@ use type_bridge_contract::query_remote_v3::StagedAnswerV3;
 use type_bridge_contract::sdk_diagnostic::FailureContext;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
-use crate::query_v2::{
+use crate::plan_lowering::{
     ast, failure, given_rows_spec, local_variable, lower_functions, lower_operand,
     lower_scoped_patterns_with_values, reducer_keyword,
 };
@@ -1846,7 +1846,7 @@ impl Scope<'_> {
             self.bindings,
             &reads,
             None,
-            Some(crate::query_v2::PatternTypeDomains::Plan(self.plan)),
+            Some(crate::plan_lowering::PatternTypeDomains::Plan(self.plan)),
             Some(self.rows),
             Some(self.literal_policy),
         )?;
