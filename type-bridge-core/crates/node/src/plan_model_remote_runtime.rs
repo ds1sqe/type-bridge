@@ -23,7 +23,7 @@ use crate::match_runtime::{
     NodeValidatedMatchResultHandle, borrow_reduce_terms, napi_match_error, napi_sdk_diagnostic,
     napi_target_error, order_handles, parse_enum, reduce_terms, unknown_u64,
 };
-use crate::query_v2_runtime::{NodeQueryV2Authority, bounded_response_snapshot, non_shared_buffer};
+use crate::plan_runtime::{NodeQueryV2Authority, bounded_response_snapshot, non_shared_buffer};
 
 /// A proxy connection whose exchange JavaScript performs, with the policy
 /// and cancellation owner its terminals run under.

@@ -25,7 +25,7 @@ use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_orm::query_v2_builder::query_builder_value_type;
 
-use crate::query_v2_runtime::{NodeQueryV2Authority, napi_error};
+use crate::plan_runtime::{NodeQueryV2Authority, napi_error};
 
 fn invocation_rows(
     env: &Env,

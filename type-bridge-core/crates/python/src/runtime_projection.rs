@@ -1388,7 +1388,7 @@ impl AuthoredPlanProjection {
                 ),
             )
         }
-        .map_err(|error| crate::query_v2_runtime::value_error(&error))?;
+        .map_err(|error| crate::plan_runtime::value_error(&error))?;
         Ok(Self {
             stack,
             registry,
@@ -1495,7 +1495,7 @@ impl PyRuntimeProjection {
         declared: &str,
     ) -> PyResult<AuthoredPlanProjection> {
         let declared = type_bridge_contract::codec::from_canonical_json(declared.as_bytes())
-            .map_err(|error| crate::query_v2_runtime::value_error(&error))?;
+            .map_err(|error| crate::plan_runtime::value_error(&error))?;
         let registry = Arc::new(
             self.package
                 .projection
@@ -1528,7 +1528,7 @@ impl PyRuntimeProjection {
                     .ok_or_else(|| py_runtime_error("model tuple binding is invalid"))?;
                 let declared =
                     type_bridge_contract::codec::from_canonical_json(declared.as_bytes())
-                        .map_err(|error| crate::query_v2_runtime::value_error(&error))?;
+                        .map_err(|error| crate::plan_runtime::value_error(&error))?;
                 Ok((binding, declared))
             })
             .collect::<PyResult<Vec<_>>>()?;

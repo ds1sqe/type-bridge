@@ -1,0 +1,585 @@
+//! Shared Node plan authority, diagnostics and bounded host values.
+
+use std::sync::Arc;
+
+use napi::bindgen_prelude::{Buffer, Env, FromNapiValue, JsValue, Unknown};
+use napi_derive::napi;
+use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::fingerprint::{Fingerprint, MAX_FINGERPRINT_IDENTIFIER_BYTES};
+use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES};
+use type_bridge_contract::schema::encode_declared_schema;
+use type_bridge_orm::plan_authority::QueryAuthority;
+use type_bridge_orm::query_v2_prepared::query_v2_host_string_unicode_error;
+use type_bridge_schema::{
+    MAX_SCHEMA_AUTHORITY_BYTES, SchemaAuthorityError, SchemaAuthorityErrorCode,
+    decode_schema_authority, schema_authority_capability_vocabulary,
+};
+
+use crate::NodeRustDatabase;
+
+pub(crate) fn napi_error(diagnostic: &Diagnostic) -> napi::Error {
+    napi::Error::from_reason(serde_json::to_string(diagnostic).unwrap_or_else(|_| {
+        r#"{"category":"invalid_contract","code":"query_v2_diagnostic_unencodable","message":"the structured query diagnostic could not be encoded","path":[],"details":{}}"#
+            .to_owned()
+    }))
+}
+
+fn binding_diagnostic(
+    category: DiagnosticCategory,
+    code: &'static str,
+    message: &'static str,
+) -> Diagnostic {
+    Diagnostic::new(
+        category,
+        DiagnosticCode::new(code).expect("static Node binding diagnostic code"),
+        message,
+    )
+}
+
+/// Opaque prepared-query schema authority handle.
+#[napi]
+pub struct NodeQueryV2Authority {
+    pub(crate) authority: Arc<QueryAuthority>,
+}
+
+impl NodeQueryV2Authority {
+    pub(crate) fn authority(&self) -> Arc<QueryAuthority> {
+        Arc::clone(&self.authority)
+    }
+}
+
+#[napi]
+impl NodeQueryV2Authority {
+    /// Derive an authority over the same schema whose plans are authored,
+    /// decoded, and validated under `query_limits`.
+    #[napi(js_name = "withQueryLimits")]
+    pub fn with_query_limits(
+        &self,
+        query_limits: &crate::match_runtime::NodeQueryLimits,
+    ) -> NodeQueryV2Authority {
+        NodeQueryV2Authority {
+            authority: Arc::new(self.authority.rebound_with_limits(query_limits.inner())),
+        }
+    }
+}
+
+pub(crate) fn bounded_response_snapshot(response: &[u8], limit: usize) -> Vec<u8> {
+    response[..response.len().min(limit)].to_vec()
+}
+
+pub(crate) fn bounded_buffer(buffer: &Buffer, limit: usize) -> &[u8] {
+    &buffer[..buffer.len().min(limit)]
+}
+
+pub(crate) enum BoundedNodeString {
+    Value(String),
+    Oversized,
+    InvalidUnicode,
+}
+
+/// Snapshot one JavaScript string with Python-equivalent size/error
+/// precedence. Python counts Unicode code points before attempting UTF-8
+/// conversion, and an unpaired surrogate still counts as one code point.
+/// JavaScript exposes UTF-16 code units, so count them explicitly before
+/// deciding whether size or invalid Unicode wins.
+pub(crate) unsafe fn bounded_node_string_snapshot(
+    env: napi::sys::napi_env,
+    value: napi::sys::napi_value,
+    limit: usize,
+) -> napi::Result<BoundedNodeString> {
+    let mut utf16_length = 0_usize;
+    napi::check_status!(
+        unsafe {
+            napi::sys::napi_get_value_string_utf16(
+                env,
+                value,
+                std::ptr::null_mut(),
+                0,
+                &mut utf16_length,
+            )
+        },
+        "Failed to inspect UTF-16 string input"
+    )?;
+
+    // Every Unicode code point occupies at most two UTF-16 code units. Above
+    // this bound the Python code-point preflight must also classify the value
+    // as oversized, so no UTF-16 allocation is needed.
+    if utf16_length > limit.saturating_mul(2) {
+        return Ok(BoundedNodeString::Oversized);
+    }
+
+    let mut utf16 = vec![0_u16; utf16_length.saturating_add(1)];
+    let mut written = 0_usize;
+    napi::check_status!(
+        unsafe {
+            napi::sys::napi_get_value_string_utf16(
+                env,
+                value,
+                utf16.as_mut_ptr(),
+                utf16.len(),
+                &mut written,
+            )
+        },
+        "Failed to copy UTF-16 string input"
+    )?;
+    if written != utf16_length {
+        return Ok(BoundedNodeString::InvalidUnicode);
+    }
+
+    let mut code_points = 0_usize;
+    let mut invalid_unicode = false;
+    let mut index = 0_usize;
+    while index < written {
+        let unit = utf16[index];
+        if (0xD800..=0xDBFF).contains(&unit) {
+            if index + 1 < written && (0xDC00..=0xDFFF).contains(&utf16[index + 1]) {
+                index += 2;
+            } else {
+                invalid_unicode = true;
+                index += 1;
+            }
+        } else {
+            if (0xDC00..=0xDFFF).contains(&unit) {
+                invalid_unicode = true;
+            }
+            index += 1;
+        }
+        code_points = code_points.saturating_add(1);
+    }
+
+    if code_points > limit {
+        return Ok(BoundedNodeString::Oversized);
+    }
+    if invalid_unicode {
+        return Ok(BoundedNodeString::InvalidUnicode);
+    }
+
+    let mut utf8_length = 0_usize;
+    napi::check_status!(
+        unsafe {
+            napi::sys::napi_get_value_string_utf8(
+                env,
+                value,
+                std::ptr::null_mut(),
+                0,
+                &mut utf8_length,
+            )
+        },
+        "Failed to inspect UTF-8 string input"
+    )?;
+    if utf8_length > limit {
+        return Ok(BoundedNodeString::Oversized);
+    }
+
+    unsafe { String::from_napi_value(env, value) }.map(BoundedNodeString::Value)
+}
+
+/// Measure one JavaScript string before napi-rs allocates its Rust copy.
+///
+/// Node already owns the immutable JavaScript string, but the normal
+/// `FromNapiValue for String` path allocates its complete UTF-8 representation
+/// before semantic code can enforce its input ceiling. Inspecting the encoded
+/// length through Node-API first keeps the boundary allocation bounded while
+/// preserving the semantic diagnostic for an oversized value.
+pub(crate) fn bounded_string(
+    env: &Env,
+    value: Unknown,
+    limit: usize,
+    oversized: impl FnOnce() -> Diagnostic,
+) -> napi::Result<String> {
+    bounded_string_with_unicode_error(
+        env,
+        value,
+        limit,
+        oversized,
+        query_v2_host_string_unicode_error,
+    )
+}
+
+/// Copy one bounded JavaScript string while rejecting lone UTF-16 surrogates
+/// before Node-API can replacement-encode them into a different Rust string.
+pub(crate) fn bounded_string_with_unicode_error(
+    env: &Env,
+    value: Unknown,
+    limit: usize,
+    oversized: impl FnOnce() -> Diagnostic,
+    invalid_unicode: impl FnOnce() -> Diagnostic,
+) -> napi::Result<String> {
+    match unsafe { bounded_node_string_snapshot(env.raw(), value.raw(), limit) }? {
+        BoundedNodeString::Value(value) => Ok(value),
+        BoundedNodeString::Oversized => Err(napi_error(&oversized())),
+        BoundedNodeString::InvalidUnicode => Err(napi_error(&invalid_unicode())),
+    }
+}
+
+pub(crate) fn invocation_input_too_large() -> Diagnostic {
+    binding_diagnostic(
+        DiagnosticCategory::ResourceLimit,
+        "query_invocation_input_byte_limit",
+        "invocation input rows exceed the structural byte ceiling",
+    )
+}
+
+fn managed_scope_id_too_large() -> Diagnostic {
+    binding_diagnostic(
+        DiagnosticCategory::InvalidContract,
+        "malformed_managed_scope_id",
+        "managed scope ID is empty or exceeds the canonical string limit",
+    )
+    .with_detail(
+        "maximum_bytes",
+        i64::try_from(MAX_CANONICAL_STRING_BYTES).unwrap_or(i64::MAX),
+    )
+}
+
+fn semantic_profile_id_too_large() -> Diagnostic {
+    binding_diagnostic(
+        DiagnosticCategory::Integrity,
+        "invalid_fingerprint_identifier",
+        "fingerprint metadata identifier is malformed",
+    )
+    .with_detail("identifier_kind", "SemanticProfileId")
+}
+
+fn schema_authority_too_large() -> Diagnostic {
+    binding_diagnostic(
+        DiagnosticCategory::ResourceLimit,
+        "canonical_json_too_large",
+        "canonical JSON exceeds the byte ceiling",
+    )
+}
+
+/// Validate a raw addon byte argument before napi-rs constructs a Rust slice.
+///
+/// A Node Buffer can be backed by SharedArrayBuffer. Another Worker may then
+/// mutate the bytes while Rust holds the ordinary `&[u8]` exposed by napi-rs,
+/// which violates Rust's aliasing model. Inspect the TypedArray's actual
+/// backing store through stable N-API metadata first, reject shared storage,
+/// and only then let napi-rs construct a Buffer view. The package facade may
+/// copy shared input for convenience; direct `.node` consumers fail closed.
+pub(crate) fn non_shared_buffer(env: &Env, value: Unknown) -> napi::Result<Buffer> {
+    if !value.is_buffer()? {
+        return Err(napi::Error::new(
+            napi::Status::InvalidArg,
+            "Expected a Buffer value".to_owned(),
+        ));
+    }
+
+    let mut typed_array_type = 0;
+    let mut length = 0_usize;
+    let mut data = std::ptr::null_mut();
+    let mut backing = std::ptr::null_mut();
+    let mut byte_offset = 0_usize;
+    napi::check_status!(
+        unsafe {
+            napi::sys::napi_get_typedarray_info(
+                env.raw(),
+                value.raw(),
+                &mut typed_array_type,
+                &mut length,
+                &mut data,
+                &mut backing,
+                &mut byte_offset,
+            )
+        },
+        "Failed to inspect Buffer backing storage"
+    )?;
+    let mut ordinary_array_buffer = false;
+    napi::check_status!(
+        unsafe { napi::sys::napi_is_arraybuffer(env.raw(), backing, &mut ordinary_array_buffer) },
+        "Failed to classify Buffer backing storage"
+    )?;
+    if !ordinary_array_buffer {
+        return Err(napi::Error::new(
+            napi::Status::InvalidArg,
+            "query_v2_shared_buffer_unsupported: raw native byte inputs cannot use SharedArrayBuffer storage"
+                .to_owned(),
+        ));
+    }
+
+    Buffer::from_unknown(value)
+}
+
+/// Build one authority from canonical declared-schema bytes.
+#[napi(js_name = "queryV2Authority")]
+pub fn query_v2_authority(
+    env: Env,
+    declared_schema: Unknown,
+    scope: Unknown,
+    profile: Unknown,
+) -> napi::Result<NodeQueryV2Authority> {
+    let declared_schema = non_shared_buffer(&env, declared_schema)?;
+    let scope = bounded_string(
+        &env,
+        scope,
+        MAX_CANONICAL_STRING_BYTES,
+        managed_scope_id_too_large,
+    )?;
+    let profile = bounded_string(
+        &env,
+        profile,
+        MAX_FINGERPRINT_IDENTIFIER_BYTES,
+        semantic_profile_id_too_large,
+    )?;
+    let authority = QueryAuthority::from_declared_bytes(
+        bounded_buffer(&declared_schema, MAX_CANONICAL_BYTES.saturating_add(1)),
+        &scope,
+        &profile,
+    )
+    .map_err(|diagnostic| napi_error(&diagnostic))?;
+    Ok(NodeQueryV2Authority {
+        authority: Arc::new(authority),
+    })
+}
+
+pub(crate) fn schema_authority_diagnostic(error: &SchemaAuthorityError) -> Diagnostic {
+    if let Some(contract) = error.contract() {
+        return contract.clone();
+    }
+    let (category, code, message) = match error.code() {
+        SchemaAuthorityErrorCode::Contract => (
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_invalid",
+            "generated schema authority is not a valid canonical contract",
+        ),
+        SchemaAuthorityErrorCode::Schema => (
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_schema_invalid",
+            "generated schema authority cannot reconstruct its declared schema",
+        ),
+        SchemaAuthorityErrorCode::UnsupportedVersion => (
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_unsupported_version",
+            "generated schema authority uses an unsupported version",
+        ),
+        SchemaAuthorityErrorCode::UnsupportedCapability => (
+            DiagnosticCategory::UnsupportedCapability,
+            "generated_schema_authority_unsupported_capability",
+            "generated schema authority requires an unsupported capability",
+        ),
+        SchemaAuthorityErrorCode::ResourceLimit => (
+            DiagnosticCategory::ResourceLimit,
+            "generated_schema_authority_resource_limit",
+            "generated schema authority exceeds a structural limit",
+        ),
+        SchemaAuthorityErrorCode::IntegrityMismatch => (
+            DiagnosticCategory::Integrity,
+            "generated_schema_authority_integrity_mismatch",
+            "generated schema authority contains stale or mismatched evidence",
+        ),
+    };
+    binding_diagnostic(category, code, message)
+}
+
+fn build_query_v2_authority_from_schema_authority(
+    schema_authority: &[u8],
+    semantic_fingerprint: &[u8],
+) -> Result<NodeQueryV2Authority, Diagnostic> {
+    let verified =
+        decode_schema_authority(schema_authority, &schema_authority_capability_vocabulary())
+            .map_err(|error| schema_authority_diagnostic(&error))?;
+    let expected: Fingerprint = from_canonical_json(semantic_fingerprint)?;
+    if &expected
+        != verified
+            .resolved_schema()
+            .semantic_fingerprint()
+            .as_fingerprint()
+    {
+        return Err(binding_diagnostic(
+            DiagnosticCategory::Integrity,
+            "generated_schema_authority_semantic_mismatch",
+            "generated schema authority does not belong to the installed runtime projection",
+        ));
+    }
+    if to_canonical_json(verified.resolved_schema().semantic_fingerprint())? != semantic_fingerprint
+    {
+        return Err(binding_diagnostic(
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_semantic_noncanonical",
+            "generated semantic fingerprint is not canonical",
+        ));
+    }
+    let declared = encode_declared_schema(verified.declared_schema())?;
+    let authority = QueryAuthority::from_declared_bytes(
+        &declared,
+        verified.managed_scope().id().as_str(),
+        verified.semantic_profile().id().as_str(),
+    )?;
+    Ok(NodeQueryV2Authority {
+        authority: Arc::new(authority),
+    })
+}
+
+/// Verify one generated package's complete schema-authority envelope.
+#[napi(js_name = "queryV2AuthorityFromSchemaAuthority")]
+pub fn query_v2_authority_from_schema_authority(
+    env: Env,
+    schema_authority: Unknown,
+    semantic_fingerprint: Unknown,
+) -> napi::Result<NodeQueryV2Authority> {
+    let schema_authority = bounded_string(
+        &env,
+        schema_authority,
+        MAX_SCHEMA_AUTHORITY_BYTES,
+        schema_authority_too_large,
+    )?;
+    let semantic_fingerprint = bounded_string(
+        &env,
+        semantic_fingerprint,
+        MAX_CANONICAL_BYTES,
+        schema_authority_too_large,
+    )?;
+    build_query_v2_authority_from_schema_authority(
+        schema_authority.as_bytes(),
+        semantic_fingerprint.as_bytes(),
+    )
+    .map_err(|diagnostic| napi_error(&diagnostic))
+}
+
+/// Build a local-only authority for a database with no migration controls.
+#[napi(js_name = "queryV2QueryOnlyAuthority")]
+pub fn query_v2_query_only_authority(
+    env: Env,
+    database: &NodeRustDatabase,
+    declared_schema: Unknown,
+    scope: Unknown,
+    profile: Unknown,
+) -> napi::Result<NodeQueryV2Authority> {
+    let declared_schema = non_shared_buffer(&env, declared_schema)?;
+    let scope = bounded_string(
+        &env,
+        scope,
+        MAX_CANONICAL_STRING_BYTES,
+        managed_scope_id_too_large,
+    )?;
+    let profile = bounded_string(
+        &env,
+        profile,
+        MAX_FINGERPRINT_IDENTIFIER_BYTES,
+        semantic_profile_id_too_large,
+    )?;
+    let (database, _) = database.handles();
+    let authority = QueryAuthority::from_declared_bytes_query_only(
+        bounded_buffer(&declared_schema, MAX_CANONICAL_BYTES.saturating_add(1)),
+        &scope,
+        &profile,
+        &database,
+    )
+    .map_err(|diagnostic| napi_error(&diagnostic))?;
+    Ok(NodeQueryV2Authority {
+        authority: Arc::new(authority),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bounded_response_snapshot, build_query_v2_authority_from_schema_authority};
+    use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
+    use type_bridge_contract::codec::to_canonical_json;
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
+    use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_contract::schema::DocumentId;
+    use type_bridge_schema::{
+        BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet,
+        build_schema_authority, encode_schema_authority, normalize_documents,
+    };
+
+    fn generated_authority_fixture(source: &str) -> (Vec<u8>, Vec<u8>) {
+        let documents = SchemaDocumentSet::parse([(
+            DocumentId::new("node-generated-authority").expect("document"),
+            source,
+        )])
+        .expect("schema parses");
+        let declared = normalize_documents(&documents).expect("schema normalizes");
+        let available: CapabilitySet = BUILTIN_SCHEMA_CAPABILITY_IDS
+            .iter()
+            .map(|id| CapabilityId::new(*id).expect("capability"))
+            .collect();
+        let context = ManagedDeltaContext::new(
+            ManagedScopeId::new("node-generated-authority").expect("scope"),
+            SemanticProfileId::new("typedb-3.12.1/v1").expect("profile"),
+            available,
+        );
+        let authority =
+            build_schema_authority(&declared, declared.required_capabilities(), &context)
+                .expect("authority builds");
+        let semantic =
+            to_canonical_json(authority.resolved_schema().semantic_fingerprint()).unwrap();
+        (encode_schema_authority(&authority), semantic)
+    }
+
+    #[test]
+    fn generated_authority_constructor_verifies_envelope_and_projection_binding() {
+        let (authority, semantic) =
+            generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  person: {}\n");
+        build_query_v2_authority_from_schema_authority(&authority, &semantic)
+            .expect("verified generated authority installs");
+
+        let (_, foreign_semantic) =
+            generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  robot: {}\n");
+        assert_eq!(
+            build_query_v2_authority_from_schema_authority(&authority, &foreign_semantic)
+                .err()
+                .expect("foreign projection fingerprint must fail")
+                .code()
+                .as_str(),
+            "generated_schema_authority_semantic_mismatch",
+        );
+        assert_eq!(
+            build_query_v2_authority_from_schema_authority(b"{", &semantic)
+                .err()
+                .expect("malformed envelope must fail")
+                .code()
+                .as_str(),
+            "malformed_canonical_json",
+        );
+        assert_eq!(
+            build_query_v2_authority_from_schema_authority(
+                &vec![b' '; type_bridge_schema::MAX_SCHEMA_AUTHORITY_BYTES + 1],
+                &semantic,
+            )
+            .err()
+            .expect("oversized envelope must fail")
+            .code()
+            .as_str(),
+            "canonical_json_too_large",
+        );
+    }
+
+    #[test]
+    fn reply_snapshot_never_exceeds_the_supplied_budget_marker() {
+        let response = vec![0x5a; 4_096];
+        let snapshot = bounded_response_snapshot(&response, 257);
+        assert_eq!(snapshot.len(), 257);
+        assert_eq!(snapshot, response[..257]);
+    }
+
+    #[test]
+    fn reply_snapshot_copies_only_the_hard_ceiling_oversize_marker() {
+        let response = vec![0x5a; MAX_REMOTE_ENVELOPE_BYTES + 4_096];
+        let snapshot =
+            bounded_response_snapshot(&response, MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1));
+        assert_eq!(snapshot.len(), MAX_REMOTE_ENVELOPE_BYTES + 1);
+        assert_eq!(snapshot, response[..MAX_REMOTE_ENVELOPE_BYTES + 1]);
+    }
+
+    #[test]
+    fn local_provider_wait_does_not_use_napi_async_work() {
+        let source = include_str!("query_v2_runtime.rs");
+        let start = source
+            .find("pub fn query_v2_execute_local")
+            .expect("local entry point");
+        let end = source[start..]
+            .find("fn remote_limit(")
+            .map(|offset| start + offset)
+            .expect("next entry point");
+        let local = &source[start..end];
+
+        assert!(local.contains("create_deferred"));
+        assert!(local.contains("runtime.spawn"));
+        assert!(!local.contains("AsyncTask"));
+        assert!(!local.contains("block_on"));
+    }
+}

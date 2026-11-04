@@ -1901,7 +1901,7 @@ impl AuthoredPlanProjection {
                 ),
             )
         }
-        .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+        .map_err(|error| crate::plan_runtime::napi_error(&error))?;
         Ok(Self {
             stack,
             registry,
@@ -2030,7 +2030,7 @@ impl NodeRuntimeProjection {
         declared: &str,
     ) -> napi::Result<AuthoredPlanProjection> {
         let declared = type_bridge_contract::codec::from_canonical_json(declared.as_bytes())
-            .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+            .map_err(|error| crate::plan_runtime::napi_error(&error))?;
         let registry = Arc::new(
             self.package
                 .projection
@@ -2069,7 +2069,7 @@ impl NodeRuntimeProjection {
                     .ok_or_else(|| invalid_error("model tuple binding is invalid"))?;
                 let declared =
                     type_bridge_contract::codec::from_canonical_json(declared.as_bytes())
-                        .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+                        .map_err(|error| crate::plan_runtime::napi_error(&error))?;
                 Ok((binding, declared))
             })
             .collect::<napi::Result<Vec<_>>>()?;

@@ -54,7 +54,7 @@ use crate::match_runtime::{
 };
 use crate::orm_runtime::{commit_outcome_class, provider_block_on, py_provider_diagnostic};
 use crate::plan_builder_runtime::{PyPlan, PyPlanProgram, PyStagedPlan};
-use crate::query_v2_runtime::{PythonBytes, value_error};
+use crate::plan_runtime::{PythonBytes, value_error};
 use crate::validated_result_runtime::{MatchInvocation, PyValidatedMatchResultHandle};
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{

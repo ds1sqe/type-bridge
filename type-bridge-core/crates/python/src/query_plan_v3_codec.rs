@@ -11,7 +11,7 @@ fn _query_plan_v3_round_trip<'py>(
     plan_bytes: &[u8],
     schema_bytes: &[u8],
 ) -> PyResult<(Bound<'py, PyBytes>, String)> {
-    let convert = |error| crate::query_v2_runtime::value_error(&error);
+    let convert = |error| crate::plan_runtime::value_error(&error);
     let schema = decode_declared_schema(schema_bytes).map_err(convert)?;
     let plan = decode_query_plan_v3(plan_bytes, &schema).map_err(convert)?;
     let bytes = plan.canonical_bytes().map_err(convert)?;

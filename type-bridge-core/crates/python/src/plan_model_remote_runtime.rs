@@ -26,7 +26,7 @@ use crate::match_runtime::{
     borrow_reduce_terms, order_handles, parse_enum, py_match_error, py_match_orm_error,
     py_query_target_error, py_sdk_diagnostic, python_window, reduce_terms, validated_result_handle,
 };
-use crate::query_v2_runtime::{PyQueryV2Authority, PythonBytes};
+use crate::plan_runtime::{PyQueryV2Authority, PythonBytes};
 use crate::validated_result_runtime::PyValidatedMatchResultHandle;
 
 /// A caller-exchanged proxy connection plus the session's resources and

@@ -40,7 +40,7 @@ use type_bridge_orm::query_v2_prepared::{
     query_v2_host_string_type_error, query_v2_host_string_unicode_error,
 };
 
-use crate::query_v2_runtime::{
+use crate::plan_runtime::{
     BoundedNodeString, NodeQueryV2Authority, bounded_node_string_snapshot,
     bounded_string_with_unicode_error, napi_error,
 };

@@ -9,7 +9,9 @@ REPOSITORY_AUTHORING_TRUTH_FILES = (
     ROOT / "docs/guide/upgrade-v2.md",
     ROOT / "docs/guide/typed-queries.md",
     ROOT / "type-bridge-core/crates/python/src/query_v2_runtime.rs",
+    ROOT / "type-bridge-core/crates/python/src/plan_runtime.rs",
     ROOT / "type-bridge-core/crates/node/src/query_v2_runtime.rs",
+    ROOT / "type-bridge-core/crates/node/src/plan_runtime.rs",
     ROOT / "type-bridge-core/crates/node/README.md",
 )
 DURABLE_AUTHORING_TRUTH_FILES = tuple(

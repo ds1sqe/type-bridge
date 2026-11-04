@@ -24,8 +24,8 @@ use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2_builder::query_builder_value_type;
 
+use crate::plan_runtime::{PyQueryV2Authority, value_error};
 use crate::query_v2_builder_runtime::python_scalar;
-use crate::query_v2_runtime::{PyQueryV2Authority, value_error};
 
 type ModelBulkCell<'py> = Option<(String, Bound<'py, PyAny>)>;
 

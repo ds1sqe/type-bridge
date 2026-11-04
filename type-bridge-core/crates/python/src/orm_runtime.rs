@@ -1435,6 +1435,7 @@ mod provider_wait_tests {
             ),
             ("migration_runtime.rs", include_str!("migration_runtime.rs")),
             ("query_v2_runtime.rs", include_str!("query_v2_runtime.rs")),
+            ("plan_runtime.rs", include_str!("plan_runtime.rs")),
         ];
 
         for (name, source) in sources {

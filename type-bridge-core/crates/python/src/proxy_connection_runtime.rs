@@ -20,7 +20,7 @@ use crate::match_runtime::{
     PyQueryCancellation, PyQueryExecutionResourceLimits, PyQueryLimits, py_sdk_diagnostic,
 };
 use crate::orm_runtime::provider_block_on;
-use crate::query_v2_runtime::{PyQueryV2Authority, PythonBytes};
+use crate::plan_runtime::{PyQueryV2Authority, PythonBytes};
 use crate::runtime_projection::direct_tls_from_python;
 use crate::staged_transaction_runtime::{PyStagedTransaction, parse_kind};
 use type_bridge_orm::plan_authority::QueryAuthority;

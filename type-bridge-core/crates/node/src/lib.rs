@@ -19,6 +19,7 @@ mod perf_stages;
 pub use perf_stages::perf_stages;
 mod plan_builder_runtime;
 mod plan_model_remote_runtime;
+pub mod plan_runtime;
 mod proxy_connection_runtime;
 #[cfg(test)]
 #[path = "../../rust/tests/support/purchase_plan.rs"]

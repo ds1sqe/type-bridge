@@ -19,8 +19,8 @@ use type_bridge_orm::session::staged::{
 };
 
 use crate::plan_builder_runtime::{NodePlan, NodePlanProgram, NodeStagedPlan};
+use crate::plan_runtime::non_shared_buffer;
 use crate::proxy_connection_runtime::settle;
-use crate::query_v2_runtime::non_shared_buffer;
 
 /// Parse transaction kind and shared deadline/phase policy without provider I/O.
 pub(crate) fn staged_options(
@@ -63,7 +63,7 @@ fn pending_error(error: &PendingError) -> napi::Error {
             crate::match_runtime::napi_sdk_diagnostic(diagnostic.as_ref().clone())
         }
         PendingError::InvalidPlan(diagnostic) | PendingError::NotAllowedInKind(diagnostic) => {
-            crate::query_v2_runtime::napi_error(diagnostic)
+            crate::plan_runtime::napi_error(diagnostic)
         }
         // The server's refusal keeps its stable code.
         PendingError::Refused { diagnostic, .. } => {
@@ -220,7 +220,7 @@ impl NodePendingPlanAnswer {
             unreachable!("raw pending retains raw plans")
         };
         let answer = merge_plan_answers(plans, &answers, &correlations)
-            .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+            .map_err(|error| crate::plan_runtime::napi_error(&error))?;
         answer_json(&answer)
     }
 
@@ -342,9 +342,9 @@ impl NodeStagedTransaction {
         let plan_bytes = non_shared_buffer(&env, plan_bytes)?;
         let schema_bytes = non_shared_buffer(&env, schema_bytes)?;
         let schema = decode_declared_schema(&schema_bytes)
-            .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+            .map_err(|error| crate::plan_runtime::napi_error(&error))?;
         let plan = decode_query_plan_v3(&plan_bytes, &schema)
-            .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+            .map_err(|error| crate::plan_runtime::napi_error(&error))?;
         let plans = Arc::new(NodePlanProgram::Raw(Box::new(BuiltPlans::single(plan))));
         let inner = self
             .lock()?

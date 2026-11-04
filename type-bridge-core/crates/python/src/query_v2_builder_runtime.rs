@@ -38,7 +38,7 @@ use type_bridge_orm::query_v2_builder::{
     query_builder_value_type,
 };
 
-use crate::query_v2_runtime::{PyQueryV2Authority, PythonString, value_error};
+use crate::plan_runtime::{PyQueryV2Authority, PythonString, value_error};
 use type_bridge_orm::query_v2_prepared::query_v2_host_string_type_error;
 
 fn diagnostic<T>(result: Result<T, Diagnostic>) -> PyResult<T> {

@@ -24,7 +24,7 @@ use crate::plan_model_remote_runtime::{
     count_request, exists_request, owned_advertisement, page_request, reduce_by_field_request,
     reduce_by_fields_request, reduce_request, rows_request,
 };
-use crate::query_v2_runtime::NodeQueryV2Authority;
+use crate::plan_runtime::NodeQueryV2Authority;
 use crate::runtime_projection::direct_tls_from_node;
 
 /// A verified connection to a TypeBridge server reached over HTTP.

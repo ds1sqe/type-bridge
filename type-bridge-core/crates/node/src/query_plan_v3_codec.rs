@@ -17,17 +17,17 @@ pub fn _query_plan_v3_round_trip(
     schema_bytes: Buffer,
 ) -> napi::Result<QueryPlanV3Encoding> {
     let schema = decode_declared_schema(&schema_bytes)
-        .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+        .map_err(|error| crate::plan_runtime::napi_error(&error))?;
     let plan = decode_query_plan_v3(&plan_bytes, &schema)
-        .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+        .map_err(|error| crate::plan_runtime::napi_error(&error))?;
     Ok(QueryPlanV3Encoding {
         bytes: plan
             .canonical_bytes()
-            .map_err(|error| crate::query_v2_runtime::napi_error(&error))?
+            .map_err(|error| crate::plan_runtime::napi_error(&error))?
             .into(),
         fingerprint: plan
             .fingerprint()
-            .map_err(|error| crate::query_v2_runtime::napi_error(&error))?
+            .map_err(|error| crate::plan_runtime::napi_error(&error))?
             .as_fingerprint()
             .digest()
             .to_hex(),
