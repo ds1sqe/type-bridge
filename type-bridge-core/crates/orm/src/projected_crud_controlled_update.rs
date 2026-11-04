@@ -51,6 +51,11 @@ impl ProjectedCrudExecutor<'_> {
     }
 
     /// Execute one single write on its connection-selected target.
+    ///
+    /// Direct targets materialize and map before commit. Proxy targets receive
+    /// an already committed reply before hydration, the final control check,
+    /// and mapping; failures there use `CommitError::proxy_projection_failure`
+    /// to preserve the remote commit outcome.
     #[doc(hidden)]
     pub async fn execute_single_write_on_target<T, F>(
         &self,
@@ -174,10 +179,12 @@ impl ProjectedCrudExecutor<'_> {
             .map_err(|error| crate::QueryTargetError::Commit(Box::new(error)))
     }
 
-    /// Execute one write and map its complete answer before committing.
+    /// Execute one direct write and map its complete answer before committing.
     ///
     /// Binding compatibility adapters use this boundary to retain their result
     /// shape without moving policy preflight or materialization after commit.
+    /// Proxy targets use `execute_single_write_on_target` and map after the
+    /// server commits.
     #[doc(hidden)]
     pub async fn execute_controlled_single_write<T, F>(
         &self,
