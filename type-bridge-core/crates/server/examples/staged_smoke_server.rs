@@ -15,6 +15,7 @@
 //! - `SMOKE_TYPEDB_TLS` — optional exact `true` / `false` transport switch
 //! - `SMOKE_TYPEDB_TLS_ROOT_CA` — optional custom CA; requires TLS `true`
 //! - `SMOKE_TRACE_FILE` — optional JSON-lines request, plan and commit evidence
+//! - `SMOKE_QUERY_LIMITS` — optional JSON object of named query-limit overrides
 //! - `SMOKE_TLS_CERT` / `SMOKE_TLS_KEY` — optional inbound HTTPS identity;
 //!   both must be present
 
@@ -264,20 +265,32 @@ async fn main() {
     if database.supports_given_stage() {
         advertised.insert(type_bridge_contract::query_given_rows_capability());
     }
-    let state = Arc::new(
-        StagedQueryState::new_query_only(
-            advertised,
-            AnswerLimits::default(),
-            database,
-            declared,
-            delta_context,
-            managed,
-        )
-        .expect("executor advertisement is canonical")
-        .with_unauthenticated_staged_writes(
-            std::env::var("SMOKE_ALLOW_STAGED_WRITES").as_deref() == Ok("true"),
-        ),
+    let mut state = StagedQueryState::new_query_only(
+        advertised,
+        AnswerLimits::default(),
+        database,
+        declared,
+        delta_context,
+        managed,
+    )
+    .expect("executor advertisement is canonical")
+    .with_unauthenticated_staged_writes(
+        std::env::var("SMOKE_ALLOW_STAGED_WRITES").as_deref() == Ok("true"),
     );
+    if let Ok(encoded) = std::env::var("SMOKE_QUERY_LIMITS") {
+        let overrides: std::collections::BTreeMap<String, u64> =
+            serde_json::from_str(&encoded).expect("SMOKE_QUERY_LIMITS is a named limit object");
+        let limits = type_bridge_contract::limits::QueryLimits::from_overrides(
+            overrides
+                .iter()
+                .map(|(name, value)| (name.as_str(), *value)),
+        )
+        .expect("SMOKE_QUERY_LIMITS contains supported limits");
+        state = state
+            .with_staged_query_limits(limits)
+            .expect("SMOKE_QUERY_LIMITS admits V3 plans");
+    }
+    let state = Arc::new(state);
     let mut pipeline = PipelineBuilder::new().with_default_database(database_name);
     if let Some(path) = std::env::var_os("SMOKE_TRACE_FILE") {
         pipeline = pipeline.with_interceptor(SmokeTrace(Mutex::new(

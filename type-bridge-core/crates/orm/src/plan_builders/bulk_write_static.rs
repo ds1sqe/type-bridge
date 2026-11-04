@@ -730,7 +730,6 @@ mod static_tests {
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 
-
     #[test]
     fn compact_source_layout_requires_iid_or_common_inherited_uniqueness() {
         use type_bridge_contract::schema::DocumentId;

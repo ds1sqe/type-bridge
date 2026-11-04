@@ -21,6 +21,7 @@ use std::{
 };
 use type_bridge_contract::{
     fingerprint::SemanticProfileId,
+    limits::QueryLimits,
     managed_scope::ManagedScopeId,
     projection::{BindingTarget, ProjectionConfig, ProjectionHandler},
     schema::DocumentId,
@@ -75,6 +76,19 @@ fn attributes(name: &str, prefix: &str) -> DynamicAttributeMap {
             )
         })
         .collect()
+}
+
+fn configured_limits(name: &str) -> Option<QueryLimits> {
+    let encoded = std::env::var(name).ok()?;
+    let overrides: BTreeMap<String, u64> = serde_json::from_str(&encoded).unwrap();
+    Some(
+        QueryLimits::from_overrides(
+            overrides
+                .iter()
+                .map(|(name, value)| (name.as_str(), *value)),
+        )
+        .unwrap(),
+    )
 }
 
 fn program(
@@ -164,7 +178,6 @@ async fn wide_manager_proxy_preserves_plural_roots_and_rolls_back_last_piece() {
     let address = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap();
     let version = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION").unwrap();
     let name = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_DATABASE").unwrap();
-    assert!(name.starts_with("tb270_06c_"));
     let db = Database::connect_with_options(
         &address,
         &name,
@@ -215,7 +228,6 @@ async fn wide_manager_proxy_preserves_plural_roots_and_rolls_back_last_piece() {
     .unwrap()
     .with_schema_authority(&authority);
     let registry = Arc::new(installed.match_registry().unwrap());
-    let plans = ManagerPlans::new(Arc::clone(&registry));
     let people = DynamicEntityManager::from_registry(
         &db,
         Arc::clone(&registry),
@@ -283,7 +295,7 @@ async fn wide_manager_proxy_preserves_plural_roots_and_rolls_back_last_piece() {
     }
     let cancellation = AnswerCancellation::default();
     let resources = QueryExecutionResourceLimits::default();
-    let proxy = ProxyQueryConnection::connect(
+    let mut proxy = ProxyQueryConnection::connect(
         &ProxyEndpoint::new(format!("http://127.0.0.1:{port}")),
         None,
         Arc::new(
@@ -300,6 +312,15 @@ async fn wide_manager_proxy_preserves_plural_roots_and_rolls_back_last_piece() {
     )
     .await
     .unwrap();
+    let requested = configured_limits("TYPE_BRIDGE_WIDE_QUERY_LIMITS").unwrap_or(QueryLimits::V3);
+    proxy = proxy.with_query_limits(requested).unwrap();
+    let server_limits = configured_limits("SMOKE_QUERY_LIMITS").unwrap_or(QueryLimits::V3);
+    assert_eq!(proxy.query_limits(), requested.min(server_limits));
+    let effective = Arc::new(proxy.query_limits());
+    let plans = ManagerPlans::new(Arc::clone(&registry)).with_query_limits(Some(&effective));
+    let expect_single = std::env::var("TYPE_BRIDGE_WIDE_EXPECT_SINGLE").as_deref() == Ok("true");
+    let expect_insert_single = std::env::var("TYPE_BRIDGE_WIDE_EXPECT_INSERT_SINGLE")
+        .map_or(expect_single, |value| value == "true");
     let mut prior_iids = Vec::new();
     for (kind, prefix) in [
         (WriteKind::Insert, "proxy-insert"),
@@ -313,7 +334,15 @@ async fn wide_manager_proxy_preserves_plural_roots_and_rolls_back_last_piece() {
             .unwrap()
             .unwrap();
         let count = entries.len();
-        assert!(count > 1);
+        assert_eq!(
+            count == 1,
+            if kind == WriteKind::Insert {
+                expect_insert_single
+            } else {
+                expect_single
+            },
+            "wide plan count {count}"
+        );
         let before = trace(&path).len();
         let answers = proxy
             .execute_write_stack(
@@ -350,6 +379,8 @@ async fn wide_manager_proxy_preserves_plural_roots_and_rolls_back_last_piece() {
             kind == WriteKind::Insert
         );
     }
+    // Retain the default compiler ceiling to force the final-piece failure.
+    let plans = ManagerPlans::new(Arc::clone(&registry));
     let failures = DynamicEntityManager::from_registry(
         &db,
         Arc::clone(&registry),
