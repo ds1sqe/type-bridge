@@ -2991,10 +2991,13 @@ async fn default_manager_read_does_not_allocate_an_authored_bulk_payload() {
         let db = Database::with_backend(Box::new(backend), "read-allocation");
         let crud = ProjectedCrudExecutor::new(&installed);
         let person = type_id(TypeKind::Entity, "person");
+        // BuiltPlans now shares a layout size with unrelated allocations. Count
+        // only allocations originating in its boxed bulk-stack constructor.
         let bytes = std::mem::size_of::<type_bridge_contract::query_plan::v3::BuiltPlans>();
         let count = if target_route {
-            let (result, count) = allocations::count(
+            let (result, count) = allocations::count_from(
                 bytes,
+                Some("match_request::plan_fetch_stack::build_bulk_plan_fetch_stack"),
                 crud.get_by_iid_on_target(
                     type_bridge_orm::QueryTarget::Database(&db),
                     &person,
@@ -3006,8 +3009,12 @@ async fn default_manager_read_does_not_allocate_an_authored_bulk_payload() {
             assert_eq!(result.unwrap().unwrap().iid(), "0x10");
             count
         } else {
-            let (result, count) =
-                allocations::count(bytes, crud.get_entity_by_iid(&db, &person, "0x10")).await;
+            let (result, count) = allocations::count_from(
+                bytes,
+                Some("match_request::plan_fetch_stack::build_bulk_plan_fetch_stack"),
+                crud.get_entity_by_iid(&db, &person, "0x10"),
+            )
+            .await;
             assert_eq!(result.unwrap().unwrap().iid(), "0x10");
             count
         };

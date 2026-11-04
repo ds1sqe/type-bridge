@@ -5,6 +5,7 @@ use std::future::Future;
 
 thread_local! {
     static TARGET: Cell<usize> = const { Cell::new(0) };
+    static ORIGIN: Cell<Option<&'static str>> = const { Cell::new(None) };
     static COUNT: Cell<usize> = const { Cell::new(0) };
 }
 struct CountingAllocator;
@@ -14,7 +15,19 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 fn observe(bytes: usize) {
     let _ = TARGET.try_with(|target| {
         if target.get() != 0 && target.get() == bytes {
-            let _ = COUNT.try_with(|count| count.set(count.get() + 1));
+            let matches = ORIGIN.with(|origin| match origin.get() {
+                None => true,
+                Some(origin) => {
+                    // Symbolization allocates; exclude that work from the probe.
+                    target.set(0);
+                    let trace = std::backtrace::Backtrace::force_capture().to_string();
+                    target.set(bytes);
+                    trace.contains(origin)
+                }
+            });
+            if matches {
+                let _ = COUNT.try_with(|count| count.set(count.get() + 1));
+            }
         }
     });
 }
@@ -40,15 +53,45 @@ struct Scope;
 impl Drop for Scope {
     fn drop(&mut self) {
         TARGET.set(0);
+        ORIGIN.set(None);
     }
 }
 pub async fn count<F: Future>(bytes: usize, future: F) -> (F::Output, usize) {
+    count_from(bytes, None, future).await
+}
+
+pub async fn count_from<F: Future>(
+    bytes: usize,
+    origin: Option<&'static str>,
+    future: F,
+) -> (F::Output, usize) {
     assert!(bytes > 0);
     assert_eq!(TARGET.get(), 0);
     COUNT.set(0);
+    ORIGIN.set(origin);
     TARGET.set(bytes);
     let scope = Scope;
     let result = future.await;
     drop(scope);
     (result, COUNT.get())
+}
+
+#[inline(never)]
+fn allocation_origin_probe(bytes: usize) -> Box<[u8]> {
+    vec![0; bytes].into_boxed_slice()
+}
+
+#[tokio::test]
+async fn allocation_origin_filter_keeps_matching_allocations() {
+    for (origin, expected) in [
+        ("allocations::allocation_origin_probe", 1),
+        ("allocations::unrelated_function", 0),
+    ] {
+        let (value, count) = count_from(632, Some(origin), async {
+            allocation_origin_probe(std::hint::black_box(632))
+        })
+        .await;
+        assert_eq!(value.len(), 632);
+        assert_eq!(count, expected);
+    }
 }
