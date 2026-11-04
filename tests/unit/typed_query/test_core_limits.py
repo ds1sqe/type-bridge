@@ -123,9 +123,10 @@ def test_raised_byte_and_item_limits_refuse_values_outside_the_shared_integer_do
     limits = QueryExecutionResourceLimits(bytes=maximum, items=maximum)
     assert limits.bytes == maximum
     assert limits.items == maximum
-    for name in ("bytes", "items"):
-        with pytest.raises(ValueError, match=name):
-            QueryExecutionResourceLimits(**{name: maximum + 1})
+    with pytest.raises(ValueError, match="bytes"):
+        QueryExecutionResourceLimits(bytes=maximum + 1)
+    with pytest.raises(ValueError, match="items"):
+        QueryExecutionResourceLimits(items=maximum + 1)
 
 
 def test_phase_collection_is_opt_in_and_survives_connection_policy() -> None:
