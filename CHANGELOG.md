@@ -200,6 +200,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust `query_remote_v2::{RemoteDiagnosticV2, RemoteDiagnosticDetailV2,
+  RemoteDiagnosticPathSegmentV2}` move to `query_remote_diagnostic` as
+  `RemoteDiagnostic`, `RemoteDiagnosticDetail`, and `RemoteDiagnosticPathSegment`.
+
 - Rust `QueryPlan::to_v3`, `QueryPlanV3::compatibility`, and
   `PlanSpec::compatibility` are removed. Construct native plans with
   `QueryPlanV3::new` or `PlanBuilder`; V3 decoding refuses a `compatibility`

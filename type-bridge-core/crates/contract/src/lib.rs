@@ -47,6 +47,8 @@ pub mod projection_wire;
 /// Reusable typed query plans and the first public V2 read vocabulary.
 pub mod query_plan;
 pub mod query_remote;
+/// Bounded structured diagnostics shared by remote plan transports.
+pub mod query_remote_diagnostic;
 /// Additive V2 remote envelopes and hydrated model-result evidence.
 pub mod query_remote_v2;
 /// Additive staged transaction envelopes and authenticated replies.

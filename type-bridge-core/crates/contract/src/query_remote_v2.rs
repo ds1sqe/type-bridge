@@ -13,13 +13,8 @@ use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::capability::{CapabilityId, CapabilitySet};
-use crate::codec::{
-    from_canonical_json_with_limits, to_canonical_json, to_canonical_json_with_limits,
-};
-use crate::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticDetailValue, DiagnosticPath,
-    DiagnosticPathSegment,
-};
+use crate::codec::{from_canonical_json_with_limits, to_canonical_json_with_limits};
+use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticDetailValue};
 use crate::fingerprint::{
     CanonicalizationVersion, Fingerprint, FingerprintDigest, FingerprintDomain,
 };
@@ -38,6 +33,10 @@ use crate::query_remote::{
     DEFAULT_REMOTE_DEADLINE_MS, MAX_REMOTE_CLOCK_SKEW_MS, MAX_REMOTE_DEADLINE_MS,
     QUERY_REMOTE_REQUEST_FINGERPRINT_DOMAIN, RemoteCapabilities, RemoteCapabilitiesFingerprint,
     RemoteFieldValue, RemoteReplySigner, RemoteReplyVerifier, RemoteSigningPublicKey, RemoteValue,
+};
+use crate::query_remote_diagnostic::{
+    RemoteDiagnostic, RemoteDiagnosticDetail, RemoteDiagnosticPathSegment,
+    validate_remote_diagnostic_wire,
 };
 use crate::value::CanonicalValue;
 
@@ -510,143 +509,6 @@ impl RemoteRequestFingerprintV2 {
 
     fn digest_hex(&self) -> String {
         self.0.digest().to_hex()
-    }
-}
-
-/// A strict V2 representation of one complete structured diagnostic.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RemoteDiagnosticV2 {
-    category: DiagnosticCategory,
-    code: DiagnosticCode,
-    details: BTreeMap<String, RemoteDiagnosticDetailV2>,
-    message: String,
-    path: Vec<RemoteDiagnosticPathSegmentV2>,
-}
-
-impl RemoteDiagnosticV2 {
-    /// Preserve all diagnostic fields in their typed representation.
-    pub fn new(diagnostic: &Diagnostic) -> Result<Self, Diagnostic> {
-        let details = diagnostic
-            .details()
-            .iter()
-            .map(|(key, value)| {
-                validate_detail_key(key)?;
-                Ok((key.clone(), RemoteDiagnosticDetailV2::from(value)))
-            })
-            .collect::<Result<BTreeMap<_, _>, Diagnostic>>()?;
-        let value = Self {
-            category: diagnostic.category(),
-            code: diagnostic.code().clone(),
-            details,
-            message: diagnostic.message().to_owned(),
-            path: diagnostic
-                .path()
-                .segments()
-                .iter()
-                .map(RemoteDiagnosticPathSegmentV2::from)
-                .collect(),
-        };
-        value.validate_size()?;
-        Ok(value)
-    }
-
-    /// Reconstruct the exact structured diagnostic.
-    pub fn diagnostic(&self) -> Result<Diagnostic, Diagnostic> {
-        self.validate_size()?;
-        let path = DiagnosticPath::from_segments(
-            self.path
-                .iter()
-                .map(DiagnosticPathSegment::from)
-                .collect::<Vec<_>>(),
-        );
-        let mut diagnostic =
-            Diagnostic::new(self.category, self.code.clone(), self.message.clone()).with_path(path);
-        for (key, value) in &self.details {
-            validate_detail_key(key)?;
-            diagnostic = diagnostic.with_detail(key.clone(), detail_value_from_wire(value)?);
-        }
-        Ok(diagnostic)
-    }
-
-    fn validate_size(&self) -> Result<(), Diagnostic> {
-        validate_remote_diagnostic_wire(self)?;
-        let bytes = to_canonical_json(self)?;
-        if bytes.len() > MAX_DIAGNOSTIC_BYTES {
-            return Err(remote_v2_failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_remote_v2_diagnostic_too_large",
-                "V2 remote diagnostic exceeds the canonical byte ceiling",
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// One strict typed V2 diagnostic path segment.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(
-    tag = "kind",
-    content = "value",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum RemoteDiagnosticPathSegmentV2 {
-    /// An object field.
-    Field(String),
-    /// A zero-based collection index.
-    Index(u64),
-    /// A typed semantic identifier.
-    Identifier(String),
-}
-
-impl From<&DiagnosticPathSegment> for RemoteDiagnosticPathSegmentV2 {
-    fn from(value: &DiagnosticPathSegment) -> Self {
-        match value {
-            DiagnosticPathSegment::Field(value) => Self::Field(value.clone()),
-            DiagnosticPathSegment::Index(value) => Self::Index(*value),
-            DiagnosticPathSegment::Identifier(value) => Self::Identifier(value.clone()),
-        }
-    }
-}
-
-impl From<&RemoteDiagnosticPathSegmentV2> for DiagnosticPathSegment {
-    fn from(value: &RemoteDiagnosticPathSegmentV2) -> Self {
-        match value {
-            RemoteDiagnosticPathSegmentV2::Field(value) => Self::Field(value.clone()),
-            RemoteDiagnosticPathSegmentV2::Index(value) => Self::Index(*value),
-            RemoteDiagnosticPathSegmentV2::Identifier(value) => Self::Identifier(value.clone()),
-        }
-    }
-}
-
-/// One strict typed V2 diagnostic detail value.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(
-    tag = "kind",
-    content = "value",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum RemoteDiagnosticDetailV2 {
-    /// Text context.
-    Text(String),
-    /// Signed long, encoded canonically as decimal text for binding safety.
-    Long(String),
-    /// Boolean context.
-    Boolean(bool),
-    /// Ordered text values.
-    TextList(Vec<String>),
-}
-
-impl From<&DiagnosticDetailValue> for RemoteDiagnosticDetailV2 {
-    fn from(value: &DiagnosticDetailValue) -> Self {
-        match value {
-            DiagnosticDetailValue::Text(value) => Self::Text(value.clone()),
-            DiagnosticDetailValue::Long(value) => Self::Long(value.to_string()),
-            DiagnosticDetailValue::Boolean(value) => Self::Boolean(*value),
-            DiagnosticDetailValue::TextList(value) => Self::TextList(value.clone()),
-        }
     }
 }
 
@@ -1507,18 +1369,18 @@ fn append_optional_safe_ascii_v2(encoded: &mut Vec<u8>, value: Option<&str>) {
 pub struct RemoteQueryFailureV2 {
     category: DiagnosticCategory,
     code: DiagnosticCode,
-    details: BTreeMap<String, RemoteDiagnosticDetailV2>,
+    details: BTreeMap<String, RemoteDiagnosticDetail>,
     format: String,
     message: String,
     nonce: Option<String>,
-    path: Vec<RemoteDiagnosticPathSegmentV2>,
+    path: Vec<RemoteDiagnosticPathSegment>,
     request: Option<String>,
 }
 
 impl RemoteQueryFailureV2 {
     /// Construct an uncorrelated V2 failure for a pre-request transport error.
     pub fn new(nonce: Option<String>, diagnostic: &Diagnostic) -> Result<Self, Diagnostic> {
-        let diagnostic = RemoteDiagnosticV2::new(diagnostic)?;
+        let diagnostic = RemoteDiagnostic::new(diagnostic)?;
         if let Some(nonce) = nonce.as_deref() {
             check_nonce_v2(nonce)?;
         }
@@ -1637,8 +1499,8 @@ impl RemoteQueryFailureV2 {
         self.nonce.as_deref()
     }
 
-    fn remote_diagnostic(&self) -> Result<RemoteDiagnosticV2, Diagnostic> {
-        let diagnostic = RemoteDiagnosticV2 {
+    fn remote_diagnostic(&self) -> Result<RemoteDiagnostic, Diagnostic> {
+        let diagnostic = RemoteDiagnostic {
             category: self.category,
             code: self.code.clone(),
             details: self.details.clone(),
@@ -2003,57 +1865,6 @@ fn remote_time_invalid_v2() -> Diagnostic {
         "query_remote_v2_time_invalid",
         "V2 request timestamps do not form a bounded absolute lifetime",
     )
-}
-
-fn validate_detail_key(key: &str) -> Result<(), Diagnostic> {
-    DiagnosticCode::new(key.to_owned())
-        .map(|_| ())
-        .map_err(|_| {
-            remote_v2_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_remote_v2_diagnostic_detail_key_invalid",
-                "V2 diagnostic detail keys must be canonical snake-case identifiers",
-            )
-        })
-}
-
-fn detail_value_from_wire(
-    value: &RemoteDiagnosticDetailV2,
-) -> Result<DiagnosticDetailValue, Diagnostic> {
-    match value {
-        RemoteDiagnosticDetailV2::Text(value) => Ok(DiagnosticDetailValue::Text(value.clone())),
-        RemoteDiagnosticDetailV2::Long(value) => {
-            let parsed = value.parse::<i64>().map_err(|_| {
-                remote_v2_failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_remote_v2_diagnostic_long_invalid",
-                    "V2 diagnostic long detail is outside the signed 64-bit range",
-                )
-            })?;
-            if parsed.to_string() != *value {
-                return Err(remote_v2_failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_remote_v2_diagnostic_long_invalid",
-                    "V2 diagnostic long detail is not canonical decimal text",
-                ));
-            }
-            Ok(DiagnosticDetailValue::Long(parsed))
-        }
-        RemoteDiagnosticDetailV2::Boolean(value) => Ok(DiagnosticDetailValue::Boolean(*value)),
-        RemoteDiagnosticDetailV2::TextList(value) => {
-            Ok(DiagnosticDetailValue::TextList(value.clone()))
-        }
-    }
-}
-
-fn validate_remote_diagnostic_wire(value: &RemoteDiagnosticV2) -> Result<(), Diagnostic> {
-    for key in value.details.keys() {
-        validate_detail_key(key)?;
-    }
-    for detail in value.details.values() {
-        detail_value_from_wire(detail)?;
-    }
-    Ok(())
 }
 
 fn peek_remote_reply_binding_v2(
