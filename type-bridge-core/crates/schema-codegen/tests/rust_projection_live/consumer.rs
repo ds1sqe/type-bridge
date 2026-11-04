@@ -313,6 +313,27 @@ impl ProxyExchange for HttpTransport {
     }
 }
 
+struct ManagerCaptureTransport {
+    inner: HttpTransport,
+    requests: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl ProxyExchange for ManagerCaptureTransport {
+    fn capabilities(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
+        self.inner.capabilities()
+    }
+
+    fn exchange<'a>(
+        &'a self,
+        request: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
+        self.requests.lock().unwrap().push(request.to_vec());
+        self.inner.exchange(request)
+    }
+}
+
 struct CancelBeforeDecodeTransport {
     inner: HttpTransport,
     cancellation: AnswerCancellation,
@@ -5378,6 +5399,217 @@ async fn generated_one_program_under_direct_and_proxy_connections() {
             .expect("one-program person cleanup");
     }
     println!("05.5 one program under direct and proxy connections: passed");
+}
+
+async fn manager_program(
+    connection: &Connection<AppSchema>,
+    workers: &[Person; 2],
+    exchanges: Option<&AtomicUsize>,
+) -> Value {
+    macro_rules! exercise {
+        ($manager:expr, $field:expr, $label:expr, $make:expr, $observe:expr) => {{
+            let manager = $manager;
+            let make = $make;
+            let observe = $observe;
+            let base = exchanges.map_or(0, |counter| counter.load(Ordering::SeqCst));
+            let mut calls = 0;
+            macro_rules! terminal {
+                ($call:expr) => {{
+                    let result = $call.await.unwrap_or_else(|error| panic!("{}: {error:?}", stringify!($call)));
+                    calls += 1;
+                    if let Some(counter) = exchanges {
+                        assert_eq!(counter.load(Ordering::SeqCst), base + calls, "{}", stringify!($call));
+                    }
+                    result
+                }};
+            }
+            let baseline = terminal!(manager.all()).len();
+            assert_eq!(terminal!(manager.count()), baseline as u64);
+            assert!(terminal!(manager.get_by_iid("0xffff")).is_none());
+            assert_eq!(terminal!(manager.filter().unwrap().all()).len(), baseline);
+            let absent = manager.where_($field, ProjectedManagerComparison::Eq,
+                &Identifier::new(format!("manager-absent-{}", $label)).unwrap()).unwrap();
+            assert!(terminal!(absent.first()).is_none());
+            assert_eq!(terminal!(manager.filter().unwrap().count()), baseline as u64);
+            assert_eq!(terminal!(manager.filter().unwrap().exists()), baseline != 0);
+            let subtype_count = terminal!(manager.subtypes().all()).len();
+            assert_eq!(terminal!(manager.subtypes().count()), subtype_count as u64);
+            assert!(terminal!(manager.subtypes().get_by_iid("0xffff")).is_none());
+
+            let inserted = one_written(terminal!(manager.insert(make("a", "insert"))));
+            let first_iid = inserted.iid().to_owned();
+            assert_eq!(observe(&inserted), "insert");
+            let put = one_written(terminal!(manager.put(make("a", "put"))));
+            assert_eq!(put.iid(), first_iid);
+            assert_eq!(observe(&put), "put");
+            let updated = one_written(terminal!(manager.update(&first_iid, make("a", "update"))));
+            assert_eq!(updated.iid(), first_iid);
+            assert_eq!(observe(&updated), "update");
+            terminal!(manager.delete(&first_iid));
+            let many = terminal!(manager.insert_many(["b", "c", "d"].map(|key| make(key, "many-insert")).to_vec()));
+            assert_eq!(many.items().len(), 3);
+            let iids = many.items().iter().zip(many.input_indexes()).map(|(item, index)| {
+                assert_eq!(observe(item), "many-insert");
+                (*index, item.iid().to_owned())
+            }).collect::<BTreeMap<_, _>>();
+            assert_eq!(iids.keys().copied().collect::<Vec<_>>(), [0, 1, 2]);
+            let put_many = terminal!(manager.put_many(["b", "c", "d"].map(|key| make(key, "many-put")).to_vec()));
+            assert_eq!(put_many.items().len(), 3);
+            for (item, index) in put_many.items().iter().zip(put_many.input_indexes()) {
+                assert_eq!(item.iid(), iids[index]);
+                assert_eq!(observe(item), "many-put");
+            }
+            let update_many = terminal!(manager.update_many(["b", "c", "d"].iter().enumerate()
+                .map(|(index, key)| (iids[&index].clone(), make(key, "many-update"))).collect()));
+            assert_eq!(update_many.items().len(), 3);
+            for (item, index) in update_many.items().iter().zip(update_many.input_indexes()) {
+                assert_eq!(item.iid(), iids[index]);
+                assert_eq!(observe(item), "many-update");
+            }
+            terminal!(manager.delete_many(&[iids[&0].clone()]));
+            let deleted = one_written(terminal!(manager.delete_returning(&iids[&1])));
+            assert_eq!(deleted.iid(), iids[&1]);
+            assert_eq!(observe(&deleted), "many-update");
+            let deleted_many = terminal!(manager.delete_many_returning(&[iids[&2].clone()]));
+            assert_eq!(deleted_many.items().len(), 1);
+            assert_eq!(deleted_many.input_indexes(), [0]);
+            assert_eq!(deleted_many.items()[0].iid(), iids[&2]);
+            assert_eq!(observe(&deleted_many.items()[0]), "many-update");
+            assert_eq!(calls, 20);
+            json!({"model": $label, "baseline": baseline, "subtypes": subtype_count,
+                "terminals": calls, "batch_count": 3, "delete_snapshots": 2})
+        }};
+    }
+    let people = exercise!(
+        connection.entities::<Person>(),
+        PersonType::identifier,
+        "person",
+        |key: &str, version: &str| ownership_edge_person_input(
+            &format!("manager-person-{key}"),
+            &[&format!("manager-alias-{key}")],
+            Some(version)
+        ),
+        |person: &Person| person.nickname().unwrap().value().clone()
+    );
+    let links = exercise!(
+        connection.relations::<NetworkLink>(),
+        NetworkLinkType::identifier,
+        "network-link",
+        |key: &str, version: &str| NetworkLinkCreate::new(
+            Identifier::new(format!("manager-link-{key}")).unwrap(),
+            Some(Nickname::new(version.to_owned()).unwrap()),
+            PersonRef::from_key(workers[1].identifier().clone()).unwrap(),
+            PersonRef::from_key(workers[0].identifier().clone()).unwrap(),
+            vec![
+                PersonRef::from_key(workers[0].identifier().clone()).unwrap(),
+                PersonRef::from_key(workers[1].identifier().clone()).unwrap()
+            ],
+        )
+        .unwrap(),
+        |link: &NetworkLink| {
+            assert_eq!(link.participant().len(), 2);
+            link.nickname().unwrap().value().clone()
+        }
+    );
+    json!([people, links])
+}
+
+#[tokio::test]
+async fn generated_managers_share_direct_and_http_proxy_terminals() {
+    let db = database().await;
+    let workers = [
+        one_written(
+            db.entities::<Person>()
+                .insert(relation_person_input("manager-seed-a", "manager-seed-a"))
+                .await
+                .unwrap(),
+        ),
+        one_written(
+            db.entities::<Person>()
+                .insert(relation_person_input("manager-seed-b", "manager-seed-b"))
+                .await
+                .unwrap(),
+        ),
+    ];
+    let direct = SCHEMA.connect(direct_connection_policy()).await.unwrap();
+    let exchanges = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let proxy = SCHEMA
+        .connect(ProxyConnectionPolicy::with_exchange(
+            ManagerCaptureTransport {
+                inner: HttpTransport::recording(
+                    env::var("TYPE_BRIDGE_REMOTE_URL").unwrap(),
+                    Arc::clone(&exchanges),
+                ),
+                requests: Arc::clone(&requests),
+            },
+        ))
+        .await
+        .unwrap();
+    let trace = env::var_os("SMOKE_TRACE_FILE").map(|path| {
+        let path = PathBuf::from(path);
+        let start = fs::read_to_string(&path).unwrap().lines().count();
+        (path, start)
+    });
+    let direct_results = manager_program(&direct, &workers, None).await;
+    assert_eq!(
+        manager_program(&proxy, &workers, Some(&exchanges)).await,
+        direct_results
+    );
+    assert_eq!(exchanges.load(Ordering::SeqCst), 40);
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 40);
+    for request in captured.iter() {
+        let value: Value = serde_json::from_slice(request).unwrap();
+        assert_eq!(value["plans"].as_array().unwrap().len(), 1);
+    }
+    drop(captured);
+    if let Some((path, start)) = trace {
+        let data = fs::read_to_string(path).unwrap();
+        let events = data
+            .lines()
+            .skip(start)
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let requests = events
+            .iter()
+            .filter(|event| event["event"] == "request")
+            .collect::<Vec<_>>();
+        assert_eq!(requests.len(), 40);
+        let mut writes = 0;
+        for request in requests {
+            let id = &request["id"];
+            let plans = events
+                .iter()
+                .filter(|event| event["event"] == "plan" && event["id"] == *id)
+                .collect::<Vec<_>>();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(plans[0]["index"], 0);
+            assert_eq!(plans[0]["result_refs"], 0);
+            let commits = events
+                .iter()
+                .filter(|event| event["event"] == "commit" && event["id"] == *id)
+                .collect::<Vec<_>>();
+            assert_eq!(commits.len(), 1);
+            assert_eq!(commits[0]["committed"], true);
+            assert_eq!(commits[0]["code"], "ok");
+            if plans[0]["writes"] == true {
+                writes += 1;
+                assert_eq!(commits[0]["kind"], "write");
+            } else {
+                assert_eq!(commits[0]["kind"], "read");
+            }
+        }
+        assert_eq!(writes, 20);
+    }
+    drop(proxy);
+    drop(direct);
+    for worker in workers {
+        db.entities::<Person>().delete(worker.iid()).await.unwrap();
+    }
+    println!(
+        "06.6 generated managers: 20 entity and 20 relation terminals, direct/HTTP proxy, one exchange each: passed"
+    );
 }
 
 #[tokio::test]

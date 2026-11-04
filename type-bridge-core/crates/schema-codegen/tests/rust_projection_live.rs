@@ -42,13 +42,14 @@ const SDK_QUERIES_CATALOG_RELATIVE: &str = "tests/contracts/sdk_conformance/quer
 /// The generated live fixture profile when `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`
 /// is unset; it pairs with TypeDB 3.13.6, the default server image.
 const DEFAULT_ACCEPTANCE_PROFILE: &str = "typedb-3.13.6/v1";
-const CONSUMER_TESTS: [&str; 13] = [
+const CONSUMER_TESTS: [&str; 14] = [
     "generated_sdk_report_journeys",
     "generated_schema_handshake_and_tokens",
     "generated_entity_crud_batches_and_scalar_domains",
     "generated_inheritance_exact_and_subtype_reads",
     "generated_relation_query_and_remote_lifecycle",
     "generated_one_program_under_direct_and_proxy_connections",
+    "generated_managers_share_direct_and_http_proxy_terminals",
     "generated_integer_keys_and_polymorphic_role_parity",
     "generated_plain_inherited_abstract_role_parity",
     "generated_unkeyed_entity_iid_lifecycle_and_singular_query",
@@ -796,9 +797,11 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
 
     assert!(
         consumer_output.status.success(),
-        "dependency-isolated client consumer failed\nstdout:\n{}\nstderr:\n{}",
+        "dependency-isolated client consumer failed\nstdout:\n{}\nstderr:\n{}\nserver status: {:?}\nserver log:\n{}",
         String::from_utf8_lossy(&consumer_output.stdout),
         String::from_utf8_lossy(&consumer_output.stderr),
+        server.child.try_wait().expect("server status is readable"),
+        fs::read_to_string(&server.log).unwrap_or_default(),
     );
     let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout);
     let expected_consumer_tests =

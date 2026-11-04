@@ -14,12 +14,16 @@
 //! - `SMOKE_TYPEDB_HTTP_PORT` — TypeDB HTTP discovery port (default 8000)
 //! - `SMOKE_TYPEDB_TLS` — optional exact `true` / `false` transport switch
 //! - `SMOKE_TYPEDB_TLS_ROOT_CA` — optional custom CA; requires TLS `true`
+//! - `SMOKE_TRACE_FILE` — optional JSON-lines request, plan and commit evidence
 //! - `SMOKE_TLS_CERT` / `SMOKE_TLS_KEY` — optional inbound HTTPS identity;
 //!   both must be present
 
+use std::future::Future;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -31,10 +35,78 @@ use type_bridge_schema::{
 use type_bridge_server::config::{
     InboundTlsSection, OutboundTlsMode, SecureTypeDBSection, TypeDBSection,
 };
+use type_bridge_server::interceptor::{
+    InterceptError, Interceptor, RequestContext, V3CommitOutcome, V3PolicyPlan,
+};
 use type_bridge_server::pipeline::PipelineBuilder;
 use type_bridge_server::transport::staged_state::StagedQueryState;
 use type_bridge_server::transport::v3::create_v3_router;
 use type_bridge_server::typedb::TypeDBClient;
+
+struct SmokeTrace(Mutex<std::fs::File>);
+
+impl SmokeTrace {
+    fn record(&self, value: serde_json::Value) -> Result<(), InterceptError> {
+        let mut bytes = serde_json::to_vec(&value)
+            .map_err(|error| InterceptError::Internal(error.to_string()))?;
+        bytes.push(b'\n');
+        self.0
+            .lock()
+            .expect("smoke trace lock")
+            .write_all(&bytes)
+            .map_err(|error| InterceptError::Internal(error.to_string()))
+    }
+}
+
+impl Interceptor for SmokeTrace {
+    fn name(&self) -> &str {
+        "staged-smoke-trace"
+    }
+    fn supports_v3(&self) -> bool {
+        true
+    }
+
+    fn on_v3_transport<'a>(
+        &'a self,
+        ctx: &'a mut RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+        Box::pin(async move {
+            if ctx
+                .metadata
+                .get("v3_endpoint")
+                .and_then(serde_json::Value::as_str)
+                == Some("staged")
+            {
+                self.record(serde_json::json!({"event":"request", "id":ctx.request_id}))?;
+            }
+            Ok(())
+        })
+    }
+
+    fn on_v3_plan<'a>(
+        &'a self,
+        index: usize,
+        plan: &'a V3PolicyPlan<'a>,
+        ctx: &'a RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.record(serde_json::json!({"event":"plan", "id":ctx.request_id,
+                "index":index, "writes":plan.writes(), "result_refs":plan.result_refs().len()}))
+        })
+    }
+
+    fn on_v3_commit<'a>(
+        &'a self,
+        outcome: &'a V3CommitOutcome<'a>,
+        ctx: &'a RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.record(serde_json::json!({"event":"commit", "id":ctx.request_id,
+                "kind":format!("{:?}", outcome.kind()).to_ascii_lowercase(),
+                "committed":outcome.committed(), "code":outcome.code()}))
+        })
+    }
+}
 
 fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"))
@@ -206,12 +278,13 @@ async fn main() {
             std::env::var("SMOKE_ALLOW_STAGED_WRITES").as_deref() == Ok("true"),
         ),
     );
-    let pipeline = Arc::new(
-        PipelineBuilder::new()
-            .with_default_database(database_name)
-            .build()
-            .expect("policy pipeline builds"),
-    );
+    let mut pipeline = PipelineBuilder::new().with_default_database(database_name);
+    if let Some(path) = std::env::var_os("SMOKE_TRACE_FILE") {
+        pipeline = pipeline.with_interceptor(SmokeTrace(Mutex::new(
+            std::fs::File::create(path).expect("smoke trace opens"),
+        )));
+    }
+    let pipeline = Arc::new(pipeline.build().expect("policy pipeline builds"));
     let router = create_v3_router(pipeline, state);
     let address = SocketAddr::from((
         [127, 0, 0, 1],
