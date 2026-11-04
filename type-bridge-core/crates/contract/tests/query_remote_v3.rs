@@ -1880,3 +1880,98 @@ fn missing_player_proof_cell_keeps_coordinates_in_signed_failure() {
     assert_eq!(round_trip.code().as_str(), failure.code().as_str());
     assert_eq!(round_trip, expected_diagnostic);
 }
+
+#[test]
+fn pre_request_failure_preserves_diagnostics_and_authenticates() {
+    use type_bridge_contract::diagnostic::{
+        Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticPath, DiagnosticPathSegment,
+    };
+    let diagnostic = Diagnostic::new(
+        DiagnosticCategory::ResourceLimit,
+        DiagnosticCode::new("staged_admission_full").unwrap(),
+        "queue is full",
+    )
+    .with_detail("capacity", 3_i64)
+    .with_path(DiagnosticPath::from_segments(vec![
+        DiagnosticPathSegment::Field("plans".into()),
+    ]));
+    let nonce = "staged_failure_nonce_0001";
+    let failure = StagedFailureV3::new(Some(nonce.into()), &diagnostic).unwrap();
+    let keys = Keys::new();
+    let advertisement = advertisement().fingerprint().unwrap();
+    let bytes = failure.encode_signed(&advertisement, &keys).unwrap();
+    let decoded =
+        decode_signed_staged_failure(&bytes, &advertisement, keys.public_key(), u64::MAX, &keys)
+            .unwrap();
+    assert_eq!(decoded.diagnostic().unwrap(), diagnostic);
+    assert_eq!(decoded.nonce(), Some(nonce));
+    assert!(
+        decode_signed_staged_failure(&bytes, &advertisement, keys.public_key(), 1, &keys).is_err()
+    );
+    let wrong = Keys(SigningKey::from_bytes(&[8; 32]));
+    assert!(
+        decode_signed_staged_failure(&bytes, &advertisement, wrong.public_key(), u64::MAX, &keys)
+            .is_err()
+    );
+    let other_advertisement = RemoteCapabilities::new(
+        Default::default(),
+        RemoteExecutorBinding::new("fixture-executor-0002", "fixture-epoch-0000002").unwrap(),
+        keys.public_key(),
+    )
+    .fingerprint()
+    .unwrap();
+    assert!(
+        decode_signed_staged_failure(
+            &bytes,
+            &other_advertisement,
+            keys.public_key(),
+            u64::MAX,
+            &keys
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn pre_request_failure_rejects_invalid_payloads_and_fallback_is_bounded() {
+    use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+    let diagnostic = Diagnostic::new(
+        DiagnosticCategory::Integrity,
+        DiagnosticCode::new("staged_refused").unwrap(),
+        "refused",
+    );
+    let failure = StagedFailureV3::new(None, &diagnostic).unwrap();
+    let value = serde_json::to_value(&failure).unwrap();
+    for (field, replacement) in [
+        ("format", json!("typebridge.query-remote-failure/v2")),
+        ("request", json!("a".repeat(64))),
+        ("nonce", json!("bad nonce")),
+        ("extra", json!(true)),
+        (
+            "message",
+            json!("x".repeat(type_bridge_contract::limits::MAX_DIAGNOSTIC_BYTES)),
+        ),
+    ] {
+        let mut invalid = value.clone();
+        invalid[field] = replacement;
+        assert!(
+            StagedFailureV3::decode_payload(&to_canonical_json(&invalid).unwrap()).is_err(),
+            "{field}"
+        );
+    }
+    assert!(StagedFailureV3::new(Some("short".into()), &diagnostic).is_err());
+    let mut oversized = value;
+    oversized["message"] = json!("x".repeat(type_bridge_contract::limits::MAX_DIAGNOSTIC_BYTES));
+    let failure: StagedFailureV3 = serde_json::from_value(oversized).unwrap();
+    let keys = Keys::new();
+    let advertisement = advertisement().fingerprint().unwrap();
+    assert!(failure.encode_signed(&advertisement, &keys).is_err());
+    let bytes = failure.encode_signed_or_fallback(&advertisement, &keys);
+    let fallback =
+        decode_signed_staged_failure(&bytes, &advertisement, keys.public_key(), u64::MAX, &keys)
+            .unwrap();
+    assert_eq!(
+        fallback.diagnostic().unwrap().code().as_str(),
+        "query_remote_v3_internal_failure"
+    );
+}

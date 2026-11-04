@@ -200,6 +200,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Staged pre-request refusals now use `typebridge.query-remote-failure/v3`.
+  Decode them with `query_remote_v3::decode_signed_staged_failure` and
+  `StagedFailureV3`; servers encode them with
+  `remote_signing::encode_unbound_staged_failure` instead of the V2 helpers.
+  The signed outer envelope and structured diagnostic fields are unchanged.
+
 - Rust `query_remote_v2::{RemoteDiagnosticV2, RemoteDiagnosticDetailV2,
   RemoteDiagnosticPathSegmentV2}` move to `query_remote_diagnostic` as
   `RemoteDiagnostic`, `RemoteDiagnosticDetail`, and `RemoteDiagnosticPathSegment`.

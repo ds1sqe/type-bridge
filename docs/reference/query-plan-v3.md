@@ -937,6 +937,13 @@ budget to receive a diagnostic. Diagnostics remain capped at 65,536 bytes.
 
 ### Replies and failure vocabulary
 
+Before admission establishes a request binding, the server returns a signed
+`typebridge.query-remote-failure/v3` payload with structured `category`, `code`,
+`message`, `path`, and typed `details`. Its `request` is null; `nonce` is null or
+uses the staged nonce grammar. `decode_signed_staged_failure` verifies the
+advertisement and signing key before decoding this bounded refusal. It cannot
+be used as a request-bound execution outcome.
+
 The unsigned payload has required `format`, `nonce`, `request`, `outcome` and
 `answers`. Its format is `typebridge.query-remote-response/v3`; `request` is the
 exact request fingerprint digest, and the nonce must equal that request's. A successful outcome is

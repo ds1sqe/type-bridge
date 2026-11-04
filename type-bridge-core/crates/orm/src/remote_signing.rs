@@ -76,3 +76,28 @@ impl RemoteReplyVerifier for Ed25519RemoteReplyVerifier {
         .is_ok()
     }
 }
+
+/// Encode an authenticated refusal before a staged request is admitted.
+#[must_use]
+pub fn encode_unbound_staged_failure(
+    nonce: Option<String>,
+    diagnostic: &type_bridge_contract::diagnostic::Diagnostic,
+    advertisement: &type_bridge_contract::query_remote::RemoteCapabilitiesFingerprint,
+    signer: &RemoteReplySigningKey,
+) -> Vec<u8> {
+    use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+    use type_bridge_contract::query_remote_v3::StagedFailureV3;
+    let failure = StagedFailureV3::new(nonce, diagnostic).unwrap_or_else(|_| {
+        StagedFailureV3::new(
+            None,
+            &Diagnostic::new(
+                DiagnosticCategory::Integrity,
+                DiagnosticCode::new("query_remote_v3_internal_failure")
+                    .expect("fixed diagnostic code"),
+                "executor could not encode the original staged remote failure",
+            ),
+        )
+        .expect("fixed internal diagnostic is canonical and bounded")
+    });
+    failure.encode_signed_or_fallback(advertisement, signer)
+}

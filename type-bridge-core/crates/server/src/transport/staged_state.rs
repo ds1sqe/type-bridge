@@ -817,7 +817,7 @@ mod tests {
     use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
     use type_bridge_contract::query_plan::QueryOutput;
     use type_bridge_contract::query_plan::QueryPattern;
-    use type_bridge_contract::query_remote_v2::decode_signed_remote_failure_v2;
+    use type_bridge_contract::query_remote_v3::decode_signed_staged_failure;
     use type_bridge_contract::schema::{
         OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact,
         ValueFactId,

@@ -40,7 +40,7 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkCommitFailureOutcome, SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
 use type_bridge_orm::lower_remote_query_diagnostic;
-use type_bridge_orm::query_v2_remote::encode_unbound_remote_failure_v2;
+use type_bridge_orm::remote_signing::encode_unbound_staged_failure;
 use type_bridge_orm::session::staged::{PendingError, TransactionKind, TransactionOptions};
 
 use super::staged_state::{
@@ -163,7 +163,7 @@ impl StagedExecutor {
     }
 
     fn unbound(&self, diagnostic: &Diagnostic) -> Vec<u8> {
-        encode_unbound_remote_failure_v2(None, diagnostic, &self.fingerprint, &self.query.signer)
+        encode_unbound_staged_failure(None, diagnostic, &self.fingerprint, &self.query.signer)
     }
 
     fn signed(

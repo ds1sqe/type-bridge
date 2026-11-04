@@ -345,7 +345,7 @@ async fn unauthenticated_staged_write_is_refused_before_anything_opens() {
 
 /// Code of a refusal signed before any request was decoded.
 fn unbound_code(fixture: &V3Fixture, bytes: &[u8]) -> String {
-    decode_signed_remote_failure_v2(
+    decode_signed_staged_failure(
         bytes,
         &fixture.advertisement.fingerprint().expect("fingerprint"),
         fixture.advertisement.reply_key(),

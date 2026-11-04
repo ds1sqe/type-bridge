@@ -25,6 +25,12 @@ use crate::sdk_diagnostic::SdkExecutionDiagnostic;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[path = "query_remote_v3_failure.rs"]
+mod pre_request_failure;
+pub use pre_request_failure::{
+    QUERY_REMOTE_FAILURE_FORMAT_V3, StagedFailureV3, decode_signed_staged_failure,
+};
+
 #[path = "query_remote_v3_result_ref.rs"]
 mod result_ref;
 pub use result_ref::{StagedResultRefV3, validate_staged_result_refs_v3};
@@ -459,17 +465,7 @@ impl StagedRequestV3 {
         if wire.advertisement != advertisement.fingerprint()?.digest_hex() {
             return Err(mismatch());
         }
-        if !(16..=128).contains(&wire.nonce.len())
-            || !wire
-                .nonce
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-        {
-            return Err(invalid(
-                "query_remote_v3_nonce",
-                "staged nonce is outside its canonical grammar",
-            ));
-        }
+        pre_request_failure::validate_nonce(&wire.nonce)?;
         if wire
             .expires_at_unix_ms
             .checked_sub(wire.prepared_at_unix_ms)
