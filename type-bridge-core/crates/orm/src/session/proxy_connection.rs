@@ -1,7 +1,7 @@
 //! Built-in HTTP transport for a proxy connection.
 //!
-//! Every binding reaches the standalone server's `/v2/capabilities` and
-//! `/v2/query` routes through this one transport. Callers with their own
+//! Every binding reaches the standalone server's `/v3/capabilities` and
+//! `/v3/staged` routes through this one transport. Callers with their own
 //! route or authentication keep supplying an exchange instead.
 
 use std::fmt;
