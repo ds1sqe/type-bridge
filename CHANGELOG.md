@@ -200,6 +200,34 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Removed core `_manager::query_builder` and its compiler wrappers; use
+  registry-backed `DynamicEntityManager` / `DynamicRelationManager` methods
+  or native `PlanBuilder` plans. Removed wrapper functions:
+  `build_insert_with_iid`, `build_fetch`, `build_delete`,
+  `build_count`, `build_dynamic_entity_insert_with_iid`, `build_dynamic_entity_put`,
+  `build_dynamic_entity_update`, `build_dynamic_entity_update_exact`, `build_dynamic_entity_fetch`,
+  `build_dynamic_entity_fetch_exact`, `build_dynamic_entity_expr_fetch`, `build_dynamic_entity_expr_fetch_exact`,
+  `build_dynamic_has_lookup_query`, `build_dynamic_entity_fetch_by_iid`, `build_dynamic_entity_fetch_by_iid_exact`,
+  `build_dynamic_entity_count`, `build_dynamic_entity_count_exact`, `build_dynamic_entity_identity_discovery`,
+  `build_dynamic_relation_identity_discovery`, `build_dynamic_relation_count_exact`, `build_dynamic_relation_delete_by_iid_exact`,
+  `build_dynamic_entity_exact_key_lookup`, `build_dynamic_entity_expr_count`, `build_dynamic_entity_expr_count_exact`,
+  `build_dynamic_entity_expr_exists_exact`, `build_dynamic_entity_expr_aggregate`, `build_dynamic_entity_expr_group_by_aggregate`,
+  `build_dynamic_entity_aggregate`, `build_dynamic_entity_group_by_aggregate`, `build_dynamic_entity_delete_by_iid`,
+  `build_dynamic_entity_delete_by_iid_exact`, `build_update`, `build_put`,
+  `build_relation_insert_with_iid`, `build_relation_fetch`, `build_relation_delete`,
+  `build_relation_count`, `build_dynamic_relation_insert_with_iid`, `build_dynamic_relation_exact_key_lookup`,
+  `build_dynamic_relation_insert_resolved_with_iid`, `build_dynamic_relation_put`, `build_dynamic_relation_update`,
+  `build_dynamic_relation_update_exact`, `build_dynamic_relation_player_lookup`, `build_dynamic_relation_clear_role`,
+  `build_dynamic_relation_attach`, `build_dynamic_relation_fetch`, `build_dynamic_relation_fetch_exact`,
+  `build_dynamic_relation_fetch_with_role_filters`, `build_dynamic_relation_expr_fetch`, `build_dynamic_relation_expr_fetch_exact`,
+  `build_dynamic_relation_fetch_by_iid`, `build_dynamic_relation_fetch_by_iid_exact`, `build_dynamic_relation_count`,
+  `build_dynamic_relation_expr_count`, `build_dynamic_relation_expr_count_exact`, `build_dynamic_relation_expr_exists_exact`,
+  `build_dynamic_relation_expr_aggregate`, `build_dynamic_relation_expr_group_by_aggregate`, `build_dynamic_relation_aggregate`,
+  `build_dynamic_relation_group_by_aggregate`, `build_dynamic_relation_delete_by_iid`, `build_expr_fetch`,
+  `build_expr_count`, `build_expr_aggregate`, `build_relation_expr_fetch`,
+  `build_relation_expr_count`, `build_relation_expr_aggregate`, `build_expr_group_by_aggregate`,
+  `build_relation_group_by_aggregate`.
+
 - Removed `EntityQuery::new`, `RelationQuery::new`,
   `GroupByEntityQuery::new` and `GroupByRelationQuery::new`, which accepted
   a database without schema authority. Use `EntityManager::from_registry`

@@ -175,50 +175,42 @@ relation membership, relates member @card(1..2), owns note @card(0..1);";
 async fn raw_entity_rows(
     db: &Database,
     descriptor: &type_bridge_orm::_descriptor::EntityDescriptor,
-    expressions: &[type_bridge_orm::_dynamic::DynamicExpr],
+    predicate: &str,
 ) -> Vec<type_bridge_orm::_dynamic::DynamicEntityRow> {
-    use type_bridge_orm::_manager::{hydration, query_builder};
-    let query = query_builder::build_dynamic_entity_expr_fetch(
-        descriptor,
-        expressions,
-        &[],
-        None,
-        None,
-        "$e",
-    )
-    .unwrap();
+    let query = format!(
+        "match $e isa! $t; $t sub person; {predicate} fetch {{ \"_iid\": iid($e), \"_type\": label($t), \"attributes\": {{ $e.* }} }};"
+    );
     let QueryResult::Documents(documents) = db.execute_raw(&query, TxType::Read).await.unwrap()
     else {
         panic!("raw entity fetch must return documents");
     };
     documents
         .iter()
-        .map(|document| hydration::hydrate_dynamic_entity(descriptor, document).unwrap())
+        .map(|document| {
+            type_bridge_orm::_manager::hydration::hydrate_dynamic_entity(descriptor, document)
+                .unwrap()
+        })
         .collect()
 }
 
 async fn raw_relation_rows(
     db: &Database,
     descriptor: &type_bridge_orm::_descriptor::RelationDescriptor,
-    expressions: &[type_bridge_orm::_dynamic::DynamicExpr],
+    excluded_player: &str,
 ) -> Vec<type_bridge_orm::_dynamic::DynamicRelationRow> {
-    use type_bridge_orm::_manager::{hydration, query_builder};
-    let query = query_builder::build_dynamic_relation_expr_fetch(
-        descriptor,
-        expressions,
-        &[],
-        None,
-        None,
-        "$r",
-    )
-    .unwrap();
+    let query = format!(
+        "match $r isa! $t; $t sub membership; $r links (member: $p); $p isa! $pt; not {{ $r links (member: $excluded); iid($excluded) == \"{excluded_player}\"; }}; fetch {{ \"_iid\": iid($r), \"_type\": label($t), \"attributes\": {{ $r.* }}, \"_role_0_iid\": iid($p), \"_role_0_type\": label($pt), \"_role_0_attributes\": {{ $p.* }} }};"
+    );
     let QueryResult::Documents(documents) = db.execute_raw(&query, TxType::Read).await.unwrap()
     else {
         panic!("raw relation fetch must return documents");
     };
     documents
         .iter()
-        .map(|document| hydration::hydrate_dynamic_relation(descriptor, document).unwrap())
+        .map(|document| {
+            type_bridge_orm::_manager::hydration::hydrate_dynamic_relation(descriptor, document)
+                .unwrap()
+        })
         .collect()
 }
 
@@ -284,27 +276,33 @@ async fn registry_managers_and_nested_iids_match_raw_builder_results() {
     );
     assert_eq!(
         planned.all().await.unwrap(),
-        raw_entity_rows(&db, &person, &[]).await
+        raw_entity_rows(&db, &person, "").await
     );
-    for expression in [
-        DynamicExpr::Or {
-            exprs: vec![
-                DynamicExpr::Iid { iid: first.clone() },
-                DynamicExpr::Iid {
-                    iid: second.clone(),
-                },
-            ],
-        },
-        DynamicExpr::Not {
-            expr: Box::new(DynamicExpr::Iid { iid: first.clone() }),
-        },
+    for (expression, predicate) in [
+        (
+            DynamicExpr::Or {
+                exprs: vec![
+                    DynamicExpr::Iid { iid: first.clone() },
+                    DynamicExpr::Iid {
+                        iid: second.clone(),
+                    },
+                ],
+            },
+            format!("{{ $e iid {first}; }} or {{ $e iid {second}; }};"),
+        ),
+        (
+            DynamicExpr::Not {
+                expr: Box::new(DynamicExpr::Iid { iid: first.clone() }),
+            },
+            format!("not {{ $e iid {first}; }};"),
+        ),
     ] {
         assert_eq!(
             planned
                 .get_with_query(std::slice::from_ref(&expression), &[], None, None)
                 .await
                 .unwrap(),
-            raw_entity_rows(&db, &person, &[expression]).await
+            raw_entity_rows(&db, &person, &predicate).await
         );
     }
     assert!(
@@ -363,7 +361,7 @@ async fn registry_managers_and_nested_iids_match_raw_builder_results() {
             .get_with_query(std::slice::from_ref(&expression), &[], None, None)
             .await
             .unwrap(),
-        raw_relation_rows(&db, &membership, &[expression]).await
+        raw_relation_rows(&db, &membership, &second).await
     );
     assert_eq!(
         relations
