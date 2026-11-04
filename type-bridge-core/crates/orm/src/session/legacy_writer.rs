@@ -30,6 +30,18 @@ mod data_plan;
 use super::{Database, TransactionContext};
 use crate::error::{OrmError, Result};
 
+// Every guard call has a fixed schema and predicates; validate each plan once.
+macro_rules! guard_read {
+    ($kind:expr, $fixed:expr, $bound:expr $(,)?) => {{
+        static QUERY: std::sync::LazyLock<
+            std::result::Result<data_plan::DataQuery, type_bridge_contract::diagnostic::Diagnostic>,
+        > = std::sync::LazyLock::new(|| data_plan::read($kind, $fixed, $bound));
+        QUERY
+            .as_ref()
+            .map_err(|error| crate::query_plan_exec::plan_diagnostic_error(error.clone()))?
+    }};
+}
+
 /// Reject a TypeBridge-owned V1 writer through its already-open mutation
 /// transaction after the database completes V2 adoption.
 ///
@@ -69,14 +81,13 @@ pub async fn require_legacy_writer_open_in_transaction(
 
     let control_existence = query_values(
         transaction,
-        data_plan::read(MANAGED_CONTROL_ENTITY, &[], &[])
-            .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
+        guard_read!(MANAGED_CONTROL_ENTITY, &[], &[]),
         "legacy writer managed-control existence probe",
     )
     .await?;
     let control_details = query_values(
         transaction,
-        data_plan::read(
+        guard_read!(
             MANAGED_CONTROL_ENTITY,
             &[],
             &[
@@ -84,19 +95,17 @@ pub async fn require_legacy_writer_open_in_transaction(
                 (MANAGED_CONTROL_LEASE_FENCE, "fence"),
                 (MANAGED_CONTROL_LEASE_STATE, "state"),
             ],
-        )
-        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
+        ),
         "legacy writer managed-control detail probe",
     )
     .await?;
     let control_holders = query_values(
         transaction,
-        data_plan::read(
+        guard_read!(
             MANAGED_CONTROL_ENTITY,
             &[],
             &[(MANAGED_CONTROL_LEASE_HOLDER, "holder")],
-        )
-        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
+        ),
         "legacy writer managed-control holder probe",
     )
     .await?;
@@ -104,28 +113,26 @@ pub async fn require_legacy_writer_open_in_transaction(
 
     let anchor_existence = query_values(
         transaction,
-        data_plan::read(LEGACY_CUTOVER_ANCHOR_ENTITY, &[], &[])
-            .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
+        guard_read!(LEGACY_CUTOVER_ANCHOR_ENTITY, &[], &[]),
         "legacy writer cutover-anchor existence probe",
     )
     .await?;
     let anchor_key_candidates = query_values(
         transaction,
-        data_plan::read(
+        guard_read!(
             LEGACY_CUTOVER_ANCHOR_ENTITY,
             &[(
                 LEGACY_CUTOVER_ANCHOR_KEY,
                 LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY,
             )],
             &[],
-        )
-        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
+        ),
         "legacy writer cutover-anchor key probe",
     )
     .await?;
     let anchor_details = query_values(
         transaction,
-        data_plan::read(
+        guard_read!(
             LEGACY_CUTOVER_ANCHOR_ENTITY,
             &[(
                 LEGACY_CUTOVER_ANCHOR_KEY,
@@ -135,8 +142,7 @@ pub async fn require_legacy_writer_open_in_transaction(
                 (LEGACY_CUTOVER_ANCHOR_SCOPE, "scope"),
                 (LEGACY_CUTOVER_ANCHOR_FINGERPRINT, "fingerprint"),
             ],
-        )
-        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
+        ),
         "legacy writer cutover-anchor detail probe",
     )
     .await?;
@@ -166,32 +172,30 @@ pub async fn require_legacy_writer_open_in_transaction(
 
     let sentinel_id_candidates = query_values(
         transaction,
-        data_plan::read(
+        guard_read!(
             LEGACY_LEDGER_APPLIED_ENTITY,
             &[(
                 LEGACY_LEDGER_MIGRATION_ID,
                 LEGACY_CUTOVER_SENTINEL_MIGRATION_ID,
             )],
             &[],
-        )
-        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
+        ),
         "legacy writer cutover-sentinel ID probe",
     )
     .await?;
     let sentinel_name_candidates = query_values(
         transaction,
-        data_plan::read(
+        guard_read!(
             LEGACY_LEDGER_APPLIED_ENTITY,
             &[(LEGACY_LEDGER_NAME, LEGACY_CUTOVER_SENTINEL_NAME)],
             &[],
-        )
-        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
+        ),
         "legacy writer cutover-sentinel name probe",
     )
     .await?;
     let sentinel_details = query_values(
         transaction,
-        data_plan::read(
+        guard_read!(
             LEGACY_LEDGER_APPLIED_ENTITY,
             &[
                 (
@@ -205,8 +209,7 @@ pub async fn require_legacy_writer_open_in_transaction(
                 (LEGACY_LEDGER_APPLIED_AT, "applied"),
                 (LEGACY_LEDGER_CHECKSUM, "checksum"),
             ],
-        )
-        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
+        ),
         "legacy writer cutover-sentinel detail probe",
     )
     .await?;
@@ -408,7 +411,7 @@ pub async fn require_legacy_writer_open(database: &Database) -> Result<()> {
 
 async fn query_values(
     transaction: &TransactionContext,
-    query: data_plan::DataQuery,
+    query: &data_plan::DataQuery,
     operation: &str,
 ) -> Result<Vec<serde_json::Value>> {
     let answers = transaction
