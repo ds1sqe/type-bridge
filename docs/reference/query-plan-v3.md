@@ -462,7 +462,7 @@ Inputs or any literal/input operand add `query.input.given-rows`.
 Providers must advertise every required feature.
 
 Derivation and advertisement are separate. `query_plan_v3_capability_vocabulary()`
-is the V2 vocabulary (which includes `query.pattern.iid`) plus
+owns the complete advertised read vocabulary, including `query.pattern.iid`,
 `query.plan.v3`, the insert/update/delete/put write capabilities, `query.let`
 and every `query.expr.*` name. The staged advertisement at
 `GET /v3/capabilities` is the V2 advertisement's capabilities, that
