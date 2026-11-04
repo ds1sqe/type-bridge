@@ -1522,7 +1522,7 @@ class PendingRemoteModelQuery:
     def request_bytes(self) -> bytes: ...
     def decode_reply(self, response: bytes | bytearray) -> ValidatedMatchResultHandle: ...
 
-def query_v2_remote_model_context_with_resources(
+def plan_remote_model_context_with_resources(
     authority: PlanAuthority,
     advertisement: bytes | bytearray,
     resources: QueryExecutionResourceLimits,
@@ -1530,7 +1530,7 @@ def query_v2_remote_model_context_with_resources(
     *,
     answer_limits: QueryExecutionResourceLimits | None = ...,
 ) -> RemoteModelQueryContext: ...
-def query_v2_prepare_remote_model_rows(
+def plan_prepare_remote_model_rows(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     order: list[MatchOrderHandle],
@@ -1538,7 +1538,7 @@ def query_v2_prepare_remote_model_rows(
     limit: int,
     cardinality: Literal["exactly_one", "bounded_many"],
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_page(
+def plan_prepare_remote_model_page(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,
@@ -1547,17 +1547,17 @@ def query_v2_prepare_remote_model_page(
     limit: int,
     include_total: bool,
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_count(
+def plan_prepare_remote_model_count(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_exists(
+def plan_prepare_remote_model_exists(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_reduce(
+def plan_prepare_remote_model_reduce(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,
@@ -1565,7 +1565,7 @@ def query_v2_prepare_remote_model_reduce(
     reducers: Sequence[Literal["count", "sum", "min", "max", "mean", "median", "std"]],
     inputs: Sequence[MatchFieldHandle | None],
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_reduce_by_field(
+def plan_prepare_remote_model_reduce_by_field(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,
@@ -1573,7 +1573,7 @@ def query_v2_prepare_remote_model_reduce_by_field(
     reducers: Sequence[Literal["count", "sum", "min", "max", "mean", "median", "std"]],
     inputs: Sequence[MatchFieldHandle | None],
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_reduce_by_fields(
+def plan_prepare_remote_model_reduce_by_fields(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,

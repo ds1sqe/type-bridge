@@ -113,7 +113,7 @@ for (const name of [
   "connectRustDatabase",
   "ensureRustDatabase",
   "planAuthority",
-  "queryV2RemoteModelContextWithResources",
+  "planRemoteModelContextWithResources",
 ]) {
   assert.equal(typeof native[name], "function", `${name} must remain native`);
 }

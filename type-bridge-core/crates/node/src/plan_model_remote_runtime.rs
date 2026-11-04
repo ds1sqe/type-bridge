@@ -198,8 +198,8 @@ impl NodePendingRemoteModelQuery {
 /// cancellation owners. `answer_limits` is the caller-exchanged connection's
 /// ceiling; left out, the proxy (wire) defaults are the ceiling, as for a
 /// `ProxyConnection` opened without answer limits.
-#[napi(js_name = "queryV2RemoteModelContextWithResources")]
-pub fn query_v2_remote_model_context_with_resources(
+#[napi(js_name = "planRemoteModelContextWithResources")]
+pub fn plan_remote_model_context_with_resources(
     env: Env,
     authority: &NodePlanAuthority,
     advertisement: Unknown,
@@ -222,8 +222,8 @@ pub fn query_v2_remote_model_context_with_resources(
 }
 
 /// Prepare a selected-row or exactly-one remote model query.
-#[napi(js_name = "queryV2PrepareRemoteModelRows")]
-pub fn query_v2_prepare_remote_model_rows(
+#[napi(js_name = "planPrepareRemoteModelRows")]
+pub fn plan_prepare_remote_model_rows(
     query: &NodeMatchQueryHandle,
     context: &NodeRemoteModelQueryContext,
     orders: Array,
@@ -237,12 +237,12 @@ pub fn query_v2_prepare_remote_model_rows(
 }
 
 /// Prepare one distinct-root remote page.
-#[napi(js_name = "queryV2PrepareRemoteModelPage")]
+#[napi(js_name = "planPrepareRemoteModelPage")]
 #[allow(
     clippy::too_many_arguments,
     reason = "terminal mirrors released grammar"
 )]
-pub fn query_v2_prepare_remote_model_page(
+pub fn plan_prepare_remote_model_page(
     query: &NodeMatchQueryHandle,
     context: &NodeRemoteModelQueryContext,
     root: &NodeMatchBindingHandle,
@@ -257,8 +257,8 @@ pub fn query_v2_prepare_remote_model_page(
 }
 
 /// Prepare one lossless distinct-root remote count.
-#[napi(js_name = "queryV2PrepareRemoteModelCount")]
-pub fn query_v2_prepare_remote_model_count(
+#[napi(js_name = "planPrepareRemoteModelCount")]
+pub fn plan_prepare_remote_model_count(
     query: &NodeMatchQueryHandle,
     context: &NodeRemoteModelQueryContext,
     root: &NodeMatchBindingHandle,
@@ -267,8 +267,8 @@ pub fn query_v2_prepare_remote_model_count(
 }
 
 /// Prepare one distinct-root remote existence query.
-#[napi(js_name = "queryV2PrepareRemoteModelExists")]
-pub fn query_v2_prepare_remote_model_exists(
+#[napi(js_name = "planPrepareRemoteModelExists")]
+pub fn plan_prepare_remote_model_exists(
     query: &NodeMatchQueryHandle,
     context: &NodeRemoteModelQueryContext,
     root: &NodeMatchBindingHandle,
@@ -277,8 +277,8 @@ pub fn query_v2_prepare_remote_model_exists(
 }
 
 /// Prepare one typed ungrouped or grouped reduction over a distinct root.
-#[napi(js_name = "queryV2PrepareRemoteModelReduce")]
-pub fn query_v2_prepare_remote_model_reduce(
+#[napi(js_name = "planPrepareRemoteModelReduce")]
+pub fn plan_prepare_remote_model_reduce(
     query: &NodeMatchQueryHandle,
     context: &NodeRemoteModelQueryContext,
     root: &NodeMatchBindingHandle,
@@ -292,8 +292,8 @@ pub fn query_v2_prepare_remote_model_reduce(
 }
 
 /// Prepare one typed reduction grouped by a projected owned field.
-#[napi(js_name = "queryV2PrepareRemoteModelReduceByField")]
-pub fn query_v2_prepare_remote_model_reduce_by_field(
+#[napi(js_name = "planPrepareRemoteModelReduceByField")]
+pub fn plan_prepare_remote_model_reduce_by_field(
     query: &NodeMatchQueryHandle,
     context: &NodeRemoteModelQueryContext,
     root: &NodeMatchBindingHandle,
@@ -307,8 +307,8 @@ pub fn query_v2_prepare_remote_model_reduce_by_field(
 }
 
 /// Prepare one typed reduction grouped by an ordered tuple of projected owned fields.
-#[napi(js_name = "queryV2PrepareRemoteModelReduceByFields")]
-pub fn query_v2_prepare_remote_model_reduce_by_fields(
+#[napi(js_name = "planPrepareRemoteModelReduceByFields")]
+pub fn plan_prepare_remote_model_reduce_by_fields(
     query: &NodeMatchQueryHandle,
     context: &NodeRemoteModelQueryContext,
     root: &NodeMatchBindingHandle,

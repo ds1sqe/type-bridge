@@ -113,7 +113,7 @@ impl PyPendingRemoteModelQuery {
 /// `ProxyConnection` opened without answer limits.
 #[pyfunction]
 #[pyo3(signature = (authority, advertisement, resources, cancellation, *, answer_limits=None))]
-pub(crate) fn query_v2_remote_model_context_with_resources(
+pub(crate) fn plan_remote_model_context_with_resources(
     py: Python<'_>,
     authority: &PyPlanAuthority,
     advertisement: &Bound<'_, PyAny>,
@@ -168,7 +168,7 @@ fn remote_context(
 /// Prepare a selected-row or exactly-one remote model query.
 #[pyfunction]
 #[pyo3(signature = (query, context, order, offset, limit, cardinality))]
-pub(crate) fn query_v2_prepare_remote_model_rows(
+pub(crate) fn plan_prepare_remote_model_rows(
     py: Python<'_>,
     query: &PyMatchQueryHandle,
     context: &PyRemoteModelQueryContext,
@@ -194,7 +194,7 @@ pub(crate) fn query_v2_prepare_remote_model_rows(
     clippy::too_many_arguments,
     reason = "terminal mirrors released grammar"
 )]
-pub(crate) fn query_v2_prepare_remote_model_page(
+pub(crate) fn plan_prepare_remote_model_page(
     py: Python<'_>,
     query: &PyMatchQueryHandle,
     context: &PyRemoteModelQueryContext,
@@ -217,7 +217,7 @@ pub(crate) fn query_v2_prepare_remote_model_page(
 
 /// Prepare one lossless distinct-root remote count.
 #[pyfunction]
-pub(crate) fn query_v2_prepare_remote_model_count(
+pub(crate) fn plan_prepare_remote_model_count(
     py: Python<'_>,
     query: &PyMatchQueryHandle,
     context: &PyRemoteModelQueryContext,
@@ -233,7 +233,7 @@ pub(crate) fn query_v2_prepare_remote_model_count(
 
 /// Prepare one distinct-root remote existence query.
 #[pyfunction]
-pub(crate) fn query_v2_prepare_remote_model_exists(
+pub(crate) fn plan_prepare_remote_model_exists(
     py: Python<'_>,
     query: &PyMatchQueryHandle,
     context: &PyRemoteModelQueryContext,
@@ -250,7 +250,7 @@ pub(crate) fn query_v2_prepare_remote_model_exists(
 /// Prepare one typed ungrouped or grouped reduction over a distinct root.
 #[pyfunction]
 #[pyo3(signature = (query, context, root, group, reducers, inputs))]
-pub(crate) fn query_v2_prepare_remote_model_reduce(
+pub(crate) fn plan_prepare_remote_model_reduce(
     py: Python<'_>,
     query: &PyMatchQueryHandle,
     context: &PyRemoteModelQueryContext,
@@ -271,7 +271,7 @@ pub(crate) fn query_v2_prepare_remote_model_reduce(
 /// Prepare one typed reduction grouped by a projected owned field.
 #[pyfunction]
 #[pyo3(signature = (query, context, root, group, reducers, inputs))]
-pub(crate) fn query_v2_prepare_remote_model_reduce_by_field(
+pub(crate) fn plan_prepare_remote_model_reduce_by_field(
     py: Python<'_>,
     query: &PyMatchQueryHandle,
     context: &PyRemoteModelQueryContext,
@@ -292,7 +292,7 @@ pub(crate) fn query_v2_prepare_remote_model_reduce_by_field(
 /// Prepare one typed reduction grouped by an ordered tuple of projected owned fields.
 #[pyfunction]
 #[pyo3(signature = (query, context, root, groups, reducers, inputs))]
-pub(crate) fn query_v2_prepare_remote_model_reduce_by_fields(
+pub(crate) fn plan_prepare_remote_model_reduce_by_fields(
     py: Python<'_>,
     query: &PyMatchQueryHandle,
     context: &PyRemoteModelQueryContext,
@@ -379,35 +379,20 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRemoteModelQueryContext>()?;
     module.add_class::<PyPendingRemoteModelQuery>()?;
     module.add_function(wrap_pyfunction!(
-        query_v2_remote_model_context_with_resources,
+        plan_remote_model_context_with_resources,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(plan_prepare_remote_model_rows, module)?)?;
+    module.add_function(wrap_pyfunction!(plan_prepare_remote_model_page, module)?)?;
+    module.add_function(wrap_pyfunction!(plan_prepare_remote_model_count, module)?)?;
+    module.add_function(wrap_pyfunction!(plan_prepare_remote_model_exists, module)?)?;
+    module.add_function(wrap_pyfunction!(plan_prepare_remote_model_reduce, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        plan_prepare_remote_model_reduce_by_field,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(
-        query_v2_prepare_remote_model_rows,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
-        query_v2_prepare_remote_model_page,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
-        query_v2_prepare_remote_model_count,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
-        query_v2_prepare_remote_model_exists,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
-        query_v2_prepare_remote_model_reduce,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
-        query_v2_prepare_remote_model_reduce_by_field,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
-        query_v2_prepare_remote_model_reduce_by_fields,
+        plan_prepare_remote_model_reduce_by_fields,
         module
     )?)?;
     Ok(())

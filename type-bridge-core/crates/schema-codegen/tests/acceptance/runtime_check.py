@@ -2017,13 +2017,13 @@ remote_terminals = {
     for name in ("_FETCH_ROWS", "_PAGE_BY", "_COUNT_BY", "_EXISTS_BY", "_REDUCE_BY")
 }
 saved_prepare = {name: terminal.prepare for name, terminal in remote_terminals.items()}
-saved_context = generated_query_module.query_v2_remote_model_context_with_resources
+saved_context = generated_query_module.plan_remote_model_context_with_resources
 saved_row_materializer = generated_query_module.Query.materialize_row
 saved_page_materializer = generated_query_module.Query.materialize_page
 saved_reduction_materializer = generated_query_module.Query.materialize_reduction
 reduce_calls: list[tuple[object, ...]] = []
 try:
-    generated_query_module.query_v2_remote_model_context_with_resources = (
+    generated_query_module.plan_remote_model_context_with_resources = (
         lambda *arguments, **keywords: object()
     )
     for terminal_name in ("_FETCH_ROWS", "_PAGE_BY", "_COUNT_BY", "_EXISTS_BY"):
@@ -2101,7 +2101,7 @@ try:
 finally:
     for name, prepare in saved_prepare.items():
         remote_terminals[name].prepare = prepare
-    generated_query_module.query_v2_remote_model_context_with_resources = saved_context
+    generated_query_module.plan_remote_model_context_with_resources = saved_context
     generated_query_module.Query.materialize_row = saved_row_materializer
     generated_query_module.Query.materialize_page = saved_page_materializer
     generated_query_module.Query.materialize_reduction = saved_reduction_materializer

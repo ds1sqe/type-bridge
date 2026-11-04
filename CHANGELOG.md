@@ -200,6 +200,15 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Python native remote-model entry points `query_v2_prepare_remote_model_*`
+  become `plan_prepare_remote_model_*` (rows, page, count, exists, reduce,
+  reduce_by_field, and reduce_by_fields), and
+  `query_v2_remote_model_context_with_resources` becomes
+  `plan_remote_model_context_with_resources`. Node's corresponding
+  `queryV2PrepareRemoteModel*` and `queryV2RemoteModelContextWithResources`
+  become `planPrepareRemoteModel*` and `planRemoteModelContextWithResources`.
+  Regenerate schema packages to use these live native-plan entry points.
+
 - Rust bounded provider methods `query_v2_bounded` and
   `query_v2_with_rows_bounded` become `query_plan_bounded` and
   `query_plan_with_rows_bounded`, including `TransactionOps` implementations.

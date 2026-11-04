@@ -61,8 +61,8 @@ export type RuntimeProjectionReduction =
   | "mean"
   | "median"
   | "std";
-type RuntimeProjectionRemoteContext = ReturnType<NativeModule["queryV2RemoteModelContextWithResources"]>;
-type RuntimeProjectionRemotePending = ReturnType<NativeModule["queryV2PrepareRemoteModelRows"]>;
+type RuntimeProjectionRemoteContext = ReturnType<NativeModule["planRemoteModelContextWithResources"]>;
+type RuntimeProjectionRemotePending = ReturnType<NativeModule["planPrepareRemoteModelRows"]>;
 
 export type RuntimeProjectionConnection = Database | TransactionContext | ProxyConnection;
 
@@ -908,7 +908,7 @@ export class InstalledRuntimeProjection {
       throw new TypeError("generated remote query answerLimits must be QueryExecutionResourceLimits");
     }
     const native = loadNative();
-    const context = planNativeCall(() => native.queryV2RemoteModelContextWithResources(
+    const context = planNativeCall(() => native.planRemoteModelContextWithResources(
       nativeAuthority,
       advertisement,
       resources.nativeHandle(),
@@ -1140,7 +1140,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     limit: bigint,
     cardinality: "exactly_one" | "bounded_many",
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(planNativeCall(() => this.#native.queryV2PrepareRemoteModelRows(
+    return this.#execute(planNativeCall(() => this.#native.planPrepareRemoteModelRows(
       query,
       this.#context,
       orders,
@@ -1158,7 +1158,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     limit: bigint,
     includeTotal: boolean,
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(planNativeCall(() => this.#native.queryV2PrepareRemoteModelPage(
+    return this.#execute(planNativeCall(() => this.#native.planPrepareRemoteModelPage(
       query,
       this.#context,
       root,
@@ -1174,7 +1174,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     root: RuntimeProjectionMatchBinding,
   ): Promise<RuntimeProjectionMatchResult> {
     return this.#execute(planNativeCall(() =>
-      this.#native.queryV2PrepareRemoteModelCount(query, this.#context, root)
+      this.#native.planPrepareRemoteModelCount(query, this.#context, root)
     ));
   }
 
@@ -1183,7 +1183,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     root: RuntimeProjectionMatchBinding,
   ): Promise<RuntimeProjectionMatchResult> {
     return this.#execute(planNativeCall(() =>
-      this.#native.queryV2PrepareRemoteModelExists(query, this.#context, root)
+      this.#native.planPrepareRemoteModelExists(query, this.#context, root)
     ));
   }
 
@@ -1195,7 +1195,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<RuntimeProjectionMatchResult> {
     return this.#execute(planNativeCall(() =>
-      this.#native.queryV2PrepareRemoteModelReduce(
+      this.#native.planPrepareRemoteModelReduce(
         query,
         this.#context,
         root,
@@ -1214,7 +1214,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<RuntimeProjectionMatchResult> {
     return this.#execute(planNativeCall(() =>
-      this.#native.queryV2PrepareRemoteModelReduceByField(
+      this.#native.planPrepareRemoteModelReduceByField(
         query,
         this.#context,
         root,
@@ -1233,7 +1233,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<RuntimeProjectionMatchResult> {
     return this.#execute(planNativeCall(() =>
-      this.#native.queryV2PrepareRemoteModelReduceByFields(
+      this.#native.planPrepareRemoteModelReduceByFields(
         query,
         this.#context,
         root,

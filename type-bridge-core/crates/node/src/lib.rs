@@ -56,11 +56,11 @@ pub use migration_catalog_runtime::{
 };
 pub use plan_builder_runtime::{NodePlan, NodePlanBuilder, NodePlanOperand};
 pub use plan_model_remote_runtime::{
-    NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, query_v2_prepare_remote_model_count,
-    query_v2_prepare_remote_model_exists, query_v2_prepare_remote_model_page,
-    query_v2_prepare_remote_model_reduce, query_v2_prepare_remote_model_reduce_by_field,
-    query_v2_prepare_remote_model_reduce_by_fields, query_v2_prepare_remote_model_rows,
-    query_v2_remote_model_context_with_resources,
+    NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, plan_prepare_remote_model_count,
+    plan_prepare_remote_model_exists, plan_prepare_remote_model_page,
+    plan_prepare_remote_model_reduce, plan_prepare_remote_model_reduce_by_field,
+    plan_prepare_remote_model_reduce_by_fields, plan_prepare_remote_model_rows,
+    plan_remote_model_context_with_resources,
 };
 pub use proxy_connection_runtime::NodeProxyConnection;
 pub use query_plan_v3_codec::{_query_plan_v3_round_trip, QueryPlanV3Encoding};

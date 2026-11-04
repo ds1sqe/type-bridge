@@ -698,9 +698,9 @@ assert.throws(
     error.details.value.value === "subtype",
 );
 const native = loadNative();
-const originalPrepareRemoteRows = native.queryV2PrepareRemoteModelRows;
+const originalPrepareRemoteRows = native.planPrepareRemoteModelRows;
 let capturedFailurePending;
-native.queryV2PrepareRemoteModelRows = (...arguments_) => {
+native.planPrepareRemoteModelRows = (...arguments_) => {
   const pending = originalPrepareRemoteRows(...arguments_);
   capturedFailurePending = pending;
   return pending;
@@ -755,7 +755,7 @@ try {
     },
   );
 } finally {
-  native.queryV2PrepareRemoteModelRows = originalPrepareRemoteRows;
+  native.planPrepareRemoteModelRows = originalPrepareRemoteRows;
 }
 assert.equal(generatedRemoteExchanges, 1);
 assert(capturedFailurePending);

@@ -631,14 +631,14 @@ interface NativeRemoteModelQueryModule {
   ) => NativeQueryExecutionResources;
   NodeQueryCancellation: new () => NativeQueryCancellation;
   NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
-  queryV2RemoteModelContextWithResources(
+  planRemoteModelContextWithResources(
     authority: ReturnType<NativeModule["planAuthority"]>,
     advertisement: Uint8Array,
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,
     answerLimits?: NativeQueryExecutionResources,
   ): NativeRemoteModelQueryContext;
-  queryV2PrepareRemoteModelRows(
+  planPrepareRemoteModelRows(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     orders: NativeMatchOrderHandle[],
@@ -646,7 +646,7 @@ interface NativeRemoteModelQueryModule {
     limit: bigint,
     cardinality: NativeMatchRowCardinality,
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelPage(
+  planPrepareRemoteModelPage(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
@@ -655,17 +655,17 @@ interface NativeRemoteModelQueryModule {
     limit: bigint,
     includeTotal: boolean,
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelCount(
+  planPrepareRemoteModelCount(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelExists(
+  planPrepareRemoteModelExists(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelReduce(
+  planPrepareRemoteModelReduce(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
@@ -673,7 +673,7 @@ interface NativeRemoteModelQueryModule {
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelReduceByField(
+  planPrepareRemoteModelReduceByField(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
@@ -681,7 +681,7 @@ interface NativeRemoteModelQueryModule {
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelReduceByFields(
+  planPrepareRemoteModelReduceByFields(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
@@ -820,7 +820,7 @@ type LoadedNativePendingQueryV2Remote = ReturnType<
   LoadedNativeModule["queryV2PrepareRemote"]
 >;
 type LoadedNativePendingRemoteModelQuery = ReturnType<
-  LoadedNativeModule["queryV2PrepareRemoteModelRows"]
+  LoadedNativeModule["planPrepareRemoteModelRows"]
 >;
 
 // This module compiles to dist/native.js (CommonJS). __dirname is therefore
@@ -935,22 +935,22 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
   const queryV2ExecuteLocal = native.queryV2ExecuteLocal.bind(native);
   const queryV2RemoteCapabilities = native.queryV2RemoteCapabilities.bind(native);
   const queryV2PrepareRemote = native.queryV2PrepareRemote.bind(native);
-  const queryV2RemoteModelContextWithResources =
-    native.queryV2RemoteModelContextWithResources.bind(native);
-  const queryV2PrepareRemoteModelRows =
-    native.queryV2PrepareRemoteModelRows.bind(native);
-  const queryV2PrepareRemoteModelPage =
-    native.queryV2PrepareRemoteModelPage.bind(native);
-  const queryV2PrepareRemoteModelCount =
-    native.queryV2PrepareRemoteModelCount.bind(native);
-  const queryV2PrepareRemoteModelExists =
-    native.queryV2PrepareRemoteModelExists.bind(native);
-  const queryV2PrepareRemoteModelReduce =
-    native.queryV2PrepareRemoteModelReduce.bind(native);
-  const queryV2PrepareRemoteModelReduceByField =
-    native.queryV2PrepareRemoteModelReduceByField.bind(native);
-  const queryV2PrepareRemoteModelReduceByFields =
-    native.queryV2PrepareRemoteModelReduceByFields.bind(native);
+  const planRemoteModelContextWithResources =
+    native.planRemoteModelContextWithResources.bind(native);
+  const planPrepareRemoteModelRows =
+    native.planPrepareRemoteModelRows.bind(native);
+  const planPrepareRemoteModelPage =
+    native.planPrepareRemoteModelPage.bind(native);
+  const planPrepareRemoteModelCount =
+    native.planPrepareRemoteModelCount.bind(native);
+  const planPrepareRemoteModelExists =
+    native.planPrepareRemoteModelExists.bind(native);
+  const planPrepareRemoteModelReduce =
+    native.planPrepareRemoteModelReduce.bind(native);
+  const planPrepareRemoteModelReduceByField =
+    native.planPrepareRemoteModelReduceByField.bind(native);
+  const planPrepareRemoteModelReduceByFields =
+    native.planPrepareRemoteModelReduceByFields.bind(native);
   const descriptors = Object.getOwnPropertyDescriptors(native);
 
   descriptors["planAuthority"] = protectedMethodDescriptor(
@@ -1036,16 +1036,16 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2RemoteModelContextWithResources"] = protectedMethodDescriptor(
+  descriptors["planRemoteModelContextWithResources"] = protectedMethodDescriptor(
     native,
-    "queryV2RemoteModelContextWithResources",
+    "planRemoteModelContextWithResources",
     ((
-      authority: Parameters<LoadedNativeModule["queryV2RemoteModelContextWithResources"]>[0],
+      authority: Parameters<LoadedNativeModule["planRemoteModelContextWithResources"]>[0],
       advertisement: Uint8Array,
       resources: NativeQueryExecutionResources,
       cancellation: NativeQueryCancellation,
       answerLimits?: NativeQueryExecutionResources,
-    ) => queryV2RemoteModelContextWithResources(
+    ) => planRemoteModelContextWithResources(
       authority,
       ownedByteSnapshot(advertisement, maxEnvelopeBytes),
       resources,
@@ -1053,66 +1053,66 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
       answerLimits,
     )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelRows"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelRows"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelRows",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelRows"]>) =>
+    "planPrepareRemoteModelRows",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelRows"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelRows(...args),
+        planPrepareRemoteModelRows(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelPage"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelPage"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelPage",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelPage"]>) =>
+    "planPrepareRemoteModelPage",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelPage"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelPage(...args),
+        planPrepareRemoteModelPage(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelCount"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelCount"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelCount",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelCount"]>) =>
+    "planPrepareRemoteModelCount",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelCount"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelCount(...args),
+        planPrepareRemoteModelCount(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelExists"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelExists"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelExists",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelExists"]>) =>
+    "planPrepareRemoteModelExists",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelExists"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelExists(...args),
+        planPrepareRemoteModelExists(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelReduce"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelReduce"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelReduce",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelReduce"]>) =>
+    "planPrepareRemoteModelReduce",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelReduce"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelReduce(...args),
+        planPrepareRemoteModelReduce(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelReduceByField"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelReduceByField"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelReduceByField",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelReduceByField"]>) =>
+    "planPrepareRemoteModelReduceByField",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelReduceByField"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelReduceByField(...args),
+        planPrepareRemoteModelReduceByField(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelReduceByFields"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelReduceByFields"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelReduceByFields",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelReduceByFields"]>) =>
+    "planPrepareRemoteModelReduceByFields",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelReduceByFields"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelReduceByFields(...args),
+        planPrepareRemoteModelReduceByFields(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );

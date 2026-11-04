@@ -48,14 +48,14 @@ from type_bridge_core import (
     ValidatedMatchResultHandle,
     ValidatedMatchRowHandle,
     plan_authority_from_schema_authority,
-    query_v2_prepare_remote_model_count,
-    query_v2_prepare_remote_model_exists,
-    query_v2_prepare_remote_model_page,
-    query_v2_prepare_remote_model_reduce,
-    query_v2_prepare_remote_model_reduce_by_field,
-    query_v2_prepare_remote_model_reduce_by_fields,
-    query_v2_prepare_remote_model_rows,
-    query_v2_remote_model_context_with_resources,
+    plan_prepare_remote_model_count,
+    plan_prepare_remote_model_exists,
+    plan_prepare_remote_model_page,
+    plan_prepare_remote_model_reduce,
+    plan_prepare_remote_model_reduce_by_field,
+    plan_prepare_remote_model_reduce_by_fields,
+    plan_prepare_remote_model_rows,
+    plan_remote_model_context_with_resources,
 )
 from type_bridge_core import (
     PlanAuthority as _PlanAuthority,
@@ -810,28 +810,28 @@ _FETCH_ROWS: _Terminal[list[MatchOrderHandle], int, int, _Cardinality] = _Termin
     MatchQueryHandle.execute_fetch_rows_owned,
     MatchQueryHandle.execute_fetch_rows_borrowed,
     MatchQueryHandle.execute_fetch_rows_proxy,
-    query_v2_prepare_remote_model_rows,
+    plan_prepare_remote_model_rows,
     MatchQueryHandle.stage_fetch_rows,
 )
 _PAGE_BY: _Terminal[MatchBindingHandle, list[MatchOrderHandle], int, int, bool] = _Terminal(
     MatchQueryHandle.execute_page_by_owned,
     MatchQueryHandle.execute_page_by_borrowed,
     MatchQueryHandle.execute_page_by_proxy,
-    query_v2_prepare_remote_model_page,
+    plan_prepare_remote_model_page,
     MatchQueryHandle.stage_page_by,
 )
 _COUNT_BY: _Terminal[MatchBindingHandle] = _Terminal(
     MatchQueryHandle.execute_count_by_owned,
     MatchQueryHandle.execute_count_by_borrowed,
     MatchQueryHandle.execute_count_by_proxy,
-    query_v2_prepare_remote_model_count,
+    plan_prepare_remote_model_count,
     MatchQueryHandle.stage_count_by,
 )
 _EXISTS_BY: _Terminal[MatchBindingHandle] = _Terminal(
     MatchQueryHandle.execute_exists_by_owned,
     MatchQueryHandle.execute_exists_by_borrowed,
     MatchQueryHandle.execute_exists_by_proxy,
-    query_v2_prepare_remote_model_exists,
+    plan_prepare_remote_model_exists,
     MatchQueryHandle.stage_exists_by,
 )
 _REDUCE_BY: _Terminal[
@@ -843,7 +843,7 @@ _REDUCE_BY: _Terminal[
     MatchQueryHandle.execute_reduce_by_owned,
     MatchQueryHandle.execute_reduce_by_borrowed,
     MatchQueryHandle.execute_reduce_by_proxy,
-    query_v2_prepare_remote_model_reduce,
+    plan_prepare_remote_model_reduce,
     MatchQueryHandle.stage_reduce_by,
 )
 _REDUCE_BY_FIELD: _Terminal[
@@ -855,7 +855,7 @@ _REDUCE_BY_FIELD: _Terminal[
     MatchQueryHandle.execute_reduce_by_field_owned,
     MatchQueryHandle.execute_reduce_by_field_borrowed,
     MatchQueryHandle.execute_reduce_by_field_proxy,
-    query_v2_prepare_remote_model_reduce_by_field,
+    plan_prepare_remote_model_reduce_by_field,
     MatchQueryHandle.stage_reduce_by_field,
 )
 _REDUCE_BY_FIELDS: _Terminal[
@@ -867,7 +867,7 @@ _REDUCE_BY_FIELDS: _Terminal[
     MatchQueryHandle.execute_reduce_by_fields_owned,
     MatchQueryHandle.execute_reduce_by_fields_borrowed,
     MatchQueryHandle.execute_reduce_by_fields_proxy,
-    query_v2_prepare_remote_model_reduce_by_fields,
+    plan_prepare_remote_model_reduce_by_fields,
     MatchQueryHandle.stage_reduce_by_fields,
 )
 
@@ -969,7 +969,7 @@ class _ExchangeTarget(_Frozen):
         resources: QueryExecutionResourceLimits,
         cancellation: QueryCancellation,
     ) -> None:
-        context = query_v2_remote_model_context_with_resources(
+        context = plan_remote_model_context_with_resources(
             _installed_query_authority(),
             connection.advertisement,
             resources,
