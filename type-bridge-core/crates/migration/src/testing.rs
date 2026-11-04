@@ -46,9 +46,8 @@ use type_bridge_contract::reserved::{
     LEGACY_CUTOVER_ANCHOR_ENTITY, LEGACY_CUTOVER_ANCHOR_FINGERPRINT, LEGACY_CUTOVER_ANCHOR_KEY,
     LEGACY_CUTOVER_ANCHOR_SCOPE, LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY,
     LEGACY_CUTOVER_SENTINEL_APP_LABEL, LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
-    LEGACY_LEDGER_APPLIED_ENTITY, LEGACY_WRITER_GUARD_QUERY_TAG, MANAGED_CONTROL_ENTITY,
-    MANAGED_CONTROL_LEASE_FENCE, MANAGED_CONTROL_LEASE_HOLDER, MANAGED_CONTROL_LEASE_STATE,
-    MANAGED_CONTROL_SCOPE,
+    LEGACY_LEDGER_APPLIED_ENTITY, MANAGED_CONTROL_ENTITY, MANAGED_CONTROL_LEASE_FENCE,
+    MANAGED_CONTROL_LEASE_HOLDER, MANAGED_CONTROL_LEASE_STATE, MANAGED_CONTROL_SCOPE,
 };
 use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
 use type_bridge_orm::{ClassifiedCommitError, CommitFailureCertainty, OrmError, TxType};
@@ -140,20 +139,20 @@ fn legacy_guard_documents(
         return Vec::new();
     }
     if typeql.contains(&format!("isa {MANAGED_CONTROL_ENTITY}")) {
-        if typeql.contains("\"scope\": $scope") {
+        if typeql.contains("$scope") {
             return vec![serde_json::json!({
                 "scope": "mock-scope",
                 "fence": "1",
                 "state": "free",
             })];
         }
-        if typeql.contains("\"holder\": $holder") {
+        if typeql.contains("$holder") {
             return Vec::new();
         }
         return vec![serde_json::json!({"exists": true})];
     }
     if typeql.contains(&format!("isa {LEGACY_CUTOVER_ANCHOR_ENTITY}")) {
-        if typeql.contains("\"fingerprint\": $fingerprint") {
+        if typeql.contains("$fingerprint") {
             return vec![serde_json::json!({
                 "key": LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY,
                 "scope": "mock-scope",
@@ -163,7 +162,7 @@ fn legacy_guard_documents(
         return vec![serde_json::json!({"exists": true})];
     }
     if typeql.contains(&format!("isa {LEGACY_LEDGER_APPLIED_ENTITY}")) {
-        if typeql.contains("\"checksum\": $checksum") {
+        if typeql.contains("$checksum") {
             return vec![serde_json::json!({
                 "app": LEGACY_CUTOVER_SENTINEL_APP_LABEL,
                 "applied": LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
@@ -388,14 +387,15 @@ impl TransactionOps for MockMigrationTransaction {
         // intentionally assert only user-query ordering.  Model a fresh
         // database with no legacy ledger without consuming scripted answers;
         // dedicated cutover tests use a marker-aware backend instead.
-        if typeql.starts_with(LEGACY_WRITER_GUARD_QUERY_TAG) {
+        if is_native_guard_query(typeql) {
             let labels = self
                 .legacy_state_labels
                 .as_ref()
                 .map(|labels| labels.lock().unwrap());
             let values =
                 legacy_guard_documents(typeql, self.legacy_cutover_present, labels.as_deref());
-            return Box::pin(async move { Ok(QueryResult::Documents(values)) });
+            let result = native_guard_rows(typeql, values);
+            return Box::pin(async move { Ok(result) });
         }
         if crate::state::typedb::is_legacy_state_schema_probe_query(typeql) {
             let values = self
@@ -550,4 +550,72 @@ impl TransactionOps for MockMigrationTransaction {
             }
         })
     }
+}
+
+fn is_native_guard_query(query: &str) -> bool {
+    query.contains("$root isa ")
+        && [
+            MANAGED_CONTROL_ENTITY,
+            LEGACY_CUTOVER_ANCHOR_ENTITY,
+            LEGACY_LEDGER_APPLIED_ENTITY,
+        ]
+        .iter()
+        .any(|label| query.contains(label))
+}
+
+fn native_guard_rows(query: &str, values: Vec<serde_json::Value>) -> QueryResult {
+    use type_bridge_contract::id::{TypeId, TypeKind};
+    use type_bridge_contract::query_remote::RemoteValue;
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+    QueryResult::Rows(
+        values
+            .into_iter()
+            .map(|value| {
+                if value.get("exists").is_some() {
+                    let label = [
+                        MANAGED_CONTROL_ENTITY,
+                        LEGACY_CUTOVER_ANCHOR_ENTITY,
+                        LEGACY_LEDGER_APPLIED_ENTITY,
+                    ]
+                    .into_iter()
+                    .find(|label| query.contains(&format!("isa {label}")))
+                    .unwrap();
+                    serde_json::json!({"root": RemoteValue::Thing {
+                        iid: "0x00000000000000000000000000000001".to_owned(),
+                        type_id: TypeId::new(TypeKind::Entity, label).unwrap(),
+                    }})
+                } else {
+                    let fields = value
+                        .as_object()
+                        .unwrap()
+                        .iter()
+                        .filter(|(name, _)| name.as_str() != "key")
+                        .map(|(name, value)| {
+                            (
+                                name.clone(),
+                                serde_json::to_value(RemoteValue::Value {
+                                    value: if name == "applied" {
+                                        CanonicalValue::DateTime(
+                                            value
+                                                .as_str()
+                                                .unwrap()
+                                                .trim_end_matches(".000000000")
+                                                .parse()
+                                                .unwrap(),
+                                        )
+                                    } else {
+                                        CanonicalValue::String(
+                                            CanonicalString::new(value.as_str().unwrap()).unwrap(),
+                                        )
+                                    },
+                                })
+                                .unwrap(),
+                            )
+                        })
+                        .collect::<serde_json::Map<_, _>>();
+                    serde_json::Value::Object(fields)
+                }
+            })
+            .collect(),
+    )
 }

@@ -9,9 +9,9 @@ use type_bridge_contract::reserved::{
     LEGACY_CUTOVER_SENTINEL_APP_LABEL, LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
     LEGACY_CUTOVER_SENTINEL_NAME, LEGACY_LEDGER_APP_LABEL, LEGACY_LEDGER_APPLIED_AT,
     LEGACY_LEDGER_APPLIED_ENTITY, LEGACY_LEDGER_CHECKSUM, LEGACY_LEDGER_MIGRATION_ID,
-    LEGACY_LEDGER_NAME, LEGACY_WRITER_CUTOVER_MESSAGE, LEGACY_WRITER_GUARD_QUERY_TAG,
-    MANAGED_CONTROL_ENTITY, MANAGED_CONTROL_LEASE_FENCE, MANAGED_CONTROL_LEASE_HOLDER,
-    MANAGED_CONTROL_LEASE_STATE, MANAGED_CONTROL_SCOPE,
+    LEGACY_LEDGER_NAME, LEGACY_WRITER_CUTOVER_MESSAGE, MANAGED_CONTROL_ENTITY,
+    MANAGED_CONTROL_LEASE_FENCE, MANAGED_CONTROL_LEASE_HOLDER, MANAGED_CONTROL_LEASE_STATE,
+    MANAGED_CONTROL_SCOPE,
 };
 use type_bridge_orm::_schema::info::*;
 use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
@@ -531,20 +531,20 @@ fn legacy_guard_result(
         );
     }
     if typeql.contains(&format!("isa {MANAGED_CONTROL_ENTITY}")) {
-        if typeql.contains("\"scope\": $scope") {
+        if typeql.contains("$scope") {
             return QueryResult::Documents(vec![serde_json::json!({
                 "scope": "mock-scope",
                 "fence": "1",
                 "state": "free",
             })]);
         }
-        if typeql.contains("\"holder\": $holder") {
+        if typeql.contains("$holder") {
             return QueryResult::Documents(Vec::new());
         }
         return QueryResult::Documents(vec![serde_json::json!({"exists": true})]);
     }
     if typeql.contains(&format!("isa {LEGACY_CUTOVER_ANCHOR_ENTITY}")) {
-        if typeql.contains("\"fingerprint\": $fingerprint") {
+        if typeql.contains("$fingerprint") {
             return QueryResult::Documents(vec![serde_json::json!({
                 "key": LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY,
                 "scope": "mock-scope",
@@ -554,7 +554,7 @@ fn legacy_guard_result(
         return QueryResult::Documents(vec![serde_json::json!({"exists": true})]);
     }
     if typeql.contains(&format!("isa {LEGACY_LEDGER_APPLIED_ENTITY}")) {
-        if typeql.contains("\"checksum\": $checksum") {
+        if typeql.contains("$checksum") {
             let checksum = if malformed_binding {
                 "1111111111111111111111111111111111111111111111111111111111111111"
             } else {
@@ -641,7 +641,7 @@ entity typebridge-internal-v2-legacy-cutover;
             .lock()
             .unwrap()
             .push((typeql.to_string(), self.tx_type));
-        if typeql.starts_with(LEGACY_WRITER_GUARD_QUERY_TAG) {
+        if is_native_guard_query(typeql) {
             if self.legacy_guard_error {
                 return Box::pin(async {
                     Err(OrmError::Connection(
@@ -656,6 +656,10 @@ entity typebridge-internal-v2-legacy-cutover;
                 self.legacy_ledger_without_anchor,
                 self.malformed_cutover_binding,
             );
+            let QueryResult::Documents(values) = result else {
+                panic!("guard fixture")
+            };
+            let result = native_guard_rows(typeql, values);
             return Box::pin(async move { Ok(result) });
         }
         let result = self
@@ -926,12 +930,16 @@ async fn sync_schema_rejects_an_anchor_bound_cutover_before_user_typeql() {
         .await
         .expect_err("an adopted database must reject the V1 schema writer");
 
-    assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
+    assert!(
+        error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE),
+        "{error}"
+    );
     let queries = queries.lock().unwrap();
+    assert_eq!(queries.len(), 9, "native fence preserves its statement count");
     assert!(
         queries
             .iter()
-            .all(|(query, _)| { query.starts_with(LEGACY_WRITER_GUARD_QUERY_TAG) })
+            .all(|(query, _)| { is_native_guard_query(query) })
     );
 }
 
@@ -951,7 +959,10 @@ async fn sync_schema_keeps_a_canonical_cutover_closed_with_a_reserved_function_r
         .await
         .expect_err("a function body reference must not reopen canonical cutover authority");
 
-    assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
+    assert!(
+        error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE),
+        "{error}"
+    );
     let queries = queries.lock().unwrap();
     assert!(
         queries
@@ -986,7 +997,10 @@ async fn sync_schema_keeps_a_canonical_cutover_closed_with_a_structured_user_att
         .await
         .expect_err("an unrelated structured value must not reopen canonical cutover authority");
 
-    assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
+    assert!(
+        error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE),
+        "{error}"
+    );
     let queries = queries.lock().unwrap();
     assert!(
         queries
@@ -1114,7 +1128,10 @@ async fn sync_schema_keeps_canonical_cutover_closed_with_a_structured_control_ex
         .await
         .expect_err("a structured control extension cannot reopen canonical cutover authority");
 
-    assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
+    assert!(
+        error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE),
+        "{error}"
+    );
     assert!(
         queries
             .lock()
@@ -1700,4 +1717,72 @@ async fn introspect_with_wrapped_values() {
     assert!(info.entities.contains_key("user"));
     assert_eq!(info.entities["user"].owned_attributes.len(), 1);
     assert_eq!(info.entities["user"].owned_attributes[0].attr_name, "email");
+}
+
+fn is_native_guard_query(query: &str) -> bool {
+    query.contains("$root isa ")
+        && [
+            MANAGED_CONTROL_ENTITY,
+            LEGACY_CUTOVER_ANCHOR_ENTITY,
+            LEGACY_LEDGER_APPLIED_ENTITY,
+        ]
+        .iter()
+        .any(|label| query.contains(label))
+}
+
+fn native_guard_rows(query: &str, values: Vec<serde_json::Value>) -> QueryResult {
+    use type_bridge_contract::id::{TypeId, TypeKind};
+    use type_bridge_contract::query_remote::RemoteValue;
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+    QueryResult::Rows(
+        values
+            .into_iter()
+            .map(|value| {
+                if value.get("exists").is_some() {
+                    let label = [
+                        MANAGED_CONTROL_ENTITY,
+                        LEGACY_CUTOVER_ANCHOR_ENTITY,
+                        LEGACY_LEDGER_APPLIED_ENTITY,
+                    ]
+                    .into_iter()
+                    .find(|label| query.contains(&format!("isa {label}")))
+                    .unwrap();
+                    serde_json::json!({"root": RemoteValue::Thing {
+                        iid: "0x00000000000000000000000000000001".to_owned(),
+                        type_id: TypeId::new(TypeKind::Entity, label).unwrap(),
+                    }})
+                } else {
+                    let fields = value
+                        .as_object()
+                        .unwrap()
+                        .iter()
+                        .filter(|(name, _)| name.as_str() != "key")
+                        .map(|(name, value)| {
+                            (
+                                name.clone(),
+                                serde_json::to_value(RemoteValue::Value {
+                                    value: if name == "applied" {
+                                        CanonicalValue::DateTime(
+                                            value
+                                                .as_str()
+                                                .unwrap()
+                                                .trim_end_matches(".000000000")
+                                                .parse()
+                                                .unwrap(),
+                                        )
+                                    } else {
+                                        CanonicalValue::String(
+                                            CanonicalString::new(value.as_str().unwrap()).unwrap(),
+                                        )
+                                    },
+                                })
+                                .unwrap(),
+                            )
+                        })
+                        .collect::<serde_json::Map<_, _>>();
+                    serde_json::Value::Object(fields)
+                }
+            })
+            .collect(),
+    )
 }

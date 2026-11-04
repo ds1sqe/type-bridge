@@ -15,16 +15,18 @@ use type_bridge_contract::reserved::{
     LEGACY_CUTOVER_SENTINEL_MIGRATION_ID, LEGACY_CUTOVER_SENTINEL_NAME, LEGACY_LEDGER_APP_LABEL,
     LEGACY_LEDGER_APPLIED_AT, LEGACY_LEDGER_APPLIED_ENTITY, LEGACY_LEDGER_CHECKSUM,
     LEGACY_LEDGER_MIGRATION_ID, LEGACY_LEDGER_NAME, LEGACY_WRITER_CUTOVER_MESSAGE,
-    LEGACY_WRITER_GUARD_QUERY_TAG, MANAGED_CONTROL_ENTITY, MANAGED_CONTROL_LEASE_FENCE,
-    MANAGED_CONTROL_LEASE_FREE, MANAGED_CONTROL_LEASE_HELD, MANAGED_CONTROL_LEASE_HOLDER,
-    MANAGED_CONTROL_LEASE_STATE, MANAGED_CONTROL_SCOPE,
+    MANAGED_CONTROL_ENTITY, MANAGED_CONTROL_LEASE_FENCE, MANAGED_CONTROL_LEASE_FREE,
+    MANAGED_CONTROL_LEASE_HELD, MANAGED_CONTROL_LEASE_HOLDER, MANAGED_CONTROL_LEASE_STATE,
+    MANAGED_CONTROL_SCOPE,
 };
 use type_bridge_schema_compat::{
     LiveLegacyLedgerPresence, LiveQueryControlPresence, legacy_ledger_schema_presence,
     managed_fence_schema_presence,
 };
 
-use super::backend::{QueryResult, TxType};
+use super::backend::TxType;
+
+mod data_plan;
 use super::{Database, TransactionContext};
 use crate::error::{OrmError, Result};
 
@@ -67,25 +69,34 @@ pub async fn require_legacy_writer_open_in_transaction(
 
     let control_existence = query_values(
         transaction,
-        guard_query(format!(
-            "match $control isa {MANAGED_CONTROL_ENTITY}; fetch {{ \"exists\": true }};"
-        )),
+        data_plan::read(MANAGED_CONTROL_ENTITY, &[], &[])
+            .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
         "legacy writer managed-control existence probe",
     )
     .await?;
     let control_details = query_values(
         transaction,
-        guard_query(format!(
-            "match $control isa {MANAGED_CONTROL_ENTITY}, has {MANAGED_CONTROL_SCOPE} $scope, has {MANAGED_CONTROL_LEASE_FENCE} $fence, has {MANAGED_CONTROL_LEASE_STATE} $state; fetch {{ \"scope\": $scope, \"fence\": $fence, \"state\": $state }};"
-        )),
+        data_plan::read(
+            MANAGED_CONTROL_ENTITY,
+            &[],
+            &[
+                (MANAGED_CONTROL_SCOPE, "scope"),
+                (MANAGED_CONTROL_LEASE_FENCE, "fence"),
+                (MANAGED_CONTROL_LEASE_STATE, "state"),
+            ],
+        )
+        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
         "legacy writer managed-control detail probe",
     )
     .await?;
     let control_holders = query_values(
         transaction,
-        guard_query(format!(
-            "match $control isa {MANAGED_CONTROL_ENTITY}, has {MANAGED_CONTROL_LEASE_HOLDER} $holder; fetch {{ \"holder\": $holder }};"
-        )),
+        data_plan::read(
+            MANAGED_CONTROL_ENTITY,
+            &[],
+            &[(MANAGED_CONTROL_LEASE_HOLDER, "holder")],
+        )
+        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
         "legacy writer managed-control holder probe",
     )
     .await?;
@@ -93,25 +104,39 @@ pub async fn require_legacy_writer_open_in_transaction(
 
     let anchor_existence = query_values(
         transaction,
-        guard_query(format!(
-            "match $anchor isa {LEGACY_CUTOVER_ANCHOR_ENTITY}; fetch {{ \"exists\": true }};"
-        )),
+        data_plan::read(LEGACY_CUTOVER_ANCHOR_ENTITY, &[], &[])
+            .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
         "legacy writer cutover-anchor existence probe",
     )
     .await?;
     let anchor_key_candidates = query_values(
         transaction,
-        guard_query(format!(
-            "match $anchor isa {LEGACY_CUTOVER_ANCHOR_ENTITY}, has {LEGACY_CUTOVER_ANCHOR_KEY} \"{LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY}\"; fetch {{ \"exists\": true }};"
-        )),
+        data_plan::read(
+            LEGACY_CUTOVER_ANCHOR_ENTITY,
+            &[(
+                LEGACY_CUTOVER_ANCHOR_KEY,
+                LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY,
+            )],
+            &[],
+        )
+        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
         "legacy writer cutover-anchor key probe",
     )
     .await?;
     let anchor_details = query_values(
         transaction,
-        guard_query(format!(
-            "match $anchor isa {LEGACY_CUTOVER_ANCHOR_ENTITY}, has {LEGACY_CUTOVER_ANCHOR_KEY} \"{LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY}\", has {LEGACY_CUTOVER_ANCHOR_SCOPE} $scope, has {LEGACY_CUTOVER_ANCHOR_FINGERPRINT} $fingerprint; fetch {{ \"scope\": $scope, \"fingerprint\": $fingerprint }};"
-        )),
+        data_plan::read(
+            LEGACY_CUTOVER_ANCHOR_ENTITY,
+            &[(
+                LEGACY_CUTOVER_ANCHOR_KEY,
+                LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY,
+            )],
+            &[
+                (LEGACY_CUTOVER_ANCHOR_SCOPE, "scope"),
+                (LEGACY_CUTOVER_ANCHOR_FINGERPRINT, "fingerprint"),
+            ],
+        )
+        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
         "legacy writer cutover-anchor detail probe",
     )
     .await?;
@@ -141,25 +166,47 @@ pub async fn require_legacy_writer_open_in_transaction(
 
     let sentinel_id_candidates = query_values(
         transaction,
-        guard_query(format!(
-            "match $m isa {LEGACY_LEDGER_APPLIED_ENTITY}, has {LEGACY_LEDGER_MIGRATION_ID} \"{LEGACY_CUTOVER_SENTINEL_MIGRATION_ID}\"; fetch {{ \"exists\": true }};"
-        )),
+        data_plan::read(
+            LEGACY_LEDGER_APPLIED_ENTITY,
+            &[(
+                LEGACY_LEDGER_MIGRATION_ID,
+                LEGACY_CUTOVER_SENTINEL_MIGRATION_ID,
+            )],
+            &[],
+        )
+        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
         "legacy writer cutover-sentinel ID probe",
     )
     .await?;
     let sentinel_name_candidates = query_values(
         transaction,
-        guard_query(format!(
-            "match $m isa {LEGACY_LEDGER_APPLIED_ENTITY}, has {LEGACY_LEDGER_NAME} \"{LEGACY_CUTOVER_SENTINEL_NAME}\"; fetch {{ \"exists\": true }};"
-        )),
+        data_plan::read(
+            LEGACY_LEDGER_APPLIED_ENTITY,
+            &[(LEGACY_LEDGER_NAME, LEGACY_CUTOVER_SENTINEL_NAME)],
+            &[],
+        )
+        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
         "legacy writer cutover-sentinel name probe",
     )
     .await?;
     let sentinel_details = query_values(
         transaction,
-        guard_query(format!(
-            "match $m isa {LEGACY_LEDGER_APPLIED_ENTITY}, has {LEGACY_LEDGER_MIGRATION_ID} \"{LEGACY_CUTOVER_SENTINEL_MIGRATION_ID}\", has {LEGACY_LEDGER_APP_LABEL} $app, has {LEGACY_LEDGER_NAME} \"{LEGACY_CUTOVER_SENTINEL_NAME}\", has {LEGACY_LEDGER_APPLIED_AT} $applied, has {LEGACY_LEDGER_CHECKSUM} $checksum; fetch {{ \"app\": $app, \"applied\": $applied, \"checksum\": $checksum }};"
-        )),
+        data_plan::read(
+            LEGACY_LEDGER_APPLIED_ENTITY,
+            &[
+                (
+                    LEGACY_LEDGER_MIGRATION_ID,
+                    LEGACY_CUTOVER_SENTINEL_MIGRATION_ID,
+                ),
+                (LEGACY_LEDGER_NAME, LEGACY_CUTOVER_SENTINEL_NAME),
+            ],
+            &[
+                (LEGACY_LEDGER_APP_LABEL, "app"),
+                (LEGACY_LEDGER_APPLIED_AT, "applied"),
+                (LEGACY_LEDGER_CHECKSUM, "checksum"),
+            ],
+        )
+        .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
         "legacy writer cutover-sentinel detail probe",
     )
     .await?;
@@ -361,19 +408,24 @@ pub async fn require_legacy_writer_open(database: &Database) -> Result<()> {
 
 async fn query_values(
     transaction: &TransactionContext,
-    query: String,
+    query: data_plan::DataQuery,
     operation: &str,
 ) -> Result<Vec<serde_json::Value>> {
-    match transaction.query(&query).await? {
-        QueryResult::Documents(values) | QueryResult::Rows(values) => Ok(values),
-        QueryResult::Ok => Err(integrity_error(format!(
-            "{operation} returned no document result"
-        ))),
-    }
-}
-
-fn guard_query(query: impl AsRef<str>) -> String {
-    format!("{LEGACY_WRITER_GUARD_QUERY_TAG}{}", query.as_ref())
+    let answers = transaction
+        .execute_plans(
+            std::slice::from_ref(&query.plan),
+            &crate::QueryExecutionResourceLimits::default(),
+            &super::backend::AnswerCancellation::default(),
+            crate::QueryExecutionDeadline::from_timeout_milliseconds(0),
+        )
+        .await?;
+    let answer = answers
+        .into_iter()
+        .next()
+        .ok_or_else(|| integrity_error(format!("{operation} returned no native result")))?;
+    query
+        .documents(answer)
+        .map_err(crate::query_plan_exec::plan_diagnostic_error)
 }
 
 fn field(document: &serde_json::Value, key: &str) -> Option<String> {
