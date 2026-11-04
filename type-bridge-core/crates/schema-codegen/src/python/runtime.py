@@ -37,6 +37,7 @@ from type_bridge.write_result import BatchWriteResult, WriteResult
 
 if TYPE_CHECKING:
     from type_bridge_core import (
+        PlanAuthority,
         ProxyConnection,
         PyProjectedManagerFilter,
         PyProjectedModelManager,
@@ -44,7 +45,6 @@ if TYPE_CHECKING:
         QueryCancellation,
         QueryExecutionResourceLimits,
         QueryLimits,
-        QueryV2Authority,
     )
 
     from type_bridge.session import Database, TransactionContext
@@ -135,7 +135,7 @@ class _PlanFieldToken(FieldToken, _AuthoringFieldToken[object]):
     __slots__ = ()
 
 
-def plan_authority() -> QueryV2Authority:
+def plan_authority() -> PlanAuthority:
     from . import schema_authority
 
     return schema_authority()

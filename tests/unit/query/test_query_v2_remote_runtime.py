@@ -226,8 +226,8 @@ PLAN_CAPABILITIES = [
 ]
 
 
-def _authority() -> core.QueryV2Authority:
-    return core.query_v2_authority(base64.b64decode(DECLARED_B64), SCOPE, PROFILE)
+def _authority() -> core.PlanAuthority:
+    return core.plan_authority(base64.b64decode(DECLARED_B64), SCOPE, PROFILE)
 
 
 def test_shared_failure_corpus_is_bound_to_the_same_authority_fixture() -> None:

@@ -36,10 +36,10 @@ from typing import Any, Literal
 
 import type_bridge_core
 from type_bridge_core import (
+    PlanAuthority,
     PyDatabase,
-    QueryV2Authority,
-    query_v2_authority,
-    query_v2_query_only_authority,
+    plan_authority,
+    plan_query_only_authority,
 )
 
 from perf.drivers.workspace import PROFILE, SCOPE, Workspace, drop
@@ -106,7 +106,7 @@ BUYER, BOUGHT = _role(Purchase, "buyer"), _role(Purchase, "item")
 # ------------------------------------------------------------------- plans
 
 
-def insert_items(authority: QueryV2Authority, prefix: str, numbers: range) -> Plan:
+def insert_items(authority: PlanAuthority, prefix: str, numbers: range) -> Plan:
     plan = Plan.builder()
     item_id = plan.input("item_id", "string")
     stock = plan.input("stock", "long")
@@ -117,7 +117,7 @@ def insert_items(authority: QueryV2Authority, prefix: str, numbers: range) -> Pl
     return plan.build(authority)
 
 
-def fetch_by_key(authority: QueryV2Authority, key: str) -> Plan:
+def fetch_by_key(authority: PlanAuthority, key: str) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     item_id = plan.input("item_id", "string")
@@ -127,7 +127,7 @@ def fetch_by_key(authority: QueryV2Authority, key: str) -> Plan:
     return plan.build(authority)
 
 
-def fetch_filtered(authority: QueryV2Authority) -> Plan:
+def fetch_filtered(authority: PlanAuthority) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     item_key, stock = plan.field(item, ITEM_ID), plan.field(item, STOCK)
@@ -135,7 +135,7 @@ def fetch_filtered(authority: QueryV2Authority) -> Plan:
     return plan.build(authority)
 
 
-def restock(authority: QueryV2Authority, key: str) -> Plan:
+def restock(authority: PlanAuthority, key: str) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     item_id = plan.input("item_id", "string")
@@ -146,7 +146,7 @@ def restock(authority: QueryV2Authority, key: str) -> Plan:
     return plan.build(authority)
 
 
-def delete_item(authority: QueryV2Authority, key: str) -> Plan:
+def delete_item(authority: PlanAuthority, key: str) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     item_id = plan.input("item_id", "string")
@@ -155,14 +155,14 @@ def delete_item(authority: QueryV2Authority, key: str) -> Plan:
     return plan.build(authority)
 
 
-def owners(authority: QueryV2Authority) -> Plan:
+def owners(authority: PlanAuthority) -> Plan:
     plan = Plan.builder()
     plan.insert(Item).field(ITEM_ID, "I1").field(STOCK, 1_000_000).field(PRICE, 1)
     plan.insert(Account).field(ACCOUNT_ID, "A1").field(BALANCE, 1_000_000_000)
     return plan.build(authority)
 
 
-def doctors(authority: QueryV2Authority) -> Plan:
+def doctors(authority: PlanAuthority) -> Plan:
     plan = Plan.builder()
     name = plan.input("name", "string")
     plan.insert(Doctor).field(NAME, name).field(ON_CALL, True)
@@ -171,7 +171,7 @@ def doctors(authority: QueryV2Authority) -> Plan:
     return plan.build(authority)
 
 
-def purchase(authority: QueryV2Authority, order: str) -> Plan:
+def purchase(authority: PlanAuthority, order: str) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     buyer = plan.exact(Account)
@@ -188,14 +188,14 @@ def purchase(authority: QueryV2Authority, order: str) -> Plan:
     return plan.build(authority)
 
 
-def touch(authority: QueryV2Authority) -> Plan:
+def touch(authority: PlanAuthority) -> Plan:
     plan = Plan.builder()
     doctor = plan.exact(Doctor)
     plan.update(doctor, ON_CALL, plan.field(doctor, ON_CALL))
     return plan.build(authority)
 
 
-def orders(authority: QueryV2Authority, prefix: str, rows: int) -> Plan:
+def orders(authority: PlanAuthority, prefix: str, rows: int) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     buyer = plan.exact(Account)
@@ -235,7 +235,7 @@ def expect(answer: object, rows: int) -> None:
         raise AssertionError(f"{actual} rows, expected {rows}")
 
 
-def seed(name: str, db: PyDatabase, authority: QueryV2Authority, iterations: int) -> None:
+def seed(name: str, db: PyDatabase, authority: PlanAuthority, iterations: int) -> None:
     if name in ("fetch_by_key", "fetch_filtered", "update"):
         commit(db, "write", [insert_items(authority, "item-", range(SEEDED_ITEMS))])
     elif name == "delete":
@@ -244,7 +244,7 @@ def seed(name: str, db: PyDatabase, authority: QueryV2Authority, iterations: int
         commit(db, "write", [owners(authority), doctors(authority)])
 
 
-def iteration(name: str, db: PyDatabase, authority: QueryV2Authority, number: int) -> None:
+def iteration(name: str, db: PyDatabase, authority: PlanAuthority, number: int) -> None:
     key = f"item-{number % SEEDED_ITEMS}"
     if name == "insert_one":
         expect(
@@ -325,7 +325,7 @@ def run_pipeline(
         workspace.apply(database)
         db = connect(config, database)
         try:
-            authority = query_v2_query_only_authority(db, declared, SCOPE, PROFILE)
+            authority = plan_query_only_authority(db, declared, SCOPE, PROFILE)
             seed(name, db, authority, config.warmup + config.iterations)
             samples: list[dict[str, object]] = []
             for number in range(config.warmup + config.iterations):
@@ -375,7 +375,7 @@ def parse(argv: Sequence[str] | None, env: dict[str, str]) -> Config:
 
 def binding(config: Config, declared: bytes) -> dict[str, object]:
     """Time the offline ops: no database opens, since staging needs a connected one."""
-    authority = query_v2_authority(declared, SCOPE, PROFILE)
+    authority = plan_authority(declared, SCOPE, PROFILE)
     rows = insert_items(authority, "batch-", range(BATCH_ROWS))
     calls: dict[str, Callable[[], object]] = {
         "build_purchase": lambda: purchase(authority, "O0"),

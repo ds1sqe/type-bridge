@@ -1,4 +1,4 @@
-import { QueryV2Authority, type NativeRustDatabase, type NativeRustTransactionContext, type Database, type TransactionContext } from "./index.js";
+import { PlanAuthority, type NativeRustDatabase, type NativeRustTransactionContext, type Database, type TransactionContext } from "./index.js";
 import { loadNative } from "./native.js";
 import type { NativePlan, NativePendingPlanAnswer, NativeProxyConnection, NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
@@ -364,7 +364,7 @@ export declare class InstalledRuntimeProjection {
      * and cancellation, and one host exchange. `answerLimits` is the
      * connection's ceiling; left out, the session's resources are the ceiling.
      */
-    remote(authority: QueryV2Authority, advertisement: Uint8Array, exchange: RuntimeProjectionRemoteExchange, resources: QueryExecutionResourceLimits, cancellation: QueryCancellation, answerLimits?: QueryExecutionResourceLimits): RuntimeProjectionRemote;
+    remote(authority: PlanAuthority, advertisement: Uint8Array, exchange: RuntimeProjectionRemoteExchange, resources: QueryExecutionResourceLimits, cancellation: QueryCancellation, answerLimits?: QueryExecutionResourceLimits): RuntimeProjectionRemote;
 }
 /** TLS for a proxy endpoint; `custom_root` trusts the `tlsRootCa` bundle only. */
 export type ProxyTlsMode = "disabled" | "native_roots" | "custom_root";
@@ -407,7 +407,7 @@ export declare class ProxyConnection implements RuntimeProjectionRemote {
     /** Configured delivery window, before the server ceiling is applied. */
     get admissionWindowMilliseconds(): bigint;
     /** Open `endpoint` under `authority`, fetch or pin its advertisement, and verify it. */
-    static connect(authority: QueryV2Authority, endpoint: string, options?: ProxyConnectionOptions): Promise<ProxyConnection>;
+    static connect(authority: PlanAuthority, endpoint: string, options?: ProxyConnectionOptions): Promise<ProxyConnection>;
     /**
      * Open a staged transaction whose commit is one signed `query-remote/v3`
      * exchange to `POST /v3/staged`. The staged advertisement is fetched from
@@ -432,5 +432,5 @@ export declare class ProxyConnection implements RuntimeProjectionRemote {
 /** Verify and install one generated package's exact projection evidence. */
 export declare function installRuntimeProjection(input: RuntimeProjectionInstall): InstalledRuntimeProjection;
 /** @internal Verify an embedded authority before a generated package installs. */
-export declare function installGeneratedSchemaAuthority(input: GeneratedSchemaAuthorityInstall): QueryV2Authority;
+export declare function installGeneratedSchemaAuthority(input: GeneratedSchemaAuthorityInstall): PlanAuthority;
 export {};

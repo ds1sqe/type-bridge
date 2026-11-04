@@ -1,9 +1,9 @@
 import type { QueryLimits } from "./runtime-projection.js";
 import type { NativeStagedTransaction, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
-import { type NativeQueryV2Authority, type NativeQueryV2BuilderRuntime } from "./query-v2-internals.js";
-export { QueryV2Error } from "./query-v2-internals.js";
-export type { ProviderFailure, QueryV2ErrorCategory, QueryV2ErrorDetail, QueryV2ErrorPathSegment, } from "./query-v2-internals.js";
+import { type NativePlanAuthority, type NativeQueryV2BuilderRuntime } from "./plan-internals.js";
+export { PlanError } from "./plan-internals.js";
+export type { ProviderFailure, PlanErrorCategory, PlanErrorDetail, PlanErrorPathSegment, } from "./plan-internals.js";
 export type ValueType = "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime-tz" | "decimal" | "duration";
 export type TransactionType = "read" | "write" | "schema";
 export type AttributeValue = {
@@ -275,12 +275,12 @@ export interface PendingQueryV2Remote {
     decodeReply(response: Uint8Array): Promise<string>;
 }
 interface NativeQueryV2Runtime {
-    queryV2Authority(declaredSchema: Uint8Array, scope: string, profile: string): NativeQueryV2Authority;
-    queryV2AuthorityFromSchemaAuthority(schemaAuthorityJson: string, semanticFingerprintJson: string): NativeQueryV2Authority;
-    queryV2QueryOnlyAuthority(database: NativeRustDatabase, declaredSchema: Uint8Array, scope: string, profile: string): NativeQueryV2Authority;
-    queryV2ExecuteLocal(database: NativeRustDatabase, authority: NativeQueryV2Authority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
+    planAuthority(declaredSchema: Uint8Array, scope: string, profile: string): NativePlanAuthority;
+    planAuthorityFromSchemaAuthority(schemaAuthorityJson: string, semanticFingerprintJson: string): NativePlanAuthority;
+    planQueryOnlyAuthority(database: NativeRustDatabase, declaredSchema: Uint8Array, scope: string, profile: string): NativePlanAuthority;
+    queryV2ExecuteLocal(database: NativeRustDatabase, authority: NativePlanAuthority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
     queryV2RemoteCapabilities(advertisement: Uint8Array): string[];
-    queryV2PrepareRemote(authority: NativeQueryV2Authority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, deadlineMs?: bigint | null): NativePendingQueryV2Remote;
+    queryV2PrepareRemote(authority: NativePlanAuthority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, deadlineMs?: bigint | null): NativePendingQueryV2Remote;
 }
 export interface NativeRuntime {
     NodeMigrationCancellation: new () => NativeMigrationCancellation;
@@ -374,15 +374,15 @@ export declare class MigrationCatalog {
 export declare function openMigrationCatalog(schemaAuthority: Uint8Array, historyBundle: Uint8Array): MigrationCatalog;
 export declare function ensureDatabase(address: string, database: string, options?: EnsureDatabaseOptions): void;
 /** Opaque declared-schema authority for prepared V2 plan execution. */
-export declare class QueryV2Authority {
+export declare class PlanAuthority {
     #private;
     constructor(declaredSchema: Uint8Array, scope: string, profile: string);
     /**
      * Derive an authority over the same schema whose plans are authored,
      * decoded, and validated under `queryLimits`.
      */
-    withQueryLimits(queryLimits: QueryLimits): QueryV2Authority;
-    static queryOnly(database: Database, declaredSchema: Uint8Array, scope: string, profile: string): QueryV2Authority;
+    withQueryLimits(queryLimits: QueryLimits): PlanAuthority;
+    static queryOnly(database: Database, declaredSchema: Uint8Array, scope: string, profile: string): PlanAuthority;
 }
 export interface QueryV2RemoteLimits {
     readonly maxItems: bigint;
@@ -390,9 +390,9 @@ export interface QueryV2RemoteLimits {
     readonly maxCollectionMembers: bigint;
     readonly deadlineMs?: bigint | null;
 }
-export declare function queryV2ExecuteLocal(database: Database, authority: QueryV2Authority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
+export declare function queryV2ExecuteLocal(database: Database, authority: PlanAuthority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
 export declare function queryV2RemoteCapabilities(advertisement: Uint8Array): readonly string[];
-export declare function queryV2PrepareRemote(authority: QueryV2Authority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, limits: QueryV2RemoteLimits): PendingQueryV2Remote;
+export declare function queryV2PrepareRemote(authority: PlanAuthority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, limits: QueryV2RemoteLimits): PendingQueryV2Remote;
 export declare class Database {
     #private;
     private constructor();

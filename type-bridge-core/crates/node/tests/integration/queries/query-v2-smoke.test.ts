@@ -175,7 +175,7 @@ async function serverAuthority(declared: Buffer): Promise<Buffer> {
   }
 }
 
-function authorPlan(authority: InstanceType<typeof queryV2.QueryV2Authority>) {
+function authorPlan(authority: InstanceType<typeof queryV2.PlanAuthority>) {
   const builder = new queryV2.QueryPlanBuilder(authority);
   const person = builder.binding("person");
   const name = builder.binding("name");
@@ -276,7 +276,7 @@ test("prepared plan executes locally and remotely", { skip: smokeSkip }, async (
     writeTx.commit();
 
     const declared = Buffer.from(DECLARED_B64, "base64");
-    const authority = new queryV2.QueryV2Authority(declared, SCOPE, PROFILE);
+    const authority = new queryV2.PlanAuthority(declared, SCOPE, PROFILE);
     const {
       plan,
       invocation,
@@ -285,7 +285,7 @@ test("prepared plan executes locally and remotely", { skip: smokeSkip }, async (
     } = authorPlan(authority);
     assert.equal(planFingerprint, CROSS_BINDING_PLAN_FINGERPRINT);
     assert.equal(invocationDigest, CROSS_BINDING_INVOCATION_SHA256);
-    const localAuthority = pkg.QueryV2Authority.queryOnly(
+    const localAuthority = pkg.PlanAuthority.queryOnly(
       db,
       declared,
       SCOPE,

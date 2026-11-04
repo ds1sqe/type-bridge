@@ -6,8 +6,8 @@ const packageJson = require("../package.json");
 const typeBridge = require("../");
 
 const retainedFunctions = [
-  "QueryV2Authority",
-  "QueryV2Error",
+  "PlanAuthority",
+  "PlanError",
   "Database",
   "TransactionContext",
   "TypedGroupByQuery",
@@ -112,7 +112,7 @@ for (const name of [
   "NodeRuntimeProjection",
   "connectRustDatabase",
   "ensureRustDatabase",
-  "queryV2Authority",
+  "planAuthority",
   "queryV2RemoteModelContextWithResources",
 ]) {
   assert.equal(typeof native[name], "function", `${name} must remain native`);
@@ -203,10 +203,10 @@ const queryV2 = require("@type-bridge/node/query-v2");
 assert.deepEqual(Object.keys(queryV2).sort(), [
   "AuthoredQueryInvocation",
   "AuthoredQueryPlan",
+  "PlanAuthority",
   "QueryPlanBuilder",
-  "QueryV2Authority",
 ]);
-assert.equal(queryV2.QueryV2Authority, typeBridge.QueryV2Authority);
+assert.equal(queryV2.PlanAuthority, typeBridge.PlanAuthority);
 
 const runtimeProjection = require("@type-bridge/node/runtime-projection");
 assert.deepEqual(Object.keys(runtimeProjection).sort(), [

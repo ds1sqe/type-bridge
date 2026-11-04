@@ -5,9 +5,9 @@
  * semantic validation, canonical serialization, fingerprints, and capability
  * derivation.
  */
-import { QueryV2Authority } from "./index.js";
-import { type NativeAuthoredQueryInvocation, type NativeAuthoredQueryPlan, type NativeQueryV2AuthorityIdentity, type NativeQueryV2BindingHandle, type NativeQueryV2DocumentFieldHandle, type NativeQueryV2InputHandle, type NativeQueryV2LocalFunctionHandle, type NativeQueryV2LocalReturnHandle, type NativeQueryV2OperandHandle, type NativeQueryV2OrderHandle, type NativeQueryV2PatternHandle, type NativeQueryV2ReduceAssignmentHandle } from "./query-v2-internals.js";
-export { QueryV2Authority };
+import { PlanAuthority } from "./index.js";
+import { type NativeAuthoredQueryInvocation, type NativeAuthoredQueryPlan, type NativePlanAuthorityIdentity, type NativeQueryV2BindingHandle, type NativeQueryV2DocumentFieldHandle, type NativeQueryV2InputHandle, type NativeQueryV2LocalFunctionHandle, type NativeQueryV2LocalReturnHandle, type NativeQueryV2OperandHandle, type NativeQueryV2OrderHandle, type NativeQueryV2PatternHandle, type NativeQueryV2ReduceAssignmentHandle } from "./plan-internals.js";
+export { PlanAuthority };
 type QueryV2ValueType = "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime_tz" | "decimal" | "duration";
 type QueryV2TextValueType = "string" | "date" | "datetime" | "datetime_tz" | "decimal" | "duration";
 type QueryV2TypeKind = "entity" | "relation" | "attribute";
@@ -26,7 +26,7 @@ export declare class AuthoredQueryInvocation {
     get canonicalBytes(): Uint8Array;
     get operation(): "rows" | "count" | "exists";
     get planFingerprint(): string;
-    get authorityIdentity(): NativeQueryV2AuthorityIdentity;
+    get authorityIdentity(): NativePlanAuthorityIdentity;
     get requiredTransportCapabilities(): readonly string[];
 }
 /** One immutable, canonical V2 query plan finalized by Rust. */
@@ -37,7 +37,7 @@ export declare class AuthoredQueryPlan {
     get format(): "typebridge.query-plan/v2";
     get fingerprint(): string;
     get requiredCapabilities(): readonly string[];
-    get authorityIdentity(): NativeQueryV2AuthorityIdentity;
+    get authorityIdentity(): NativePlanAuthorityIdentity;
     rows(rows: QueryV2InvocationRows): AuthoredQueryInvocation;
     documents(rows: QueryV2InvocationRows): AuthoredQueryInvocation;
     count(rows: QueryV2InvocationRows): AuthoredQueryInvocation;
@@ -46,7 +46,7 @@ export declare class AuthoredQueryPlan {
 /** The only public incremental builder for canonical V2 plans. */
 export declare class QueryPlanBuilder {
     #private;
-    constructor(authority: QueryV2Authority);
+    constructor(authority: PlanAuthority);
     binding(variable: string): NativeQueryV2BindingHandle;
     input(publicName: string, valueType: QueryV2ValueType, optional: boolean): NativeQueryV2InputHandle;
     bindingOperand(binding: NativeQueryV2BindingHandle): NativeQueryV2OperandHandle;

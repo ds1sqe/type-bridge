@@ -1,12 +1,12 @@
 import type { NativeQueryLimits } from "./native.js";
-/** Shared, package-private machinery for the prepared and authored V2 facades. */
+/** Shared, package-private machinery for plan facades. */
 
-declare const nativeQueryV2AuthorityKind: unique symbol;
+declare const nativePlanAuthorityKind: unique symbol;
 
-/** Opaque N-API authority. Public callers use the stable QueryV2Authority class. */
-export interface NativeQueryV2Authority {
-  readonly [nativeQueryV2AuthorityKind]: "query-v2-authority";
-  withQueryLimits(queryLimits: NativeQueryLimits): NativeQueryV2Authority;
+/** Opaque N-API authority. Public callers use the stable PlanAuthority class. */
+export interface NativePlanAuthority {
+  readonly [nativePlanAuthorityKind]: "query-v2-authority";
+  withQueryLimits(queryLimits: NativeQueryLimits): NativePlanAuthority;
 }
 
 declare const nativeQueryV2BuilderHandleKind: unique symbol;
@@ -17,9 +17,9 @@ interface NativeOpaqueClass<Instance> {
 
 type NativeQueryV2Scalar = string | bigint | number | boolean;
 
-export interface NativeQueryV2AuthorityIdentity {
+export interface NativePlanAuthorityIdentity {
   readonly [nativeQueryV2BuilderHandleKind]: "authority-identity";
-  sameAuthority(other: NativeQueryV2AuthorityIdentity): boolean;
+  sameAuthority(other: NativePlanAuthorityIdentity): boolean;
 }
 
 export interface NativeQueryV2BindingHandle {
@@ -62,7 +62,7 @@ export interface NativeAuthoredQueryInvocation {
   readonly canonicalBytes: Uint8Array;
   readonly operation: "rows" | "count" | "exists";
   readonly planFingerprint: string;
-  readonly authorityIdentity: NativeQueryV2AuthorityIdentity;
+  readonly authorityIdentity: NativePlanAuthorityIdentity;
   readonly requiredTransportCapabilities: string[];
 }
 
@@ -71,7 +71,7 @@ export interface NativeAuthoredQueryPlan {
   readonly format: "typebridge.query-plan/v2";
   readonly fingerprint: string;
   readonly requiredCapabilities: string[];
-  readonly authorityIdentity: NativeQueryV2AuthorityIdentity;
+  readonly authorityIdentity: NativePlanAuthorityIdentity;
   rows(rows: (NativeQueryV2Scalar | null)[][]): NativeAuthoredQueryInvocation;
   documents(
     rows: (NativeQueryV2Scalar | null)[][],
@@ -182,11 +182,11 @@ export interface NativeQueryPlanBuilder {
 
 export interface NativeQueryV2BuilderRuntime {
   NodeQueryPlanBuilder: new (
-    authority: NativeQueryV2Authority,
+    authority: NativePlanAuthority,
   ) => NativeQueryPlanBuilder;
   NodeAuthoredQueryPlan: NativeOpaqueClass<NativeAuthoredQueryPlan>;
   NodeAuthoredQueryInvocation: NativeOpaqueClass<NativeAuthoredQueryInvocation>;
-  NodeQueryV2AuthorityIdentity: NativeOpaqueClass<NativeQueryV2AuthorityIdentity>;
+  NodePlanAuthorityIdentity: NativeOpaqueClass<NativePlanAuthorityIdentity>;
   NodeQueryV2BindingHandle: NativeOpaqueClass<NativeQueryV2BindingHandle>;
   NodeQueryV2InputHandle: NativeOpaqueClass<NativeQueryV2InputHandle>;
   NodeQueryV2OperandHandle: NativeOpaqueClass<NativeQueryV2OperandHandle>;
@@ -198,23 +198,23 @@ export interface NativeQueryV2BuilderRuntime {
   NodeQueryV2DocumentFieldHandle: NativeOpaqueClass<NativeQueryV2DocumentFieldHandle>;
 }
 
-const queryV2AuthorityHandles = new WeakMap<object, NativeQueryV2Authority>();
+const planAuthorityHandles = new WeakMap<object, NativePlanAuthority>();
 
-export function registerQueryV2AuthorityHandle(
+export function registerPlanAuthorityHandle(
   authority: object,
-  native: NativeQueryV2Authority,
+  native: NativePlanAuthority,
 ): void {
-  queryV2AuthorityHandles.set(authority, native);
+  planAuthorityHandles.set(authority, native);
 }
 
-export function queryV2AuthorityHandle(
+export function planAuthorityHandle(
   authority: object,
-): NativeQueryV2Authority | undefined {
-  return queryV2AuthorityHandles.get(authority);
+): NativePlanAuthority | undefined {
+  return planAuthorityHandles.get(authority);
 }
 
 /** Stable V2 contract diagnostic categories. */
-export type QueryV2ErrorCategory =
+export type PlanErrorCategory =
   | "invalid_contract"
   | "invalid_input"
   | "invalid_plan"
@@ -230,7 +230,7 @@ export type QueryV2ErrorCategory =
   | "internal";
 
 /** One typed location inside a rejected V2 contract. */
-export type QueryV2ErrorPathSegment =
+export type PlanErrorPathSegment =
   | Readonly<{
       kind:
         | "request"
@@ -276,7 +276,7 @@ export interface ExecutionTimeline {
 }
 
 /** One deterministic structured V2 diagnostic detail. */
-export type QueryV2ErrorDetail =
+export type PlanErrorDetail =
   | Readonly<{ kind: "execution_timeline"; value: ExecutionTimeline }>
   | Readonly<{
       kind:
@@ -306,18 +306,18 @@ export interface ProviderFailure {
   readonly code: string | null;
 }
 
-/** Structured diagnostic preserved from the Rust V2 semantic engine. */
-export class QueryV2Error extends Error {
-  readonly name = "QueryV2Error";
+/** Structured diagnostic preserved from the Rust plan engine. */
+export class PlanError extends Error {
+  readonly name = "PlanError";
 
   constructor(
-    readonly category: QueryV2ErrorCategory,
+    readonly category: PlanErrorCategory,
     readonly code: string,
     readonly diagnosticMessage: string,
-    readonly path: readonly QueryV2ErrorPathSegment[],
-    readonly details: Readonly<Record<string, QueryV2ErrorDetail>>,
-    readonly sdkCategory: QueryV2ErrorCategory = category,
-    readonly queryCategory: QueryV2ErrorCategory | null = category,
+    readonly path: readonly PlanErrorPathSegment[],
+    readonly details: Readonly<Record<string, PlanErrorDetail>>,
+    readonly sdkCategory: PlanErrorCategory = category,
+    readonly queryCategory: PlanErrorCategory | null = category,
     readonly failure?: Readonly<ProviderFailure>,
   ) {
     super(`${code}: ${diagnosticMessage}`);
@@ -334,13 +334,13 @@ export class QueryV2Error extends Error {
  */
 interface NativeDiagnostic {
   readonly failure?: ProviderFailure;
-  readonly category: QueryV2ErrorCategory;
-  readonly sdk_category?: QueryV2ErrorCategory;
-  readonly query_category?: QueryV2ErrorCategory | null;
+  readonly category: PlanErrorCategory;
+  readonly sdk_category?: PlanErrorCategory;
+  readonly query_category?: PlanErrorCategory | null;
   readonly code: string;
   readonly message: string;
-  readonly path: readonly QueryV2ErrorPathSegment[];
-  readonly details: Readonly<Record<string, QueryV2ErrorDetail>>;
+  readonly path: readonly PlanErrorPathSegment[];
+  readonly details: Readonly<Record<string, PlanErrorDetail>>;
 }
 
 function nativeDiagnostic(message: string): NativeDiagnostic | null {
@@ -364,7 +364,7 @@ function nativeDiagnostic(message: string): NativeDiagnostic | null {
     : null;
 }
 
-function structuredQueryV2Error(error: unknown): unknown {
+function structuredPlanError(error: unknown): unknown {
   if (!(error instanceof Error)) {
     return error;
   }
@@ -375,7 +375,7 @@ function structuredQueryV2Error(error: unknown): unknown {
   if (diagnostic === null || sdkCategory === undefined || sdkCategory === "internal") {
     return error;
   }
-  return new QueryV2Error(
+  return new PlanError(
     diagnostic.category,
     diagnostic.code,
     diagnostic.message,
@@ -390,20 +390,20 @@ function structuredQueryV2Error(error: unknown): unknown {
   );
 }
 
-export function queryV2NativeCall<Result>(operation: () => Result): Result {
+export function planNativeCall<Result>(operation: () => Result): Result {
   try {
     return operation();
   } catch (error) {
-    throw structuredQueryV2Error(error);
+    throw structuredPlanError(error);
   }
 }
 
-export async function queryV2NativePromise<Result>(
+export async function planNativePromise<Result>(
   promise: Promise<Result>,
 ): Promise<Result> {
   try {
     return await promise;
   } catch (error) {
-    throw structuredQueryV2Error(error);
+    throw structuredPlanError(error);
   }
 }

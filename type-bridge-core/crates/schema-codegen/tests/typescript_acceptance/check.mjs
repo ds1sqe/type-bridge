@@ -69,13 +69,13 @@ for (const fixture of [
   "runtime_check.mjs",
 ]) {
   const source = readFileSync(resolve(HERE, fixture), "utf8");
-  for (const forbidden of ["QueryV2Authority", "declared-schema.json", "readFileSync"]) {
+  for (const forbidden of ["PlanAuthority", "declared-schema.json", "readFileSync"]) {
     if (source.includes(forbidden)) {
       throw new Error(`${fixture} bypasses generated embedded authority with ${forbidden}`);
     }
   }
 }
-for (const forbidden of ["QueryV2Authority", "declared-schema.json", "readFileSync"]) {
+for (const forbidden of ["PlanAuthority", "declared-schema.json", "readFileSync"]) {
   if (readFileSync(DOCUMENTED_EXAMPLES, "utf8").includes(forbidden)) {
     throw new Error(`documented_examples.ts bypasses generated embedded authority with ${forbidden}`);
   }

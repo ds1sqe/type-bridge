@@ -23,12 +23,12 @@ from type_bridge_core import (
     PlanAnswer as PlanAnswer,
 )
 from type_bridge_core import (
+    PlanAuthority,
     QueryLimits,
-    QueryV2Authority,
     _Plan,
 )
 from type_bridge_core import (
-    QueryV2Error as _QueryV2Error,
+    PlanError as _PlanError,
 )
 from type_bridge_core import (
     Rows as Rows,
@@ -40,7 +40,7 @@ from type_bridge_core import (
     Transaction as Transaction,
 )
 
-PlanError = _QueryV2Error
+PlanError = _PlanError
 
 type PlanValueType = Literal[
     "string", "long", "double", "boolean", "date", "datetime", "datetime_tz", "decimal", "duration"
@@ -227,10 +227,10 @@ class PlanBuilder(_Inputs):
     ) -> Self: ...
     def count(self) -> Self: ...
     def exists(self) -> Self: ...
-    def build(self, authority: QueryV2Authority) -> Plan[_Answer]: ...
+    def build(self, authority: PlanAuthority) -> Plan[_Answer]: ...
     def build_staged(
         self,
-        authority: QueryV2Authority,
+        authority: PlanAuthority,
         rows: Iterable[Iterable[PlanInputCell[Any]]],
         result_refs: Iterable[StagedResultRef] = (),
     ) -> StagedPlan: ...
@@ -401,7 +401,7 @@ _MISSING: Any
 def _match[H: Handle[Any]](
     model: type[Any],
     handle: type[H],
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     key_field: str | None,
     key: object,
     fields: Mapping[str, object],
@@ -411,7 +411,7 @@ def _match[H: Handle[Any]](
 ) -> H: ...
 def _insert[M](
     model: type[M],
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     fields: Mapping[str, object],
     players: Mapping[str, object],
     *,
@@ -419,7 +419,7 @@ def _insert[M](
 ) -> Plan[list[M]]: ...
 def _bulk_insert[M](
     model: type[M],
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     rows: Iterable[Mapping[str, object]],
     *,
     put: bool = False,

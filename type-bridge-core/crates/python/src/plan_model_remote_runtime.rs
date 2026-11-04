@@ -26,7 +26,7 @@ use crate::match_runtime::{
     borrow_reduce_terms, order_handles, parse_enum, py_match_error, py_match_orm_error,
     py_query_target_error, py_sdk_diagnostic, python_window, reduce_terms, validated_result_handle,
 };
-use crate::plan_runtime::{PyQueryV2Authority, PythonBytes};
+use crate::plan_runtime::{PyPlanAuthority, PythonBytes};
 use crate::validated_result_runtime::PyValidatedMatchResultHandle;
 
 /// A caller-exchanged proxy connection plus the session's resources and
@@ -115,7 +115,7 @@ impl PyPendingRemoteModelQuery {
 #[pyo3(signature = (authority, advertisement, resources, cancellation, *, answer_limits=None))]
 pub(crate) fn query_v2_remote_model_context_with_resources(
     py: Python<'_>,
-    authority: &PyQueryV2Authority,
+    authority: &PyPlanAuthority,
     advertisement: &Bound<'_, PyAny>,
     resources: PyRef<'_, PyQueryExecutionResourceLimits>,
     cancellation: PyRef<'_, PyQueryCancellation>,
@@ -145,7 +145,7 @@ fn advertisement_snapshot(advertisement: &Bound<'_, PyAny>) -> PyResult<Vec<u8>>
 /// session resources constrained by it.
 fn remote_context(
     py: Python<'_>,
-    authority: &PyQueryV2Authority,
+    authority: &PyPlanAuthority,
     advertisement: Vec<u8>,
     answer_limits: QueryExecutionResourceLimits,
     resources: QueryExecutionResourceLimits,

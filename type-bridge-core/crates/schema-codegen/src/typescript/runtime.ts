@@ -42,7 +42,7 @@ export {
   type ProxyConnectionOptions,
   type ProxyTlsMode,
 } from "@type-bridge/node/runtime-projection";
-import type { QueryV2Authority } from "@type-bridge/node/query-v2";
+import type { PlanAuthority } from "@type-bridge/node/query-v2";
 import type { Database } from "@type-bridge/node";
 import { Pending, StagedTransaction } from "@type-bridge/node";
 import { Plan, Handle as PlanHandle, Value as PlanValue, Expr as PlanExpr, PlanInput, planFieldToken, planMatch, planInsert, planInsertMany, type FieldToken as AuthoringFieldToken, type PlanModelAuthoring } from "@type-bridge/node";
@@ -552,7 +552,7 @@ const roleTokenStates = new WeakMap<
   RoleTokenDefinition<string, string>
 >();
 let installedProjection: InstalledRuntimeProjection | null = null;
-let installedQueryAuthority: QueryV2Authority | null = null;
+let installedQueryAuthority: PlanAuthority | null = null;
 
 interface StructFieldDefinition {
   readonly name: string;
@@ -2286,7 +2286,7 @@ export function connect(
   return policy.__connect(requireProjection(), cancellation);
 }
 
-function requireQueryAuthority(): QueryV2Authority {
+function requireQueryAuthority(): PlanAuthority {
   if (installedQueryAuthority === null) {
     throw new TypeError("generated schema authority is not installed");
   }
@@ -3555,7 +3555,7 @@ export class RemoteQuerySession extends QuerySession {
   }
 }
 
-/** Run a native composition call; a core refusal surfaces as `QueryV2Error`. */
+/** Run a native composition call; a core refusal surfaces as `PlanError`. */
 function coreCall<Result>(operation: () => Result): Result {
   return projectedManagerNativeCall(operation);
 }

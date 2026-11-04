@@ -101,7 +101,7 @@ Python and TypeScript, `SCHEMA.connect(ProxyConnectionPolicy)` in Rust, and
 `type_bridge_proxy_connection_open_v1` with the package in C. Applications
 supply a server endpoint (or advertisement bytes and a caller-owned exchange)
 and resource limits; they do not read an authority file or construct
-`QueryV2Authority`.
+`PlanAuthority`.
 
 ## Server authority artifact
 

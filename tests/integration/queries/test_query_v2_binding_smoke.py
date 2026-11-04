@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 import type_bridge_core as core
 
-from type_bridge.query_v2 import QueryPlanBuilder, QueryV2Authority
+from type_bridge.query_v2 import PlanAuthority, QueryPlanBuilder
 
 pytestmark = pytest.mark.integration
 
@@ -120,7 +120,7 @@ def _server_authority(declared: bytes) -> bytes:
     return authority
 
 
-def _author_plan(authority: QueryV2Authority) -> tuple[bytes, str, str, str]:
+def _author_plan(authority: PlanAuthority) -> tuple[bytes, str, str, str]:
     builder = QueryPlanBuilder(authority)
     person = builder.binding("person")
     name = builder.binding("name")
@@ -236,11 +236,11 @@ def test_prepared_plan_executes_locally_and_remotely() -> None:
         )
         write_tx.commit()
 
-        authority = QueryV2Authority(declared, SCOPE, PROFILE)
+        authority = PlanAuthority(declared, SCOPE, PROFILE)
         plan, invocation, plan_fingerprint, invocation_digest = _author_plan(authority)
         assert plan_fingerprint == CROSS_BINDING_PLAN_FINGERPRINT
         assert invocation_digest == CROSS_BINDING_INVOCATION_SHA256
-        local_authority = QueryV2Authority.query_only(
+        local_authority = PlanAuthority.query_only(
             rust_db,
             declared,
             SCOPE,

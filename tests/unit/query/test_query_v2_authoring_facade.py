@@ -64,7 +64,7 @@ _BUILDER_OPERATIONS = {
 }
 
 
-def _author_plan(authority: public.QueryV2Authority) -> public.AuthoredQueryPlan:
+def _author_plan(authority: public.PlanAuthority) -> public.AuthoredQueryPlan:
     builder = public.QueryPlanBuilder(authority)
     person = builder.binding("person")
     name = builder.binding("name")
@@ -79,14 +79,14 @@ def _author_plan(authority: public.QueryV2Authority) -> public.AuthoredQueryPlan
 
 
 def test_public_authoring_classes_are_the_native_classes_by_identity() -> None:
-    assert public.QueryV2Authority is native.QueryV2Authority
+    assert public.PlanAuthority is native.PlanAuthority
     assert public.QueryPlanBuilder is native.QueryPlanBuilder
     assert public.AuthoredQueryPlan is native.AuthoredQueryPlan
     assert public.AuthoredQueryInvocation is native.AuthoredQueryInvocation
 
 
 def test_public_authoring_produces_deterministic_canonical_plan_and_invocation() -> None:
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -125,7 +125,7 @@ def test_public_authoring_produces_deterministic_canonical_plan_and_invocation()
 
 
 def _assert_diagnostic(code: str, operation: Callable[[], object]) -> None:
-    with pytest.raises(native.QueryV2Error) as captured:
+    with pytest.raises(native.PlanError) as captured:
         operation()
     assert captured.value.code == code
 
@@ -137,7 +137,7 @@ def test_public_authority_rejects_non_scalar_unicode_without_identity_replacemen
 
     _assert_diagnostic(
         "query_v2_host_string_unicode",
-        lambda: public.QueryV2Authority(
+        lambda: public.PlanAuthority(
             _DECLARED_SCHEMA,
             "binding-\ud800",
             "typedb-3.12.1/v1",
@@ -145,14 +145,14 @@ def test_public_authority_rejects_non_scalar_unicode_without_identity_replacemen
     )
     _assert_diagnostic(
         "query_v2_host_string_unicode",
-        lambda: public.QueryV2Authority(
+        lambda: public.PlanAuthority(
             _DECLARED_SCHEMA,
             mixed_astral_canonical,
             "typedb-3.12.1/v1",
         ),
     )
 
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -196,12 +196,12 @@ def test_public_authority_rejects_non_scalar_unicode_without_identity_replacemen
 
 
 def test_public_ownership_failures_distinguish_builder_and_authority_and_are_atomic() -> None:
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
     )
-    foreign_authority = public.QueryV2Authority(
+    foreign_authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -227,7 +227,7 @@ def test_public_ownership_failures_distinguish_builder_and_authority_and_are_ato
 
 
 def test_public_builder_cross_thread_misuse_fails_without_mutation_or_panic() -> None:
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -246,7 +246,7 @@ def test_public_builder_cross_thread_misuse_fails_without_mutation_or_panic() ->
     worker.join(timeout=5)
     assert not worker.is_alive()
     assert len(failures) == 1
-    assert isinstance(failures[0], native.QueryV2Error)
+    assert isinstance(failures[0], native.PlanError)
     assert failures[0].code == "query_builder_cross_thread"
 
     person = builder.binding("person")
@@ -255,7 +255,7 @@ def test_public_builder_cross_thread_misuse_fails_without_mutation_or_panic() ->
 
 
 def test_public_integer_boundaries_fail_before_mutation() -> None:
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -316,7 +316,7 @@ def test_public_collection_and_invocation_limits_preflight_before_element_access
             self.accessed = True
             raise AssertionError("pattern access must not occur")
 
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -346,7 +346,7 @@ def test_public_collection_and_invocation_limits_preflight_before_element_access
             raise AssertionError("row access must not occur")
 
     hostile_rows = HostileRows()
-    with pytest.raises(native.QueryV2Error) as captured:
+    with pytest.raises(native.PlanError) as captured:
         plan.rows(
             hostile_rows,  # pyright: ignore[reportArgumentType]
         )
@@ -393,7 +393,7 @@ def test_public_collection_container_type_is_canonical_and_huge_lengths_are_boun
             self.accessed = True
             raise AssertionError("pattern access must not occur")
 
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -448,7 +448,7 @@ def test_public_invocation_row_arity_preflights_before_cell_access() -> None:
             self.accessed = True
             raise AssertionError("row access must not occur")
 
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -485,7 +485,7 @@ def test_public_invocation_row_arity_preflights_before_cell_access() -> None:
 
 
 def test_public_operation_specific_collection_limits_and_node_budget_are_canonical() -> None:
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -592,7 +592,7 @@ def test_public_operation_specific_collection_limits_and_node_budget_are_canonic
 
 
 def test_public_groupby_accepts_sixty_five_groups_and_rejects_the_257th() -> None:
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -618,7 +618,7 @@ def test_public_groupby_accepts_sixty_five_groups_and_rejects_the_257th() -> Non
 
 
 def test_public_declaration_and_output_boundaries_use_stable_binding_diagnostics() -> None:
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -674,7 +674,7 @@ def test_public_declaration_and_output_boundaries_use_stable_binding_diagnostics
 
 
 def test_dynamic_host_flags_text_and_labels_fail_canonically_and_atomically() -> None:
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _DECLARED_SCHEMA,
         "binding-smoke",
         "typedb-3.12.1/v1",
@@ -733,7 +733,7 @@ def test_dynamic_host_flags_text_and_labels_fail_canonically_and_atomically() ->
 
 
 def test_every_builder_operation_executes_with_cross_binding_canonical_parity() -> None:
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _PARITY_DECLARED_SCHEMA,
         "model-remote-parity",
         "typedb-3.12.1/v1",
@@ -929,14 +929,14 @@ def test_every_builder_operation_executes_with_cross_binding_canonical_parity() 
 
 
 def test_reducer_error_preserves_the_complete_shared_diagnostic() -> None:
-    authority = public.QueryV2Authority(
+    authority = public.PlanAuthority(
         _PARITY_DECLARED_SCHEMA,
         "model-remote-parity",
         "typedb-3.12.1/v1",
     )
     builder = public.QueryPlanBuilder(authority)
     assigned = builder.binding("assigned")
-    with pytest.raises(native.QueryV2Error) as captured:
+    with pytest.raises(native.PlanError) as captured:
         builder.reduce_assignment(
             assigned,
             "max",

@@ -71,7 +71,7 @@ print(result)  # {"is_valid": true, "errors": []}
 
 ## Prepared V2 remote execution
 
-The module exposes `query_v2_authority(...)`, `query_v2_prepare_remote(...)`,
+The module exposes `plan_authority(...)`, `query_v2_prepare_remote(...)`,
 and the returned one-shot `PendingQueryV2Remote` handle for canonical Rust V2
 plans. The request and its reply use the one remote envelope
 (`typebridge.query-remote-request/v2`), so the executor must advertise

@@ -17,7 +17,7 @@ same canonical bytes as the same plan built in Rust, TypeScript or C::
 
 Names follow the Rust builder; ``where_`` and ``let_`` avoid the Python
 keywords. Calls never fail on content: the first invalid call is raised by
-``build`` as a ``QueryV2Error`` with ``.code``. A handle from another
+``build`` as a ``PlanError`` with ``.code``. A handle from another
 builder raises ``TypeError`` at once.
 """
 
@@ -39,9 +39,9 @@ from type_bridge_core import (
     Matched,
     Pending,
     PlanAnswer,
+    PlanAuthority,
+    PlanError,
     QueryLimits,
-    QueryV2Authority,
-    QueryV2Error,
     Rows,
     StagedPlan,
     Transaction,
@@ -625,7 +625,7 @@ class PlanBuilder:
         self._native.exists()
         return self
 
-    def build(self, authority: QueryV2Authority) -> Plan:
+    def build(self, authority: PlanAuthority) -> Plan:
         """Validate the plan under a schema authority, such as a generated
         package's ``schema_authority()``."""
         plan = Plan(self._native.build(authority))
@@ -635,7 +635,7 @@ class PlanBuilder:
 
     def build_staged(
         self,
-        authority: QueryV2Authority,
+        authority: PlanAuthority,
         rows: Iterable[Iterable[PlanInputCell]],
         result_refs: Iterable[StagedResultRef] = (),
     ) -> StagedPlan:
@@ -734,7 +734,6 @@ class PlanExplanation:
 
 _current_plan: ContextVar[Plan[Any] | None] = ContextVar("type_bridge_plan", default=None)
 _MISSING = object()
-PlanError = QueryV2Error
 Condition = PlanCondition
 Expr = PlanExpr
 
@@ -743,8 +742,8 @@ def _bad_answer() -> Never:
     raise TypeError("the plan answer does not match its selected result")
 
 
-def _context_error(code: str, message: str) -> QueryV2Error:
-    error = QueryV2Error(f"{code}: {message}")
+def _context_error(code: str, message: str) -> PlanError:
+    error = PlanError(f"{code}: {message}")
     error.code = code
     error.message = message
     error.category = "invalid_contract"
@@ -862,7 +861,7 @@ class Plan[R](_Plan):
         if plan is not None and query_limits is not None:
             raise TypeError("query_limits belong to a new recording")
         self._builder = PlanBuilder(query_limits=query_limits)
-        self._authority: QueryV2Authority | None = None
+        self._authority: PlanAuthority | None = None
         self._projection: Any = None
         self._results: list[ReferenceType[Plan[Any]]] = []
         self._token: Token[Plan[Any] | None] | None = None
@@ -941,7 +940,7 @@ class Plan[R](_Plan):
             )
         return plan
 
-    def _use_package(self, authority: QueryV2Authority, projection: Any) -> None:
+    def _use_package(self, authority: PlanAuthority, projection: Any) -> None:
         if self._authority is not None and self._authority is not authority:
             raise _context_error(
                 "plan_schema_mismatch", "one plan uses one generated schema package"
@@ -1120,7 +1119,7 @@ class PlanTemplate(Plan[Matched]):
 def _match[H: Handle[Any]](
     model: type[Any],
     handle: type[H],
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     key_field: str | None,
     key: Any,
     fields: Mapping[str, Any],
@@ -1152,7 +1151,7 @@ def _match[H: Handle[Any]](
 
 def _insert[M](
     model: type[M],
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     fields: Mapping[str, Any],
     players: Mapping[str, Any],
     *,
@@ -1178,7 +1177,7 @@ def _insert[M](
 
 def _bulk_insert[M](
     model: type[M],
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     rows: Iterable[Mapping[str, Any]],
     *,
     put: bool = False,

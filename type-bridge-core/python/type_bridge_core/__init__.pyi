@@ -93,16 +93,16 @@ def run_v2_cli(arguments: list[str]) -> int: ...
 # Prepared V2 query facade — opaque authority handle plus canonical
 # plan/envelope bytes; limits accept any int and are range-checked
 # against the unsigned 64-bit wire contract.
-class QueryV2Authority:
+class PlanAuthority:
     def __init__(self, declared_schema: bytes, scope: str, profile: str) -> None: ...
-    def with_query_limits(self, query_limits: QueryLimits) -> QueryV2Authority: ...
+    def with_query_limits(self, query_limits: QueryLimits) -> PlanAuthority: ...
     @staticmethod
     def query_only(
         database: PyDatabase,
         declared_schema: bytes,
         scope: str,
         profile: str,
-    ) -> QueryV2Authority: ...
+    ) -> PlanAuthority: ...
 
 type QueryV2ValueType = Literal[
     "string",
@@ -134,9 +134,9 @@ class _QueryV2ExactFloat(Protocol):
     def hex(self) -> str: ...
 
 @final
-class _QueryV2AuthorityIdentity:
+class _PlanAuthorityIdentity:
     def __new__(cls) -> Never: ...
-    def same_authority(self, other: _QueryV2AuthorityIdentity) -> bool: ...
+    def same_authority(self, other: _PlanAuthorityIdentity) -> bool: ...
 
 @final
 class _QueryV2BindingHandle:
@@ -184,7 +184,7 @@ class AuthoredQueryInvocation:
     @property
     def plan_fingerprint(self) -> str: ...
     @property
-    def authority_identity(self) -> _QueryV2AuthorityIdentity: ...
+    def authority_identity(self) -> _PlanAuthorityIdentity: ...
     @property
     def required_transport_capabilities(self) -> tuple[str, ...]: ...
 
@@ -200,7 +200,7 @@ class AuthoredQueryPlan:
     @property
     def required_capabilities(self) -> tuple[str, ...]: ...
     @property
-    def authority_identity(self) -> _QueryV2AuthorityIdentity: ...
+    def authority_identity(self) -> _PlanAuthorityIdentity: ...
     def rows(self, rows: Sequence[Sequence[QueryV2Scalar | None]]) -> AuthoredQueryInvocation: ...
     def documents(
         self, rows: Sequence[Sequence[QueryV2Scalar | None]]
@@ -210,7 +210,7 @@ class AuthoredQueryPlan:
 
 @final
 class QueryPlanBuilder:
-    def __init__(self, authority: QueryV2Authority) -> None: ...
+    def __init__(self, authority: PlanAuthority) -> None: ...
     def binding(self, variable: str) -> _QueryV2BindingHandle: ...
     def input(
         self, public_name: str, value_type: QueryV2ValueType, optional: bool
@@ -366,33 +366,31 @@ class QueryPlanBuilder:
         self, fields: Sequence[_QueryV2DocumentFieldHandle]
     ) -> AuthoredQueryPlan: ...
 
-class _QueryV2ErrorTextPathSegment(TypedDict):
+class _PlanErrorTextPathSegment(TypedDict):
     kind: Literal["field", "identifier"]
     value: str
 
-class _QueryV2ErrorIndexPathSegment(TypedDict):
+class _PlanErrorIndexPathSegment(TypedDict):
     kind: Literal["index"]
     value: int
 
-type _QueryV2ErrorPathSegment = _QueryV2ErrorTextPathSegment | _QueryV2ErrorIndexPathSegment
+type _PlanErrorPathSegment = _PlanErrorTextPathSegment | _PlanErrorIndexPathSegment
 
-class _QueryV2ErrorTextDetail(TypedDict):
+class _PlanErrorTextDetail(TypedDict):
     kind: Literal["text", "long"]
     value: str
 
-class _QueryV2ErrorBooleanDetail(TypedDict):
+class _PlanErrorBooleanDetail(TypedDict):
     kind: Literal["boolean"]
     value: bool
 
-class _QueryV2ErrorTextListDetail(TypedDict):
+class _PlanErrorTextListDetail(TypedDict):
     kind: Literal["text_list"]
     value: list[str]
 
-type _QueryV2ErrorDetail = (
-    _QueryV2ErrorTextDetail | _QueryV2ErrorBooleanDetail | _QueryV2ErrorTextListDetail
-)
+type _PlanErrorDetail = _PlanErrorTextDetail | _PlanErrorBooleanDetail | _PlanErrorTextListDetail
 
-class QueryV2Error(ValueError):
+class PlanError(ValueError):
     category: Literal[
         "invalid_contract",
         "unsupported_capability",
@@ -401,8 +399,8 @@ class QueryV2Error(ValueError):
     ]
     code: str
     message: str
-    path: list[_QueryV2ErrorPathSegment]
-    details: Mapping[str, _QueryV2ErrorDetail]
+    path: list[_PlanErrorPathSegment]
+    details: Mapping[str, _PlanErrorDetail]
 
 class PendingQueryV2Remote:
     def request_bytes(self) -> bytes: ...
@@ -410,23 +408,23 @@ class PendingQueryV2Remote:
         """Claim once, snapshot a bounded reply, and verify its request binding."""
         ...
 
-def query_v2_authority(declared_schema: bytes, scope: str, profile: str) -> QueryV2Authority: ...
-def query_v2_authority_from_schema_authority(
+def plan_authority(declared_schema: bytes, scope: str, profile: str) -> PlanAuthority: ...
+def plan_authority_from_schema_authority(
     schema_authority: bytes,
     semantic_fingerprint: bytes,
-) -> QueryV2Authority: ...
-def query_v2_query_only_authority(
+) -> PlanAuthority: ...
+def plan_query_only_authority(
     database: PyDatabase,
     declared_schema: bytes,
     scope: str,
     profile: str,
-) -> QueryV2Authority:
+) -> PlanAuthority:
     """Bind a local-only authority to one exact database with no migration controls."""
     ...
 
 def query_v2_execute_local(
     database: PyDatabase,
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     plan: bytes,
     invocation_json: str,
     deadline_ms: int | None = ...,
@@ -439,7 +437,7 @@ def query_v2_remote_capabilities(advertisement: bytes) -> list[str]:
     ...
 
 def query_v2_prepare_remote(
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     plan: bytes,
     invocation_json: str,
     advertisement: bytes,
@@ -1320,7 +1318,7 @@ class ProxyConnection:
     def __new__(cls) -> Never: ...
     @staticmethod
     def connect(
-        authority: QueryV2Authority,
+        authority: PlanAuthority,
         endpoint: str,
         *,
         tls_mode: Literal["disabled", "native_roots", "custom_root"] = ...,
@@ -1473,17 +1471,17 @@ class _PlanBuilderCore:
     def count(self) -> None: ...
     def exists(self) -> None: ...
     def build(
-        self, authority: QueryV2Authority, matched: bool = False, models: bool = False
+        self, authority: PlanAuthority, matched: bool = False, models: bool = False
     ) -> _Plan[Rows | Documents | Count | Exists | Matched]: ...
     def build_staged(
         self,
-        authority: QueryV2Authority,
+        authority: PlanAuthority,
         rows: list[list[tuple[int, object | None]]],
         references: str,
     ) -> StagedPlan: ...
     def build_selected(
         self,
-        authority: QueryV2Authority,
+        authority: PlanAuthority,
         kind: str,
         thing: int | None,
         roles: Sequence[tuple[str, bool]],
@@ -1500,7 +1498,7 @@ class _Plan[R]:
     def _complete(self, plan: _Plan[Any], decoder: Callable[[PlanAnswer], R] | None) -> None: ...
     def bind_rows(
         self,
-        authority: QueryV2Authority,
+        authority: PlanAuthority,
         rows: list[list[tuple[int, object | None]]],
         decoder_factory: Callable[[_Plan[Any]], Callable[[PlanAnswer], object] | None]
         | None = None,
@@ -1525,7 +1523,7 @@ class PendingRemoteModelQuery:
     def decode_reply(self, response: bytes | bytearray) -> ValidatedMatchResultHandle: ...
 
 def query_v2_remote_model_context_with_resources(
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     advertisement: bytes | bytearray,
     resources: QueryExecutionResourceLimits,
     cancellation: QueryCancellation,

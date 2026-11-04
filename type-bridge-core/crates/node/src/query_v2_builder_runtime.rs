@@ -41,7 +41,7 @@ use type_bridge_orm::query_v2_prepared::{
 };
 
 use crate::plan_runtime::{
-    BoundedNodeString, NodeQueryV2Authority, bounded_node_string_snapshot,
+    BoundedNodeString, NodePlanAuthority, bounded_node_string_snapshot,
     bounded_string_with_unicode_error, napi_error,
 };
 
@@ -302,15 +302,15 @@ fn invocation_rows(
 
 /// Opaque authority identity carried by plans and invocations.
 #[napi]
-pub struct NodeQueryV2AuthorityIdentity {
+pub struct NodePlanAuthorityIdentity {
     inner: QueryAuthorityIdentity,
 }
 
 #[napi]
-impl NodeQueryV2AuthorityIdentity {
+impl NodePlanAuthorityIdentity {
     /// Compare opaque authority allocation identity.
     #[napi(js_name = "sameAuthority")]
-    pub fn same_authority(&self, other: &NodeQueryV2AuthorityIdentity) -> bool {
+    pub fn same_authority(&self, other: &NodePlanAuthorityIdentity) -> bool {
         self.inner == other.inner
     }
 }
@@ -397,8 +397,8 @@ impl NodeAuthoredQueryInvocation {
 
     /// Return the opaque authority token.
     #[napi(getter, js_name = "authorityIdentity")]
-    pub fn authority_identity(&self) -> NodeQueryV2AuthorityIdentity {
-        NodeQueryV2AuthorityIdentity {
+    pub fn authority_identity(&self) -> NodePlanAuthorityIdentity {
+        NodePlanAuthorityIdentity {
             inner: self.inner.authority_identity().clone(),
         }
     }
@@ -444,8 +444,8 @@ impl NodeAuthoredQueryPlan {
 
     /// Return the opaque authority token.
     #[napi(getter, js_name = "authorityIdentity")]
-    pub fn authority_identity(&self) -> NodeQueryV2AuthorityIdentity {
-        NodeQueryV2AuthorityIdentity {
+    pub fn authority_identity(&self) -> NodePlanAuthorityIdentity {
+        NodePlanAuthorityIdentity {
             inner: self.inner.authority_identity().clone(),
         }
     }
@@ -489,7 +489,7 @@ pub struct NodeQueryPlanBuilder {
 impl NodeQueryPlanBuilder {
     /// Start one builder under an exact prepared authority.
     #[napi(constructor)]
-    pub fn new(authority: &NodeQueryV2Authority) -> Self {
+    pub fn new(authority: &NodePlanAuthority) -> Self {
         Self {
             inner: QueryPlanBuilder::new(authority.authority()),
         }

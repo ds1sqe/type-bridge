@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { QueryV2Error, Database } from "./common/index.js";
+import { PlanError, Database } from "./common/index.js";
 import type { TransactionContext } from "../../typescript/index.js";
 
 const fixture = JSON.parse(fs.readFileSync("../../../tests/contracts/typed-failure-scenarios.json", "utf8")) as Record<"schema" | "seed" | "purchase" | "cnt5" | "cnt9" | "paused" | "stock_read", string>;
@@ -47,7 +47,7 @@ for (const scenario of ["stc2", "cnt5", "cnt9", "paused"] as const) {
         operation = () => { try { tx.commit(); } finally { execFileSync("docker", ["unpause", container]); } };
       }
       assert.throws(operation, (error: unknown) => {
-        assert.ok(error instanceof QueryV2Error);
+        assert.ok(error instanceof PlanError);
         assert.ok(error.failure);
         assert.equal(error.failure.retry_safe, scenario !== "paused");
         assert.equal(error.failure.phase, scenario === "cnt9" ? "query" : "commit");

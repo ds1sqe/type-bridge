@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { test } from "node:test";
-import { QueryV2Authority, Database } from "./common/index.js";
+import { PlanAuthority, Database } from "./common/index.js";
 import type { PlanAnswer, StagedTransaction } from "../../typescript/index.js";
 import { createRequire } from "node:module";
 
@@ -50,7 +50,7 @@ async function proxyTransaction(
   headers: [string, string][] = [],
 ): Promise<StagedTransaction> {
   const proxy = live.proxies[role];
-  const authority = new QueryV2Authority(bytes(live.declared_hex), proxy.scope, live.profile);
+  const authority = new PlanAuthority(bytes(live.declared_hex), proxy.scope, live.profile);
   const connection = await ProxyConnection.connect(authority, proxy.endpoint, { headers });
   return connection.transaction();
 }

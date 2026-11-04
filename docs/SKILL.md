@@ -200,7 +200,7 @@ database or transaction, `connect_proxy(url)` (`await connectProxy(url)` in
 TypeScript), or `ExchangeConnection(advertisement, exchange)`; every terminal
 is awaited, and the program is the same on each. Both proxy connections derive
 authority from private package evidence; never read an authority file or
-construct a low-level `QueryV2Authority` for this normal path.
+construct a low-level `PlanAuthority` for this normal path.
 
 Write over the proxy with a staged transaction: `transaction(kind)` on a
 proxy connection returns the core staged transaction, and `commit()` sends the

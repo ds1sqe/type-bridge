@@ -7,26 +7,26 @@ import {
   type StagedTransactionOptions,
 } from "./staged-transaction.js";
 import {
-  queryV2AuthorityHandle,
-  queryV2NativeCall,
-  queryV2NativePromise,
-  registerQueryV2AuthorityHandle,
-  type NativeQueryV2Authority,
+  planAuthorityHandle,
+  planNativeCall,
+  planNativePromise,
+  registerPlanAuthorityHandle,
+  type NativePlanAuthority,
   type NativeQueryV2BuilderRuntime,
-} from "./query-v2-internals.js";
+} from "./plan-internals.js";
 import {
   registerRustDatabaseHandle,
   registerRustTransactionHandle,
   rustDatabaseHandle,
 } from "./runtime-handles.js";
 
-export { QueryV2Error } from "./query-v2-internals.js";
+export { PlanError } from "./plan-internals.js";
 export type {
   ProviderFailure,
-  QueryV2ErrorCategory,
-  QueryV2ErrorDetail,
-  QueryV2ErrorPathSegment,
-} from "./query-v2-internals.js";
+  PlanErrorCategory,
+  PlanErrorDetail,
+  PlanErrorPathSegment,
+} from "./plan-internals.js";
 
 export type ValueType =
   | "string"
@@ -404,31 +404,31 @@ export interface PendingQueryV2Remote {
 }
 
 interface NativeQueryV2Runtime {
-  queryV2Authority(
+  planAuthority(
     declaredSchema: Uint8Array,
     scope: string,
     profile: string,
-  ): NativeQueryV2Authority;
-  queryV2AuthorityFromSchemaAuthority(
+  ): NativePlanAuthority;
+  planAuthorityFromSchemaAuthority(
     schemaAuthorityJson: string,
     semanticFingerprintJson: string,
-  ): NativeQueryV2Authority;
-  queryV2QueryOnlyAuthority(
+  ): NativePlanAuthority;
+  planQueryOnlyAuthority(
     database: NativeRustDatabase,
     declaredSchema: Uint8Array,
     scope: string,
     profile: string,
-  ): NativeQueryV2Authority;
+  ): NativePlanAuthority;
   queryV2ExecuteLocal(
     database: NativeRustDatabase,
-    authority: NativeQueryV2Authority,
+    authority: NativePlanAuthority,
     plan: Uint8Array,
     invocationJson: string,
     deadlineMs?: bigint | null,
   ): Promise<string>;
   queryV2RemoteCapabilities(advertisement: Uint8Array): string[];
   queryV2PrepareRemote(
-    authority: NativeQueryV2Authority,
+    authority: NativePlanAuthority,
     plan: Uint8Array,
     invocationJson: string,
     advertisement: Uint8Array,
@@ -721,14 +721,14 @@ export function ensureDatabase(
 }
 
 /** Opaque declared-schema authority for prepared V2 plan execution. */
-export class QueryV2Authority {
+export class PlanAuthority {
   readonly #brand = undefined;
 
   constructor(declaredSchema: Uint8Array, scope: string, profile: string) {
-    registerQueryV2AuthorityHandle(
+    registerPlanAuthorityHandle(
       this,
-      queryV2NativeCall(() =>
-        loadNative().queryV2Authority(declaredSchema, scope, profile),
+      planNativeCall(() =>
+        loadNative().planAuthority(declaredSchema, scope, profile),
       ),
     );
   }
@@ -737,17 +737,17 @@ export class QueryV2Authority {
    * Derive an authority over the same schema whose plans are authored,
    * decoded, and validated under `queryLimits`.
    */
-  withQueryLimits(queryLimits: QueryLimits): QueryV2Authority {
-    const native = queryV2AuthorityHandle(this);
+  withQueryLimits(queryLimits: QueryLimits): PlanAuthority {
+    const native = planAuthorityHandle(this);
     if (native === undefined) {
       throw new TypeError("query authority is not installed by this package");
     }
     const authority = Object.create(
-      QueryV2Authority.prototype,
-    ) as QueryV2Authority;
-    registerQueryV2AuthorityHandle(
+      PlanAuthority.prototype,
+    ) as PlanAuthority;
+    registerPlanAuthorityHandle(
       authority,
-      queryV2NativeCall(() => native.withQueryLimits(queryLimits.nativeHandle())),
+      planNativeCall(() => native.withQueryLimits(queryLimits.nativeHandle())),
     );
     return authority;
   }
@@ -757,14 +757,14 @@ export class QueryV2Authority {
     declaredSchema: Uint8Array,
     scope: string,
     profile: string,
-  ): QueryV2Authority {
+  ): PlanAuthority {
     const authority = Object.create(
-      QueryV2Authority.prototype,
-    ) as QueryV2Authority;
-    registerQueryV2AuthorityHandle(
+      PlanAuthority.prototype,
+    ) as PlanAuthority;
+    registerPlanAuthorityHandle(
       authority,
-      queryV2NativeCall(() =>
-        loadNative().queryV2QueryOnlyAuthority(
+      planNativeCall(() =>
+        loadNative().planQueryOnlyAuthority(
           preparedV2DatabaseHandle(database),
           declaredSchema,
           scope,
@@ -794,12 +794,12 @@ function preparedV2DatabaseHandle(database: Database): NativeRustDatabase {
 }
 
 function preparedV2AuthorityHandle(
-  authority: QueryV2Authority,
-): NativeQueryV2Authority {
-  const native = queryV2AuthorityHandle(authority);
+  authority: PlanAuthority,
+): NativePlanAuthority {
+  const native = planAuthorityHandle(authority);
   if (native === undefined) {
     throw new TypeError(
-      "prepared V2 execution requires a type-bridge QueryV2Authority",
+      "prepared V2 execution requires a type-bridge PlanAuthority",
     );
   }
   return native;
@@ -807,13 +807,13 @@ function preparedV2AuthorityHandle(
 
 export function queryV2ExecuteLocal(
   database: Database,
-  authority: QueryV2Authority,
+  authority: PlanAuthority,
   plan: Uint8Array,
   invocationJson: string,
   deadlineMs?: bigint | null,
 ): Promise<string> {
-  return queryV2NativePromise(
-    queryV2NativeCall(() =>
+  return planNativePromise(
+    planNativeCall(() =>
       loadNative().queryV2ExecuteLocal(
         preparedV2DatabaseHandle(database),
         preparedV2AuthorityHandle(authority),
@@ -828,19 +828,19 @@ export function queryV2ExecuteLocal(
 export function queryV2RemoteCapabilities(
   advertisement: Uint8Array,
 ): readonly string[] {
-  return queryV2NativeCall(() =>
+  return planNativeCall(() =>
     loadNative().queryV2RemoteCapabilities(advertisement),
   );
 }
 
 export function queryV2PrepareRemote(
-  authority: QueryV2Authority,
+  authority: PlanAuthority,
   plan: Uint8Array,
   invocationJson: string,
   advertisement: Uint8Array,
   limits: QueryV2RemoteLimits,
 ): PendingQueryV2Remote {
-  const pending = queryV2NativeCall(() =>
+  const pending = planNativeCall(() =>
     loadNative().queryV2PrepareRemote(
       preparedV2AuthorityHandle(authority),
       plan,
@@ -854,10 +854,10 @@ export function queryV2PrepareRemote(
   );
   return Object.freeze({
     requestBytes: (): Uint8Array =>
-      queryV2NativeCall(() => new Uint8Array(pending.requestBytes())),
+      planNativeCall(() => new Uint8Array(pending.requestBytes())),
     decodeReply: (response: Uint8Array): Promise<string> =>
-      queryV2NativePromise(
-        queryV2NativeCall(() => pending.decodeReply(response)),
+      planNativePromise(
+        planNativeCall(() => pending.decodeReply(response)),
       ),
   });
 }
@@ -969,7 +969,7 @@ export class Database {
    */
   stagedTransaction(kind?: StagedTransactionKind, options: import("./staged-transaction.js").StagedTransactionOptions = {}): StagedTransaction {
     return new StagedTransaction(
-      queryV2NativeCall(() => this.#native.stagedTransaction(kind, options.timeoutMilliseconds, options.collectPhaseTimestamps)),
+      planNativeCall(() => this.#native.stagedTransaction(kind, options.timeoutMilliseconds, options.collectPhaseTimestamps)),
     );
   }
 }
@@ -1028,11 +1028,11 @@ export class TransactionContext {
   }
 
   query(query: string): unknown[] {
-    return queryV2NativeCall(() => parseJson(this.#native.queryJson(query)));
+    return planNativeCall(() => parseJson(this.#native.queryJson(query)));
   }
 
   commit(): void {
-    queryV2NativeCall(() => this.#native.commit());
+    planNativeCall(() => this.#native.commit());
   }
 
   /** Roll back writes and keep this transaction usable. */

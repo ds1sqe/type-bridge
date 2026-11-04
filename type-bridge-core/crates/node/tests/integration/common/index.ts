@@ -8,7 +8,7 @@ const packageFacade = requirePackage(packageRoot) as typeof import(
   "../../../typescript/public.js"
 );
 
-export const { QueryV2Authority, QueryV2Error, Database, ensureDatabase } = packageFacade;
+export const { PlanAuthority, PlanError, Database, ensureDatabase } = packageFacade;
 
 export const TYPEDB_ADDRESS =
   process.env.TYPEDB_ADDRESS ?? "localhost:1730";

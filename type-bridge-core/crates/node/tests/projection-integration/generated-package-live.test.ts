@@ -10,7 +10,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { TextDecoder } from "node:util";
 
-import type { QueryV2Error } from "../../typescript/index.js";
+import type { PlanError } from "../../typescript/index.js";
 
 import {
   connectIntegration,
@@ -666,8 +666,8 @@ function sdkQueriesHydratedResult(
 function assertUnknownEnumValue(operation: () => unknown, kind: string): void {
   assert.throws(operation, (error: unknown) => {
     assert.ok(error instanceof Error);
-    assert.equal(error.name, "QueryV2Error");
-    const diagnostic = error as QueryV2Error;
+    assert.equal(error.name, "PlanError");
+    const diagnostic = error as PlanError;
     assert.equal(diagnostic.category, "invalid_input");
     assert.equal(diagnostic.code, "unknown_enum_value");
     assert.deepEqual(diagnostic.details.kind, { kind: "query_identity", value: kind });
@@ -677,8 +677,8 @@ function assertUnknownEnumValue(operation: () => unknown, kind: string): void {
 
 function sdkQueriesCardinalityDiagnostic(error: any): Record<string, unknown> {
   assert.ok(error instanceof Error);
-  assert.equal(error.name, "QueryV2Error");
-  const diagnostic = error as QueryV2Error;
+  assert.equal(error.name, "PlanError");
+  const diagnostic = error as PlanError;
   assert.equal(typeof diagnostic.sdkCategory, "string");
   assert.equal(typeof diagnostic.queryCategory, "string");
   assert.equal(typeof diagnostic.code, "string");
@@ -1087,8 +1087,8 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
     modelPlanMark("ordered_distinct_collections.refused_nonempty");
     assert.throws(() => oneWritten(manager.insert(value)), (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.equal(error.name, "QueryV2Error");
-      const diagnostic = error as QueryV2Error;
+      assert.equal(error.name, "PlanError");
+      const diagnostic = error as PlanError;
       assert.equal(diagnostic.code, "query_plan_ordered_collection_unsupported");
       assert.equal(diagnostic.sdkCategory, "unsupported_capability");
       return true;
@@ -1224,8 +1224,8 @@ async function sdkQueriesQueryLane(
     () => Person.create({ identifier: Identifier.create("query-cardinality") }),
     (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.equal(error.name, "QueryV2Error");
-      const diagnostic = error as QueryV2Error;
+      assert.equal(error.name, "PlanError");
+      const diagnostic = error as PlanError;
       assert.equal(diagnostic.category, "invalid_input");
       assert.equal(diagnostic.code, "missing_required_field");
       return true;

@@ -47,7 +47,7 @@ from type_bridge_core import (
     RemoteModelQueryContext,
     ValidatedMatchResultHandle,
     ValidatedMatchRowHandle,
-    query_v2_authority_from_schema_authority,
+    plan_authority_from_schema_authority,
     query_v2_prepare_remote_model_count,
     query_v2_prepare_remote_model_exists,
     query_v2_prepare_remote_model_page,
@@ -58,7 +58,7 @@ from type_bridge_core import (
     query_v2_remote_model_context_with_resources,
 )
 from type_bridge_core import (
-    QueryV2Authority as _QueryV2Authority,
+    PlanAuthority as _PlanAuthority,
 )
 from type_bridge_core import (
     Transaction as StagedTransaction,
@@ -103,7 +103,7 @@ def _exact_projection(model: type[ModelBase]) -> PyRuntimeProjection:
 
 
 _package_projection: PyRuntimeProjection | None = None
-_package_query_authority: _QueryV2Authority = query_v2_authority_from_schema_authority(
+_package_query_authority: _PlanAuthority = plan_authority_from_schema_authority(
     SCHEMA_AUTHORITY_BYTES,
     SEMANTIC_SCHEMA_FINGERPRINT_JSON.encode("utf-8"),
 )
@@ -122,7 +122,7 @@ def _installed_projection() -> PyRuntimeProjection:
     return _package_projection
 
 
-def _installed_query_authority() -> _QueryV2Authority:
+def _installed_query_authority() -> _PlanAuthority:
     return _package_query_authority
 
 

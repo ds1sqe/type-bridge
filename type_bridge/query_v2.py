@@ -8,13 +8,13 @@ AST, serialize plans, or repeat contract validation.
 from type_bridge_core import (
     AuthoredQueryInvocation,
     AuthoredQueryPlan,
+    PlanAuthority,
     QueryPlanBuilder,
-    QueryV2Authority,
 )
 
 __all__ = [
     "AuthoredQueryInvocation",
     "AuthoredQueryPlan",
     "QueryPlanBuilder",
-    "QueryV2Authority",
+    "PlanAuthority",
 ]

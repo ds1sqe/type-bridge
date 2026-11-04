@@ -12,7 +12,7 @@ import type {
 // Load the built package like the shared helpers do, so classes are shared.
 const packageRoot = process.env["TYPE_BRIDGE_NODE_PACKAGE_ROOT"] ?? process.cwd();
 const requirePackage = createRequire(import.meta.url);
-const { Plan, QueryV2Authority, QueryV2Error, Database } = requirePackage(packageRoot) as typeof import(
+const { Plan, PlanAuthority, PlanError, Database } = requirePackage(packageRoot) as typeof import(
   "../../typescript/public.js"
 );
 const { ProxyConnection } = requirePackage(
@@ -20,7 +20,7 @@ const { ProxyConnection } = requirePackage(
 ) as typeof import("../../typescript/runtime-projection.js");
 
 type Plan = InstanceType<typeof Plan>;
-type QueryV2Authority = InstanceType<typeof QueryV2Authority>;
+type PlanAuthority = InstanceType<typeof PlanAuthority>;
 
 // A fresh instance of the live fixture `sdk_staged_fixture_serves_until_stopped`
 // (crates/server/tests/v3_staged_integration_tests.rs), separate from the one
@@ -71,7 +71,7 @@ const Account = model<"account">("entity", "account");
 const Purchase = model<"purchase">("relation", "purchase");
 
 /** The one-query purchase, built in TypeScript. */
-function purchase(authority: QueryV2Authority, order: string): Plan {
+function purchase(authority: PlanAuthority, order: string): Plan {
   const plan = Plan.builder();
   const item = plan.exact(Item);
   const buyer = plan.exact(Account);
@@ -99,8 +99,8 @@ function purchase(authority: QueryV2Authority, order: string): Plan {
   return plan.build(authority);
 }
 
-function authorityFor(live: Fixture): QueryV2Authority {
-  return new QueryV2Authority(
+function authorityFor(live: Fixture): PlanAuthority {
+  return new PlanAuthority(
     Buffer.from(live.declared_hex, "hex"),
     live.proxies.purchase.scope,
     live.profile,
@@ -187,7 +187,7 @@ test("two TypeScript transactions race for the last item and never oversell", { 
   assert.equal(bought.length, 1, `exactly one racer buys: ${JSON.stringify(outcomes)}`);
   for (const outcome of outcomes) {
     if (outcome instanceof Error) {
-      assert.ok(outcome instanceof QueryV2Error, String(outcome));
+      assert.ok(outcome instanceof PlanError, String(outcome));
       assert.ok(outcome.failure, `the loser carries a typed failure: ${outcome.code}`);
     } else {
       assert.equal((outcome as { kind: string }).kind, "matched");

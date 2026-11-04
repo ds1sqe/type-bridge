@@ -4,13 +4,13 @@ import path = require("node:path");
 import test = require("node:test");
 
 import { Plan, PlanRecording } from "../../typescript/plan.js";
-import { QueryV2Authority } from "../../typescript/public.js";
+import { PlanAuthority } from "../../typescript/public.js";
 import { QueryLimits } from "../../typescript/runtime-projection.js";
 
 const fixture = JSON.parse(fs.readFileSync(path.resolve("tests/fixtures/plan-builder-purchase.json"), "utf8")) as {
   declared_hex: string; scope: string; profile: string;
 };
-const authority = new QueryV2Authority(Buffer.from(fixture.declared_hex, "hex"), fixture.scope, fixture.profile);
+const authority = new PlanAuthority(Buffer.from(fixture.declared_hex, "hex"), fixture.scope, fixture.profile);
 const Item = { typeKey: '{"kind":"entity","label":"item"}' };
 
 function match(): void {

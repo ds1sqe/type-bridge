@@ -11,7 +11,7 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { Plan, QueryV2Error } from "@type-bridge/node";
+import { Plan, PlanError } from "@type-bridge/node";
 import { installRuntimeProjection } from "@type-bridge/node/runtime-projection";
 import { loadNative } from "../../crates/node/dist/native.js";
 
@@ -192,7 +192,7 @@ assert.deepEqual(scorePlan().canonicalBytes(), scorePlan().canonicalBytes());
   const robot = plan.exact(Robot);
   plan.update(robot, Robot.robotId, 1n);
   // A key field is immutable; build reports it.
-  assert.throws(() => plan.build(schemaAuthority()), QueryV2Error);
+  assert.throws(() => plan.build(schemaAuthority()), PlanError);
 }
 
 const event = Event.create({ subject: person });
@@ -710,7 +710,7 @@ try {
   await assert.rejects(
     generatedRemoteSession.query(generatedRemotePerson).one(),
     (error) => {
-      assert(error instanceof QueryV2Error);
+      assert(error instanceof PlanError);
       assert.equal(error.category, "result_decode");
       assert.equal(error.sdkCategory, "integrity");
       assert.equal(error.queryCategory, "result_decode");
@@ -805,7 +805,7 @@ const cancelledRemoteExecution = cancelledRemoteSession
 await Promise.resolve();
 transportCancellation.cancel();
 await assert.rejects(cancelledRemoteExecution, (error) => {
-  assert(error instanceof QueryV2Error);
+  assert(error instanceof PlanError);
   assert.equal(error.category, "cancelled");
   assert.equal(error.code, "provider_cancelled");
   return true;
@@ -833,7 +833,7 @@ let beforeExchangeDiagnostic;
 await assert.rejects(
   beforeExchangeSession.query(beforeExchangePerson).one(),
   (error) => {
-    assert(error instanceof QueryV2Error);
+    assert(error instanceof PlanError);
     beforeExchangeDiagnostic = error;
     assert.equal(error.sdkCategory, "cancelled");
     assert.equal(error.code, "provider_cancelled");
@@ -857,7 +857,7 @@ const defaultExchangeSession = new QuerySession(
 );
 await assert.rejects(
   defaultExchangeSession.query(defaultExchangeSession.exact(Person)).rows({ limit: 1n }),
-  (error) => error instanceof QueryV2Error,
+  (error) => error instanceof PlanError,
 );
 defaultExchangeSession.close();
 assert.equal(defaultExchangeLimits.length, 1);
@@ -925,7 +925,7 @@ async function remoteExampleOutcome(legacy) {
       assert.fail(`the offline exchange cannot produce rows: ${rows}`);
     }
   } catch (error) {
-    assert.ok(error instanceof QueryV2Error, error);
+    assert.ok(error instanceof PlanError, error);
     assert.equal(sent.length, 1);
     return [sent[0], error.category, error.code];
   }
@@ -995,7 +995,7 @@ let duringDecodeDiagnostic;
 await assert.rejects(
   duringDecodeSession.query(duringDecodePerson).one(),
   (error) => {
-    assert(error instanceof QueryV2Error);
+    assert(error instanceof PlanError);
     duringDecodeDiagnostic = error;
     assert.equal(error.sdkCategory, "cancelled");
     assert.equal(error.code, "provider_cancelled");
@@ -1539,7 +1539,7 @@ assert(remoteLifecycleClone.clone());
 async function rejectsClosedRemoteTerminal(invoke) {
   const exchangesBefore = generatedRemoteExchanges;
   await assert.rejects(async () => invoke(), (error) => {
-    assert(error instanceof QueryV2Error);
+    assert(error instanceof PlanError);
     assert.equal(error.code, "query_resource_closed");
     return true;
   });

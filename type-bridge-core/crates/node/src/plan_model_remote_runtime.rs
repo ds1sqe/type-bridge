@@ -23,7 +23,7 @@ use crate::match_runtime::{
     NodeValidatedMatchResultHandle, borrow_reduce_terms, napi_match_error, napi_sdk_diagnostic,
     napi_target_error, order_handles, parse_enum, reduce_terms, unknown_u64,
 };
-use crate::plan_runtime::{NodeQueryV2Authority, bounded_response_snapshot, non_shared_buffer};
+use crate::plan_runtime::{NodePlanAuthority, bounded_response_snapshot, non_shared_buffer};
 
 /// A proxy connection whose exchange JavaScript performs, with the policy
 /// and cancellation owner its terminals run under.
@@ -37,7 +37,7 @@ pub struct NodeRemoteModelQueryContext {
 impl NodeRemoteModelQueryContext {
     fn new(
         env: &Env,
-        authority: &NodeQueryV2Authority,
+        authority: &NodePlanAuthority,
         advertisement: Unknown,
         answer_limits: QueryExecutionResourceLimits,
         resources: QueryExecutionResourceLimits,
@@ -201,7 +201,7 @@ impl NodePendingRemoteModelQuery {
 #[napi(js_name = "queryV2RemoteModelContextWithResources")]
 pub fn query_v2_remote_model_context_with_resources(
     env: Env,
-    authority: &NodeQueryV2Authority,
+    authority: &NodePlanAuthority,
     advertisement: Unknown,
     resources: &NodeQueryExecutionResources,
     cancellation: &NodeQueryCancellation,

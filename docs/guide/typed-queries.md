@@ -58,10 +58,10 @@ silently replace the generated package's authority:
 import {
   QueryPlanBuilder,
   type AuthoredQueryInvocation,
-  type QueryV2Authority,
+  type PlanAuthority,
 } from "@type-bridge/node/query-v2";
 
-function authorInvocation(authority: QueryV2Authority): AuthoredQueryInvocation {
+function authorInvocation(authority: PlanAuthority): AuthoredQueryInvocation {
   const builder = new QueryPlanBuilder(authority);
   const person = builder.binding("person");
   const name = builder.binding("name");
@@ -81,7 +81,7 @@ function authorInvocation(authority: QueryV2Authority): AuthoredQueryInvocation 
 
 Builder transitions perform no provider or network I/O. Finalization is
 terminal, and a rejected transition leaves the builder at its preceding valid
-state. Explicit construction of `QueryV2Authority` remains a low-level API for
+state. Explicit construction of `PlanAuthority` remains a low-level API for
 integrators that already own canonical declared-schema bytes and their trust
 policy. `schema export-declared` is retained only as a debug/compatibility tool;
 generated sessions do not call it, read its JSON, or use it as an authoring
@@ -225,7 +225,7 @@ rows = await session.query(person).rows(limit=50)
 ```
 
 Both connections reconstruct Query V2 authority from private, verified package
-evidence; no authority file or low-level `QueryV2Authority` argument is
+evidence; no authority file or low-level `PlanAuthority` argument is
 involved. `connect_proxy` fetches the advertisement over the configured TLS
 connection, or takes a pinned `advertisement=`; `headers=` carries caller
 authentication. `ExchangeConnection(advertisement, exchange)` takes
@@ -809,7 +809,7 @@ assert bought.result() in (Matched(1), Matched(0))
 ```
 
 Calls never fail on content; `build` raises the first invalid call as a
-`QueryV2Error` with `.code` (for example `query_plan_builder_duplicate_name`).
+`PlanError` with `.code` (for example `query_plan_builder_duplicate_name`).
 A handle from another builder raises `TypeError` at once. A generated
 package's `schema_authority()` is its embedded, verified authority.
 

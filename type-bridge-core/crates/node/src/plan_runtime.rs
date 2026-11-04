@@ -39,26 +39,26 @@ fn binding_diagnostic(
 
 /// Opaque prepared-query schema authority handle.
 #[napi]
-pub struct NodeQueryV2Authority {
+pub struct NodePlanAuthority {
     pub(crate) authority: Arc<QueryAuthority>,
 }
 
-impl NodeQueryV2Authority {
+impl NodePlanAuthority {
     pub(crate) fn authority(&self) -> Arc<QueryAuthority> {
         Arc::clone(&self.authority)
     }
 }
 
 #[napi]
-impl NodeQueryV2Authority {
+impl NodePlanAuthority {
     /// Derive an authority over the same schema whose plans are authored,
     /// decoded, and validated under `query_limits`.
     #[napi(js_name = "withQueryLimits")]
     pub fn with_query_limits(
         &self,
         query_limits: &crate::match_runtime::NodeQueryLimits,
-    ) -> NodeQueryV2Authority {
-        NodeQueryV2Authority {
+    ) -> NodePlanAuthority {
+        NodePlanAuthority {
             authority: Arc::new(self.authority.rebound_with_limits(query_limits.inner())),
         }
     }
@@ -302,13 +302,13 @@ pub(crate) fn non_shared_buffer(env: &Env, value: Unknown) -> napi::Result<Buffe
 }
 
 /// Build one authority from canonical declared-schema bytes.
-#[napi(js_name = "queryV2Authority")]
-pub fn query_v2_authority(
+#[napi(js_name = "planAuthority")]
+pub fn plan_authority(
     env: Env,
     declared_schema: Unknown,
     scope: Unknown,
     profile: Unknown,
-) -> napi::Result<NodeQueryV2Authority> {
+) -> napi::Result<NodePlanAuthority> {
     let declared_schema = non_shared_buffer(&env, declared_schema)?;
     let scope = bounded_string(
         &env,
@@ -328,7 +328,7 @@ pub fn query_v2_authority(
         &profile,
     )
     .map_err(|diagnostic| napi_error(&diagnostic))?;
-    Ok(NodeQueryV2Authority {
+    Ok(NodePlanAuthority {
         authority: Arc::new(authority),
     })
 }
@@ -372,10 +372,10 @@ pub(crate) fn schema_authority_diagnostic(error: &SchemaAuthorityError) -> Diagn
     binding_diagnostic(category, code, message)
 }
 
-fn build_query_v2_authority_from_schema_authority(
+fn build_plan_authority_from_schema_authority(
     schema_authority: &[u8],
     semantic_fingerprint: &[u8],
-) -> Result<NodeQueryV2Authority, Diagnostic> {
+) -> Result<NodePlanAuthority, Diagnostic> {
     let verified =
         decode_schema_authority(schema_authority, &schema_authority_capability_vocabulary())
             .map_err(|error| schema_authority_diagnostic(&error))?;
@@ -406,18 +406,18 @@ fn build_query_v2_authority_from_schema_authority(
         verified.managed_scope().id().as_str(),
         verified.semantic_profile().id().as_str(),
     )?;
-    Ok(NodeQueryV2Authority {
+    Ok(NodePlanAuthority {
         authority: Arc::new(authority),
     })
 }
 
 /// Verify one generated package's complete schema-authority envelope.
-#[napi(js_name = "queryV2AuthorityFromSchemaAuthority")]
-pub fn query_v2_authority_from_schema_authority(
+#[napi(js_name = "planAuthorityFromSchemaAuthority")]
+pub fn plan_authority_from_schema_authority(
     env: Env,
     schema_authority: Unknown,
     semantic_fingerprint: Unknown,
-) -> napi::Result<NodeQueryV2Authority> {
+) -> napi::Result<NodePlanAuthority> {
     let schema_authority = bounded_string(
         &env,
         schema_authority,
@@ -430,7 +430,7 @@ pub fn query_v2_authority_from_schema_authority(
         MAX_CANONICAL_BYTES,
         schema_authority_too_large,
     )?;
-    build_query_v2_authority_from_schema_authority(
+    build_plan_authority_from_schema_authority(
         schema_authority.as_bytes(),
         semantic_fingerprint.as_bytes(),
     )
@@ -438,14 +438,14 @@ pub fn query_v2_authority_from_schema_authority(
 }
 
 /// Build a local-only authority for a database with no migration controls.
-#[napi(js_name = "queryV2QueryOnlyAuthority")]
-pub fn query_v2_query_only_authority(
+#[napi(js_name = "planQueryOnlyAuthority")]
+pub fn plan_query_only_authority(
     env: Env,
     database: &NodeRustDatabase,
     declared_schema: Unknown,
     scope: Unknown,
     profile: Unknown,
-) -> napi::Result<NodeQueryV2Authority> {
+) -> napi::Result<NodePlanAuthority> {
     let declared_schema = non_shared_buffer(&env, declared_schema)?;
     let scope = bounded_string(
         &env,
@@ -467,14 +467,14 @@ pub fn query_v2_query_only_authority(
         &database,
     )
     .map_err(|diagnostic| napi_error(&diagnostic))?;
-    Ok(NodeQueryV2Authority {
+    Ok(NodePlanAuthority {
         authority: Arc::new(authority),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_response_snapshot, build_query_v2_authority_from_schema_authority};
+    use super::{bounded_response_snapshot, build_plan_authority_from_schema_authority};
     use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
     use type_bridge_contract::codec::to_canonical_json;
     use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -514,13 +514,13 @@ mod tests {
     fn generated_authority_constructor_verifies_envelope_and_projection_binding() {
         let (authority, semantic) =
             generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  person: {}\n");
-        build_query_v2_authority_from_schema_authority(&authority, &semantic)
+        build_plan_authority_from_schema_authority(&authority, &semantic)
             .expect("verified generated authority installs");
 
         let (_, foreign_semantic) =
             generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  robot: {}\n");
         assert_eq!(
-            build_query_v2_authority_from_schema_authority(&authority, &foreign_semantic)
+            build_plan_authority_from_schema_authority(&authority, &foreign_semantic)
                 .err()
                 .expect("foreign projection fingerprint must fail")
                 .code()
@@ -528,7 +528,7 @@ mod tests {
             "generated_schema_authority_semantic_mismatch",
         );
         assert_eq!(
-            build_query_v2_authority_from_schema_authority(b"{", &semantic)
+            build_plan_authority_from_schema_authority(b"{", &semantic)
                 .err()
                 .expect("malformed envelope must fail")
                 .code()
@@ -536,7 +536,7 @@ mod tests {
             "malformed_canonical_json",
         );
         assert_eq!(
-            build_query_v2_authority_from_schema_authority(
+            build_plan_authority_from_schema_authority(
                 &vec![b' '; type_bridge_schema::MAX_SCHEMA_AUTHORITY_BYTES + 1],
                 &semantic,
             )

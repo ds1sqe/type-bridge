@@ -38,7 +38,7 @@ use type_bridge_orm::query_v2_builder::{
     query_builder_value_type,
 };
 
-use crate::plan_runtime::{PyQueryV2Authority, PythonString, value_error};
+use crate::plan_runtime::{PyPlanAuthority, PythonString, value_error};
 use type_bridge_orm::query_v2_prepared::query_v2_host_string_type_error;
 
 fn diagnostic<T>(result: Result<T, Diagnostic>) -> PyResult<T> {
@@ -298,19 +298,19 @@ fn invocation_rows(
 }
 
 /// Opaque authority identity carried by plans and invocations.
-#[pyclass(name = "_QueryV2AuthorityIdentity", frozen)]
-pub struct PyQueryV2AuthorityIdentity {
+#[pyclass(name = "_PlanAuthorityIdentity", frozen)]
+pub struct PyPlanAuthorityIdentity {
     inner: QueryAuthorityIdentity,
 }
 
 #[pymethods]
-impl PyQueryV2AuthorityIdentity {
+impl PyPlanAuthorityIdentity {
     fn same_authority(&self, other: &Self) -> bool {
         self.inner == other.inner
     }
 
     fn __repr__(&self) -> &'static str {
-        "_QueryV2AuthorityIdentity([OPAQUE])"
+        "_PlanAuthorityIdentity([OPAQUE])"
     }
 }
 
@@ -392,8 +392,8 @@ impl PyAuthoredQueryInvocation {
     }
 
     #[getter]
-    fn authority_identity(&self) -> PyQueryV2AuthorityIdentity {
-        PyQueryV2AuthorityIdentity {
+    fn authority_identity(&self) -> PyPlanAuthorityIdentity {
+        PyPlanAuthorityIdentity {
             inner: self.inner.authority_identity().clone(),
         }
     }
@@ -448,8 +448,8 @@ impl PyAuthoredQueryPlan {
     }
 
     #[getter]
-    fn authority_identity(&self) -> PyQueryV2AuthorityIdentity {
-        PyQueryV2AuthorityIdentity {
+    fn authority_identity(&self) -> PyPlanAuthorityIdentity {
+        PyPlanAuthorityIdentity {
             inner: self.inner.authority_identity().clone(),
         }
     }
@@ -516,7 +516,7 @@ impl PyQueryPlanBuilder {
 #[pymethods]
 impl PyQueryPlanBuilder {
     #[new]
-    fn new(authority: &PyQueryV2Authority) -> Self {
+    fn new(authority: &PyPlanAuthority) -> Self {
         Self {
             inner: QueryPlanBuilder::new(authority.authority()),
             owner_thread: thread::current().id(),
@@ -1008,7 +1008,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyQueryPlanBuilder>()?;
     m.add_class::<PyAuthoredQueryPlan>()?;
     m.add_class::<PyAuthoredQueryInvocation>()?;
-    m.add_class::<PyQueryV2AuthorityIdentity>()?;
+    m.add_class::<PyPlanAuthorityIdentity>()?;
     m.add_class::<PyQueryV2BindingHandle>()?;
     m.add_class::<PyQueryV2InputHandle>()?;
     m.add_class::<PyQueryV2OperandHandle>()?;

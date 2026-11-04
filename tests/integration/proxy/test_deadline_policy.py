@@ -12,7 +12,7 @@ from type_bridge_core import (
     ProxyConnection,
     PyDatabase,
     QueryExecutionResourceLimits,
-    query_v2_authority,
+    plan_authority,
 )
 
 from .test_staged_plan_builder import _purchase
@@ -30,9 +30,7 @@ def test_deadline_none_and_typed_timeout(transport: str) -> None:
     assert FIXTURE_DIR is not None
     live = json.loads((Path(FIXTURE_DIR) / "fixture.json").read_text())
     entry = live["entries"][f"python-{transport}"]
-    authority = query_v2_authority(
-        bytes.fromhex(live["declared_hex"]), entry["scope"], live["profile"]
-    )
+    authority = plan_authority(bytes.fromhex(live["declared_hex"]), entry["scope"], live["profile"])
     plan = _purchase(authority, "O1")
     arm = Path(entry["arm"])
     for timeout, delay in [(1_000, 2_000), (0, 61_000)]:

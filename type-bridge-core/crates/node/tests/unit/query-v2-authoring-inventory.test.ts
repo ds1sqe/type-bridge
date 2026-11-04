@@ -3,12 +3,12 @@ import fs = require("node:fs");
 import path = require("node:path");
 import test = require("node:test");
 
-import { QueryV2Error } from "../../typescript/index.js";
+import { PlanError } from "../../typescript/index.js";
 import {
   AuthoredQueryInvocation,
   AuthoredQueryPlan,
   QueryPlanBuilder,
-  QueryV2Authority,
+  PlanAuthority,
 } from "../../typescript/query-v2.js";
 
 type JsonRecord = Readonly<Record<string, unknown>>;
@@ -399,7 +399,7 @@ function executeStep(
 }
 
 function executePlan(
-  authority: QueryV2Authority,
+  authority: PlanAuthority,
   planCase: PlanCase,
 ): AuthoredQueryPlan {
   const builder = new QueryPlanBuilder(authority);
@@ -439,8 +439,8 @@ function invoke(
   return invocation;
 }
 
-function authority(): QueryV2Authority {
-  return new QueryV2Authority(
+function authority(): PlanAuthority {
+  return new PlanAuthority(
     declared,
     corpus.authority.scope,
     corpus.authority.profile,
@@ -567,7 +567,7 @@ test("public Node facade preserves every complete inventory diagnostic", () => {
         }
       },
       (error: unknown) => {
-        assert.ok(error instanceof QueryV2Error);
+        assert.ok(error instanceof PlanError);
         assert.deepEqual(
           {
             category: error.category,

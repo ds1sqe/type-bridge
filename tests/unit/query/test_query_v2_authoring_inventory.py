@@ -21,10 +21,10 @@ def _corpus() -> dict[str, Any]:
     return json.loads(_FIXTURE_PATH.read_text())
 
 
-def _authority(corpus: Mapping[str, Any]) -> public.QueryV2Authority:
+def _authority(corpus: Mapping[str, Any]) -> public.PlanAuthority:
     authority = corpus["authority"]
     declared = (_FIXTURE_DIRECTORY / authority["declared"]).read_bytes().removesuffix(b"\n")
-    return public.QueryV2Authority(
+    return public.PlanAuthority(
         declared,
         authority["scope"],
         authority["profile"],
@@ -220,7 +220,7 @@ def _execute_step(
 
 
 def _execute_plan(
-    authority: public.QueryV2Authority,
+    authority: public.PlanAuthority,
     case: Mapping[str, Any],
 ) -> public.AuthoredQueryPlan:
     builder = public.QueryPlanBuilder(authority)
@@ -243,7 +243,7 @@ def _invoke(
     return invocation
 
 
-def _diagnostic(error: native.QueryV2Error) -> dict[str, object]:
+def _diagnostic(error: native.PlanError) -> dict[str, object]:
     return {
         "category": error.category,
         "code": error.code,
@@ -324,7 +324,7 @@ def test_public_python_facade_preserves_every_complete_inventory_diagnostic() ->
     authority = _authority(corpus)
     plans = {case["id"]: _execute_plan(authority, case) for case in corpus["plans"]}
     for case in corpus["diagnostics"]:
-        with pytest.raises(native.QueryV2Error) as captured:
+        with pytest.raises(native.PlanError) as captured:
             if case["kind"] == "builder":
                 builder = public.QueryPlanBuilder(authority)
                 handles: dict[str, Any] = {}

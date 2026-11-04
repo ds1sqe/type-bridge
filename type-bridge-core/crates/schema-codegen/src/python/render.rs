@@ -226,23 +226,23 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
     }
     if stub {
         output.push_str(
-            "from collections.abc import Mapping\nfrom typing import Final\nfrom type_bridge_core import MigrationCatalog as MigrationCatalog\nfrom type_bridge_core import QueryV2Authority as _QueryV2Authority\n\n\
+            "from collections.abc import Mapping\nfrom typing import Final\nfrom type_bridge_core import MigrationCatalog as MigrationCatalog\nfrom type_bridge_core import PlanAuthority as _PlanAuthority\n\n\
              MIGRATION_HISTORY_RESOURCE: Final[str]\n\
              SEMANTIC_SCHEMA_FINGERPRINT_JSON: Final[str]\n\
              PROJECTION_FINGERPRINT_JSON: Final[str]\n\
              RUNTIME_PROJECTION_JSON: Final[str]\n\
              PLAYING_FACTS: Final[Mapping[str, object]]\n\n\
              def open_migration_catalog() -> MigrationCatalog: ...\n\
-             def schema_authority() -> _QueryV2Authority:\n\
+             def schema_authority() -> _PlanAuthority:\n\
              \x20\x20\x20\x20\"\"\"This package's verified schema authority; build plans with `plan.build(schema_authority())`.\"\"\"\n",
         );
     } else {
         output.push_str(
             "from pathlib import Path as _Path\n\
              from type_bridge_core import MigrationCatalog as MigrationCatalog\n\
-             from type_bridge_core import QueryV2Authority as _QueryV2Authority\n\
+             from type_bridge_core import PlanAuthority as _PlanAuthority\n\
              from type_bridge_core import open_migration_catalog as _open_migration_catalog\n\
-             from type_bridge_core import query_v2_authority_from_schema_authority as _query_v2_authority_from_schema_authority\n\
+             from type_bridge_core import plan_authority_from_schema_authority as _plan_authority_from_schema_authority\n\
              from ._authority import SCHEMA_AUTHORITY_BYTES as _SCHEMA_AUTHORITY_BYTES\n\
              from ._schema import PLAYING_FACTS as PLAYING_FACTS\n\
              from ._schema import PROJECTION_FINGERPRINT_JSON as PROJECTION_FINGERPRINT_JSON\n\
@@ -252,12 +252,12 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
              def open_migration_catalog() -> MigrationCatalog:\n\
              \x20\x20\x20\x20history = (_Path(__file__).parent / MIGRATION_HISTORY_RESOURCE).read_bytes()\n\
              \x20\x20\x20\x20return _open_migration_catalog(_SCHEMA_AUTHORITY_BYTES, history)\n\n\
-             _schema_authority: list[_QueryV2Authority] = []\n\n\
-             def schema_authority() -> _QueryV2Authority:\n\
+             _schema_authority: list[_PlanAuthority] = []\n\n\
+             def schema_authority() -> _PlanAuthority:\n\
              \x20\x20\x20\x20\"\"\"This package's verified schema authority; build plans with `plan.build(schema_authority())`.\"\"\"\n\
              \x20\x20\x20\x20if not _schema_authority:\n\
              \x20\x20\x20\x20\x20\x20\x20\x20_schema_authority.append(\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20_query_v2_authority_from_schema_authority(\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20_plan_authority_from_schema_authority(\n\
              \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20_SCHEMA_AUTHORITY_BYTES, SEMANTIC_SCHEMA_FINGERPRINT_JSON.encode(\"utf-8\")\n\
              \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20)\n\
              \x20\x20\x20\x20\x20\x20\x20\x20)\n\

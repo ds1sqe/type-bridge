@@ -6,7 +6,7 @@ import type {
   NativeRustTransactionContext,
 } from "./index.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
-import type { NativeQueryV2Authority } from "./query-v2-internals.js";
+import type { NativePlanAuthority } from "./plan-internals.js";
 import type {
   NativeProjectedFacadeProof,
   NativeProjectedManager,
@@ -455,7 +455,7 @@ export interface NativeStagedPlan { resultRefsJson(): string; }
 
 export interface NativePlan {
   explainJson(): string;
-  bindRows(authority: NativeQueryV2Authority, columns: number[][], rows: unknown[][]): NativePlan;
+  bindRows(authority: NativePlanAuthority, columns: number[][], rows: unknown[][]): NativePlan;
   scalarRowsJson(answerJson: string): string;
   canonicalBytes(): Uint8Array;
   fingerprint(): string;
@@ -499,9 +499,9 @@ export interface NativePlanBuilder {
   fetchHeld(thing: number, roles: string[], required: boolean[]): void;
   count(): void;
   exists(): void;
-  build(authority: NativeQueryV2Authority, matched?: boolean, models?: boolean): NativePlan;
-  buildStaged(authority: NativeQueryV2Authority, columns: number[][], rows: unknown[][], references: string): NativeStagedPlan;
-  buildSelected(authority: NativeQueryV2Authority, kind: string, thing: number | null, roles: string[], required: boolean[], columns: number[], projection?: NativeProjectionHandle | null, declared?: string | null, modelBindings?: number[] | null, modelTypes?: string[] | null): NativePlan;
+  build(authority: NativePlanAuthority, matched?: boolean, models?: boolean): NativePlan;
+  buildStaged(authority: NativePlanAuthority, columns: number[][], rows: unknown[][], references: string): NativeStagedPlan;
+  buildSelected(authority: NativePlanAuthority, kind: string, thing: number | null, roles: string[], required: boolean[], columns: number[], projection?: NativeProjectionHandle | null, declared?: string | null, modelBindings?: number[] | null, modelTypes?: string[] | null): NativePlan;
 }
 
 interface NativePlanBuilderModule {
@@ -567,7 +567,7 @@ export interface NativeProxyConnection {
 interface NativeProxyConnectionModule {
   NodeProxyConnection: {
     connect(
-      authority: ReturnType<NativeModule["queryV2Authority"]>,
+      authority: ReturnType<NativeModule["planAuthority"]>,
       endpoint: string,
       tlsMode: string,
       tlsRootCa: string | undefined,
@@ -632,7 +632,7 @@ interface NativeRemoteModelQueryModule {
   NodeQueryCancellation: new () => NativeQueryCancellation;
   NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
   queryV2RemoteModelContextWithResources(
-    authority: ReturnType<NativeModule["queryV2Authority"]>,
+    authority: ReturnType<NativeModule["planAuthority"]>,
     advertisement: Uint8Array,
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,
@@ -930,8 +930,8 @@ function protectedMethodDescriptor(
 function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModule {
   const maxCanonicalBytes = native.MAX_CANONICAL_BYTES;
   const maxEnvelopeBytes = native.MAX_REMOTE_ENVELOPE_BYTES;
-  const queryV2Authority = native.queryV2Authority.bind(native);
-  const queryV2QueryOnlyAuthority = native.queryV2QueryOnlyAuthority.bind(native);
+  const planAuthority = native.planAuthority.bind(native);
+  const planQueryOnlyAuthority = native.planQueryOnlyAuthority.bind(native);
   const queryV2ExecuteLocal = native.queryV2ExecuteLocal.bind(native);
   const queryV2RemoteCapabilities = native.queryV2RemoteCapabilities.bind(native);
   const queryV2PrepareRemote = native.queryV2PrepareRemote.bind(native);
@@ -953,11 +953,11 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
     native.queryV2PrepareRemoteModelReduceByFields.bind(native);
   const descriptors = Object.getOwnPropertyDescriptors(native);
 
-  descriptors["queryV2Authority"] = protectedMethodDescriptor(
+  descriptors["planAuthority"] = protectedMethodDescriptor(
     native,
-    "queryV2Authority",
+    "planAuthority",
     ((declaredSchema: Uint8Array, scope: string, profile: string) =>
-      queryV2Authority(
+      planAuthority(
         ownedByteSnapshot(declaredSchema, maxCanonicalBytes),
         scope,
         profile,
@@ -965,16 +965,16 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
       ...args: never[]
     ) => unknown,
   );
-  descriptors["queryV2QueryOnlyAuthority"] = protectedMethodDescriptor(
+  descriptors["planQueryOnlyAuthority"] = protectedMethodDescriptor(
     native,
-    "queryV2QueryOnlyAuthority",
+    "planQueryOnlyAuthority",
     ((
       database: NativeRustDatabase,
       declaredSchema: Uint8Array,
       scope: string,
       profile: string,
     ) =>
-      queryV2QueryOnlyAuthority(
+      planQueryOnlyAuthority(
         database,
         ownedByteSnapshot(declaredSchema, maxCanonicalBytes),
         scope,

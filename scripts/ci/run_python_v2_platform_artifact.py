@@ -44,9 +44,9 @@ from type_bridge.query_v2 import (
     AuthoredQueryInvocation,
     AuthoredQueryPlan,
     QueryPlanBuilder,
-    QueryV2Authority,
+    PlanAuthority,
 )
-from type_bridge_core import QueryV2Error
+from type_bridge_core import PlanError
 
 for module in (type_bridge, type_bridge_core):
     module_path = Path(module.__file__).resolve()
@@ -62,11 +62,11 @@ for module in (type_bridge, type_bridge_core):
 
 if QueryPlanBuilder is not type_bridge_core.QueryPlanBuilder:
     raise SystemExit("public QueryPlanBuilder is not the packaged native authority")
-if QueryV2Authority is not type_bridge_core.QueryV2Authority:
-    raise SystemExit("public QueryV2Authority is not the packaged native authority")
+if PlanAuthority is not type_bridge_core.PlanAuthority:
+    raise SystemExit("public PlanAuthority is not the packaged native authority")
 
 declared = declared_path.read_bytes().removesuffix(b"\n")
-authority = QueryV2Authority(
+authority = PlanAuthority(
     declared,
     "model-remote-parity",
     "typedb-3.12.1/v1",
@@ -107,7 +107,7 @@ if tuple(plan.required_capabilities) != tuple(sorted(plan.required_capabilities)
 
 try:
     builder.binding("after_finalize")
-except QueryV2Error as error:
+except PlanError as error:
     if error.code != "query_builder_finalized":
         raise SystemExit(f"unexpected finalized diagnostic: {error.code!r}") from error
 else:

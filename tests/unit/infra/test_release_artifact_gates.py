@@ -1169,7 +1169,7 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     for consumer in (python_live, node_live):
         assert "schema-authority.json" in consumer
         assert "SMOKE_AUTHORITY_B64" in consumer
-        assert "QueryV2Authority" not in consumer
+        assert "PlanAuthority" not in consumer
         assert "declared-schema.json" not in consumer
         assert "SMOKE_DECLARED_B64" not in consumer
         assert "SMOKE_SCOPE" not in consumer
@@ -1212,7 +1212,7 @@ def test_low_level_query_smokes_use_compiled_server_authority() -> None:
     )
     for path in consumers:
         source = path.read_text(encoding="utf-8")
-        assert "QueryV2Authority" in source
+        assert "PlanAuthority" in source
         assert "query-v2-binding-smoke" in source
         assert "type-bridge-cli" in source
         assert "schema-authority.json" in source

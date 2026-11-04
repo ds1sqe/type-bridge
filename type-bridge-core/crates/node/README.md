@@ -161,7 +161,7 @@ const rows = await remote.query(person).rows({ limit: 50n });
 ```
 
 Generated sessions never read a schema-authority file or accept a low-level
-`QueryV2Authority` argument. The generated package also re-exports
+`PlanAuthority` argument. The generated package also re-exports
 `ProxyConnection`, `ProxyConnectionOptions`, and `ProxyTlsMode` from
 `@type-bridge/node/runtime-projection`.
 
@@ -176,17 +176,17 @@ successful typed response. Authenticated structured failures instead use the pro
 zero or otherwise tiny success budget can still return the bound diagnostic
 explaining why no success could fit.
 
-The low-level `QueryV2Authority` constructor creates managed/offline authority
+The low-level `PlanAuthority` constructor creates managed/offline authority
 for prepared remote execution. For local execution against a database with no
 migration controls, bind a separate local-only handle:
 
 ```ts
 import {
-  QueryV2Authority,
+  PlanAuthority,
   queryV2ExecuteLocal,
 } from "@type-bridge/node";
 
-const localAuthority = QueryV2Authority.queryOnly(
+const localAuthority = PlanAuthority.queryOnly(
   database,
   trustedDeclaredSchemaBytes,
   managedScope,

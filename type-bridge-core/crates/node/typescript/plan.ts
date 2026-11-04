@@ -22,13 +22,13 @@
  *
  * Content errors (an invalid literal, a duplicate name, a field the thing
  * does not own) never throw from a builder call: the first one is thrown by
- * `build` as a `QueryV2Error`. Handles belong to the builder that created
+ * `build` as a `PlanError`. Handles belong to the builder that created
  * them; passing one to another builder throws a `TypeError` at once.
  *
  * @module
  */
 
-import type { AttributeValue, QueryV2Authority } from "./index.js";
+import type { AttributeValue, PlanAuthority } from "./index.js";
 import { loadNative } from "./native.js";
 import type {
   NativePlan,
@@ -36,7 +36,7 @@ import type {
   NativePlanBuilder,
   NativePlanOperand,
 } from "./native.js";
-import { queryV2AuthorityHandle, queryV2NativeCall } from "./query-v2-internals.js";
+import { planAuthorityHandle, planNativeCall } from "./plan-internals.js";
 import type { PlanAnswer } from "./staged-transaction.js";
 import { Expr, Value } from "./plan-values.js";
 import type { QueryLimits, InstalledRuntimeProjection, NativeAuthoredPlanResult } from "./runtime-projection.js";
@@ -447,7 +447,7 @@ export class PlanBuilder {
   readonly #native: NativePlanBuilder;
 
   constructor(options: PlanOptions = {}) {
-    this.#native = queryV2NativeCall(() => new (loadNative().NodePlanBuilder)(options.queryLimits?.nativeHandle()));
+    this.#native = planNativeCall(() => new (loadNative().NodePlanBuilder)(options.queryLimits?.nativeHandle()));
     nativeBuilders.set(this, this.#native);
     newThingOps.set(this, {
       thingField: (thing, token, value) => {
@@ -690,27 +690,27 @@ export class PlanBuilder {
 
   /**
    * Validate the program against `authority`, a generated package's
-   * `schemaAuthority()` or a `QueryV2Authority` over declared-schema bytes.
+   * `schemaAuthority()` or a `PlanAuthority` over declared-schema bytes.
    *
    * A plan with writes answers its matched row count, or the
    * {@link returning} rows. A read answers rows, or {@link count} /
-   * {@link exists}. Throws a `QueryV2Error` for the first invalid call, a
+   * {@link exists}. Throws a `PlanError` for the first invalid call, a
    * write plan that also asked for count or exists, or a plan the schema
    * rejects (for example a field the thing does not own, or a key update).
    */
-  build(authority: QueryV2Authority): Plan {
-    const native = queryV2AuthorityHandle(authority);
+  build(authority: PlanAuthority): Plan {
+    const native = planAuthorityHandle(authority);
     if (native === undefined) {
-      throw new TypeError("PlanBuilder.build requires a type-bridge QueryV2Authority");
+      throw new TypeError("PlanBuilder.build requires a type-bridge PlanAuthority");
     }
-    const plan = new Plan(queryV2NativeCall(() => this.#native.build(native)));
+    const plan = new Plan(planNativeCall(() => this.#native.build(native)));
     planBindings.set(plan, { builder: this, authority, encode: undefined });
     return plan;
   }
   /** Finalize templates with absent reference cells for stageStack. */
-  buildStaged(authority: QueryV2Authority, rows: readonly (readonly PlanInputValue<unknown>[])[], references: readonly StagedResultRef[] = []): StagedPlan {
-    const native = queryV2AuthorityHandle(authority);
-    if (native === undefined) throw new TypeError("PlanBuilder.buildStaged requires a type-bridge QueryV2Authority");
+  buildStaged(authority: PlanAuthority, rows: readonly (readonly PlanInputValue<unknown>[])[], references: readonly StagedResultRef[] = []): StagedPlan {
+    const native = planAuthorityHandle(authority);
+    if (native === undefined) throw new TypeError("PlanBuilder.buildStaged requires a type-bridge PlanAuthority");
     const columns: number[][] = [];
     const values: unknown[][] = [];
     for (const row of rows) {
@@ -719,7 +719,7 @@ export class PlanBuilder {
       values.push(cells.map(([, value]) => value));
     }
     const refs = references.map(reference => ({ input: this.#index(reference.input), source_plan: reference.sourcePlan, source_column: reference.sourceColumn, expected_types: reference.expectedTypes.map(model => JSON.parse(model.typeKey) as unknown) }));
-    return new StagedPlan(queryV2NativeCall(() => this.#native.buildStaged(native, columns, values, JSON.stringify(refs))));
+    return new StagedPlan(planNativeCall(() => this.#native.buildStaged(native, columns, values, JSON.stringify(refs))));
   }
 
 }
@@ -728,7 +728,7 @@ const plans = new WeakMap<object, NativePlan>();
 const decoders = new WeakMap<object, (answerJson: string, projection?: NativeAuthoredPlanResult) => unknown>();
 const decoderFactories = new WeakMap<object, (plan: NativePlan, answerJson: string, projection?: NativeAuthoredPlanResult) => unknown>();
 type ScalarEncoder = (kind: PlanValueType, value: unknown) => unknown;
-const planBindings = new WeakMap<object, { builder: PlanBuilder; authority: QueryV2Authority; encode: ScalarEncoder | undefined }>();
+const planBindings = new WeakMap<object, { builder: PlanBuilder; authority: PlanAuthority; encode: ScalarEncoder | undefined }>();
 
 /** @internal The native program behind `plan`, for staging. */
 export function nativePlan(plan: Plan<unknown>): NativePlan {
@@ -791,18 +791,18 @@ export class Plan<R = PlanAnswer> {
   /** The plan's canonical `query-plan/v3` bytes, identical in every SDK. */
   canonicalBytes(): Uint8Array {
     const native = nativePlan(this);
-    return queryV2NativeCall(() => native.canonicalBytes());
+    return planNativeCall(() => native.canonicalBytes());
   }
 
   /** Exact executed statements. Given values are omitted; embedded plan constants remain. */
   explain(): PlanExplanation {
-    return queryV2NativeCall(() => JSON.parse(nativePlan(this).explainJson()) as PlanExplanation);
+    return planNativeCall(() => JSON.parse(nativePlan(this).explainJson()) as PlanExplanation);
   }
 
   /** The plan fingerprint digest, hex encoded. */
   fingerprint(): string {
     const native = nativePlan(this);
-    return queryV2NativeCall(() => native.fingerprint());
+    return planNativeCall(() => native.fingerprint());
   }
 
   /** Whether the plan writes, which makes an inferred transaction kind `write`. */
@@ -832,9 +832,9 @@ export class Plan<R = PlanAnswer> {
       columns.push(indexes);
       values.push(cells);
     }
-    const authority = queryV2AuthorityHandle(binding.authority);
+    const authority = planAuthorityHandle(binding.authority);
     if (authority === undefined) throw new TypeError("the template has no generated schema authority");
-    const native = queryV2NativeCall(() => nativePlan(this).bindRows(authority, columns, values));
+    const native = planNativeCall(() => nativePlan(this).bindRows(authority, columns, values));
     const result = new Plan<R>(native);
     const factory = decoderFactories.get(this);
     if (factory !== undefined) {
@@ -902,7 +902,7 @@ export class PlanTemplate {
 export class PlanRecording {
   /** @internal */
   readonly builder: PlanBuilder;
-  #authority: QueryV2Authority | undefined;
+  #authority: PlanAuthority | undefined;
   #projection: InstalledRuntimeProjection | undefined;
   #decodeRows: ((projection: NativeAuthoredPlanResult) => unknown[][]) | undefined;
   #decodeScalars: ((plan: NativePlan, answerJson: string) => unknown[][]) | undefined;
@@ -919,7 +919,7 @@ export class PlanRecording {
   }
 
   /** @internal One generated package supplies the authority for a recording. */
-  use(authority: QueryV2Authority, decodeScalars?: (plan: NativePlan, answerJson: string) => unknown[][], encodeScalar?: ScalarEncoder, projection?: InstalledRuntimeProjection, decodeRows?: (projection: NativeAuthoredPlanResult) => unknown[][]): void {
+  use(authority: PlanAuthority, decodeScalars?: (plan: NativePlan, answerJson: string) => unknown[][], encodeScalar?: ScalarEncoder, projection?: InstalledRuntimeProjection, decodeRows?: (projection: NativeAuthoredPlanResult) => unknown[][]): void {
     if (this.#authority !== undefined && this.#authority !== authority) {
       throw contextError("plan_schema_mismatch", "one plan uses one generated schema package");
     }
@@ -996,9 +996,9 @@ export class PlanRecording {
       if (handle === undefined || handle.builder !== this.builder) throw new TypeError("foreign plan value");
       return handle.index;
     });
-    const authority = queryV2AuthorityHandle(this.#authority);
+    const authority = planAuthorityHandle(this.#authority);
     if (authority === undefined) throw new TypeError("build requires a generated schema authority");
-    const built = queryV2NativeCall(() => native.buildSelected(authority, selection.kind, selection.thing ?? null, roles.map((role) => role.role), roles.map((role) => role.required), columns, this.#projection?.nativeHandle() ?? null, selection.declared ?? null, selection.modelSlots?.map((slot) => slot.binding) ?? null, selection.modelSlots?.map((slot) => slot.declared) ?? null));
+    const built = planNativeCall(() => native.buildSelected(authority, selection.kind, selection.thing ?? null, roles.map((role) => role.role), roles.map((role) => role.required), columns, this.#projection?.nativeHandle() ?? null, selection.declared ?? null, selection.modelSlots?.map((slot) => slot.binding) ?? null, selection.modelSlots?.map((slot) => slot.declared) ?? null));
     plans.set(result, built);
     const decode = (native: NativePlan, answerJson: string, projection?: NativeAuthoredPlanResult): unknown => {
       if (selection.decode !== undefined) return selection.decode(native, answerJson, projection);
@@ -1020,7 +1020,7 @@ export interface PlanModelAuthoring<M> {
   readonly model: PlanModelToken;
   readonly projection: () => InstalledRuntimeProjection;
   readonly decodeRows: (projection: NativeAuthoredPlanResult) => unknown[][];
-  readonly authority: () => QueryV2Authority;
+  readonly authority: () => PlanAuthority;
   readonly isFieldToken: (token: object) => boolean;
   readonly fields: Readonly<Record<string, {
     readonly token: PlanFieldToken;

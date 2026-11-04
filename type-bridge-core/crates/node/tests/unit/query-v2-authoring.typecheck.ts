@@ -1,10 +1,10 @@
 import {
   AuthoredQueryPlan,
   QueryPlanBuilder,
-  QueryV2Authority,
+  PlanAuthority,
 } from "../../typescript/query-v2.js";
 
-function completeVocabulary(authority: QueryV2Authority): AuthoredQueryPlan {
+function completeVocabulary(authority: PlanAuthority): AuthoredQueryPlan {
   const builder = new QueryPlanBuilder(authority);
   const person = builder.binding("person");
   const friend = builder.binding("friend");
@@ -89,7 +89,7 @@ function completeVocabulary(authority: QueryV2Authority): AuthoredQueryPlan {
   return builder.finalizeRows([person, aggregate]);
 }
 
-function localFunctionAndDocuments(authority: QueryV2Authority): AuthoredQueryPlan {
+function localFunctionAndDocuments(authority: PlanAuthority): AuthoredQueryPlan {
   const builder = new QueryPlanBuilder(authority);
   const localPerson = builder.binding("local_person");
   const localName = builder.binding("local_name");
@@ -122,7 +122,7 @@ function localFunctionAndDocuments(authority: QueryV2Authority): AuthoredQueryPl
   return builder.finalizeDocuments([scalar, names]);
 }
 
-declare const authority: QueryV2Authority;
+declare const authority: PlanAuthority;
 const authored: AuthoredQueryPlan = completeVocabulary(authority);
 const documents: AuthoredQueryPlan = localFunctionAndDocuments(authority);
 const bytes: Uint8Array = authored.canonicalBytes;

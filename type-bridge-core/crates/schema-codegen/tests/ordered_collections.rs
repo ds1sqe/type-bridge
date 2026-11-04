@@ -1151,7 +1151,7 @@ import * as Runtime from "./generated/dist/runtime.js";
 import * as ForeignRuntime from "./foreign/dist/runtime.js";
 
 const require = createRequire(import.meta.url);
-const { QueryV2Error } = require("@type-bridge/node");
+const { PlanError } = require("@type-bridge/node");
 const Native = require("./node_modules/@type-bridge/node/type_bridge_node.node");
 const Handles = require("./node_modules/@type-bridge/node/dist/runtime-handles.js");
 
@@ -1251,7 +1251,7 @@ const temporalLinkDocument = (iid, playerIid) => ({
 
 const diagnostic = (error) => {
   assert.ok(error instanceof Error);
-  if (error instanceof QueryV2Error) {
+  if (error instanceof PlanError) {
     return { code: error.code, sdk_category: error.sdkCategory, path: error.path };
   }
   return JSON.parse(error.message);

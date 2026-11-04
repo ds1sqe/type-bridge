@@ -23,7 +23,7 @@ const validDiagnostic = Object.freeze({
   },
 });
 
-test("QueryV2Error takes the Rust diagnostic JSON forms as given", async (context) => {
+test("PlanError takes the Rust diagnostic JSON forms as given", async (context) => {
   const nativePath = process.env["TYPE_BRIDGE_NODE_NATIVE_PATH"];
   assert.ok(nativePath, "native test path");
 
@@ -31,23 +31,23 @@ test("QueryV2Error takes the Rust diagnostic JSON forms as given", async (contex
   // facade so this test can exercise its native-error projection directly.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const raw = require(nativePath) as Record<string, NativeCall>;
-  const original = raw["queryV2Authority"];
-  assert.ok(original, "raw queryV2Authority");
+  const original = raw["planAuthority"];
+  assert.ok(original, "raw planAuthority");
   let diagnostic: unknown = validDiagnostic;
-  raw["queryV2Authority"] = (): never => {
+  raw["planAuthority"] = (): never => {
     throw new Error(JSON.stringify(diagnostic));
   };
   context.after(() => {
-    raw["queryV2Authority"] = original;
+    raw["planAuthority"] = original;
   });
 
-  const { QueryV2Authority, QueryV2Error } =
+  const { PlanAuthority, PlanError } =
     await import("../../typescript/index.js");
   const invoke = () =>
-    new QueryV2Authority(Buffer.from([0]), "scope", "profile");
+    new PlanAuthority(Buffer.from([0]), "scope", "profile");
 
   assert.throws(invoke, (error: unknown) => {
-    assert.ok(error instanceof QueryV2Error);
+    assert.ok(error instanceof PlanError);
     assert.equal(error.category, validDiagnostic.category);
     assert.equal(error.sdkCategory, validDiagnostic.sdk_category);
     assert.equal(error.queryCategory, validDiagnostic.query_category);
@@ -63,7 +63,7 @@ test("QueryV2Error takes the Rust diagnostic JSON forms as given", async (contex
     validDiagnostic;
   diagnostic = contract;
   assert.throws(invoke, (error: unknown) => {
-    assert.ok(error instanceof QueryV2Error);
+    assert.ok(error instanceof PlanError);
     assert.equal(error.category, contract.category);
     assert.equal(error.sdkCategory, contract.category);
     assert.equal(error.queryCategory, contract.category);
@@ -80,7 +80,7 @@ test("QueryV2Error takes the Rust diagnostic JSON forms as given", async (contex
     diagnostic = payload;
     assert.throws(invoke, (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.ok(!(error instanceof QueryV2Error));
+      assert.ok(!(error instanceof PlanError));
       assert.equal(error.message, JSON.stringify(payload));
       return true;
     });

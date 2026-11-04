@@ -4,26 +4,26 @@ from __future__ import annotations
 
 from typing import Literal, assert_type
 
-from type_bridge_core import QueryV2Error
+from type_bridge_core import PlanError
 
 from type_bridge.query_v2 import (
     AuthoredQueryInvocation,
     AuthoredQueryPlan,
+    PlanAuthority,
     QueryPlanBuilder,
-    QueryV2Authority,
 )
 
 
 def positive_query_v2_authoring(
     declared_schema: bytes,
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
 ) -> None:
-    constructed = QueryV2Authority(
+    constructed = PlanAuthority(
         declared_schema,
         "typecheck-query-v2",
         "typedb-3.12.1/v1",
     )
-    assert_type(constructed, QueryV2Authority)
+    assert_type(constructed, PlanAuthority)
 
     builder = QueryPlanBuilder(authority)
     person = builder.binding("person")
@@ -122,7 +122,7 @@ def positive_query_v2_authoring(
     assert_type(plan.exists(()), AuthoredQueryInvocation)
 
 
-def positive_query_v2_documents(authority: QueryV2Authority) -> AuthoredQueryPlan:
+def positive_query_v2_documents(authority: PlanAuthority) -> AuthoredQueryPlan:
     builder = QueryPlanBuilder(authority)
     person = builder.binding("person")
     builder.match((builder.isa(person, "entity", "person", False),))
@@ -133,7 +133,7 @@ def positive_query_v2_documents(authority: QueryV2Authority) -> AuthoredQueryPla
     return plan
 
 
-def positive_query_v2_structured_diagnostic(error: QueryV2Error) -> None:
+def positive_query_v2_structured_diagnostic(error: PlanError) -> None:
     assert_type(
         error.category,
         Literal[

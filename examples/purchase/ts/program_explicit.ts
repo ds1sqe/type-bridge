@@ -1,8 +1,8 @@
 /** Core-builder equality oracles for generated authoring. */
-import { Plan, type QueryV2Authority } from "@type-bridge/node";
+import { Plan, type PlanAuthority } from "@type-bridge/node";
 import { Account, Doctor, Item, Purchase } from "./index.js";
 
-export function purchaseExplicit(authority: QueryV2Authority): Plan {
+export function purchaseExplicit(authority: PlanAuthority): Plan {
   const p = Plan.builder();
   const item = p.exact(Item);
   const itemKey = p.field(item, Item.fields.itemId);
@@ -28,14 +28,14 @@ export function purchaseExplicit(authority: QueryV2Authority): Plan {
   return p.build(authority);
 }
 
-export function touchExplicit(authority: QueryV2Authority): Plan {
+export function touchExplicit(authority: PlanAuthority): Plan {
   const p = Plan.builder();
   const doctor = p.exact(Doctor);
   p.update(doctor, Doctor.fields.onCall, p.field(doctor, Doctor.fields.onCall));
   return p.build(authority);
 }
 
-export function doctorExplicit(authority: QueryV2Authority, state: boolean): Plan {
+export function doctorExplicit(authority: PlanAuthority, state: boolean): Plan {
   const p = Plan.builder();
   const doctor = p.insert(Doctor);
   const name = p.input("doctor_name", "string");

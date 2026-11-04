@@ -4,12 +4,12 @@ from enum import Enum, StrEnum
 from typing import Any, ClassVar, Literal, Never, TypedDict, Unpack, overload
 
 from type_bridge_core import (
+    PlanAuthority,
     ProxyConnection,
     PyRuntimeProjection,
     QueryCancellation,
     QueryExecutionResourceLimits,
     QueryLimits,
-    QueryV2Authority,
 )
 from type_bridge_core import Transaction as StagedTransaction
 
@@ -56,7 +56,7 @@ class _PlanFieldToken[OwnerT: ModelBase, AttributeT: AttributeBase, T](
     FieldToken[OwnerT, AttributeT], _AuthoringFieldToken[T]
 ): ...
 
-def plan_authority() -> QueryV2Authority: ...
+def plan_authority() -> PlanAuthority: ...
 
 class RoleToken[OwnerT: ModelBase, PlayerT_co: ModelBase, CompatibleBindingT_contra]:
     owner: type[OwnerT]

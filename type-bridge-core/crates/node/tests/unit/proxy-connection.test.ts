@@ -5,7 +5,7 @@ import net = require("node:net");
 import path = require("node:path");
 import test = require("node:test");
 
-import { QueryV2Authority } from "../../typescript/index.js";
+import { PlanAuthority } from "../../typescript/index.js";
 import { loadNative } from "../../typescript/native.js";
 import {
   InstalledRuntimeProjection,
@@ -25,8 +25,8 @@ const corpus = JSON.parse(fs.readFileSync(
   "utf8",
 )) as Corpus;
 
-function authority(): QueryV2Authority {
-  return new QueryV2Authority(
+function authority(): PlanAuthority {
+  return new PlanAuthority(
     Buffer.from(corpus.declared_b64, "base64"),
     corpus.scope,
     corpus.profile,
@@ -158,8 +158,8 @@ test("a proxy connection without answer limits runs at the proxy defaults", asyn
 
 test("proxy connect rejects JavaScript type confusion before native work", async () => {
   await assert.rejects(
-    ProxyConnection.connect({} as QueryV2Authority, "http://proxy:8080"),
-    /QueryV2Authority/,
+    ProxyConnection.connect({} as PlanAuthority, "http://proxy:8080"),
+    /PlanAuthority/,
   );
   await assert.rejects(
     ProxyConnection.connect(authority(), "http://proxy:8080", {

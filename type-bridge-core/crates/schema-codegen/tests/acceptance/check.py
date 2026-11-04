@@ -105,7 +105,7 @@ def main() -> None:
                 raise AssertionError(f"{fixture.name} contains forbidden typing escape {forbidden}")
     for fixture in (HERE / "positive.py", HERE / "runtime_check.py", DOCUMENTED_EXAMPLES):
         source = fixture.read_text()
-        for forbidden in ("QueryV2Authority", "declared-schema.json", ".read_bytes()"):
+        for forbidden in ("PlanAuthority", "declared-schema.json", ".read_bytes()"):
             if forbidden in source:
                 raise AssertionError(
                     f"{fixture.name} bypasses generated embedded authority with {forbidden}"

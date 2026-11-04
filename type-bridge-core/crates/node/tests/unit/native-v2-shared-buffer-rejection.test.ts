@@ -11,7 +11,7 @@ interface Corpus {
 }
 
 interface RawNative {
-  queryV2Authority(
+  planAuthority(
     declaredSchema: Uint8Array,
     scope: string,
     profile: string,
@@ -51,7 +51,7 @@ test("directly loaded addon rejects SharedArrayBuffer before Rust borrowing", ()
   const shared = sharedBuffer([0x7b, 0x7d]);
 
   assert.throws(
-    () => raw.queryV2Authority(shared, corpus.scope, corpus.profile),
+    () => raw.planAuthority(shared, corpus.scope, corpus.profile),
     /query_v2_shared_buffer_unsupported/,
   );
   assert.throws(
@@ -59,7 +59,7 @@ test("directly loaded addon rejects SharedArrayBuffer before Rust borrowing", ()
     /query_v2_shared_buffer_unsupported/,
   );
 
-  const authority = raw.queryV2Authority(
+  const authority = raw.planAuthority(
     Buffer.from(corpus.declared_b64, "base64"),
     corpus.scope,
     corpus.profile,

@@ -70,9 +70,9 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
     },
   };
   const authority = Object.freeze({});
-  raw["queryV2Authority"] = remember("queryV2Authority", [0], authority);
-  raw["queryV2QueryOnlyAuthority"] = remember(
-    "queryV2QueryOnlyAuthority",
+  raw["planAuthority"] = remember("planAuthority", [0], authority);
+  raw["planQueryOnlyAuthority"] = remember(
+    "planQueryOnlyAuthority",
     [1],
     authority,
   );
@@ -109,17 +109,17 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
 
   const native = loadNative() as unknown as Record<string, UnknownCall>;
   const declared = sharedBytes([1, 2, 3]);
-  native["queryV2Authority"](declared, "scope", "profile");
+  native["planAuthority"](declared, "scope", "profile");
   assertDetachedSnapshot(
-    captured.get("queryV2Authority")![0],
+    captured.get("planAuthority")![0],
     declared,
     [1, 2, 3],
   );
 
   const queryOnlyDeclared = sharedBytes([4, 5, 6]);
-  native["queryV2QueryOnlyAuthority"]({}, queryOnlyDeclared, "scope", "profile");
+  native["planQueryOnlyAuthority"]({}, queryOnlyDeclared, "scope", "profile");
   assertDetachedSnapshot(
-    captured.get("queryV2QueryOnlyAuthority")![0],
+    captured.get("planQueryOnlyAuthority")![0],
     queryOnlyDeclared,
     [4, 5, 6],
   );
@@ -216,12 +216,12 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
     "the facade must not retry a claimed native decode",
   );
 
-  const descriptor = Object.getOwnPropertyDescriptor(native, "queryV2Authority");
-  assert.notEqual(descriptor?.value, raw["queryV2Authority"]);
+  const descriptor = Object.getOwnPropertyDescriptor(native, "planAuthority");
+  assert.notEqual(descriptor?.value, raw["planAuthority"]);
   const reflectedDeclared = sharedBytes([28, 29, 30]);
   (descriptor?.value as UnknownCall)(reflectedDeclared, "scope", "profile");
   assertDetachedSnapshot(
-    captured.get("queryV2Authority")![0],
+    captured.get("planAuthority")![0],
     reflectedDeclared,
     [28, 29, 30],
   );

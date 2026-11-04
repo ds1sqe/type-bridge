@@ -1,5 +1,5 @@
 import type { NativeModule, NativeRustDatabase, NativeRustTransactionContext } from "./index.js";
-import type { NativeQueryV2Authority } from "./query-v2-internals.js";
+import type { NativePlanAuthority } from "./plan-internals.js";
 import type { NativeProjectedFacadeProof, NativeProjectedManager, NativeProjectedValueEnvelope, NativeProjectionHandle, NativeAuthoredPlanResult, RuntimeProjectionInstall } from "./runtime-projection.js";
 type NativeProjectedBatchAuthority = Parameters<NonNullable<RuntimeProjectionInstall["projectedBatchMaterializer"]>>[3];
 type NativeMatchComparison = "equal" | "not_equal" | "less_than" | "less_than_or_equal" | "greater_than" | "greater_than_or_equal" | "contains" | "starts_with" | "ends_with" | "regex";
@@ -210,7 +210,7 @@ export interface NativeStagedPlan {
 }
 export interface NativePlan {
     explainJson(): string;
-    bindRows(authority: NativeQueryV2Authority, columns: number[][], rows: unknown[][]): NativePlan;
+    bindRows(authority: NativePlanAuthority, columns: number[][], rows: unknown[][]): NativePlan;
     scalarRowsJson(answerJson: string): string;
     canonicalBytes(): Uint8Array;
     fingerprint(): string;
@@ -260,9 +260,9 @@ export interface NativePlanBuilder {
     fetchHeld(thing: number, roles: string[], required: boolean[]): void;
     count(): void;
     exists(): void;
-    build(authority: NativeQueryV2Authority, matched?: boolean, models?: boolean): NativePlan;
-    buildStaged(authority: NativeQueryV2Authority, columns: number[][], rows: unknown[][], references: string): NativeStagedPlan;
-    buildSelected(authority: NativeQueryV2Authority, kind: string, thing: number | null, roles: string[], required: boolean[], columns: number[], projection?: NativeProjectionHandle | null, declared?: string | null, modelBindings?: number[] | null, modelTypes?: string[] | null): NativePlan;
+    build(authority: NativePlanAuthority, matched?: boolean, models?: boolean): NativePlan;
+    buildStaged(authority: NativePlanAuthority, columns: number[][], rows: unknown[][], references: string): NativeStagedPlan;
+    buildSelected(authority: NativePlanAuthority, kind: string, thing: number | null, roles: string[], required: boolean[], columns: number[], projection?: NativeProjectionHandle | null, declared?: string | null, modelBindings?: number[] | null, modelTypes?: string[] | null): NativePlan;
 }
 interface NativePlanBuilderModule {
     setDebugListener(callback: ((json: string) => void) | null): void;
@@ -284,7 +284,7 @@ export interface NativeProxyConnection {
 }
 interface NativeProxyConnectionModule {
     NodeProxyConnection: {
-        connect(authority: ReturnType<NativeModule["queryV2Authority"]>, endpoint: string, tlsMode: string, tlsRootCa: string | undefined, headerNames: string[], headerValues: string[], advertisement?: Uint8Array, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation, stagedAdvertisement?: Uint8Array, admissionWindowMilliseconds?: bigint, queryLimits?: NativeQueryLimits): Promise<NativeProxyConnection>;
+        connect(authority: ReturnType<NativeModule["planAuthority"]>, endpoint: string, tlsMode: string, tlsRootCa: string | undefined, headerNames: string[], headerValues: string[], advertisement?: Uint8Array, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation, stagedAdvertisement?: Uint8Array, admissionWindowMilliseconds?: bigint, queryLimits?: NativeQueryLimits): Promise<NativeProxyConnection>;
     };
 }
 /** Core limits the addon exports, so the package holds no copies. */
@@ -322,7 +322,7 @@ interface NativeRemoteModelQueryModule {
     NodeQueryExecutionResources: new (timeoutMilliseconds?: bigint, items?: bigint, bytes?: bigint, graphNodes?: bigint, attributeValues?: bigint, collectionMembers?: bigint, rolePlayers?: bigint, statements?: bigint, collectPhaseTimestamps?: boolean) => NativeQueryExecutionResources;
     NodeQueryCancellation: new () => NativeQueryCancellation;
     NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
-    queryV2RemoteModelContextWithResources(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, answerLimits?: NativeQueryExecutionResources): NativeRemoteModelQueryContext;
+    queryV2RemoteModelContextWithResources(authority: ReturnType<NativeModule["planAuthority"]>, advertisement: Uint8Array, resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, answerLimits?: NativeQueryExecutionResources): NativeRemoteModelQueryContext;
     queryV2PrepareRemoteModelRows(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelPage(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelCount(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle): NativePendingRemoteModelQuery;

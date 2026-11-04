@@ -2,7 +2,7 @@
 
 use crate::NodeRustDatabase;
 use crate::plan_runtime::{
-    NodeQueryV2Authority, bounded_buffer, bounded_response_snapshot, bounded_string,
+    NodePlanAuthority, bounded_buffer, bounded_response_snapshot, bounded_string,
     invocation_input_too_large, napi_error, non_shared_buffer,
 };
 use napi::bindgen_prelude::{AsyncTask, BigInt, Buffer, Env, JsValue, Object, Unknown};
@@ -117,7 +117,7 @@ impl NodePendingQueryV2Remote {
 pub fn query_v2_execute_local<'env>(
     env: Env,
     database: &NodeRustDatabase,
-    authority: &NodeQueryV2Authority,
+    authority: &NodePlanAuthority,
     plan: Unknown<'env>,
     invocation_json: Unknown<'env>,
     deadline_ms: Option<BigInt>,
@@ -244,7 +244,7 @@ pub fn query_v2_remote_capabilities(env: Env, advertisement: Unknown) -> napi::R
 #[allow(clippy::too_many_arguments, reason = "flat binding surface")]
 pub fn query_v2_prepare_remote(
     env: Env,
-    authority: &NodeQueryV2Authority,
+    authority: &NodePlanAuthority,
     plan: Unknown,
     invocation_json: Unknown,
     advertisement: Unknown,

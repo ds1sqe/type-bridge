@@ -21,7 +21,7 @@ from type_bridge_core import (
     Pending,
     ProxyConnection,
     Transaction,
-    query_v2_authority,
+    plan_authority,
 )
 
 FIXTURE_DIR = os.environ.get("TB_STAGED_FIXTURE_DIR")
@@ -45,9 +45,7 @@ def _transaction(
     live: dict[str, Any], role: str, headers: list[tuple[str, str]] | None = None
 ) -> Transaction:
     proxy = live["proxies"][role]
-    authority = query_v2_authority(
-        bytes.fromhex(live["declared_hex"]), proxy["scope"], live["profile"]
-    )
+    authority = plan_authority(bytes.fromhex(live["declared_hex"]), proxy["scope"], live["profile"])
     connection = ProxyConnection.connect(authority, proxy["endpoint"], headers=headers or [])
     return connection.transaction()
 

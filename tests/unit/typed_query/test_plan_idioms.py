@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from type_bridge_core import QueryLimits, QueryV2Authority, query_v2_authority
+from type_bridge_core import PlanAuthority, QueryLimits, plan_authority
 
 from type_bridge.plan import FieldToken, Handle, Plan, PlanError, Value, _match, literal
 
@@ -52,18 +52,18 @@ class ItemHandle(Handle[Item]):
 
 
 @pytest.fixture
-def authority() -> QueryV2Authority:
-    return query_v2_authority(
+def authority() -> PlanAuthority:
+    return plan_authority(
         bytes.fromhex(FIXTURE["declared_hex"]), FIXTURE["scope"], FIXTURE["profile"]
     )
 
 
-def item(authority: QueryV2Authority, key: str = "I1") -> ItemHandle:
+def item(authority: PlanAuthority, key: str = "I1") -> ItemHandle:
     return _match(Item, ItemHandle, authority, "item_id", key, {})
 
 
 def test_context_and_implicit_update_equal_the_explicit_core_form(
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
 ) -> None:
     with Plan():
         bound = item(authority).where(Item.stock > 0)
@@ -84,7 +84,7 @@ def test_context_and_implicit_update_equal_the_explicit_core_form(
     assert len(json.loads(updated.canonical_bytes())["bindings"]) == 4
 
 
-def test_held_delete_snapshot_equals_fetch_before_delete(authority: QueryV2Authority) -> None:
+def test_held_delete_snapshot_equals_fetch_before_delete(authority: PlanAuthority) -> None:
     with Plan():
         deleted = item(authority).delete_returning()
     explicit = Plan.builder()
@@ -96,7 +96,7 @@ def test_held_delete_snapshot_equals_fetch_before_delete(authority: QueryV2Autho
 
 
 def test_ignored_writes_do_not_select_a_result_for_deleted_bindings(
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
 ) -> None:
     with Plan():
         bound = item(authority)
@@ -107,7 +107,7 @@ def test_ignored_writes_do_not_select_a_result_for_deleted_bindings(
     assert not any(stage["kind"] == "fetch" for stage in plan["pipeline"])
 
 
-def test_context_reset_on_nested_exception_and_after_exit(authority: QueryV2Authority) -> None:
+def test_context_reset_on_nested_exception_and_after_exit(authority: PlanAuthority) -> None:
     with pytest.raises(PlanError, match="plan_context_missing"):
         item(authority)
     with Plan() as outer:
@@ -123,7 +123,7 @@ def test_context_reset_on_nested_exception_and_after_exit(authority: QueryV2Auth
         bound.delete()
 
 
-def test_async_tasks_keep_independent_plan_contexts(authority: QueryV2Authority) -> None:
+def test_async_tasks_keep_independent_plan_contexts(authority: PlanAuthority) -> None:
     async def build(key: str) -> bytes:
         with Plan() as plan:
             item(authority, key)
@@ -139,7 +139,7 @@ def test_async_tasks_keep_independent_plan_contexts(authority: QueryV2Authority)
     assert second["given_rows"][0][0]["value"] == "second"
 
 
-def test_conditions_refuse_accidental_python_truth_tests(authority: QueryV2Authority) -> None:
+def test_conditions_refuse_accidental_python_truth_tests(authority: PlanAuthority) -> None:
     with Plan():
         bound = item(authority)
         with pytest.raises(TypeError, match="where"):
@@ -147,7 +147,7 @@ def test_conditions_refuse_accidental_python_truth_tests(authority: QueryV2Autho
         bound.set_stock(literal("long", 1))
 
 
-def test_an_aborted_context_cannot_be_reentered(authority: QueryV2Authority) -> None:
+def test_an_aborted_context_cannot_be_reentered(authority: PlanAuthority) -> None:
     plan: Plan[object] = Plan()
     with pytest.raises(RuntimeError, match="abort"):
         with plan:
@@ -158,7 +158,7 @@ def test_an_aborted_context_cannot_be_reentered(authority: QueryV2Authority) -> 
             pass
 
 
-def test_entity_bulk_equals_explicit_inputs_and_rows(authority: QueryV2Authority) -> None:
+def test_entity_bulk_equals_explicit_inputs_and_rows(authority: PlanAuthority) -> None:
     from type_bridge.plan import _bulk_insert
 
     with Plan():
@@ -176,7 +176,7 @@ def test_entity_bulk_equals_explicit_inputs_and_rows(authority: QueryV2Authority
 
 
 def test_bulk_ownership_metadata_is_lowered_once_per_field(
-    authority: QueryV2Authority, monkeypatch: pytest.MonkeyPatch
+    authority: PlanAuthority, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import type_bridge.plan as module
 
@@ -198,7 +198,7 @@ def test_bulk_ownership_metadata_is_lowered_once_per_field(
     assert len(set(ownerships)) == 2
 
 
-def test_empty_and_mixed_shape_bulk_are_not_a_single_wire_plan(authority: QueryV2Authority) -> None:
+def test_empty_and_mixed_shape_bulk_are_not_a_single_wire_plan(authority: PlanAuthority) -> None:
     from type_bridge.plan import _bulk_insert
 
     for rows in [[], [{"item_id": "I1", "stock": 2}, {"item_id": "I2"}]]:
@@ -209,7 +209,7 @@ def test_empty_and_mixed_shape_bulk_are_not_a_single_wire_plan(authority: QueryV
             bulk.canonical_bytes()
 
 
-def test_cached_fields_still_check_the_tokens_nominal_owner(authority: QueryV2Authority) -> None:
+def test_cached_fields_still_check_the_tokens_nominal_owner(authority: PlanAuthority) -> None:
     class OtherItem(Item):
         pass
 
@@ -224,7 +224,7 @@ def test_cached_fields_still_check_the_tokens_nominal_owner(authority: QueryV2Au
 
 
 def test_explicit_template_rebinds_without_mutating_the_original(
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
 ) -> None:
     with Plan.template() as template:
         minimum = template.input("minimum", "long")
@@ -242,7 +242,7 @@ def test_explicit_template_rebinds_without_mutating_the_original(
         counted.bind([[unrelated.value(2)]])
 
 
-def test_optional_trailing_input_can_be_absent(authority: QueryV2Authority) -> None:
+def test_optional_trailing_input_can_be_absent(authority: PlanAuthority) -> None:
     p = Plan.builder()
     p.exact(Item)
     required = p.input("minimum", "long")
@@ -252,7 +252,7 @@ def test_optional_trailing_input_can_be_absent(authority: QueryV2Authority) -> N
     assert original.bind([[required.value(2)]]).canonical_bytes() == original.canonical_bytes()
 
 
-def test_built_template_refuses_mutation(authority: QueryV2Authority) -> None:
+def test_built_template_refuses_mutation(authority: PlanAuthority) -> None:
     with Plan.template() as template:
         item(authority)
     for operation in [
@@ -265,9 +265,7 @@ def test_built_template_refuses_mutation(authority: QueryV2Authority) -> None:
 
 
 @pytest.mark.parametrize("template", [False, True])
-def test_recording_captures_selected_query_limits(
-    authority: QueryV2Authority, template: bool
-) -> None:
+def test_recording_captures_selected_query_limits(authority: PlanAuthority, template: bool) -> None:
     limits = QueryLimits(canonical_bytes=512, canonical_string_bytes=512)
     recording = Plan.template(query_limits=limits) if template else Plan(query_limits=limits)
     with pytest.raises(ValueError, match="canonical_json_too_large"):
@@ -276,7 +274,7 @@ def test_recording_captures_selected_query_limits(
 
 
 def test_scalar_returning_uses_core_column_order_and_host_decoding(
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
 ) -> None:
     from type_bridge.plan import Rows
 

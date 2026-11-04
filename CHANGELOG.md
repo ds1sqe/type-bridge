@@ -200,6 +200,16 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Python and Node `QueryV2Authority` and `QueryV2Error` are now
+  `PlanAuthority` and `PlanError`. Native authority constructors are
+  `plan_authority`, `plan_authority_from_schema_authority`, and
+  `plan_query_only_authority` in Python, and `planAuthority`,
+  `planAuthorityFromSchemaAuthority`, and `planQueryOnlyAuthority` in Node.
+  Generated packages must be regenerated to use the shared plan names.
+  Node `QueryV2ErrorCategory`, `QueryV2ErrorDetail`, and
+  `QueryV2ErrorPathSegment` become `PlanErrorCategory`, `PlanErrorDetail`,
+  and `PlanErrorPathSegment`.
+
 - Rust `query_v2_prepared::QueryAuthority` and
   `query_v2_builder::QueryAuthorityIdentity` move to `plan_authority`;
   generated reads and staged plans share this schema-authority owner.

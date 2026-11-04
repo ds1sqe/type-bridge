@@ -84,7 +84,7 @@ Check = Callable[[list[Outcome], dict[str, int]], None]
 def _rounds(
     base: Target,
     scenario: str,
-    state: dict[str, Callable[[driver.QueryV2Authority], driver.Plan]],
+    state: dict[str, Callable[[driver.PlanAuthority], driver.Plan]],
     check: Check,
 ) -> list[Counter[str]]:
     """Race `scenario` for every round; check each round; return the tallies."""
@@ -139,7 +139,7 @@ def test_purchase_sells_each_unit_once(base: Target) -> None:
     _contended(tallies, "conflict:STC2")
 
 
-ON_CALL: dict[str, Callable[[driver.QueryV2Authority], driver.Plan]] = {
+ON_CALL: dict[str, Callable[[driver.PlanAuthority], driver.Plan]] = {
     "on_call": lambda a: driver.count_of(a, driver.Doctor, on_call=True),
 }
 

@@ -5,7 +5,7 @@ import type {
 import type { NativeAuthoredPlanResult, RuntimeProjectionMatchResult } from "./runtime-projection.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
 import { decodePlan, nativePlan, type Plan, type StagedPlan } from "./plan.js";
-import { queryV2NativeCall, queryV2NativePromise } from "./query-v2-internals.js";
+import { planNativeCall, planNativePromise } from "./plan-internals.js";
 
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
 export type StagedTransactionKind = "read" | "write" | "schema";
@@ -48,10 +48,10 @@ export class PendingPlanAnswer<R = PlanAnswer> {
    */
   get(): R {
     if (this.#typedQuery) {
-      return this.#decode("", undefined, queryV2NativeCall(() => this.#native.getQueryResult()));
+      return this.#decode("", undefined, planNativeCall(() => this.#native.getQueryResult()));
     }
-    const projection = queryV2NativeCall(() => this.#native.getProjection());
-    return this.#decode(projection === null ? queryV2NativeCall(() => this.#native.getJson()) : "", projection ?? undefined);
+    const projection = planNativeCall(() => this.#native.getProjection());
+    return this.#decode(projection === null ? planNativeCall(() => this.#native.getJson()) : "", projection ?? undefined);
   }
 
   /** The typed result after a successful commit. */
@@ -99,12 +99,12 @@ export class StagedTransaction {
    */
   stage<R>(plan: Plan<R>): PendingPlanAnswer<R> {
     const native = nativePlan(plan);
-    return new PendingPlanAnswer(queryV2NativeCall(() => this.#native.stage(native)), (answer, projection) => decodePlan(plan, answer, projection));
+    return new PendingPlanAnswer(planNativeCall(() => this.#native.stage(native)), (answer, projection) => decodePlan(plan, answer, projection));
   }
 
   /** Queue a complete invocation stack with block-local IID references. */
   stageStack(plans: readonly StagedPlan[]): PendingPlanAnswer[] {
-    return queryV2NativeCall(() => this.#native.stageStack(plans.map(plan => plan.nativeHandle()))).map(pending => new PendingPlanAnswer(pending));
+    return planNativeCall(() => this.#native.stageStack(plans.map(plan => plan.nativeHandle()))).map(pending => new PendingPlanAnswer(pending));
   }
 
   /** Stage one canonical `query-plan/v3` program validated under `declaredSchema`. */
@@ -112,23 +112,23 @@ export class StagedTransaction {
     const planBytes = ownedByteSnapshot(plan, MAX_STAGED_INPUT_BYTES);
     const schemaBytes = ownedByteSnapshot(declaredSchema, MAX_STAGED_INPUT_BYTES);
     return new PendingPlanAnswer(
-      queryV2NativeCall(() => this.#native.stagePlan(planBytes, schemaBytes)),
+      planNativeCall(() => this.#native.stagePlan(planBytes, schemaBytes)),
     );
   }
 
   /** Fire the staged stack; answers become visible only on success. */
   commit(): Promise<void> {
-    return queryV2NativePromise(queryV2NativeCall(() => this.#native.commit()));
+    return planNativePromise(planNativeCall(() => this.#native.commit()));
   }
 
   /** Discard staged work and keep the transaction for reuse. */
   rollback(): void {
-    queryV2NativeCall(() => this.#native.rollback());
+    planNativeCall(() => this.#native.rollback());
   }
 
   /** Discard staged work and make the transaction terminal. */
   close(): void {
-    queryV2NativeCall(() => this.#native.close());
+    planNativeCall(() => this.#native.close());
   }
 
   // `await using` closes without committing once a running commit settles;
@@ -142,7 +142,7 @@ export class StagedTransaction {
         writable: true,
         value(this: StagedTransaction): Promise<void> {
           const native = this.#native;
-          return queryV2NativePromise(queryV2NativeCall(() => native.dispose()));
+          return planNativePromise(planNativeCall(() => native.dispose()));
         },
       });
     }

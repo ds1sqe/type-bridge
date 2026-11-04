@@ -24,14 +24,14 @@ use crate::orm_runtime::PyDatabase;
 
 pyo3::create_exception!(
     type_bridge_core,
-    QueryV2Error,
+    PlanError,
     PyValueError,
-    "Structured canonical V2 query diagnostic."
+    "Structured canonical plan diagnostic."
 );
 
 pub(crate) fn value_error(diagnostic: &Diagnostic) -> PyErr {
     Python::attach(|py| {
-        let py_error = QueryV2Error::new_err(format!(
+        let py_error = PlanError::new_err(format!(
             "{}: {}",
             diagnostic.code().as_str(),
             diagnostic.message(),
@@ -66,19 +66,19 @@ fn binding_diagnostic(
 }
 
 /// Opaque prepared-query schema authority handle.
-#[pyclass(name = "QueryV2Authority", frozen)]
-pub struct PyQueryV2Authority {
+#[pyclass(name = "PlanAuthority", frozen)]
+pub struct PyPlanAuthority {
     pub(crate) authority: Arc<QueryAuthority>,
 }
 
-impl PyQueryV2Authority {
+impl PyPlanAuthority {
     pub(crate) fn authority(&self) -> Arc<QueryAuthority> {
         Arc::clone(&self.authority)
     }
 }
 
 #[pymethods]
-impl PyQueryV2Authority {
+impl PyPlanAuthority {
     /// Derive an authority over the same schema whose plans are authored,
     /// decoded, and validated under `query_limits`.
     fn with_query_limits(&self, query_limits: &crate::match_runtime::PyQueryLimits) -> Self {
@@ -95,7 +95,7 @@ impl PyQueryV2Authority {
         scope: &Bound<'_, PyAny>,
         profile: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
-        build_query_v2_authority(py, declared_schema, scope, profile)
+        build_plan_authority(py, declared_schema, scope, profile)
     }
 
     /// Build a local-only authority for a database with no migration controls.
@@ -107,7 +107,7 @@ impl PyQueryV2Authority {
         scope: &Bound<'_, PyAny>,
         profile: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
-        build_query_v2_query_only_authority(py, database, declared_schema, scope, profile)
+        build_plan_query_only_authority(py, database, declared_schema, scope, profile)
     }
 }
 
@@ -195,12 +195,12 @@ impl<'py> PythonString<'py> {
     }
 }
 
-fn build_query_v2_authority(
+fn build_plan_authority(
     py: Python<'_>,
     declared_schema: &Bound<'_, PyAny>,
     scope: &Bound<'_, PyAny>,
     profile: &Bound<'_, PyAny>,
-) -> PyResult<PyQueryV2Authority> {
+) -> PyResult<PyPlanAuthority> {
     let declared_schema = PythonBytes::extract(declared_schema, "declared_schema")?;
     let scope = PythonString::extract(scope, "scope")?;
     let profile = PythonString::extract(profile, "profile")?;
@@ -210,7 +210,7 @@ fn build_query_v2_authority(
     let authority = py
         .detach(move || QueryAuthority::from_declared_bytes(&declared_schema, &scope, &profile))
         .map_err(|diagnostic| value_error(&diagnostic))?;
-    Ok(PyQueryV2Authority {
+    Ok(PyPlanAuthority {
         authority: Arc::new(authority),
     })
 }
@@ -254,10 +254,10 @@ pub(crate) fn schema_authority_diagnostic(error: &SchemaAuthorityError) -> Diagn
     binding_diagnostic(category, code, message)
 }
 
-fn build_query_v2_authority_from_schema_authority(
+fn build_plan_authority_from_schema_authority(
     schema_authority: &[u8],
     semantic_fingerprint: &[u8],
-) -> Result<PyQueryV2Authority, Diagnostic> {
+) -> Result<PyPlanAuthority, Diagnostic> {
     let verified =
         decode_schema_authority(schema_authority, &schema_authority_capability_vocabulary())
             .map_err(|error| schema_authority_diagnostic(&error))?;
@@ -288,18 +288,18 @@ fn build_query_v2_authority_from_schema_authority(
         verified.managed_scope().id().as_str(),
         verified.semantic_profile().id().as_str(),
     )?;
-    Ok(PyQueryV2Authority {
+    Ok(PyPlanAuthority {
         authority: Arc::new(authority),
     })
 }
 
-fn build_query_v2_query_only_authority(
+fn build_plan_query_only_authority(
     py: Python<'_>,
     database: &PyDatabase,
     declared_schema: &Bound<'_, PyAny>,
     scope: &Bound<'_, PyAny>,
     profile: &Bound<'_, PyAny>,
-) -> PyResult<PyQueryV2Authority> {
+) -> PyResult<PyPlanAuthority> {
     let declared_schema = PythonBytes::extract(declared_schema, "declared_schema")?;
     let scope = PythonString::extract(scope, "scope")?;
     let profile = PythonString::extract(profile, "profile")?;
@@ -317,49 +317,49 @@ fn build_query_v2_query_only_authority(
             )
         })
         .map_err(|diagnostic| value_error(&diagnostic))?;
-    Ok(PyQueryV2Authority {
+    Ok(PyPlanAuthority {
         authority: Arc::new(authority),
     })
 }
 
 /// Build one authority from canonical declared-schema bytes.
 #[pyfunction]
-pub fn query_v2_authority(
+pub fn plan_authority(
     py: Python<'_>,
     declared_schema: &Bound<'_, PyAny>,
     scope: &Bound<'_, PyAny>,
     profile: &Bound<'_, PyAny>,
-) -> PyResult<PyQueryV2Authority> {
-    build_query_v2_authority(py, declared_schema, scope, profile)
+) -> PyResult<PyPlanAuthority> {
+    build_plan_authority(py, declared_schema, scope, profile)
 }
 
 /// Verify one generated package's complete schema-authority envelope.
 #[pyfunction]
-pub fn query_v2_authority_from_schema_authority(
+pub fn plan_authority_from_schema_authority(
     py: Python<'_>,
     schema_authority: &Bound<'_, PyAny>,
     semantic_fingerprint: &Bound<'_, PyAny>,
-) -> PyResult<PyQueryV2Authority> {
+) -> PyResult<PyPlanAuthority> {
     let schema_authority = PythonBytes::extract(schema_authority, "schema_authority")?
         .bounded_snapshot(MAX_SCHEMA_AUTHORITY_BYTES.saturating_add(1));
     let semantic_fingerprint = PythonBytes::extract(semantic_fingerprint, "semantic_fingerprint")?
         .bounded_snapshot(MAX_CANONICAL_BYTES.saturating_add(1));
     py.detach(move || {
-        build_query_v2_authority_from_schema_authority(&schema_authority, &semantic_fingerprint)
+        build_plan_authority_from_schema_authority(&schema_authority, &semantic_fingerprint)
     })
     .map_err(|diagnostic| value_error(&diagnostic))
 }
 
 /// Build a local-only authority for a database with no migration controls.
 #[pyfunction]
-pub fn query_v2_query_only_authority(
+pub fn plan_query_only_authority(
     py: Python<'_>,
     database: &PyDatabase,
     declared_schema: &Bound<'_, PyAny>,
     scope: &Bound<'_, PyAny>,
     profile: &Bound<'_, PyAny>,
-) -> PyResult<PyQueryV2Authority> {
-    build_query_v2_query_only_authority(py, database, declared_schema, scope, profile)
+) -> PyResult<PyPlanAuthority> {
+    build_plan_query_only_authority(py, database, declared_schema, scope, profile)
 }
 
 /// Build the local execution budget from a checked optional deadline.
@@ -381,14 +381,11 @@ pub(crate) fn python_optional_limit(
 
 /// Register shared plan authority and diagnostics on the native module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("QueryV2Error", m.py().get_type::<QueryV2Error>())?;
-    m.add_class::<PyQueryV2Authority>()?;
-    m.add_function(wrap_pyfunction!(query_v2_authority, m)?)?;
-    m.add_function(wrap_pyfunction!(
-        query_v2_authority_from_schema_authority,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(query_v2_query_only_authority, m)?)?;
+    m.add("PlanError", m.py().get_type::<PlanError>())?;
+    m.add_class::<PyPlanAuthority>()?;
+    m.add_function(wrap_pyfunction!(plan_authority, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_authority_from_schema_authority, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_query_only_authority, m)?)?;
     Ok(())
 }
 
@@ -400,8 +397,8 @@ mod tests {
     use pythonize::depythonize;
 
     use super::{
-        MAX_FINGERPRINT_IDENTIFIER_BYTES, PyQueryV2Authority, PythonBytes, PythonString,
-        QueryV2Error, build_query_v2_authority_from_schema_authority, python_limit, value_error,
+        MAX_FINGERPRINT_IDENTIFIER_BYTES, PlanError, PyPlanAuthority, PythonBytes, PythonString,
+        build_plan_authority_from_schema_authority, python_limit, value_error,
     };
     use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
     use type_bridge_contract::codec::{FormatVersion, to_canonical_json};
@@ -452,7 +449,7 @@ mod tests {
     fn generated_authority_constructor_verifies_envelope_and_projection_binding() {
         let (authority, semantic) =
             generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  person: {}\n");
-        let installed = build_query_v2_authority_from_schema_authority(&authority, &semantic)
+        let installed = build_plan_authority_from_schema_authority(&authority, &semantic)
             .expect("verified generated authority installs");
         QueryPlanBuilder::new(installed.authority())
             .binding("person")
@@ -461,7 +458,7 @@ mod tests {
         let (_, foreign_semantic) =
             generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  robot: {}\n");
         assert_eq!(
-            build_query_v2_authority_from_schema_authority(&authority, &foreign_semantic)
+            build_plan_authority_from_schema_authority(&authority, &foreign_semantic)
                 .err()
                 .expect("foreign projection fingerprint must fail")
                 .code()
@@ -469,7 +466,7 @@ mod tests {
             "generated_schema_authority_semantic_mismatch",
         );
         assert_eq!(
-            build_query_v2_authority_from_schema_authority(b"{", &semantic)
+            build_plan_authority_from_schema_authority(b"{", &semantic)
                 .err()
                 .expect("malformed envelope must fail")
                 .code()
@@ -477,7 +474,7 @@ mod tests {
             "malformed_canonical_json",
         );
         assert_eq!(
-            build_query_v2_authority_from_schema_authority(
+            build_plan_authority_from_schema_authority(
                 &vec![b' '; type_bridge_schema::MAX_SCHEMA_AUTHORITY_BYTES + 1],
                 &semantic,
             )
@@ -507,7 +504,7 @@ mod tests {
         Python::initialize();
         let error = value_error(&diagnostic);
         Python::attach(|py| {
-            assert!(error.is_instance_of::<QueryV2Error>(py));
+            assert!(error.is_instance_of::<PlanError>(py));
             let value = error.value(py);
             assert_eq!(
                 value
@@ -579,7 +576,7 @@ mod tests {
 
         Python::initialize();
         Python::attach(|py| {
-            let authority = PyQueryV2Authority::new(
+            let authority = PyPlanAuthority::new(
                 py,
                 PyBytes::new(py, &bytes).as_any(),
                 PyString::new(py, "python-authority-constructor").as_any(),

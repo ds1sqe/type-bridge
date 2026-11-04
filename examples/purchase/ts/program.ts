@@ -10,11 +10,11 @@
  * report. It compiles as part of the generated package (`./index.js`); see
  * tests/contracts/sdk_conformance/writes/purchase.
  */
-import { Matched, Plan, QueryV2Error, Database } from "@type-bridge/node";
+import { Matched, Plan, PlanError, Database } from "@type-bridge/node";
 import type {
   PendingPlanAnswer,
   PlanAnswer,
-  ProviderFailure,   QueryV2Authority,
+  ProviderFailure,   PlanAuthority,
   StagedTransaction,
 } from "@type-bridge/node";
 import { ProxyConnection } from "@type-bridge/node/runtime-projection";
@@ -36,7 +36,7 @@ const BATCH_ORDERS = Array.from(
 );
 
 /** One item in stock, one funded account and one on-call doctor. */
-function seed(authority: QueryV2Authority): Built {
+function seed(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const itemId = plan.input("item_id", "string");
   const stock = plan.input("stock", "long");
@@ -66,7 +66,7 @@ function seed(authority: QueryV2Authority): Built {
 
 // --8<-- [start:purchase]
 /** The one-query purchase: take one item and its price, record the order. */
-function purchase(_authority: QueryV2Authority): Built {
+function purchase(_authority: PlanAuthority): Built {
   return Plan.build(() => {
     const item = Item.match({ itemId: "I1" }).where(Item.stock.gt(0n));
     const buyer = Account.match({ accountId: "A1" });
@@ -79,7 +79,7 @@ function purchase(_authority: QueryV2Authority): Built {
 // --8<-- [end:purchase]
 
 /** Rewrite every doctor's on-call value with itself, taking its lock. */
-function touch(_authority: QueryV2Authority): Built {
+function touch(_authority: PlanAuthority): Built {
   return Plan.build(() => {
     const doctor = Doctor.match({});
     doctor.set({ onCall: doctor.onCall });
@@ -87,7 +87,7 @@ function touch(_authority: QueryV2Authority): Built {
 }
 
 /** Fifty orders of the item by the account, one given row each. */
-function batch(authority: QueryV2Authority): Built {
+function batch(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const item = plan.exact(Item);
   const buyer = plan.exact(Account);
@@ -103,7 +103,7 @@ function batch(authority: QueryV2Authority): Built {
   return plan.build(authority);
 }
 
-function soldOut(authority: QueryV2Authority): Built {
+function soldOut(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const item = plan.exact(Item);
   plan.where(plan.field(item, Item.fields.itemId).eq("I1"));
@@ -111,7 +111,7 @@ function soldOut(authority: QueryV2Authority): Built {
   return plan.count().build(authority);
 }
 
-function charged(authority: QueryV2Authority): Built {
+function charged(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const account = plan.exact(Account);
   plan.where(plan.field(account, Account.fields.accountId).eq("A1"));
@@ -119,13 +119,13 @@ function charged(authority: QueryV2Authority): Built {
   return plan.count().build(authority);
 }
 
-function orders(authority: QueryV2Authority): Built {
+function orders(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   plan.exact(Purchase);
   return plan.count().build(authority);
 }
 
-function onCall(authority: QueryV2Authority): Built {
+function onCall(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const doctor = plan.exact(Doctor);
   plan.where(plan.field(doctor, Doctor.fields.onCall).eq(true));
@@ -133,14 +133,14 @@ function onCall(authority: QueryV2Authority): Built {
 }
 
 /** Put a second doctor, off call: created, since none matches. */
-function putDoctor(authority: QueryV2Authority): Built {
+function putDoctor(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   plan.put(Doctor).field(Doctor.fields.name_, "D2").field(Doctor.fields.onCall, false);
   return plan.build(authority);
 }
 
 /** Put the second doctor on call and answer its name (`Write{returns}`). */
-function returns(authority: QueryV2Authority): Built {
+function returns(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const doctor = plan.exact(Doctor);
   const name = plan.field(doctor, Doctor.fields.name_);
@@ -150,7 +150,7 @@ function returns(authority: QueryV2Authority): Built {
 }
 
 /** A purchase whose players are the item and account this write inserts. */
-function refer(authority: QueryV2Authority): Built {
+function refer(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const item = plan
     .insert(Item)
@@ -167,7 +167,7 @@ function refer(authority: QueryV2Authority): Built {
 }
 
 /** Delete the first purchase. */
-function remove(authority: QueryV2Authority): Built {
+function remove(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const order = plan.exact(Purchase);
   plan.where(plan.field(order, Purchase.fields.orderId).eq("O1"));
@@ -175,7 +175,7 @@ function remove(authority: QueryV2Authority): Built {
 }
 
 // --8<-- [start:read_back]
-function readBack(authority: QueryV2Authority): Built {
+function readBack(authority: PlanAuthority): Built {
   const plan = Plan.builder(); // PlanBuilder
   const purchase = plan.exact(Purchase); // PlanThing
   const orderId = plan.input("order_id", "string");
@@ -186,14 +186,14 @@ function readBack(authority: QueryV2Authority): Built {
 }
 // --8<-- [end:read_back]
 
-function doctorsOnCall(authority: QueryV2Authority): Built {
+function doctorsOnCall(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const doctor = plan.exact(Doctor);
   plan.where(plan.field(doctor, Doctor.fields.onCall).eq(true));
   return plan.count().build(authority);
 }
 
-function referred(authority: QueryV2Authority): Built {
+function referred(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const order = plan.exact(Purchase);
   const buyer = plan.exact(Account);
@@ -203,7 +203,7 @@ function referred(authority: QueryV2Authority): Built {
   return plan.count().build(authority);
 }
 
-function removed(authority: QueryV2Authority): Built {
+function removed(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const order = plan.exact(Purchase);
   plan.where(plan.field(order, Purchase.fields.orderId).eq("O1"));
@@ -211,30 +211,30 @@ function removed(authority: QueryV2Authority): Built {
 }
 
 /** A third doctor, on call: staged, then rolled back. */
-function ghost(authority: QueryV2Authority): Built {
+function ghost(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   plan.insert(Doctor).field(Doctor.fields.name_, "D3").field(Doctor.fields.onCall, true);
   return plan.build(authority);
 }
 
 /** A fourth doctor, off call: staged after the rollback and committed. */
-function kept(authority: QueryV2Authority): Built {
+function kept(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   plan.insert(Doctor).field(Doctor.fields.name_, "D4").field(Doctor.fields.onCall, false);
   return plan.build(authority);
 }
 
 /** The doctor whose name the constraints suite inserts twice. */
-function seedDoctor(_authority: QueryV2Authority): Built {
+function seedDoctor(_authority: PlanAuthority): Built {
   return Plan.build(() => { Doctor.insert({ name_: "D1", onCall: true }); });
 }
 
 /** A second doctor named D1: the key rejects the commit. */
-function duplicateDoctor(_authority: QueryV2Authority): Built {
+function duplicateDoctor(_authority: PlanAuthority): Built {
   return Plan.build(() => { Doctor.insert({ name_: "D1", onCall: false }); });
 }
 
-const PURCHASE_BUILDERS: Record<string, (authority: QueryV2Authority) => Built> = {
+const PURCHASE_BUILDERS: Record<string, (authority: PlanAuthority) => Built> = {
   seed,
   purchase,
   touch,
@@ -270,7 +270,7 @@ const PURCHASE_ROLLED_BACK: ReadonlyMap<string, readonly string[]> = new Map([
 const PURCHASE_READS: ReadonlySet<string> = new Set(["read", "after", "read_back"]);
 
 interface Suite {
-  readonly builders: Record<string, (authority: QueryV2Authority) => Built>;
+  readonly builders: Record<string, (authority: PlanAuthority) => Built>;
   readonly steps: ReadonlyArray<readonly [string, readonly string[]]>;
   readonly rolledBack: ReadonlyMap<string, readonly string[]>;
   readonly reads: ReadonlySet<string>;
@@ -340,7 +340,7 @@ async function run(
       await tx.commit();
     } catch (error) {
       // A rejected commit answers every plan with its typed failure.
-      if (!(error instanceof QueryV2Error) || error.failure === undefined) {
+      if (!(error instanceof PlanError) || error.failure === undefined) {
         throw error;
       }
       const { phase, reason, code, retry_safe } = error.failure;

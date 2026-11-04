@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { test } from "node:test";
 import { createRequire } from "node:module";
-import { QueryV2Authority, Database } from "./common/index.js";
+import { PlanAuthority, Database } from "./common/index.js";
 
 const requirePackage = createRequire(import.meta.url);
 const { ProxyConnection, QueryExecutionResourceLimits } = requirePackage(
@@ -20,7 +20,7 @@ for (const transport of ["direct", "proxy"] as const) {
     const entry = live.entries[`node-${transport}`];
     const declared = Buffer.from(live.declared_hex, "hex");
     const plan = Buffer.from(live.purchase_hex, "hex");
-    const authority = new QueryV2Authority(declared, entry.scope, live.profile);
+    const authority = new PlanAuthority(declared, entry.scope, live.profile);
     for (const [timeout, delay] of [[1_000n, 2_000], [0n, 61_000]] as const) {
       const db = transport === "direct"
         ? Database.connect(entry.address, entry.database, { httpPort: 43131 }) : undefined;

@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   createRustDatabaseFromNative,
-  QueryV2Error,
+  PlanError,
   type NativeRustDatabase,
   type NativeRustTransactionContext,
   type Database,
@@ -56,7 +56,7 @@ function throwNativeDiagnostic(): never {
 
 test("generated manager calls preserve structured SDK diagnostics", () => {
   assert.throws(() => projectedManagerNativeCall(throwNativeDiagnostic), (error: unknown) => {
-    assert.ok(error instanceof QueryV2Error);
+    assert.ok(error instanceof PlanError);
     assert.equal(error.category, nativeDiagnostic.category);
     assert.equal(error.sdkCategory, nativeDiagnostic.sdk_category);
     assert.equal(error.queryCategory, nativeDiagnostic.query_category);
@@ -153,7 +153,7 @@ test("direct generated terminals project native diagnostics for both ownership p
   ] as const) {
     for (const [terminal, invoke] of calls) {
       await assert.rejects(invoke(connection), (error: unknown) => {
-        assert.ok(error instanceof QueryV2Error, `${ownership} ${terminal}`);
+        assert.ok(error instanceof PlanError, `${ownership} ${terminal}`);
         assert.equal(error.category, nativeDiagnostic.category);
         assert.equal(error.sdkCategory, nativeDiagnostic.sdk_category);
         assert.equal(error.queryCategory, nativeDiagnostic.query_category);

@@ -280,10 +280,10 @@ async function buy(db: Database): Promise<boolean> {
 
 The builder takes the generated model, field and role tokens, so a field of
 another model does not type-check. `schemaAuthority()` is the generated
-package's embedded authority; a `QueryV2Authority` over declared-schema bytes
+package's embedded authority; a `PlanAuthority` over declared-schema bytes
 works too. Builder calls never throw on content: `build` throws the first
 invalid call (an invalid literal, a reused name, a field the thing does not
-own, a key update) as a `QueryV2Error`. Nothing is checked against TypeDB
+own, a key update) as a `PlanError`. Nothing is checked against TypeDB
 until commit. Literals are `string`, `bigint` (long) and `boolean` values,
 or the typed helpers (`double(1.5)`, `decimal("1.25")`, `date(...)`); a
 plain `number` is not a literal.
@@ -300,7 +300,7 @@ plain `number` is not a literal.
   `round`, `min`, `max` and `length`.
 - **Answers.** Each `stage` returns a `PendingPlanAnswer`; `get()` resolves
   after a successful commit. A failed commit stores nothing and rejects with
-  a `QueryV2Error` whose `code` and `failure` name the typed outcome; every
+  a `PlanError` whose `code` and `failure` name the typed outcome; every
   answer of that commit throws the same failure.
 - **Kinds.** `db.stagedTransaction("read" | "write" | "schema")` fixes the
   kind; without one, a staged write makes it `write`. `read` refuses write
@@ -353,7 +353,7 @@ const rows = await session.query(person).rows({ limit: 50n });
 ```
 
 Both connections use the package's privately embedded, verified Query V2
-authority; no authority file or `QueryV2Authority` is passed. `connectProxy`
+authority; no authority file or `PlanAuthority` is passed. `connectProxy`
 fetches the server advertisement over the configured TLS mode (`tls`,
 `tlsRootCa`), or takes a pinned `advertisement`; `headers` carries caller
 authentication. It follows no redirects. `ExchangeConnection` takes
@@ -402,7 +402,7 @@ the 2.x line. The npm package publishes native modules for Linux glibc
 targets build from source and must satisfy the repository toolchain.
 
 Provider query and commit errors expose readonly `error.failure` data on
-`QueryV2Error`: `phase`, `reason`, `lock_kind`, `annotation`, `op_index`,
+`PlanError`: `phase`, `reason`, `lock_kind`, `annotation`, `op_index`,
 `retry_safe` and the TypeDB `code`. Rust classifies these fields; TypeScript
 only forwards them. A safe retry reruns the complete transaction on a new
 snapshot. An unknown commit outcome requires reconciliation before retry.

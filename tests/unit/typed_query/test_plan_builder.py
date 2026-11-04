@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from type_bridge_core import QueryV2Authority, QueryV2Error, query_v2_authority
+from type_bridge_core import PlanAuthority, PlanError, plan_authority
 
 from type_bridge import Plan as TopLevelPlan
 from type_bridge.plan import (
@@ -32,8 +32,8 @@ FIXTURE = json.loads(
 )
 
 
-def _authority() -> QueryV2Authority:
-    return query_v2_authority(
+def _authority() -> PlanAuthority:
+    return plan_authority(
         bytes.fromhex(FIXTURE["declared_hex"]), FIXTURE["scope"], FIXTURE["profile"]
     )
 
@@ -156,7 +156,7 @@ def test_content_errors_surface_at_build_with_a_stable_code() -> None:
     plan.input("dup", "string")
     plan.input("dup", "string")
     plan.returning([item])
-    with pytest.raises(QueryV2Error) as raised:
+    with pytest.raises(PlanError) as raised:
         plan.build(_authority())
     assert getattr(raised.value, "code", None) == "query_plan_builder_duplicate_name"
 
@@ -165,7 +165,7 @@ def test_count_on_a_write_is_refused_at_build() -> None:
     plan = PlanBuilder()
     item = plan.exact(Item)
     plan.delete(item).count()
-    with pytest.raises(QueryV2Error) as raised:
+    with pytest.raises(PlanError) as raised:
         plan.build(_authority())
     assert getattr(raised.value, "code", None) == "query_plan_builder_write_operation"
 
@@ -174,7 +174,7 @@ def test_a_literal_of_the_wrong_host_type_is_refused_at_build() -> None:
     plan = PlanBuilder()
     item = plan.exact(Item)
     plan.where_(plan.field(item, STOCK).gt(literal("long", "zero")))
-    with pytest.raises(QueryV2Error):
+    with pytest.raises(PlanError):
         plan.build(_authority())
 
 
@@ -233,7 +233,7 @@ def test_fetch_terminal_errors_surface_from_the_core(terminal: str, fetch_first:
         plan.exists()
     if not fetch_first:
         plan.fetch(thing)
-    with pytest.raises(QueryV2Error) as caught:
+    with pytest.raises(PlanError) as caught:
         plan.build(_authority())
     expected = "fetch_once" if terminal == "fetch" else "terminal_conflict"
     assert caught.value.code == f"query_plan_builder_{expected}"
@@ -307,7 +307,7 @@ def test_staged_builder_keeps_typed_iid_references_and_rejects_invalid_templates
             "expected_types": [{"kind": "entity", "label": "item"}],
         }
     ]
-    with pytest.raises(QueryV2Error) as error:
+    with pytest.raises(PlanError) as error:
         builder.build_staged(_authority(), [[iid.value("0x10")]], [reference])
     assert error.value.code == "query_stage_result_ref_template"
     foreign = PlanBuilder().input("foreign", "string")

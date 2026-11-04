@@ -22,12 +22,12 @@
  *
  * Content errors (an invalid literal, a duplicate name, a field the thing
  * does not own) never throw from a builder call: the first one is thrown by
- * `build` as a `QueryV2Error`. Handles belong to the builder that created
+ * `build` as a `PlanError`. Handles belong to the builder that created
  * them; passing one to another builder throws a `TypeError` at once.
  *
  * @module
  */
-import type { AttributeValue, QueryV2Authority } from "./index.js";
+import type { AttributeValue, PlanAuthority } from "./index.js";
 import type { NativePlan, NativeStagedPlan } from "./native.js";
 import type { PlanAnswer } from "./staged-transaction.js";
 import { Value } from "./plan-values.js";
@@ -285,17 +285,17 @@ export declare class PlanBuilder {
     exists(): this;
     /**
      * Validate the program against `authority`, a generated package's
-     * `schemaAuthority()` or a `QueryV2Authority` over declared-schema bytes.
+     * `schemaAuthority()` or a `PlanAuthority` over declared-schema bytes.
      *
      * A plan with writes answers its matched row count, or the
      * {@link returning} rows. A read answers rows, or {@link count} /
-     * {@link exists}. Throws a `QueryV2Error` for the first invalid call, a
+     * {@link exists}. Throws a `PlanError` for the first invalid call, a
      * write plan that also asked for count or exists, or a plan the schema
      * rejects (for example a field the thing does not own, or a key update).
      */
-    build(authority: QueryV2Authority): Plan;
+    build(authority: PlanAuthority): Plan;
     /** Finalize templates with absent reference cells for stageStack. */
-    buildStaged(authority: QueryV2Authority, rows: readonly (readonly PlanInputValue<unknown>[])[], references?: readonly StagedResultRef[]): StagedPlan;
+    buildStaged(authority: PlanAuthority, rows: readonly (readonly PlanInputValue<unknown>[])[], references?: readonly StagedResultRef[]): StagedPlan;
 }
 type ScalarEncoder = (kind: PlanValueType, value: unknown) => unknown;
 /** @internal The native program behind `plan`, for staging. */
@@ -404,7 +404,7 @@ export declare class PlanRecording {
     /** @internal */
     static current(): PlanRecording;
     /** @internal One generated package supplies the authority for a recording. */
-    use(authority: QueryV2Authority, decodeScalars?: (plan: NativePlan, answerJson: string) => unknown[][], encodeScalar?: ScalarEncoder, projection?: InstalledRuntimeProjection, decodeRows?: (projection: NativeAuthoredPlanResult) => unknown[][]): void;
+    use(authority: PlanAuthority, decodeScalars?: (plan: NativePlan, answerJson: string) => unknown[][], encodeScalar?: ScalarEncoder, projection?: InstalledRuntimeProjection, decodeRows?: (projection: NativeAuthoredPlanResult) => unknown[][]): void;
     /** @internal */
     result<R>(selection: Omit<ResultSelection, "recording">): Plan<R>;
     /** Answer the matched row count. */
@@ -427,7 +427,7 @@ export interface PlanModelAuthoring<M> {
     readonly model: PlanModelToken;
     readonly projection: () => InstalledRuntimeProjection;
     readonly decodeRows: (projection: NativeAuthoredPlanResult) => unknown[][];
-    readonly authority: () => QueryV2Authority;
+    readonly authority: () => PlanAuthority;
     readonly isFieldToken: (token: object) => boolean;
     readonly fields: Readonly<Record<string, {
         readonly token: PlanFieldToken;

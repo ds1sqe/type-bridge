@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from type_bridge_core import ProxyConnection, PyDatabase, QueryV2Authority, query_v2_authority
+from type_bridge_core import PlanAuthority, ProxyConnection, PyDatabase, plan_authority
 
 from type_bridge.plan import Matched, Plan, PlanAnswer
 
@@ -45,8 +45,8 @@ def _connect(database: str) -> PyDatabase:
     )
 
 
-def _authority(live: dict[str, Any]) -> QueryV2Authority:
-    return query_v2_authority(
+def _authority(live: dict[str, Any]) -> PlanAuthority:
+    return plan_authority(
         bytes.fromhex(live["declared_hex"]), live["proxies"]["purchase"]["scope"], live["profile"]
     )
 
@@ -75,7 +75,7 @@ def _role(owner: type[Any], label: str) -> _Token:
     return _Token(owner, {"role": {"declaring_relation": "purchase", "label": label}})
 
 
-def _purchase(authority: QueryV2Authority, order: str) -> Plan:
+def _purchase(authority: PlanAuthority, order: str) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     buyer = plan.exact(Account)

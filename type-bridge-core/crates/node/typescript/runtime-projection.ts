@@ -1,6 +1,6 @@
 import {
   createRustDatabaseFromNative,
-  QueryV2Authority,
+  PlanAuthority,
   type NativeRustDatabase,
   type NativeRustTransactionContext,
   type Database,
@@ -22,11 +22,11 @@ import {
   type StagedTransactionKind,
 } from "./staged-transaction.js";
 import {
-  queryV2AuthorityHandle,
-  queryV2NativeCall,
-  queryV2NativePromise,
-  registerQueryV2AuthorityHandle,
-} from "./query-v2-internals.js";
+  planAuthorityHandle,
+  planNativeCall,
+  planNativePromise,
+  registerPlanAuthorityHandle,
+} from "./plan-internals.js";
 import {
   isRegisteredRustConnection,
   rustDatabaseHandle,
@@ -347,7 +347,7 @@ interface NativeProjectedBatchAuthority {
 
 /** @internal Read the core snapshot flag while the generated mapper publishes a row. */
 export function projectedBatchDeleted(authority: NativeProjectedBatchAuthority, ordinal: number, roleName?: string, playerIndex?: number): boolean {
-  return queryV2NativeCall(() => loadNative().projectedBatchDeleted(authority, ordinal, roleName, playerIndex));
+  return planNativeCall(() => loadNative().projectedBatchDeleted(authority, ordinal, roleName, playerIndex));
 }
 
 /** @internal Exact root selector backed by one batch publication authority. */
@@ -463,7 +463,7 @@ export interface NativeProjectedManagerFilter {
 
 /** @internal Preserve structured SDK diagnostics from generated-manager N-API calls. */
 export function projectedManagerNativeCall<Result>(operation: () => Result): Result {
-  return queryV2NativeCall(operation);
+  return planNativeCall(operation);
 }
 
 export interface NativeProjectionHandle {
@@ -840,7 +840,7 @@ export class InstalledRuntimeProjection {
 
   /** @internal Project validated plan documents through the installed model registry. */
   materializePlanDocuments<Model>(plan: NativePlan, answerJson: string, declaredId: string): Model[] {
-    return queryV2NativeCall(() => this.#native.materializePlanDocuments(plan, answerJson, declaredId)) as Model[];
+    return planNativeCall(() => this.#native.materializePlanDocuments(plan, answerJson, declaredId)) as Model[];
   }
 
   /** @internal Materialize one successor query thing with its exact opaque proof. */
@@ -884,16 +884,16 @@ export class InstalledRuntimeProjection {
    * connection's ceiling; left out, the session's resources are the ceiling.
    */
   remote(
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     advertisement: Uint8Array,
     exchange: RuntimeProjectionRemoteExchange,
     resources: QueryExecutionResourceLimits,
     cancellation: QueryCancellation,
     answerLimits?: QueryExecutionResourceLimits,
   ): RuntimeProjectionRemote {
-    const nativeAuthority = queryV2AuthorityHandle(authority);
+    const nativeAuthority = planAuthorityHandle(authority);
     if (nativeAuthority === undefined) {
-      throw new TypeError("generated remote query requires a type-bridge QueryV2Authority");
+      throw new TypeError("generated remote query requires a type-bridge PlanAuthority");
     }
     if (!(advertisement instanceof Uint8Array)) {
       throw new TypeError("generated remote query advertisement must be a Uint8Array");
@@ -908,7 +908,7 @@ export class InstalledRuntimeProjection {
       throw new TypeError("generated remote query answerLimits must be QueryExecutionResourceLimits");
     }
     const native = loadNative();
-    const context = queryV2NativeCall(() => native.queryV2RemoteModelContextWithResources(
+    const context = planNativeCall(() => native.queryV2RemoteModelContextWithResources(
       nativeAuthority,
       advertisement,
       resources.nativeHandle(),
@@ -935,7 +935,7 @@ class InstalledRuntimeProjectionStaged implements RuntimeProjectionRemote<Native
     limit: bigint,
     cardinality: "exactly_one" | "bounded_many",
   ): Promise<NativePendingPlanAnswer> {
-    return queryV2NativeCall(() => query.stageFetchRows(this.#transaction, orders, offset, limit, cardinality));
+    return planNativeCall(() => query.stageFetchRows(this.#transaction, orders, offset, limit, cardinality));
   }
   async page(
     query: RuntimeProjectionMatchQuery,
@@ -945,19 +945,19 @@ class InstalledRuntimeProjectionStaged implements RuntimeProjectionRemote<Native
     limit: bigint,
     includeTotal: boolean,
   ): Promise<NativePendingPlanAnswer> {
-    return queryV2NativeCall(() => query.stagePageBy(this.#transaction, root, orders, offset, limit, includeTotal));
+    return planNativeCall(() => query.stagePageBy(this.#transaction, root, orders, offset, limit, includeTotal));
   }
   async count(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
   ): Promise<NativePendingPlanAnswer> {
-    return queryV2NativeCall(() => query.stageCountBy(this.#transaction, root));
+    return planNativeCall(() => query.stageCountBy(this.#transaction, root));
   }
   async exists(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
   ): Promise<NativePendingPlanAnswer> {
-    return queryV2NativeCall(() => query.stageExistsBy(this.#transaction, root));
+    return planNativeCall(() => query.stageExistsBy(this.#transaction, root));
   }
   async reduce(
     query: RuntimeProjectionMatchQuery,
@@ -966,7 +966,7 @@ class InstalledRuntimeProjectionStaged implements RuntimeProjectionRemote<Native
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<NativePendingPlanAnswer> {
-    return queryV2NativeCall(() => query.stageReduceBy(this.#transaction, root, group, reducers, inputs));
+    return planNativeCall(() => query.stageReduceBy(this.#transaction, root, group, reducers, inputs));
   }
   async reduceByField(
     query: RuntimeProjectionMatchQuery,
@@ -975,7 +975,7 @@ class InstalledRuntimeProjectionStaged implements RuntimeProjectionRemote<Native
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<NativePendingPlanAnswer> {
-    return queryV2NativeCall(() => query.stageReduceByField(this.#transaction, root, group, reducers, inputs));
+    return planNativeCall(() => query.stageReduceByField(this.#transaction, root, group, reducers, inputs));
   }
   async reduceByFields(
     query: RuntimeProjectionMatchQuery,
@@ -984,7 +984,7 @@ class InstalledRuntimeProjectionStaged implements RuntimeProjectionRemote<Native
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<NativePendingPlanAnswer> {
-    return queryV2NativeCall(() => query.stageReduceByFields(this.#transaction, root, groups, reducers, inputs));
+    return planNativeCall(() => query.stageReduceByFields(this.#transaction, root, groups, reducers, inputs));
   }
 }
 
@@ -1106,7 +1106,7 @@ class InstalledRuntimeProjectionDirect implements RuntimeProjectionRemote {
     ) => Promise<RuntimeProjectionMatchResult>,
   ): Promise<RuntimeProjectionMatchResult> {
     const target = this.#target;
-    return queryV2NativePromise(queryV2NativeCall(() => {
+    return planNativePromise(planNativeCall(() => {
       this.#native.revalidateMatchDiagnostic(diagnostic());
       return target.kind === "owned" ? owned(target.database) : borrowed(target.transaction);
     }));
@@ -1140,7 +1140,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     limit: bigint,
     cardinality: "exactly_one" | "bounded_many",
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() => this.#native.queryV2PrepareRemoteModelRows(
+    return this.#execute(planNativeCall(() => this.#native.queryV2PrepareRemoteModelRows(
       query,
       this.#context,
       orders,
@@ -1158,7 +1158,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     limit: bigint,
     includeTotal: boolean,
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() => this.#native.queryV2PrepareRemoteModelPage(
+    return this.#execute(planNativeCall(() => this.#native.queryV2PrepareRemoteModelPage(
       query,
       this.#context,
       root,
@@ -1173,7 +1173,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() =>
+    return this.#execute(planNativeCall(() =>
       this.#native.queryV2PrepareRemoteModelCount(query, this.#context, root)
     ));
   }
@@ -1182,7 +1182,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() =>
+    return this.#execute(planNativeCall(() =>
       this.#native.queryV2PrepareRemoteModelExists(query, this.#context, root)
     ));
   }
@@ -1194,7 +1194,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() =>
+    return this.#execute(planNativeCall(() =>
       this.#native.queryV2PrepareRemoteModelReduce(
         query,
         this.#context,
@@ -1213,7 +1213,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() =>
+    return this.#execute(planNativeCall(() =>
       this.#native.queryV2PrepareRemoteModelReduceByField(
         query,
         this.#context,
@@ -1232,7 +1232,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() =>
+    return this.#execute(planNativeCall(() =>
       this.#native.queryV2PrepareRemoteModelReduceByFields(
         query,
         this.#context,
@@ -1245,7 +1245,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
   }
 
   async #execute(pending: RuntimeProjectionRemotePending): Promise<RuntimeProjectionMatchResult> {
-    const request = queryV2NativeCall(() => new Uint8Array(pending.requestBytes()));
+    const request = planNativeCall(() => new Uint8Array(pending.requestBytes()));
     const controller = new AbortController();
     const detach = this.#cancellation.onCancelled(() => controller.abort());
     const exchange = Promise.resolve()
@@ -1262,7 +1262,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
       if (outcome.kind === "cancelled") {
         // Claim through the neutral one-shot authority after cancellation so
         // the pending request is consumed and the canonical diagnostic wins.
-        return await queryV2NativePromise(queryV2NativeCall(() =>
+        return await planNativePromise(planNativeCall(() =>
           pending.decodeReply(new Uint8Array())
         ));
       }
@@ -1273,7 +1273,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
       if (!(response instanceof Uint8Array)) {
         throw new TypeError("generated remote query exchange must resolve to a Uint8Array");
       }
-      return queryV2NativePromise(queryV2NativeCall(() => pending.decodeReply(response)));
+      return planNativePromise(planNativeCall(() => pending.decodeReply(response)));
     } finally {
       detach();
     }
@@ -1333,13 +1333,13 @@ export class ProxyConnection implements RuntimeProjectionRemote {
 
   /** Open `endpoint` under `authority`, fetch or pin its advertisement, and verify it. */
   static async connect(
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     endpoint: string,
     options: ProxyConnectionOptions = {},
   ): Promise<ProxyConnection> {
-    const nativeAuthority = queryV2AuthorityHandle(authority);
+    const nativeAuthority = planAuthorityHandle(authority);
     if (nativeAuthority === undefined) {
-      throw new TypeError("proxy connection requires a type-bridge QueryV2Authority");
+      throw new TypeError("proxy connection requires a type-bridge PlanAuthority");
     }
     if (typeof endpoint !== "string") {
       throw new TypeError("proxy endpoint must be a string");
@@ -1362,7 +1362,7 @@ export class ProxyConnection implements RuntimeProjectionRemote {
     const stagedAdvertisement = options.stagedAdvertisement === undefined
       ? undefined
       : ownedByteSnapshot(options.stagedAdvertisement, loadNative().MAX_REMOTE_ENVELOPE_BYTES);
-    const native = await queryV2NativePromise(queryV2NativeCall(() =>
+    const native = await planNativePromise(planNativeCall(() =>
       loadNative().NodeProxyConnection.connect(
         nativeAuthority,
         endpoint,
@@ -1392,7 +1392,7 @@ export class ProxyConnection implements RuntimeProjectionRemote {
     kind?: StagedTransactionKind,
     options: { readonly cancellation?: QueryCancellation } = {},
   ): Promise<StagedTransaction> {
-    const native = await queryV2NativePromise(queryV2NativeCall(() =>
+    const native = await planNativePromise(planNativeCall(() =>
       this.#native.transaction(kind, options.cancellation?.nativeHandle())
     ));
     return new StagedTransaction(native);
@@ -1494,7 +1494,7 @@ export class ProxyConnection implements RuntimeProjectionRemote {
   async #run(
     terminal: () => Promise<RuntimeProjectionMatchResult>,
   ): Promise<RuntimeProjectionMatchResult> {
-    return queryV2NativePromise(queryV2NativeCall(terminal));
+    return planNativePromise(planNativeCall(terminal));
   }
 }
 
@@ -1503,7 +1503,7 @@ export function installRuntimeProjection(input: RuntimeProjectionInstall): Insta
   const native = loadNative();
   if (input.planResultsOnly === true) {
     if (input.schemaAuthorityJson === undefined || input.projectedBatchMaterializer === undefined) throw new TypeError("plan results require schema authority and a generated batch mapper");
-    return new InstalledRuntimeProjection(queryV2NativeCall(() => native.installPlanRuntimeProjection(
+    return new InstalledRuntimeProjection(planNativeCall(() => native.installPlanRuntimeProjection(
       input.projectionJson, input.semanticFingerprintJson, input.projectionFingerprintJson,
       JSON.stringify(input.bindings), input.schemaAuthorityJson!, input.projectedBatchMaterializer!,
     )));
@@ -1521,12 +1521,12 @@ export function installRuntimeProjection(input: RuntimeProjectionInstall): Insta
 /** @internal Verify an embedded authority before a generated package installs. */
 export function installGeneratedSchemaAuthority(
   input: GeneratedSchemaAuthorityInstall,
-): QueryV2Authority {
-  const authority = Object.create(QueryV2Authority.prototype) as QueryV2Authority;
-  registerQueryV2AuthorityHandle(
+): PlanAuthority {
+  const authority = Object.create(PlanAuthority.prototype) as PlanAuthority;
+  registerPlanAuthorityHandle(
     authority,
-    queryV2NativeCall(() =>
-      loadNative().queryV2AuthorityFromSchemaAuthority(
+    planNativeCall(() =>
+      loadNative().planAuthorityFromSchemaAuthority(
         input.schemaAuthorityJson,
         input.semanticFingerprintJson,
       )

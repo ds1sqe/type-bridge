@@ -24,7 +24,7 @@ use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2_builder::query_builder_value_type;
 
-use crate::plan_runtime::{PyQueryV2Authority, value_error};
+use crate::plan_runtime::{PyPlanAuthority, value_error};
 use crate::query_v2_builder_runtime::python_scalar;
 
 type ModelBulkCell<'py> = Option<(String, Bound<'py, PyAny>)>;
@@ -128,7 +128,7 @@ impl PyPlanBuilderCore {
     fn finish(
         &self,
         py: Python<'_>,
-        authority: &PyQueryV2Authority,
+        authority: &PyPlanAuthority,
         selection: BuildSelection<'_>,
         models: bool,
     ) -> PyResult<PyPlan> {
@@ -690,7 +690,7 @@ impl PyPlanBuilderCore {
     fn build(
         &self,
         py: Python<'_>,
-        authority: PyRef<'_, PyQueryV2Authority>,
+        authority: PyRef<'_, PyPlanAuthority>,
         matched: bool,
         models: bool,
     ) -> PyResult<PyPlan> {
@@ -709,7 +709,7 @@ impl PyPlanBuilderCore {
     fn build_staged(
         &self,
         py: Python<'_>,
-        authority: PyRef<'_, PyQueryV2Authority>,
+        authority: PyRef<'_, PyPlanAuthority>,
         rows: Vec<Vec<(u32, Option<Bound<'_, PyAny>>)>>,
         references: &str,
     ) -> PyResult<PyStagedPlan> {
@@ -749,7 +749,7 @@ impl PyPlanBuilderCore {
     fn build_selected(
         &self,
         py: Python<'_>,
-        authority: PyRef<'_, PyQueryV2Authority>,
+        authority: PyRef<'_, PyPlanAuthority>,
         kind: &str,
         thing: Option<u32>,
         roles: Vec<(String, bool)>,
@@ -947,7 +947,7 @@ impl PyPlan {
     fn bind_rows(
         &self,
         py: Python<'_>,
-        authority: PyRef<'_, PyQueryV2Authority>,
+        authority: PyRef<'_, PyPlanAuthority>,
         rows: Vec<Vec<(u32, Option<Bound<'_, PyAny>>)>>,
         decoder_factory: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
@@ -1083,7 +1083,7 @@ mod tests {
     }
 
     /// The Python golden: the Rust SDK's hand-built purchase under the
-    /// purchase package authority, which a `QueryV2Authority` over the same
+    /// purchase package authority, which a `PlanAuthority` over the same
     /// declared bytes, scope and profile must reproduce. The Python unit
     /// test builds the purchase and compares its bytes with this fixture.
     /// `TB_UPDATE_PLAN_BUILDER_FIXTURE=1` rewrites it.

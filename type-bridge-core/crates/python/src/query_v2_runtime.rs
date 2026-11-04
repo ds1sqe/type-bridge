@@ -2,7 +2,7 @@
 
 use crate::orm_runtime::{PyDatabase, provider_block_on};
 use crate::plan_runtime::{
-    PyQueryV2Authority, PythonBytes, PythonString, python_limit, python_optional_limit, value_error,
+    PyPlanAuthority, PythonBytes, PythonString, python_limit, python_optional_limit, value_error,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -91,7 +91,7 @@ fn local_limits(deadline_ms: Option<&Bound<'_, PyAny>>) -> PyResult<AnswerLimits
 pub fn query_v2_execute_local(
     py: Python<'_>,
     database: &PyDatabase,
-    authority: &PyQueryV2Authority,
+    authority: &PyPlanAuthority,
     plan: &Bound<'_, PyAny>,
     invocation_json: &Bound<'_, PyAny>,
     deadline_ms: Option<&Bound<'_, PyAny>>,
@@ -169,7 +169,7 @@ pub fn query_v2_remote_capabilities(
 #[expect(clippy::too_many_arguments, reason = "flat binding surface")]
 pub fn query_v2_prepare_remote(
     py: Python<'_>,
-    authority: &PyQueryV2Authority,
+    authority: &PyPlanAuthority,
     plan: &Bound<'_, PyAny>,
     invocation_json: &Bound<'_, PyAny>,
     advertisement: &Bound<'_, PyAny>,

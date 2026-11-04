@@ -6,15 +6,15 @@
  * derivation.
  */
 
-import { QueryV2Authority } from "./index.js";
+import { PlanAuthority } from "./index.js";
 import { loadNative } from "./native.js";
 import {
-  queryV2AuthorityHandle,
-  queryV2NativeCall,
+  planAuthorityHandle,
+  planNativeCall,
   type NativeAuthoredQueryInvocation,
   type NativeAuthoredQueryPlan,
   type NativeQueryPlanBuilder,
-  type NativeQueryV2AuthorityIdentity,
+  type NativePlanAuthorityIdentity,
   type NativeQueryV2BindingHandle,
   type NativeQueryV2DocumentFieldHandle,
   type NativeQueryV2InputHandle,
@@ -24,9 +24,9 @@ import {
   type NativeQueryV2OrderHandle,
   type NativeQueryV2PatternHandle,
   type NativeQueryV2ReduceAssignmentHandle,
-} from "./query-v2-internals.js";
+} from "./plan-internals.js";
 
-export { QueryV2Authority };
+export { PlanAuthority };
 
 type QueryV2ValueType =
   | "string"
@@ -108,7 +108,7 @@ export class AuthoredQueryInvocation {
     return this.#native.planFingerprint;
   }
 
-  get authorityIdentity(): NativeQueryV2AuthorityIdentity {
+  get authorityIdentity(): NativePlanAuthorityIdentity {
     return this.#native.authorityIdentity;
   }
 
@@ -145,27 +145,27 @@ export class AuthoredQueryPlan {
     return Object.freeze([...this.#native.requiredCapabilities]);
   }
 
-  get authorityIdentity(): NativeQueryV2AuthorityIdentity {
+  get authorityIdentity(): NativePlanAuthorityIdentity {
     return this.#native.authorityIdentity;
   }
 
   rows(rows: QueryV2InvocationRows): AuthoredQueryInvocation {
-    const native = queryV2NativeCall(() => this.#native.rows(nativeNestedArray(rows)));
+    const native = planNativeCall(() => this.#native.rows(nativeNestedArray(rows)));
     return new AuthoredQueryInvocation(native, AUTHORED_INVOCATION);
   }
 
   documents(rows: QueryV2InvocationRows): AuthoredQueryInvocation {
-    const native = queryV2NativeCall(() => this.#native.documents(nativeNestedArray(rows)));
+    const native = planNativeCall(() => this.#native.documents(nativeNestedArray(rows)));
     return new AuthoredQueryInvocation(native, AUTHORED_INVOCATION);
   }
 
   count(rows: QueryV2InvocationRows): AuthoredQueryInvocation {
-    const native = queryV2NativeCall(() => this.#native.count(nativeNestedArray(rows)));
+    const native = planNativeCall(() => this.#native.count(nativeNestedArray(rows)));
     return new AuthoredQueryInvocation(native, AUTHORED_INVOCATION);
   }
 
   exists(rows: QueryV2InvocationRows): AuthoredQueryInvocation {
-    const native = queryV2NativeCall(() => this.#native.exists(nativeNestedArray(rows)));
+    const native = planNativeCall(() => this.#native.exists(nativeNestedArray(rows)));
     return new AuthoredQueryInvocation(native, AUTHORED_INVOCATION);
   }
 }
@@ -174,18 +174,18 @@ export class AuthoredQueryPlan {
 export class QueryPlanBuilder {
   readonly #native: NativeQueryPlanBuilder;
 
-  constructor(authority: QueryV2Authority) {
-    const nativeAuthority = queryV2AuthorityHandle(authority);
+  constructor(authority: PlanAuthority) {
+    const nativeAuthority = planAuthorityHandle(authority);
     if (nativeAuthority === undefined) {
-      throw new TypeError("QueryPlanBuilder requires a type-bridge QueryV2Authority");
+      throw new TypeError("QueryPlanBuilder requires a type-bridge PlanAuthority");
     }
-    this.#native = queryV2NativeCall(
+    this.#native = planNativeCall(
       () => new (loadNative().NodeQueryPlanBuilder)(nativeAuthority),
     );
   }
 
   binding(variable: string): NativeQueryV2BindingHandle {
-    return queryV2NativeCall(() => this.#native.binding(variable));
+    return planNativeCall(() => this.#native.binding(variable));
   }
 
   input(
@@ -193,11 +193,11 @@ export class QueryPlanBuilder {
     valueType: QueryV2ValueType,
     optional: boolean,
   ): NativeQueryV2InputHandle {
-    return queryV2NativeCall(() => this.#native.input(publicName, valueType, optional));
+    return planNativeCall(() => this.#native.input(publicName, valueType, optional));
   }
 
   bindingOperand(binding: NativeQueryV2BindingHandle): NativeQueryV2OperandHandle {
-    return queryV2NativeCall(() => this.#native.bindingOperand(binding));
+    return planNativeCall(() => this.#native.bindingOperand(binding));
   }
 
   literalOperand(
@@ -211,11 +211,11 @@ export class QueryPlanBuilder {
     valueType: QueryV2ValueType,
     value: QueryV2Scalar,
   ): NativeQueryV2OperandHandle {
-    return queryV2NativeCall(() => this.#native.literalOperand(valueType, value));
+    return planNativeCall(() => this.#native.literalOperand(valueType, value));
   }
 
   inputOperand(input: NativeQueryV2InputHandle): NativeQueryV2OperandHandle {
-    return queryV2NativeCall(() => this.#native.inputOperand(input));
+    return planNativeCall(() => this.#native.inputOperand(input));
   }
 
   isa(
@@ -224,7 +224,7 @@ export class QueryPlanBuilder {
     typeLabel: string,
     includeSubtypes: boolean,
   ): NativeQueryV2PatternHandle {
-    return queryV2NativeCall(
+    return planNativeCall(
       () => this.#native.isa(binding, typeKind, typeLabel, includeSubtypes),
     );
   }
@@ -234,7 +234,7 @@ export class QueryPlanBuilder {
     attribute: NativeQueryV2BindingHandle,
     attributeLabel: string,
   ): NativeQueryV2PatternHandle {
-    return queryV2NativeCall(
+    return planNativeCall(
       () => this.#native.has(owner, attribute, attributeLabel),
     );
   }
@@ -245,7 +245,7 @@ export class QueryPlanBuilder {
     roles: readonly string[],
     players: readonly NativeQueryV2BindingHandle[],
   ): NativeQueryV2PatternHandle {
-    return queryV2NativeCall(
+    return planNativeCall(
       () =>
         this.#native.links(
           relation,
@@ -261,23 +261,23 @@ export class QueryPlanBuilder {
     left: NativeQueryV2OperandHandle,
     right: NativeQueryV2OperandHandle,
   ): NativeQueryV2PatternHandle {
-    return queryV2NativeCall(() => this.#native.value(comparator, left, right));
+    return planNativeCall(() => this.#native.value(comparator, left, right));
   }
 
   not(patterns: readonly NativeQueryV2PatternHandle[]): NativeQueryV2PatternHandle {
-    return queryV2NativeCall(() => this.#native.not(nativeArray(patterns)));
+    return planNativeCall(() => this.#native.not(nativeArray(patterns)));
   }
 
   or(
     branches: readonly (readonly NativeQueryV2PatternHandle[])[],
   ): NativeQueryV2PatternHandle {
-    return queryV2NativeCall(
+    return planNativeCall(
       () => this.#native.or(nativeNestedArray(branches)),
     );
   }
 
   try(patterns: readonly NativeQueryV2PatternHandle[]): NativeQueryV2PatternHandle {
-    return queryV2NativeCall(() => this.#native.try(nativeArray(patterns)));
+    return planNativeCall(() => this.#native.try(nativeArray(patterns)));
   }
 
   reachable(
@@ -289,7 +289,7 @@ export class QueryPlanBuilder {
     minDepth: number,
     maxDepth: number,
   ): NativeQueryV2PatternHandle {
-    return queryV2NativeCall(
+    return planNativeCall(
       () =>
         this.#native.reachable(
           source,
@@ -321,7 +321,7 @@ export class QueryPlanBuilder {
     functionName: string | null,
     localFunction?: NativeQueryV2LocalFunctionHandle | null,
   ): NativeQueryV2PatternHandle {
-    return queryV2NativeCall(
+    return planNativeCall(
       () =>
         this.#native.functionCall(
           assigned,
@@ -336,7 +336,7 @@ export class QueryPlanBuilder {
     binding: NativeQueryV2BindingHandle,
     direction: QueryV2OrderDirection,
   ): NativeQueryV2OrderHandle {
-    return queryV2NativeCall(() => this.#native.order(binding, direction));
+    return planNativeCall(() => this.#native.order(binding, direction));
   }
 
   reduceAssignment(
@@ -354,7 +354,7 @@ export class QueryPlanBuilder {
     reducer: QueryV2Reducer,
     input?: NativeQueryV2BindingHandle | null,
   ): NativeQueryV2ReduceAssignmentHandle {
-    return queryV2NativeCall(
+    return planNativeCall(
       () => this.#native.reduceAssignment(assigned, reducer, input),
     );
   }
@@ -374,7 +374,7 @@ export class QueryPlanBuilder {
     input: NativeQueryV2BindingHandle,
     valueType: "long" | "double",
   ): NativeQueryV2LocalReturnHandle {
-    return queryV2NativeCall(
+    return planNativeCall(
       () => this.#native.localReturn(reducer, input, valueType),
     );
   }
@@ -387,7 +387,7 @@ export class QueryPlanBuilder {
     body: readonly NativeQueryV2PatternHandle[],
     returns: NativeQueryV2LocalReturnHandle,
   ): NativeQueryV2LocalFunctionHandle {
-    return queryV2NativeCall(
+    return planNativeCall(
       () =>
         this.#native.localFunction(
           name,
@@ -401,47 +401,47 @@ export class QueryPlanBuilder {
   }
 
   match(patterns: readonly NativeQueryV2PatternHandle[]): void {
-    queryV2NativeCall(() => this.#native.match(nativeArray(patterns)));
+    planNativeCall(() => this.#native.match(nativeArray(patterns)));
   }
 
   select(bindings: readonly NativeQueryV2BindingHandle[]): void {
-    queryV2NativeCall(() => this.#native.select(nativeArray(bindings)));
+    planNativeCall(() => this.#native.select(nativeArray(bindings)));
   }
 
   require(bindings: readonly NativeQueryV2BindingHandle[]): void {
-    queryV2NativeCall(() => this.#native.require(nativeArray(bindings)));
+    planNativeCall(() => this.#native.require(nativeArray(bindings)));
   }
 
   distinct(): void {
-    queryV2NativeCall(() => this.#native.distinct());
+    planNativeCall(() => this.#native.distinct());
   }
 
   reduce(
     assignments: readonly NativeQueryV2ReduceAssignmentHandle[],
     groups: readonly NativeQueryV2BindingHandle[],
   ): void {
-    queryV2NativeCall(() =>
+    planNativeCall(() =>
       this.#native.reduce(nativeArray(assignments), nativeArray(groups)),
     );
   }
 
   sort(terms: readonly NativeQueryV2OrderHandle[]): void {
-    queryV2NativeCall(() => this.#native.sort(nativeArray(terms)));
+    planNativeCall(() => this.#native.sort(nativeArray(terms)));
   }
 
   offset(rows: bigint): void {
-    queryV2NativeCall(() => this.#native.offset(rows));
+    planNativeCall(() => this.#native.offset(rows));
   }
 
   limit(rows: bigint): void {
-    queryV2NativeCall(() => this.#native.limit(rows));
+    planNativeCall(() => this.#native.limit(rows));
   }
 
   documentBinding(
     key: string,
     binding: NativeQueryV2BindingHandle,
   ): NativeQueryV2DocumentFieldHandle {
-    return queryV2NativeCall(() => this.#native.documentBinding(key, binding));
+    return planNativeCall(() => this.#native.documentBinding(key, binding));
   }
 
   documentAttributeList(
@@ -449,7 +449,7 @@ export class QueryPlanBuilder {
     owner: NativeQueryV2BindingHandle,
     attributeLabel: string,
   ): NativeQueryV2DocumentFieldHandle {
-    return queryV2NativeCall(
+    return planNativeCall(
       () => this.#native.documentAttributeList(key, owner, attributeLabel),
     );
   }
@@ -457,7 +457,7 @@ export class QueryPlanBuilder {
   finalizeRows(
     columns: readonly NativeQueryV2BindingHandle[],
   ): AuthoredQueryPlan {
-    const native = queryV2NativeCall(() =>
+    const native = planNativeCall(() =>
       this.#native.finalizeRows(nativeArray(columns)),
     );
     return new AuthoredQueryPlan(native, AUTHORED_PLAN);
@@ -466,7 +466,7 @@ export class QueryPlanBuilder {
   finalizeDocuments(
     fields: readonly NativeQueryV2DocumentFieldHandle[],
   ): AuthoredQueryPlan {
-    const native = queryV2NativeCall(() =>
+    const native = planNativeCall(() =>
       this.#native.finalizeDocuments(nativeArray(fields)),
     );
     return new AuthoredQueryPlan(native, AUTHORED_PLAN);

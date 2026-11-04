@@ -5,7 +5,7 @@ import path = require("node:path");
 import test = require("node:test");
 
 import {
-  QueryV2Authority,
+  PlanAuthority,
   queryV2PrepareRemote,
   queryV2RemoteCapabilities,
 } from "../../typescript/index.js";
@@ -155,7 +155,7 @@ function signedReply(payload: unknown): Uint8Array {
 }
 
 function pendingReply(maxItems = 10n, maxBytes = 1n << 20n) {
-  const authority = new QueryV2Authority(
+  const authority = new PlanAuthority(
     Buffer.from(corpus.declared_b64, "base64"),
     corpus.scope,
     corpus.profile,
@@ -201,7 +201,7 @@ test("V2 string inputs fail at their semantic byte ceilings", () => {
   const declared = Buffer.from(corpus.declared_b64, "base64");
   assert.throws(
     () =>
-      new QueryV2Authority(
+      new PlanAuthority(
         declared,
         "s".repeat(1024 * 1024 + 1),
         corpus.profile,
@@ -210,7 +210,7 @@ test("V2 string inputs fail at their semantic byte ceilings", () => {
   );
   assert.throws(
     () =>
-      new QueryV2Authority(
+      new PlanAuthority(
         declared,
         corpus.scope,
         "p".repeat(256),
@@ -218,7 +218,7 @@ test("V2 string inputs fail at their semantic byte ceilings", () => {
     /invalid_fingerprint_identifier: fingerprint metadata identifier is malformed/,
   );
 
-  const authority = new QueryV2Authority(
+  const authority = new PlanAuthority(
     declared,
     corpus.scope,
     corpus.profile,

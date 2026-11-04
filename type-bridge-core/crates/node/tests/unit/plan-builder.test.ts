@@ -10,8 +10,8 @@ import {
   Plan,
   PlanBuilder,
   PlanExpr,
-  QueryV2Authority,
-  QueryV2Error,
+  PlanAuthority,
+  PlanError,
   decimal,
   type PlanFieldToken,
   type PlanModelToken,
@@ -35,8 +35,8 @@ const fixture = JSON.parse(
   fs.readFileSync(path.resolve(process.cwd(), "tests/fixtures/plan-builder-purchase.json"), "utf8"),
 ) as Fixture;
 
-function authority(): QueryV2Authority {
-  return new QueryV2Authority(Buffer.from(fixture.declared_hex, "hex"), fixture.scope, fixture.profile);
+function authority(): PlanAuthority {
+  return new PlanAuthority(Buffer.from(fixture.declared_hex, "hex"), fixture.scope, fixture.profile);
 }
 
 // The shapes a generated package's tokens carry (`Item`, `Item.fields.stock`,
@@ -106,11 +106,11 @@ function purchase(order: string, itemId: string, accountId: string): Plan {
   return plan.build(authority());
 }
 
-function buildError(build: () => unknown): QueryV2Error {
+function buildError(build: () => unknown): PlanError {
   try {
     build();
   } catch (error) {
-    assert.ok(error instanceof QueryV2Error, `expected QueryV2Error, got ${String(error)}`);
+    assert.ok(error instanceof PlanError, `expected PlanError, got ${String(error)}`);
     return error;
   }
   assert.fail("build unexpectedly succeeded");
@@ -268,7 +268,7 @@ test("RUST_LOG fallback emits plan records on stderr", () => {
   const script = `
     const sdk = require('./dist/public.js');
     const fixture = require('./tests/fixtures/plan-builder-purchase.json');
-    const authority = new sdk.QueryV2Authority(Buffer.from(fixture.declared_hex, 'hex'), fixture.scope, fixture.profile);
+    const authority = new sdk.PlanAuthority(Buffer.from(fixture.declared_hex, 'hex'), fixture.scope, fixture.profile);
     const builder = sdk.Plan.builder();
     builder.exact({typeKey: JSON.stringify({kind: 'entity', label: 'item'})});
     builder.count();
@@ -302,7 +302,7 @@ test("staged builder keeps typed IID references and rejects authored reference v
   assert.deepEqual(JSON.parse(staged.nativeHandle().resultRefsJson()), [
     { input: 0, source_plan: 0, source_column: 0, expected_types: [{ kind: "entity", label: "item" }] },
   ]);
-  assert.throws(() => builder.buildStaged(authority(), [[iid.value("0x10")]], [reference]), (error: unknown) => error instanceof QueryV2Error && error.code === "query_stage_result_ref_template");
+  assert.throws(() => builder.buildStaged(authority(), [[iid.value("0x10")]], [reference]), (error: unknown) => error instanceof PlanError && error.code === "query_stage_result_ref_template");
   const foreign = new PlanBuilder().input("foreign", "string");
   assert.throws(() => builder.buildStaged(authority(), [[foreign.absent()]], [reference]), /does not belong|plan handle does not belong/);
 });

@@ -25,7 +25,7 @@ use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_orm::query_v2_builder::query_builder_value_type;
 
-use crate::plan_runtime::{NodeQueryV2Authority, napi_error};
+use crate::plan_runtime::{NodePlanAuthority, napi_error};
 
 fn invocation_rows(
     env: &Env,
@@ -141,7 +141,7 @@ pub struct NodePlanBuilder {
 impl NodePlanBuilder {
     fn finish(
         &self,
-        authority: &NodeQueryV2Authority,
+        authority: &NodePlanAuthority,
         selection: BuildSelection<'_>,
         models: bool,
     ) -> napi::Result<NodePlan> {
@@ -789,7 +789,7 @@ impl NodePlanBuilder {
     #[napi]
     pub fn build(
         &self,
-        authority: &NodeQueryV2Authority,
+        authority: &NodePlanAuthority,
         matched: Option<bool>,
         models: Option<bool>,
     ) -> napi::Result<NodePlan> {
@@ -808,7 +808,7 @@ impl NodePlanBuilder {
     pub fn build_staged(
         &self,
         env: Env,
-        authority: &NodeQueryV2Authority,
+        authority: &NodePlanAuthority,
         columns: Vec<Vec<u32>>,
         rows: Vec<Vec<Unknown<'_>>>,
         references: String,
@@ -845,7 +845,7 @@ impl NodePlanBuilder {
     #[allow(clippy::too_many_arguments)] // napi forwards attributes to wrappers with different arities.
     pub fn build_selected(
         &self,
-        authority: &NodeQueryV2Authority,
+        authority: &NodePlanAuthority,
         kind: String,
         thing: Option<u32>,
         roles: Vec<String>,
@@ -1012,7 +1012,7 @@ impl NodePlan {
     pub fn bind_rows(
         &self,
         env: Env,
-        authority: &NodeQueryV2Authority,
+        authority: &NodePlanAuthority,
         columns: Vec<Vec<u32>>,
         rows: Vec<Vec<Unknown<'_>>>,
     ) -> napi::Result<Self> {
@@ -1116,7 +1116,7 @@ mod tests {
     }
 
     /// The TypeScript golden: the Rust SDK's hand-built purchase under the
-    /// purchase package authority. The authority a `QueryV2Authority` over
+    /// purchase package authority. The authority a `PlanAuthority` over
     /// the same declared bytes, scope and profile resolves must carry the
     /// same managed semantics, or TypeScript could not reach these bytes.
     /// `TB_UPDATE_PLAN_BUILDER_FIXTURE=1` rewrites the fixture.

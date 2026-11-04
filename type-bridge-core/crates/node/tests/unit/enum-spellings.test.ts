@@ -4,7 +4,7 @@ import path = require("node:path");
 import test = require("node:test");
 
 import { loadNative } from "../../typescript/native.js";
-import { QueryV2Error, queryV2NativeCall } from "../../typescript/query-v2-internals.js";
+import { PlanError, planNativeCall } from "../../typescript/plan-internals.js";
 
 // Node half of the enum-spelling parity corpus: the same cases, codes, and
 // details as Python and Rust, from the core's one parser per enum.
@@ -28,9 +28,9 @@ for (const entry of corpus.cases) {
   test(`enum spelling corpus: ${entry.id}`, () => {
     const native = loadNative();
     assert.throws(
-      () => queryV2NativeCall(() => native.canonicalEnumSpelling(entry.kind, entry.value)),
+      () => planNativeCall(() => native.canonicalEnumSpelling(entry.kind, entry.value)),
       (error: unknown) => {
-        assert.ok(error instanceof QueryV2Error);
+        assert.ok(error instanceof PlanError);
         assert.deepEqual(
           {
             category: error.category,

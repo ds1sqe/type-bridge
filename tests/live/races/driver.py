@@ -29,7 +29,7 @@ from pathlib import Path
 from queue import Empty
 from typing import Any, Protocol
 
-from type_bridge_core import PyDatabase, QueryV2Authority, query_v2_query_only_authority
+from type_bridge_core import PlanAuthority, PyDatabase, plan_query_only_authority
 
 from type_bridge.plan import Count, Matched, Plan
 
@@ -177,7 +177,7 @@ def _role(owner: type[Any], relation: str, label: str) -> _Token:
 # ------------------------------------------------------------------- plans
 
 
-def purchase(authority: QueryV2Authority, order: str, account: str) -> Plan:
+def purchase(authority: PlanAuthority, order: str, account: str) -> Plan:
     """The one-query purchase of item I1: stock and balance checked and taken."""
     plan = Plan.builder()
     item = plan.exact(Item)
@@ -199,7 +199,7 @@ def purchase(authority: QueryV2Authority, order: str, account: str) -> Plan:
     return plan.build(authority)
 
 
-def off_call(authority: QueryV2Authority, doctor: str, colleague: str, *, touch: bool) -> Plan:
+def off_call(authority: PlanAuthority, doctor: str, colleague: str, *, touch: bool) -> Plan:
     """Take `doctor` off call while `colleague` is on call.
 
     The check reads the colleague's on-call ownership and writes nothing
@@ -221,7 +221,7 @@ def off_call(authority: QueryV2Authority, doctor: str, colleague: str, *, touch:
     return plan.build(authority)
 
 
-def assign(authority: QueryV2Authority, doctor: str, shift: str) -> Plan:
+def assign(authority: PlanAuthority, doctor: str, shift: str) -> Plan:
     """Assign `doctor` to `shift`; `plays assignee @card(0..1)` is the rule."""
     plan = Plan.builder()
     assignee = plan.exact(Doctor)
@@ -236,14 +236,14 @@ def assign(authority: QueryV2Authority, doctor: str, shift: str) -> Plan:
     return plan.build(authority)
 
 
-def claim_key(authority: QueryV2Authority, stock: int) -> Plan:
+def claim_key(authority: PlanAuthority, stock: int) -> Plan:
     """Insert item K1; `item-id @key` lets one racer have it."""
     plan = Plan.builder()
     plan.insert(Item).field(_field(Item, "item-id"), "K1").field(_field(Item, "stock"), stock)
     return plan.build(authority)
 
 
-def bulk_items(authority: QueryV2Authority, prefix: str, rows: int) -> Plan:
+def bulk_items(authority: PlanAuthority, prefix: str, rows: int) -> Plan:
     """Insert `rows` items with ids `prefix0`, `prefix1`, ..."""
     plan = Plan.builder()
     item_id = plan.input("item_id", "string")
@@ -253,7 +253,7 @@ def bulk_items(authority: QueryV2Authority, prefix: str, rows: int) -> Plan:
     return plan.build(authority)
 
 
-def count_of(authority: QueryV2Authority, model: type[Any], **equal: str | int | bool) -> Plan:
+def count_of(authority: PlanAuthority, model: type[Any], **equal: str | int | bool) -> Plan:
     """Count `model` instances whose fields equal the given values."""
     plan = Plan.builder()
     thing = plan.exact(model)
@@ -272,10 +272,10 @@ class Scenario:
     """Seed TypeQL, and the plans racer `index` stages."""
 
     seed: tuple[str, ...]
-    plans: Callable[[QueryV2Authority, int], list[Plan]]
+    plans: Callable[[PlanAuthority, int], list[Plan]]
 
 
-def _skew(authority: QueryV2Authority, index: int, *, touch: bool) -> list[Plan]:
+def _skew(authority: PlanAuthority, index: int, *, touch: bool) -> list[Plan]:
     # Cyclic: racer i reads doctor i+1 and takes doctor i off call.
     me, colleague = DOCTORS[index], DOCTORS[(index + 1) % len(DOCTORS)]
     return [off_call(authority, me, colleague, touch=touch)]
@@ -316,8 +316,8 @@ def connect(target: Target) -> PyDatabase:
     return PyDatabase.connect(target.address, target.database, http_port=target.http_port)
 
 
-def authority_for(db: PyDatabase, target: Target) -> QueryV2Authority:
-    return query_v2_query_only_authority(db, target.declared, SCOPE, target.profile)
+def authority_for(db: PyDatabase, target: Target) -> PlanAuthority:
+    return plan_query_only_authority(db, target.declared, SCOPE, target.profile)
 
 
 def fresh_database(base: Target, label: str, seed: Iterable[str]) -> Target:
@@ -365,7 +365,7 @@ def drop_database(target: Target) -> None:
 
 
 def read_counts(
-    target: Target, plans: Mapping[str, Callable[[QueryV2Authority], Plan]]
+    target: Target, plans: Mapping[str, Callable[[PlanAuthority], Plan]]
 ) -> dict[str, int]:
     """Run count plans in one staged read transaction."""
     db = connect(target)
@@ -383,7 +383,7 @@ def read_counts(
         db.close()
 
 
-def commit_alone(target: Target, plans: Callable[[QueryV2Authority], list[Plan]]) -> Outcome:
+def commit_alone(target: Target, plans: Callable[[PlanAuthority], list[Plan]]) -> Outcome:
     """Stage and commit plans in one transaction, with no racer."""
     db = connect(target)
     try:
@@ -475,7 +475,7 @@ PAUSE_ATTEMPTS = 12
 COMMIT_SECONDS = 180.0
 
 
-def _bulk(authority: QueryV2Authority) -> list[Plan]:
+def _bulk(authority: PlanAuthority) -> list[Plan]:
     return [bulk_items(authority, f"P{plan}-", BULK_ROWS) for plan in range(BULK_PLANS)]
 
 

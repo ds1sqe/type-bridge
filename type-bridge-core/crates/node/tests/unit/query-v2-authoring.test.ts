@@ -6,11 +6,11 @@ import test = require("node:test");
 import vm = require("node:vm");
 import type ts = require("typescript");
 
-import { QueryV2Error } from "../../typescript/index.js";
+import { PlanError } from "../../typescript/index.js";
 import * as queryV2Authoring from "../../typescript/query-v2.js";
 import {
   QueryPlanBuilder,
-  QueryV2Authority,
+  PlanAuthority,
 } from "../../typescript/query-v2.js";
 import { loadNative } from "../../typescript/native.js";
 
@@ -90,7 +90,7 @@ function formatTypeScriptDiagnostics(
   });
 }
 
-function publicPlan(authority: QueryV2Authority) {
+function publicPlan(authority: PlanAuthority) {
   const builder = new QueryPlanBuilder(authority);
   const person = builder.binding("person");
   const name = builder.binding("name");
@@ -104,11 +104,11 @@ function publicPlan(authority: QueryV2Authority) {
 }
 
 test("public authoring is byte-identical to the direct Rust N-API builder", () => {
-  const authority = new QueryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = new PlanAuthority(declared, corpus.scope, corpus.profile);
   const { plan } = publicPlan(authority);
 
   const native = loadNative();
-  const nativeAuthority = native.queryV2Authority(
+  const nativeAuthority = native.planAuthority(
     declared,
     corpus.scope,
     corpus.profile,
@@ -143,8 +143,8 @@ test("public authoring is byte-identical to the direct Rust N-API builder", () =
 });
 
 test("public facade preserves structured ownership and terminal diagnostics", () => {
-  const authority = new QueryV2Authority(declared, corpus.scope, corpus.profile);
-  const foreignAuthority = new QueryV2Authority(
+  const authority = new PlanAuthority(declared, corpus.scope, corpus.profile);
+  const foreignAuthority = new PlanAuthority(
     declared,
     corpus.scope,
     corpus.profile,
@@ -158,7 +158,7 @@ test("public facade preserves structured ownership and terminal diagnostics", ()
   assert.throws(
     () => second.bindingOperand(sameAuthorityHandle),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_builder_cross_builder_handle");
       return true;
     },
@@ -166,7 +166,7 @@ test("public facade preserves structured ownership and terminal diagnostics", ()
   assert.throws(
     () => second.bindingOperand(foreignAuthorityHandle),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_builder_cross_authority_handle");
       return true;
     },
@@ -183,7 +183,7 @@ test("public facade preserves structured ownership and terminal diagnostics", ()
   assert.throws(
     () => builder.binding("after_finalize"),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_builder_finalized");
       return true;
     },
@@ -191,7 +191,7 @@ test("public facade preserves structured ownership and terminal diagnostics", ()
   assert.throws(
     () => plan.rows([[]]),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_invocation_unexpected_inputs");
       return true;
     },
@@ -205,32 +205,32 @@ test("public strings reject lone surrogates instead of replacement-encoding iden
     "\ud800";
 
   assert.throws(
-    () => new QueryV2Authority(declared, "binding-\ud800", corpus.profile),
+    () => new PlanAuthority(declared, "binding-\ud800", corpus.profile),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_v2_host_string_unicode");
       return true;
     },
   );
   assert.throws(
-    () => new QueryV2Authority(
+    () => new PlanAuthority(
       declared,
       mixedAstralCanonical,
       corpus.profile,
     ),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_v2_host_string_unicode");
       return true;
     },
   );
 
-  const authority = new QueryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = new PlanAuthority(declared, corpus.scope, corpus.profile);
   const builder = new QueryPlanBuilder(authority);
   assert.throws(
     () => builder.literalOperand("string", "\ud800"),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_builder_scalar_unicode");
       return true;
     },
@@ -242,7 +242,7 @@ test("public strings reject lone surrogates instead of replacement-encoding iden
   assert.throws(
     () => builder.binding(1 as unknown as string),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_v2_host_string_type");
       return true;
     },
@@ -264,7 +264,7 @@ test("public strings reject lone surrogates instead of replacement-encoding iden
     assert.throws(
       operation,
       (error: unknown) => {
-        assert.ok(error instanceof QueryV2Error);
+        assert.ok(error instanceof PlanError);
         assert.equal(error.code, "query_v2_host_string_unicode");
         return true;
       },
@@ -273,7 +273,7 @@ test("public strings reject lone surrogates instead of replacement-encoding iden
   assert.throws(
     () => builder.literalOperand("string", mixedAstralCanonical),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_builder_scalar_unicode");
       return true;
     },
@@ -302,7 +302,7 @@ function rawDiagnosticCode(operation: () => unknown): string {
 
 test("raw N-API integer conversion rejects hostile values without consuming the builder", () => {
   const native = loadNative();
-  const authority = native.queryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = native.planAuthority(declared, corpus.scope, corpus.profile);
   const builder = new native.NodeQueryPlanBuilder(authority);
   const source = builder.binding("source");
   const target = builder.binding("target");
@@ -362,7 +362,7 @@ test("raw N-API integer conversion rejects hostile values without consuming the 
 
 test("raw N-API flags, text scalars, and labels fail canonically and atomically", () => {
   const native = loadNative();
-  const authority = native.queryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = native.planAuthority(declared, corpus.scope, corpus.profile);
 
   const inputBuilder = new native.NodeQueryPlanBuilder(authority);
   assert.equal(
@@ -420,7 +420,7 @@ test("raw N-API flags, text scalars, and labels fail canonically and atomically"
 });
 
 test("public authoring rejects oversized arrays before element access", () => {
-  const authority = new QueryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = new PlanAuthority(declared, corpus.scope, corpus.profile);
   const builder = new QueryPlanBuilder(authority);
   const person = builder.binding("person");
   const personIsa = builder.isa(person, "entity", "smoke-person", false);
@@ -436,7 +436,7 @@ test("public authoring rejects oversized arrays before element access", () => {
   assert.throws(
     () => builder.match(hostilePatterns as never),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_plan_pattern_limit");
       return true;
     },
@@ -449,7 +449,7 @@ test("public authoring rejects oversized arrays before element access", () => {
 });
 
 test("public operation-specific collection limits and node budget are canonical", () => {
-  const authority = new QueryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = new PlanAuthority(declared, corpus.scope, corpus.profile);
   const builder = new QueryPlanBuilder(authority);
   const person = builder.binding("person");
   const relation = builder.binding("relation");
@@ -537,7 +537,7 @@ test("public operation-specific collection limits and node budget are canonical"
     assert.throws(
       operation,
       (error: unknown) => {
-        assert.ok(error instanceof QueryV2Error);
+        assert.ok(error instanceof PlanError);
         assert.equal(error.code, code);
         return true;
       },
@@ -548,7 +548,7 @@ test("public operation-specific collection limits and node budget are canonical"
   assert.throws(
     () => builder.not(Array.from({ length: 16 }, () => wide)),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_plan_pattern_node_limit");
       return true;
     },
@@ -572,7 +572,7 @@ test("public operation-specific collection limits and node budget are canonical"
       Array.from({ length: 257 }, () => null),
     ] as never),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_invocation_row_arity");
       return true;
     },
@@ -580,7 +580,7 @@ test("public operation-specific collection limits and node budget are canonical"
 });
 
 test("public groupby accepts sixty-five groups and rejects the 257th", () => {
-  const authority = new QueryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = new PlanAuthority(declared, corpus.scope, corpus.profile);
   const builder = new QueryPlanBuilder(authority);
   const owner = builder.binding("group_owner");
   const attributes = Array.from(
@@ -602,7 +602,7 @@ test("public groupby accepts sixty-five groups and rejects the 257th", () => {
       Array.from({ length: 257 }, () => groups[0]),
     ),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_plan_binding_limit");
       return true;
     },
@@ -615,7 +615,7 @@ test("public groupby accepts sixty-five groups and rejects the 257th", () => {
 });
 
 test("public invocation rows are count and aggregate-byte bounded before materialization", () => {
-  const authority = new QueryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = new PlanAuthority(declared, corpus.scope, corpus.profile);
   const { plan: noInputPlan } = publicPlan(authority);
   let accessed = false;
   const hostileRows = new Array(4_097);
@@ -629,7 +629,7 @@ test("public invocation rows are count and aggregate-byte bounded before materia
   assert.throws(
     () => noInputPlan.rows(hostileRows as never),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_invocation_row_limit");
       // The core bounds the host array and annotates the refusal (Python
       // reports the same details).
@@ -657,7 +657,7 @@ test("public invocation rows are count and aggregate-byte bounded before materia
   assert.throws(
     () => inputPlan.exists(Array.from({ length: 5 }, () => [oversizedChunk])),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_invocation_input_byte_limit");
       return true;
     },
@@ -693,7 +693,7 @@ test("public invocation rows are count and aggregate-byte bounded before materia
 });
 
 test("public collection container type is canonical across bindings", () => {
-  const authority = new QueryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = new PlanAuthority(declared, corpus.scope, corpus.profile);
   const builder = new QueryPlanBuilder(authority);
   const person = builder.binding("person");
   const relation = builder.binding("relation");
@@ -706,7 +706,7 @@ test("public collection container type is canonical across bindings", () => {
       [person],
     ),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_builder_host_collection_type");
       return true;
     },
@@ -714,7 +714,7 @@ test("public collection container type is canonical across bindings", () => {
   assert.throws(
     () => builder.match({} as never),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_builder_host_collection_type");
       return true;
     },
@@ -722,7 +722,7 @@ test("public collection container type is canonical across bindings", () => {
 });
 
 test("public invocation row arity preflights before cell access", () => {
-  const authority = new QueryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = new PlanAuthority(declared, corpus.scope, corpus.profile);
   const inputBuilder = new QueryPlanBuilder(authority);
   inputBuilder.input("supplied_text", "string", true);
   const inputPerson = inputBuilder.binding("person");
@@ -742,7 +742,7 @@ test("public invocation row arity preflights before cell access", () => {
   assert.throws(
     () => inputPlan.exists([wrongArity] as never),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_invocation_row_arity");
       return true;
     },
@@ -761,7 +761,7 @@ test("public invocation row arity preflights before cell access", () => {
   assert.throws(
     () => noInputPlan.rows(hostileNoInput as never),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_invocation_unexpected_inputs");
       return true;
     },
@@ -770,7 +770,7 @@ test("public invocation row arity preflights before cell access", () => {
 });
 
 test("optional invocation cells require explicit null rather than undefined or holes", () => {
-  const authority = new QueryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = new PlanAuthority(declared, corpus.scope, corpus.profile);
   const builder = new QueryPlanBuilder(authority);
   builder.input("optional_name", "string", true);
   const person = builder.binding("person");
@@ -784,7 +784,7 @@ test("optional invocation cells require explicit null rather than undefined or h
     assert.throws(
       () => plan.exists(rows as never),
       (error: unknown) => {
-        assert.ok(error instanceof QueryV2Error);
+        assert.ok(error instanceof PlanError);
         assert.equal(error.code, "query_builder_scalar_host_type");
         return true;
       },
@@ -800,7 +800,7 @@ test("optional invocation cells require explicit null rather than undefined or h
 });
 
 test("public declaration and output boundaries use stable binding diagnostics", () => {
-  const authority = new QueryV2Authority(declared, corpus.scope, corpus.profile);
+  const authority = new PlanAuthority(declared, corpus.scope, corpus.profile);
 
   const bindingBuilder = new QueryPlanBuilder(authority);
   for (let index = 0; index < 256; index += 1) {
@@ -809,7 +809,7 @@ test("public declaration and output boundaries use stable binding diagnostics", 
   assert.throws(
     () => bindingBuilder.binding("binding_256"),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_builder_authored_binding_limit");
       return true;
     },
@@ -822,7 +822,7 @@ test("public declaration and output boundaries use stable binding diagnostics", 
   assert.throws(
     () => inputBuilder.input("input_256", "string", true),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_plan_input_limit");
       return true;
     },
@@ -844,7 +844,7 @@ test("public declaration and output boundaries use stable binding diagnostics", 
   assert.throws(
     () => rowBuilder.finalizeRows(rowBindings),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_plan_output_limit");
       return true;
     },
@@ -868,7 +868,7 @@ test("public declaration and output boundaries use stable binding diagnostics", 
   assert.throws(
     () => documentBuilder.finalizeDocuments(fields),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.equal(error.code, "query_plan_output_limit");
       return true;
     },
@@ -880,7 +880,7 @@ test("public declaration and output boundaries use stable binding diagnostics", 
 });
 
 test("every builder operation executes with cross-binding canonical parity", () => {
-  const authority = new QueryV2Authority(
+  const authority = new PlanAuthority(
     parityDeclared,
     "model-remote-parity",
     "typedb-3.12.1/v1",
@@ -1098,7 +1098,7 @@ test("every builder operation executes with cross-binding canonical parity", () 
 });
 
 test("reducer error preserves the complete shared diagnostic", () => {
-  const authority = new QueryV2Authority(
+  const authority = new PlanAuthority(
     parityDeclared,
     "model-remote-parity",
     "typedb-3.12.1/v1",
@@ -1108,7 +1108,7 @@ test("reducer error preserves the complete shared diagnostic", () => {
   assert.throws(
     () => builder.reduceAssignment(assigned, "max", null as never),
     (error: unknown) => {
-      assert.ok(error instanceof QueryV2Error);
+      assert.ok(error instanceof PlanError);
       assert.deepEqual(
         {
           category: error.category,
@@ -1212,7 +1212,7 @@ test("documented Node low-level example typechecks and executes verbatim", () =>
     };
     vm.runInNewContext(
       `${transpiled.outputText}
-const docsAuthority = new (require("@type-bridge/node/query-v2").QueryV2Authority)(
+const docsAuthority = new (require("@type-bridge/node/query-v2").PlanAuthority)(
   declared,
   scope,
   profile,

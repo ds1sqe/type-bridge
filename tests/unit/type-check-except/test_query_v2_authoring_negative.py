@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from type_bridge.query_v2 import QueryPlanBuilder, QueryV2Authority
+from type_bridge.query_v2 import PlanAuthority, QueryPlanBuilder
 
 
-def invalid_query_v2_authoring(authority: QueryV2Authority) -> None:
+def invalid_query_v2_authoring(authority: PlanAuthority) -> None:
     builder = QueryPlanBuilder(authority)
     value = builder.binding("value")
     builder.isa(value, "struct", "record", False)  # query-v2-error: struct-is-not-queryable
