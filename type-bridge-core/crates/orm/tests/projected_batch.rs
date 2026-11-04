@@ -330,10 +330,6 @@ fn binding_budget_authority_brand_and_row_model_match_full_construction() {
             type_id(TypeKind::Entity, "abstract-item"),
             ProjectedBatchOperation::Delete,
         ),
-        (
-            type_id(TypeKind::Entity, "log"),
-            ProjectedBatchOperation::Put,
-        ),
     ];
     for (model, operation) in constructor_cases {
         let incremental_error =
@@ -1295,7 +1291,7 @@ fn decimal_and_datetime_tz_keys_use_semantic_identity() {
 }
 
 #[test]
-fn unkeyed_insert_and_update_keep_equal_rows_distinct_but_put_rejects() {
+fn unkeyed_insert_and_update_keep_equal_rows_distinct_but_only_empty_put_is_allowed() {
     let installed = installed(BindingTarget::Python);
     let log = type_id(TypeKind::Entity, "log");
     let create = || {
@@ -1336,8 +1332,32 @@ fn unkeyed_insert_and_update_keep_equal_rows_distinct_but_put_rejects() {
         ],
     )
     .unwrap();
-    let error =
-        ProjectedBatch::try_new(&installed, log, ProjectedBatchOperation::Put, vec![]).unwrap_err();
+    let empty = ProjectedBatch::try_new(
+        &installed,
+        log.clone(),
+        ProjectedBatchOperation::Put,
+        vec![],
+    )
+    .unwrap();
+    assert!(empty.is_empty());
+    assert_eq!(empty.resource_measure().statements(), 0);
+    empty.validate_for(&installed).unwrap();
+    let mut budget =
+        ProjectedBatchBindingBudget::try_new(&installed, log.clone(), ProjectedBatchOperation::Put)
+            .unwrap();
+    assert!(budget.is_empty());
+    let row = ProjectedBatchRow::Create(create());
+    assert_eq!(
+        budget
+            .try_add_row(&installed, &row)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "put_requires_projected_key"
+    );
+    assert!(budget.is_empty());
+    let error = ProjectedBatch::try_new(&installed, log, ProjectedBatchOperation::Put, vec![row])
+        .unwrap_err();
     assert_eq!(error.code().as_str(), "put_requires_projected_key");
 }
 

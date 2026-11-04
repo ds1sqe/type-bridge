@@ -176,7 +176,7 @@ impl ProjectedBatchBudgetState {
         model: TypeId,
         operation: ProjectedBatchOperation,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        require_batch_model(installed, &model, operation)?;
+        require_batch_model(installed, &model, operation, false)?;
         Ok(Self {
             brand: ProjectionBrand::from_installed(installed),
             model,
@@ -192,7 +192,7 @@ impl ProjectedBatchBudgetState {
         row: &ProjectedBatchRow,
         control: Option<&ProjectedBatchInvocationControl>,
     ) -> Result<(), SdkExecutionDiagnostic> {
-        let projected_model = require_batch_model(installed, &self.model, self.operation)?;
+        let projected_model = require_batch_model(installed, &self.model, self.operation, true)?;
         check_control(control)?;
 
         let next_row_count = self.row_count.checked_add(1).ok_or_else(|| {
@@ -591,7 +591,7 @@ impl ProjectedBatch {
         control: Option<&ProjectedBatchInvocationControl>,
         probe: ProjectedBatchReservationProbe,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        let projected_model = require_batch_model(installed, &model, operation)?;
+        let projected_model = require_batch_model(installed, &model, operation, !rows.is_empty())?;
         let row_count = rows.len();
         let resource_ceiling = control.map_or(QueryExecutionResourceLimits::default(), |control| {
             control.limits
@@ -760,7 +760,7 @@ impl ProjectedBatch {
         installed: &InstalledRuntimeProjection,
     ) -> Result<(), SdkExecutionDiagnostic> {
         self.brand.validate(installed, type_path(&self.model))?;
-        require_batch_model(installed, &self.model, self.operation).map(|_| ())
+        require_batch_model(installed, &self.model, self.operation, !self.is_empty()).map(|_| ())
     }
 }
 
@@ -936,6 +936,7 @@ fn require_batch_model<'a>(
     installed: &'a InstalledRuntimeProjection,
     type_id: &TypeId,
     operation: ProjectedBatchOperation,
+    has_rows: bool,
 ) -> Result<&'a ModelProjection, SdkExecutionDiagnostic> {
     if !matches!(type_id.kind(), TypeKind::Entity | TypeKind::Relation) {
         return Err(invalid(
@@ -969,7 +970,8 @@ fn require_batch_model<'a>(
             type_path(type_id),
         ));
     }
-    if matches!(operation, ProjectedBatchOperation::Put)
+    if has_rows
+        && matches!(operation, ProjectedBatchOperation::Put)
         && model.reference_read().key_fields().is_empty()
     {
         return Err(invalid(

@@ -596,6 +596,35 @@ async fn empty_and_missing_given_transport_reject_without_transaction_or_provide
 }
 
 #[tokio::test]
+async fn empty_unkeyed_put_keeps_admission_without_provider_or_transaction_work() {
+    let schema = SCHEMA.replace("identifier: { key: true }", "identifier: { card: 1 }");
+    let installed = installed_with_schema(&schema, ProjectionHandler::python_v1());
+    let empty = ProjectedBatch::try_new(
+        &installed,
+        type_id(TypeKind::Entity, "person"),
+        ProjectedBatchOperation::Put,
+        vec![],
+    )
+    .unwrap();
+    let (database, state) = fixture(
+        vec![],
+        Version::new(3, 14, 0),
+        true,
+        CommitBehavior::Success,
+    );
+    let result = ProjectedBatchExecutor::new(&installed)
+        .execute(&database, &empty, control())
+        .await
+        .unwrap();
+    assert_eq!(result, ProjectedBatchResult::Things(Default::default()));
+    let state = state.lock().unwrap();
+    assert!(state.opens.is_empty());
+    assert!(state.calls.is_empty());
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 0);
+}
+
+#[tokio::test]
 async fn empty_mapped_execution_is_infallible_and_never_invokes_the_mapper() {
     let installed = installed();
     let empty = ProjectedBatch::try_new(
