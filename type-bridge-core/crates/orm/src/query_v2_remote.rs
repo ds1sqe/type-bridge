@@ -20,15 +20,16 @@ use serde::Serialize;
 use type_bridge_contract::codec::to_canonical_json_with_limits;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::limits::REMOTE_ENVELOPE_CODEC_LIMITS;
+use type_bridge_contract::query_model_limits::{ModelReplyDecodeLimits, RemoteModelLimits};
 use type_bridge_contract::query_plan::{QueryInvocation, QueryOperation, QueryPlanFingerprint};
 use type_bridge_contract::query_remote::{
     RemoteCapabilities, RemoteCapabilitiesFingerprint, RemoteFieldValue, RemoteSigningPublicKey,
     RemoteValue,
 };
 use type_bridge_contract::query_remote_v2::{
-    RemoteLimitsV2, RemoteOutcomeV2, RemoteQueryFailureV2, RemoteQueryRequestV2,
-    RemoteQueryResponseV2, RemoteReplyDecodeLimitsV2, RemoteReplyV2, RemoteRequestFingerprintV2,
-    RemoteResultKindV2, decode_remote_reply_v2, validate_remote_outcome_v2,
+    RemoteOutcomeV2, RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteQueryResponseV2,
+    RemoteReplyV2, RemoteRequestFingerprintV2, RemoteResultKindV2, decode_remote_reply_v2,
+    validate_remote_outcome_v2,
 };
 use type_bridge_query::{
     MigrationAssertionValidationContext, OutputSchema, ValidatedQuery, validate_query_plan,
@@ -112,7 +113,7 @@ pub fn encode_remote_request_v2(
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
     advertisement: &RemoteCapabilities,
-    limits: RemoteLimitsV2,
+    limits: RemoteModelLimits,
     nonce: impl Into<String>,
 ) -> Result<Vec<u8>, Diagnostic> {
     encode_remote_request_v2_at(
@@ -130,7 +131,7 @@ pub fn encode_remote_request_v2_at(
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
     advertisement: &RemoteCapabilities,
-    limits: RemoteLimitsV2,
+    limits: RemoteModelLimits,
     nonce: impl Into<String>,
     prepared_at_unix_ms: u64,
 ) -> Result<Vec<u8>, Diagnostic> {
@@ -197,7 +198,7 @@ pub fn check_advertised_capabilities_v2(
         invocation,
         remote_result_kind_v2(validated, invocation)?,
         advertisement,
-        RemoteLimitsV2 {
+        RemoteModelLimits {
             deadline_ms: None,
             max_bytes: 0,
             max_items: 0,
@@ -225,7 +226,7 @@ pub fn decode_remote_outcome_v2(
     request: &RemoteRequestFingerprintV2,
     advertisement: &RemoteCapabilitiesFingerprint,
     trusted_key: RemoteSigningPublicKey,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
 ) -> Result<RemoteOutcomeV2, Diagnostic> {
     let plan = validated.plan().fingerprint()?;
     match decode_remote_reply_v2(
@@ -255,7 +256,7 @@ pub struct AdmittedRemoteRequestV2 {
     plan_fingerprint: QueryPlanFingerprint,
     provider_byte_budget: u64,
     replay_until: Instant,
-    reply_limits: RemoteReplyDecodeLimitsV2,
+    reply_limits: ModelReplyDecodeLimits,
     request_envelope: RemoteQueryRequestV2,
     request_fingerprint: RemoteRequestFingerprintV2,
     result: RemoteResultKindV2,
@@ -295,7 +296,7 @@ impl AdmittedRemoteRequestV2 {
 
     /// Return authenticated V2 reply decode budgets.
     #[must_use]
-    pub const fn reply_decode_limits(&self) -> RemoteReplyDecodeLimitsV2 {
+    pub const fn reply_decode_limits(&self) -> ModelReplyDecodeLimits {
         self.reply_limits
     }
 
@@ -592,7 +593,7 @@ fn preflight_remote_request_v2_with_clock(
 /// Exact bindings needed to audit a server-produced reply before release.
 pub struct RemoteReplyExpectation {
     /// Authenticated ceilings used while decoding the reply.
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     /// Fingerprint of the prepared plan selected by the request.
     plan: QueryPlanFingerprint,
     /// Fingerprint of the complete request envelope.
@@ -891,11 +892,11 @@ fn minimum_signed_success_response_len_v2(
 // the caller asked for, what this executor advertised, and the provider
 // ceilings of the hosting process.
 fn tighten_limits_v2(
-    caller: RemoteLimitsV2,
+    caller: RemoteModelLimits,
     ceilings: AnswerLimits,
     advertised: QueryExecutionResourceLimits,
     request_expiry: Instant,
-) -> (AnswerLimits, RemoteReplyDecodeLimitsV2) {
+) -> (AnswerLimits, ModelReplyDecodeLimits) {
     let max_items = ceilings
         .answer
         .max_items
@@ -925,7 +926,7 @@ fn tighten_limits_v2(
         max_collection_members,
         ..Default::default()
     };
-    let reply = RemoteReplyDecodeLimitsV2 {
+    let reply = ModelReplyDecodeLimits {
         max_bytes,
         max_items,
         max_collection_members,
@@ -1077,7 +1078,7 @@ mod tests {
             max_collection_members: 31,
             ..Default::default()
         };
-        let caller = RemoteLimitsV2 {
+        let caller = RemoteModelLimits {
             deadline_ms: Some(1_000),
             max_bytes: 19,
             max_items: 17,
@@ -1105,7 +1106,7 @@ mod tests {
         assert_eq!(reply.max_attribute_values, 7);
         assert_eq!(reply.max_role_players, 5);
 
-        let unbounded = RemoteLimitsV2 {
+        let unbounded = RemoteModelLimits {
             deadline_ms: None,
             max_bytes: u64::MAX,
             max_items: u64::MAX,

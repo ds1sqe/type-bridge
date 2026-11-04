@@ -28,8 +28,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::limits::{LIMIT_SOURCE_ADVERTISED, MAX_REMOTE_ENVELOPE_BYTES};
+use type_bridge_contract::query_model_limits::RemoteModelLimits;
 use type_bridge_contract::query_remote::RemoteCapabilities;
-use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_contract::query_remote_v3::{
     StagedKindV3, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3,
     VerifiedStagedReplyV3,
@@ -371,7 +371,7 @@ pub fn prepare_remote_model_query(
     registry: &DescriptorRegistry,
     request: ValidatedMatchRequest,
     advertisement: &[u8],
-    limits: RemoteLimitsV2,
+    limits: RemoteModelLimits,
 ) -> Result<PendingRemoteModelQuery, RemoteModelQueryError> {
     let policy = QueryExecutionResourceLimits::from_remote(limits);
     prepare_remote_model_query_with_policy(
@@ -391,7 +391,7 @@ pub fn prepare_remote_model_query_with_budget(
     registry: &DescriptorRegistry,
     request: ValidatedMatchRequest,
     advertisement: &[u8],
-    limits: RemoteLimitsV2,
+    limits: RemoteModelLimits,
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
 ) -> Result<PendingRemoteModelQuery, RemoteModelQueryError> {
@@ -638,8 +638,8 @@ fn wire_execution_deadline(deadline: QueryExecutionDeadline) -> Option<u64> {
 #[cfg(test)]
 fn answer_limit_refusal(
     error: Diagnostic,
-    wanted: RemoteLimitsV2,
-    held: RemoteLimitsV2,
+    wanted: RemoteModelLimits,
+    held: RemoteModelLimits,
 ) -> Diagnostic {
     annotate_refusal(
         error,
@@ -693,8 +693,8 @@ mod tests {
         capabilities
     }
 
-    fn budget(items: u64) -> RemoteLimitsV2 {
-        RemoteLimitsV2 {
+    fn budget(items: u64) -> RemoteModelLimits {
+        RemoteModelLimits {
             deadline_ms: Some(1000),
             max_items: items,
             max_bytes: 8192,
@@ -852,7 +852,7 @@ functions:
             &registry,
             validated,
             b"advertisement decoding must not run",
-            RemoteLimitsV2 {
+            RemoteModelLimits {
                 deadline_ms: Some(1_000),
                 max_bytes: 4_096,
                 max_items: 10,
@@ -914,7 +914,7 @@ functions:
             &registry,
             validated,
             advertisement_bytes,
-            RemoteLimitsV2 {
+            RemoteModelLimits {
                 deadline_ms: Some(1_000),
                 max_bytes: 4_096,
                 max_items: 10,
@@ -1291,7 +1291,7 @@ functions:
             &registry,
             validated(),
             b"expired preparation must not decode an advertisement",
-            RemoteLimitsV2 {
+            RemoteModelLimits {
                 deadline_ms: Some(0),
                 max_bytes: 4_096,
                 max_items: 10,
@@ -1324,7 +1324,7 @@ functions:
             &registry,
             validated(),
             &advertisement.encode().expect("advertisement bytes"),
-            RemoteLimitsV2 {
+            RemoteModelLimits {
                 deadline_ms: Some(1_000),
                 max_bytes: 4_096,
                 max_items: 10,
@@ -1360,7 +1360,7 @@ functions:
             &registry,
             validated(),
             &advertisement.encode().expect("advertisement bytes"),
-            RemoteLimitsV2 {
+            RemoteModelLimits {
                 deadline_ms: Some(100),
                 max_bytes: 4_096,
                 max_items: 10,
@@ -1397,7 +1397,7 @@ functions:
             &registry,
             validated(),
             &advertisement.encode().expect("advertisement bytes"),
-            RemoteLimitsV2 {
+            RemoteModelLimits {
                 deadline_ms: Some(1_000),
                 max_bytes: 4_096,
                 max_items: 10,
@@ -1430,7 +1430,7 @@ functions:
             &registry,
             validated(),
             &advertisement.encode().expect("advertisement bytes"),
-            RemoteLimitsV2 {
+            RemoteModelLimits {
                 deadline_ms: Some(1_000),
                 max_bytes: 4_096,
                 max_items: 10,
@@ -1463,7 +1463,7 @@ functions:
             &registry,
             validated(),
             &advertisement.encode().expect("advertisement bytes"),
-            RemoteLimitsV2 {
+            RemoteModelLimits {
                 deadline_ms: Some(1_000),
                 max_bytes: 4_096,
                 max_items: 10,
@@ -1535,8 +1535,8 @@ mod answer_limit_refusal_tests {
 
     use super::*;
 
-    fn budget(items: u64) -> RemoteLimitsV2 {
-        RemoteLimitsV2 {
+    fn budget(items: u64) -> RemoteModelLimits {
+        RemoteModelLimits {
             max_items: items,
             ..QueryExecutionResourceLimits::default().remote()
         }

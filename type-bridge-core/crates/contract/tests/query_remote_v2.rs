@@ -6,6 +6,9 @@ use type_bridge_contract::diagnostic::{
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+use type_bridge_contract::query_model_limits::{
+    DEFAULT_MODEL_MAX_STATEMENTS, ModelReplyDecodeLimits, RemoteModelLimits,
+};
 use type_bridge_contract::query_plan::{
     CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
     HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, ModelQueryV2, QueryBindingPairV2,
@@ -21,14 +24,14 @@ use type_bridge_contract::query_remote::{
 use type_bridge_contract::query_remote_v2::{
     CAP_QUERY_OUTPUT_HYDRATED, CAP_QUERY_PLAN_V2, CAP_QUERY_REMOTE_ENVELOPE_V2,
     CAP_QUERY_REMOTE_STATEMENT_LIMIT, CAP_QUERY_REMOTE_STRUCTURED_DIAGNOSTIC,
-    CAP_QUERY_SAME_SNAPSHOT_HYDRATION, DEFAULT_REMOTE_MAX_STATEMENTS_V2, HydratedRowV2,
-    HydrationAttributeEvidenceV2, HydrationGraphV2, HydrationNodeIdV2, HydrationNodeKindV2,
-    HydrationNodeV2, HydrationReferenceV2, HydrationRoleEvidenceV2, HydrationSlotV2,
-    QUERY_REMOTE_REQUEST_CANONICALIZATION_V2, RemoteLimitsV2, RemoteOutcomeV2,
-    RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteReducedValueV2,
-    RemoteReductionGroupV2, RemoteReductionRowV2, RemoteReplyDecodeLimitsV2, RemoteReplyV2,
-    RemoteResultKindV2, decode_remote_reply_v2, decode_signed_remote_failure_v2,
-    query_remote_v2_required_capabilities, validate_remote_outcome_v2,
+    CAP_QUERY_SAME_SNAPSHOT_HYDRATION, HydratedRowV2, HydrationAttributeEvidenceV2,
+    HydrationGraphV2, HydrationNodeIdV2, HydrationNodeKindV2, HydrationNodeV2,
+    HydrationReferenceV2, HydrationRoleEvidenceV2, HydrationSlotV2,
+    QUERY_REMOTE_REQUEST_CANONICALIZATION_V2, RemoteOutcomeV2, RemoteQueryFailureV2,
+    RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteReducedValueV2, RemoteReductionGroupV2,
+    RemoteReductionRowV2, RemoteReplyV2, RemoteResultKindV2, decode_remote_reply_v2,
+    decode_signed_remote_failure_v2, query_remote_v2_required_capabilities,
+    validate_remote_outcome_v2,
 };
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::value::{
@@ -61,8 +64,8 @@ fn semantics() -> ManagedSemanticSchemaFingerprint {
     .expect("managed semantics")
 }
 
-fn limits() -> RemoteLimitsV2 {
-    RemoteLimitsV2 {
+fn limits() -> RemoteModelLimits {
+    RemoteModelLimits {
         deadline_ms: Some(5_000),
         max_bytes: 1 << 20,
         max_items: 100,
@@ -74,8 +77,8 @@ fn limits() -> RemoteLimitsV2 {
     }
 }
 
-fn decode_limits() -> RemoteReplyDecodeLimitsV2 {
-    RemoteReplyDecodeLimitsV2 {
+fn decode_limits() -> ModelReplyDecodeLimits {
+    ModelReplyDecodeLimits {
         max_bytes: 1 << 20,
         max_items: 100,
         max_collection_members: 100,
@@ -187,7 +190,7 @@ fn request_with_limits(
     plan: &QueryPlan,
     result: RemoteResultKindV2,
     model: bool,
-    limits: RemoteLimitsV2,
+    limits: RemoteModelLimits,
 ) -> RemoteQueryRequestV2 {
     let invocation = type_bridge_contract::query_plan::QueryInvocation::new(
         plan,
@@ -1622,7 +1625,7 @@ fn low_level_signed_response_round_trips_and_preflights_item_budget() {
 fn a_reply_past_the_default_ceilings_needs_both_peers_to_raise_them() {
     const ROWS: usize = 70_000;
     let plan = low_level_plan();
-    let raised_request = RemoteLimitsV2 {
+    let raised_request = RemoteModelLimits {
         max_items: 100_000,
         max_bytes: 1 << 26,
         ..limits()
@@ -1639,7 +1642,7 @@ fn a_reply_past_the_default_ceilings_needs_both_peers_to_raise_them() {
             })
             .collect::<Vec<_>>()
     };
-    let raised = RemoteReplyDecodeLimitsV2 {
+    let raised = ModelReplyDecodeLimits {
         max_items: 100_000,
         max_bytes: 1 << 26,
         ..decode_limits()
@@ -1696,7 +1699,7 @@ fn a_reply_past_the_default_ceilings_needs_both_peers_to_raise_them() {
     assert_eq!(rows.len(), ROWS);
 
     // A client that kept the default item budget refuses it.
-    let default_items = RemoteReplyDecodeLimitsV2 {
+    let default_items = ModelReplyDecodeLimits {
         max_items: 65_536,
         ..raised
     };
@@ -3199,7 +3202,7 @@ fn default_statement_budget_preserves_old_bytes_and_tighter_values_negotiate_cap
     let decoded = RemoteQueryRequestV2::decode(&default_bytes).expect("old-shape request decode");
     assert_eq!(
         decoded.limits().max_statements,
-        DEFAULT_REMOTE_MAX_STATEMENTS_V2
+        DEFAULT_MODEL_MAX_STATEMENTS
     );
     assert_eq!(
         decoded.encode().expect("canonical re-encode"),
@@ -3212,7 +3215,7 @@ fn default_statement_budget_preserves_old_bytes_and_tighter_values_negotiate_cap
         Vec::new(),
     )
     .expect("invocation");
-    for max_statements in 0..DEFAULT_REMOTE_MAX_STATEMENTS_V2 {
+    for max_statements in 0..DEFAULT_MODEL_MAX_STATEMENTS {
         let mut tightened = limits();
         tightened.max_statements = max_statements;
         let error = RemoteQueryRequestV2::new(
@@ -3253,7 +3256,7 @@ fn default_statement_budget_preserves_old_bytes_and_tighter_values_negotiate_cap
     }
 
     let mut widened = limits();
-    widened.max_statements = DEFAULT_REMOTE_MAX_STATEMENTS_V2 + 1;
+    widened.max_statements = DEFAULT_MODEL_MAX_STATEMENTS + 1;
     let error = RemoteQueryRequestV2::new(
         &plan,
         &invocation,

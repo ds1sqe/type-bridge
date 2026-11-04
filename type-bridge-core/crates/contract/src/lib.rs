@@ -43,6 +43,7 @@ pub mod projected_record;
 pub mod projection;
 /// Fail-closed canonical wire decoding for runtime projections.
 pub mod projection_wire;
+pub mod query_model_limits;
 /// Versioned schema identities, facts, provenance, and fingerprints.
 /// Reusable typed query plans and the first public V2 read vocabulary.
 pub mod query_plan;

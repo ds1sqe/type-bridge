@@ -9,6 +9,7 @@ use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+use type_bridge_contract::query_model_limits::{ModelReplyDecodeLimits, RemoteModelLimits};
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryInvocation, QueryOperation, QueryOutput,
     QueryPattern, QueryPlan, ReadStage,
@@ -17,9 +18,8 @@ use type_bridge_contract::query_remote::{
     MAX_REMOTE_CLOCK_SKEW_MS, RemoteCapabilities, RemoteExecutorBinding, RemoteValue,
 };
 use type_bridge_contract::query_remote_v2::{
-    RemoteLimitsV2, RemoteOutcomeV2, RemoteQueryRequestV2, RemoteQueryResponseV2,
-    RemoteReplyDecodeLimitsV2, RemoteRequestFingerprintV2, RemoteResultKindV2,
-    query_remote_v2_required_capabilities,
+    RemoteOutcomeV2, RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteRequestFingerprintV2,
+    RemoteResultKindV2, query_remote_v2_required_capabilities,
 };
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
@@ -194,8 +194,8 @@ fn advertisement(with_given_rows: bool) -> Vec<u8> {
         .expect("advertisement bytes")
 }
 
-fn limits_v2() -> RemoteLimitsV2 {
-    RemoteLimitsV2 {
+fn limits_v2() -> RemoteModelLimits {
+    RemoteModelLimits {
         deadline_ms: None,
         max_bytes: 1 << 20,
         max_items: 100,
@@ -766,8 +766,8 @@ fn advertisements_decode_into_sorted_capability_ids() {
     assert!(decode_remote_capabilities(b"not an advertisement").is_err());
 }
 
-fn reply_decode_limits(limits: RemoteLimitsV2) -> RemoteReplyDecodeLimitsV2 {
-    RemoteReplyDecodeLimitsV2 {
+fn reply_decode_limits(limits: RemoteModelLimits) -> ModelReplyDecodeLimits {
+    ModelReplyDecodeLimits {
         max_bytes: limits.max_bytes,
         max_items: limits.max_items,
         max_collection_members: limits.max_collection_members,

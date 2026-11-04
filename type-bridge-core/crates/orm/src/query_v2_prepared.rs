@@ -17,6 +17,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
+use type_bridge_contract::query_model_limits::{ModelReplyDecodeLimits, RemoteModelLimits};
 use type_bridge_contract::query_plan::{
     InputRow, QueryInvocation, QueryOperation, QueryPlan, decode_query_invocation,
     decode_query_plan_with_limits,
@@ -25,9 +26,7 @@ use type_bridge_contract::query_remote::{
     DEFAULT_REMOTE_DEADLINE_MS, RemoteCapabilities, RemoteCapabilitiesFingerprint,
     RemoteSigningPublicKey,
 };
-use type_bridge_contract::query_remote_v2::{
-    RemoteLimitsV2, RemoteQueryRequestV2, RemoteReplyDecodeLimitsV2, RemoteRequestFingerprintV2,
-};
+use type_bridge_contract::query_remote_v2::{RemoteQueryRequestV2, RemoteRequestFingerprintV2};
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_core_lib::version::semantic_profile_id;
@@ -608,7 +607,7 @@ pub struct PendingRemoteQueryV2 {
 struct PendingRemoteQueryStateV2 {
     advertisement_fingerprint: RemoteCapabilitiesFingerprint,
     lifecycle: AtomicU8,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     request: Vec<u8>,
     request_envelope: RemoteQueryRequestV2,
     request_fingerprint: RemoteRequestFingerprintV2,
@@ -617,7 +616,7 @@ struct PendingRemoteQueryStateV2 {
     validated: ValidatedQuery,
     // The budget the caller asked for, before it was held to the executor's
     // advertised ceilings; kept to say where a refusing ceiling came from.
-    wanted: RemoteLimitsV2,
+    wanted: RemoteModelLimits,
 }
 
 const REMOTE_QUERY_PENDING: u8 = 0;
@@ -788,7 +787,7 @@ impl ClaimedRemoteReplyV2 {
     /// The budget the caller asked for and the one the request carried after
     /// it was held to the executor's advertised ceilings.
     #[must_use]
-    pub fn answer_budgets(&self) -> (RemoteLimitsV2, RemoteLimitsV2) {
+    pub fn answer_budgets(&self) -> (RemoteModelLimits, RemoteModelLimits) {
         (self.state.wanted, self.state.request_envelope.limits())
     }
 
@@ -830,7 +829,7 @@ pub fn prepare_remote_query_v2(
     plan_bytes: &[u8],
     invocation_json: &str,
     advertisement_bytes: &[u8],
-    limits: RemoteLimitsV2,
+    limits: RemoteModelLimits,
 ) -> Result<PendingRemoteQueryV2, Diagnostic> {
     let deadline = QueryExecutionDeadline::from_timeout_milliseconds(
         limits.deadline_ms.unwrap_or(DEFAULT_REMOTE_DEADLINE_MS),
@@ -855,7 +854,7 @@ pub fn prepare_remote_query_v2_with_budget(
     plan_bytes: &[u8],
     invocation_json: &str,
     advertisement_bytes: &[u8],
-    limits: RemoteLimitsV2,
+    limits: RemoteModelLimits,
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
 ) -> Result<PendingRemoteQueryV2, Diagnostic> {
@@ -882,7 +881,7 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
     validated: ValidatedQuery,
     invocation: QueryInvocation,
     advertisement_bytes: &[u8],
-    mut limits: RemoteLimitsV2,
+    mut limits: RemoteModelLimits,
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
 ) -> Result<PendingRemoteQueryV2, Diagnostic> {
@@ -991,7 +990,7 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
         state: Arc::new(PendingRemoteQueryStateV2 {
             advertisement_fingerprint,
             lifecycle: AtomicU8::new(REMOTE_QUERY_PENDING),
-            limits: RemoteReplyDecodeLimitsV2 {
+            limits: ModelReplyDecodeLimits {
                 max_bytes: limits.max_bytes,
                 max_items: limits.max_items,
                 max_collection_members: limits.max_collection_members,
@@ -1078,9 +1077,9 @@ mod tests {
         max_bytes: u64,
         max_items: u64,
         max_collection_members: u64,
-    ) -> RemoteLimitsV2 {
+    ) -> RemoteModelLimits {
         let policy = crate::QueryExecutionResourceLimits::default();
-        RemoteLimitsV2 {
+        RemoteModelLimits {
             deadline_ms: None,
             max_bytes,
             max_items,

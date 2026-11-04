@@ -15,15 +15,15 @@ use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
+use type_bridge_contract::query_model_limits::{ModelReplyDecodeLimits, RemoteModelLimits};
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryInvocation, QueryOperand,
     QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage,
 };
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
 use type_bridge_contract::query_remote_v2::{
-    RemoteLimitsV2, RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteReplyDecodeLimitsV2,
-    RemoteReplyV2, RemoteRequestFingerprintV2, decode_remote_reply_v2,
-    query_remote_v2_required_capabilities,
+    RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteReplyV2, RemoteRequestFingerprintV2,
+    decode_remote_reply_v2, query_remote_v2_required_capabilities,
 };
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
@@ -69,8 +69,8 @@ fn remote_signer() -> RemoteReplySigningKey {
 }
 
 /// A caller budget with the given deadline and item ceiling.
-fn remote_limits(deadline_ms: Option<u64>, max_items: u64) -> RemoteLimitsV2 {
-    RemoteLimitsV2 {
+fn remote_limits(deadline_ms: Option<u64>, max_items: u64) -> RemoteModelLimits {
+    RemoteModelLimits {
         deadline_ms,
         max_bytes: 1 << 20,
         max_items,
@@ -83,8 +83,8 @@ fn remote_limits(deadline_ms: Option<u64>, max_items: u64) -> RemoteLimitsV2 {
 }
 
 /// The reply budget a caller decodes under: its request budget, byte for byte.
-fn reply_limits(limits: RemoteLimitsV2) -> RemoteReplyDecodeLimitsV2 {
-    RemoteReplyDecodeLimitsV2 {
+fn reply_limits(limits: RemoteModelLimits) -> ModelReplyDecodeLimits {
+    ModelReplyDecodeLimits {
         max_bytes: limits.max_bytes,
         max_items: limits.max_items,
         max_collection_members: limits.max_collection_members,
@@ -108,7 +108,7 @@ fn decode_bound_failure(
     request: &[u8],
     validated: &ValidatedQuery,
     advertisement: &RemoteCapabilities,
-    limits: RemoteLimitsV2,
+    limits: RemoteModelLimits,
 ) -> RemoteQueryFailureV2 {
     let (envelope, fingerprint) = request_binding(request);
     let reply = decode_remote_reply_v2(
@@ -2177,7 +2177,7 @@ async fn remote_envelope_round_trip_matches_local_execution_live() {
         &expected_request,
         &advertisement_fingerprint,
         advertisement.reply_key(),
-        RemoteReplyDecodeLimitsV2 {
+        ModelReplyDecodeLimits {
             max_bytes: 16,
             ..reply_limits(caller_limits)
         },

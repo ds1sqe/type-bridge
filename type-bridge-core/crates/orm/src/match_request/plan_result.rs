@@ -13,9 +13,10 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::TypeId;
+use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
 use type_bridge_contract::query_plan::{QueryModelOutputSlotV2, QueryOutput};
 use type_bridge_contract::query_remote::RemoteValue;
-use type_bridge_contract::query_remote_v2::{RemoteOutcomeV2, RemoteReplyDecodeLimitsV2};
+use type_bridge_contract::query_remote_v2::RemoteOutcomeV2;
 use type_bridge_contract::query_remote_v3::StagedAnswerV3;
 use type_bridge_contract::value::CanonicalValue;
 
@@ -270,7 +271,7 @@ pub(crate) fn resolve(
     else {
         unreachable!()
     };
-    let reply_limits = RemoteReplyDecodeLimitsV2 {
+    let reply_limits = ModelReplyDecodeLimits {
         max_bytes: limits.bytes,
         max_items: limits.items,
         max_graph_nodes: limits.graph_nodes,
@@ -940,7 +941,7 @@ fn resolve_reduction(
         }
     }
     let authority = HydrationAuthority::new(&stack.hydration).map_err(shared)?;
-    let reply_limits = RemoteReplyDecodeLimitsV2 {
+    let reply_limits = ModelReplyDecodeLimits {
         max_bytes: limits.bytes,
         max_items: limits.items,
         max_graph_nodes: limits.graph_nodes,

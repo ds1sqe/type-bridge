@@ -17,6 +17,7 @@ use type_bridge_contract::id::{
 };
 use type_bridge_contract::limits::MAX_SUPPORTED_BINDINGS;
 use type_bridge_contract::migration_assertion::BindingId;
+use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
 use type_bridge_contract::query_plan::{
     HydrationDescriptorV2, HydrationProjectionV2, ModelQueryV2, QueryFieldV2, QueryInvocation,
     QueryModelOutputSlotV2, QueryModelOutputV2, QueryReductionGroupV2, QueryReductionKindV2,
@@ -24,8 +25,7 @@ use type_bridge_contract::query_plan::{
 };
 use type_bridge_contract::query_remote_v2::{
     HydrationGraphV2, HydrationNodeKindV2, RemoteOutcomeV2, RemoteReducedValueV2,
-    RemoteReductionGroupV2, RemoteReductionRowV2, RemoteReplyDecodeLimitsV2, RemoteResultKindV2,
-    validate_remote_outcome_v2,
+    RemoteReductionGroupV2, RemoteReductionRowV2, RemoteResultKindV2, validate_remote_outcome_v2,
 };
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_core_lib::ast::{
@@ -76,7 +76,7 @@ pub(crate) async fn execute_validated_model_query_with_statement_limit(
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
     limits: AnswerLimits,
-    reply_limits: RemoteReplyDecodeLimitsV2,
+    reply_limits: ModelReplyDecodeLimits,
     max_statements: u8,
 ) -> ExecResult<RemoteOutcomeV2> {
     execute_validated_model_query_in_target(
@@ -95,7 +95,7 @@ async fn execute_validated_model_query_in_target(
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
     limits: AnswerLimits,
-    reply_limits: RemoteReplyDecodeLimitsV2,
+    reply_limits: ModelReplyDecodeLimits,
     max_statements: u8,
 ) -> ExecResult<RemoteOutcomeV2> {
     preflight_invocation_transport(validated.plan(), invocation)
@@ -251,11 +251,7 @@ struct ExecutionBudget {
 }
 
 impl ExecutionBudget {
-    fn new(
-        limits: AnswerLimits,
-        reply_limits: RemoteReplyDecodeLimitsV2,
-        max_statements: u8,
-    ) -> Self {
+    fn new(limits: AnswerLimits, reply_limits: ModelReplyDecodeLimits, max_statements: u8) -> Self {
         Self {
             remaining_items: limits.answer.max_items,
             remaining_bytes: limits.answer.max_bytes,
@@ -1213,7 +1209,7 @@ async fn execute_rows(
     mut statement: TypedFetchRows,
     tuple_proof: Option<TypedFetchRows>,
     budget: &mut ExecutionBudget,
-    reply_limits: RemoteReplyDecodeLimitsV2,
+    reply_limits: ModelReplyDecodeLimits,
 ) -> ExecResult<RemoteOutcomeV2> {
     if output.slots().iter().any(|slot| slot.collection()) {
         return Err(validation_error(
@@ -1508,7 +1504,7 @@ async fn execute_page(
     total_scan: Option<TypedRootScan>,
     mut rematch: TypedPageRematch,
     budget: &mut ExecutionBudget,
-    reply_limits: RemoteReplyDecodeLimitsV2,
+    reply_limits: ModelReplyDecodeLimits,
 ) -> ExecResult<RemoteOutcomeV2> {
     let total = match (include_total, total_scan) {
         (true, Some(scan)) => Some(execute_count(transaction, root, scan, budget).await?),
@@ -1664,7 +1660,7 @@ async fn execute_reduction(
     scan: TypedRootScan,
     mut rematch: Option<TypedPageRematch>,
     budget: &mut ExecutionBudget,
-    reply_limits: RemoteReplyDecodeLimitsV2,
+    reply_limits: ModelReplyDecodeLimits,
 ) -> ExecResult<RemoteOutcomeV2> {
     let scan_limit = budget.remaining_items();
     let (roots, stats) = execute_root_scan(transaction, root, scan, budget, scan_limit).await?;
@@ -2044,7 +2040,7 @@ mod tests {
         let first = AttributeId::new("attribute-a").expect("attribute");
         let second = AttributeId::new("attribute-z").expect("attribute");
         let iid = "0x1".to_owned();
-        let mut graph = GraphBuilder::new(RemoteReplyDecodeLimitsV2 {
+        let mut graph = GraphBuilder::new(ModelReplyDecodeLimits {
             max_bytes: 1 << 20,
             max_items: 10,
             max_collection_members: 10,

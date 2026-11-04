@@ -11,6 +11,7 @@ use type_bridge_contract::limits::{MAX_CANONICAL_DEPTH, MAX_REMOTE_ENVELOPE_BYTE
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
+use type_bridge_contract::query_model_limits::{ModelReplyDecodeLimits, RemoteModelLimits};
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryInvocation, QueryOperand, QueryOperation,
     QueryOutput, QueryPattern, QueryPlan, QueryPlanFingerprint, ReadStage,
@@ -23,9 +24,9 @@ use type_bridge_contract::query_remote::{
 };
 use type_bridge_contract::query_remote_v2::{
     CAP_QUERY_PLAN_V2, CAP_QUERY_REMOTE_ENVELOPE_V2, CAP_QUERY_REMOTE_STRUCTURED_DIAGNOSTIC,
-    RemoteLimitsV2, RemoteOutcomeV2, RemoteQueryFailureV2, RemoteQueryRequestV2,
-    RemoteQueryResponseV2, RemoteReplyDecodeLimitsV2, RemoteReplyV2, RemoteRequestFingerprintV2,
-    RemoteResultKindV2, decode_remote_reply_v2, decode_signed_remote_failure_v2,
+    RemoteOutcomeV2, RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteQueryResponseV2,
+    RemoteReplyV2, RemoteRequestFingerprintV2, RemoteResultKindV2, decode_remote_reply_v2,
+    decode_signed_remote_failure_v2,
 };
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::temporal::{CanonicalDateTimeTz, TimeZoneDesignator};
@@ -68,8 +69,8 @@ fn person_name_patterns() -> Vec<QueryPattern> {
 
 /// Request budgets: the byte budget sits at the wire ceiling so the reply
 /// decode budgets below can be tightened without widening the request.
-fn limits() -> RemoteLimitsV2 {
-    RemoteLimitsV2 {
+fn limits() -> RemoteModelLimits {
+    RemoteModelLimits {
         deadline_ms: None,
         max_bytes: u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).expect("wire ceiling"),
         max_items: 100,
@@ -81,8 +82,8 @@ fn limits() -> RemoteLimitsV2 {
     }
 }
 
-fn decode_limits(max_bytes: u64) -> RemoteReplyDecodeLimitsV2 {
-    RemoteReplyDecodeLimitsV2 {
+fn decode_limits(max_bytes: u64) -> ModelReplyDecodeLimits {
+    ModelReplyDecodeLimits {
         max_bytes,
         max_items: 100,
         max_collection_members: 100,
@@ -96,7 +97,7 @@ fn request(
     plan: &QueryPlan,
     invocation: &QueryInvocation,
     advertisement: &RemoteCapabilities,
-    limits: RemoteLimitsV2,
+    limits: RemoteModelLimits,
 ) -> RemoteQueryRequestV2 {
     let result = match invocation.operation() {
         QueryOperation::Rows => RemoteResultKindV2::Rows,
@@ -232,7 +233,7 @@ fn decode_reply(
     request: &RemoteQueryRequestV2,
     plan: &QueryPlanFingerprint,
     advertisement: &RemoteCapabilities,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     verifier: &impl RemoteReplyVerifier,
 ) -> Result<RemoteReplyV2, Diagnostic> {
     decode_remote_reply_v2(

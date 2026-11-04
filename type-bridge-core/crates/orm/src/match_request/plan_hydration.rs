@@ -11,6 +11,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
+use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
 use type_bridge_contract::query_plan::{
     CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
     HydrationProjectionV2, HydrationRoleV2, QueryComparatorV2, QueryFieldV2, QueryPatternV2,
@@ -19,7 +20,7 @@ use type_bridge_contract::query_plan::{
 use type_bridge_contract::query_remote_v2::{
     HydratedRowV2, HydrationAttributeEvidenceV2, HydrationGraphV2, HydrationNodeIdV2,
     HydrationNodeKindV2, HydrationNodeV2, HydrationReferenceV2, HydrationRoleEvidenceV2,
-    HydrationSlotV2, RemoteReplyDecodeLimitsV2,
+    HydrationSlotV2,
 };
 use type_bridge_contract::value::ValueTypeTag;
 use unicase::UniCase;
@@ -143,7 +144,7 @@ pub(crate) struct GraphBuilder {
 }
 
 impl GraphBuilder {
-    pub(crate) fn new(limits: RemoteReplyDecodeLimitsV2) -> Self {
+    pub(crate) fn new(limits: ModelReplyDecodeLimits) -> Self {
         Self {
             nodes: BTreeMap::new(),
             max_nodes: limits.max_graph_nodes,
@@ -1240,7 +1241,7 @@ pub(crate) fn compare_solutions_by_order(
 pub(crate) fn charge_solution_semantics(
     solutions: &[Solution],
     graph: &GraphBuilder,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
 ) -> ExecResult<()> {
     charge_selected_solution_semantics(solutions, graph, limits, None)
 }
@@ -1248,7 +1249,7 @@ pub(crate) fn charge_solution_semantics(
 pub(crate) fn charge_selected_solution_semantics(
     solutions: &[Solution],
     graph: &GraphBuilder,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     selected: Option<&BTreeSet<u16>>,
 ) -> ExecResult<()> {
     let mut hydrated_things = 0_u64;
@@ -1692,7 +1693,7 @@ pub(crate) fn graph_from_verified_plan_documents(
     .map_err(PlanExecutionError::Validation)?;
     let authority = HydrationAuthority::new(&projection)?;
     let declared = authority.binding(0)?.declared_descriptor().clone();
-    let mut graph = GraphBuilder::new(RemoteReplyDecodeLimitsV2 {
+    let mut graph = GraphBuilder::new(ModelReplyDecodeLimits {
         max_bytes: limits.bytes,
         max_items: limits.items,
         max_graph_nodes: limits.graph_nodes,
@@ -1917,7 +1918,7 @@ mod predicate_recheck_tests {
                 CanonicalString::new(text).unwrap(),
             ))
         };
-        let mut graph = GraphBuilder::new(RemoteReplyDecodeLimitsV2::DEFAULT_CEILING);
+        let mut graph = GraphBuilder::new(ModelReplyDecodeLimits::DEFAULT_CEILING);
         graph
             .insert(NodeDraft {
                 iid: "0x01".into(),

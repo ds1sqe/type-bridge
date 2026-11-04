@@ -200,6 +200,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust `query_remote_v2::{RemoteLimitsV2, RemoteReplyDecodeLimitsV2,
+  DEFAULT_REMOTE_MAX_STATEMENTS_V2}` move to `query_model_limits` as
+  `RemoteModelLimits`, `ModelReplyDecodeLimits`, and `DEFAULT_MODEL_MAX_STATEMENTS`.
+  Their budgets, defaults, and serialized fields are unchanged.
+
 - Rust binding scalar helpers move from `query_v2_builder` to `plan_scalar`:
   `QueryBuilderScalarInput` becomes `PlanScalarInput`, `query_builder_scalar`
   becomes `plan_scalar`, `query_builder_value_type` becomes `plan_value_type`,

@@ -10,10 +10,10 @@ use napi_derive::napi;
 use std::sync::Arc;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
+use type_bridge_contract::query_model_limits::RemoteModelLimits;
 use type_bridge_contract::query_remote::{
     checked_remote_deadline, checked_remote_limit, remote_deadline_limit, remote_limit_invalid,
 };
-use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_orm::query_v2_prepared::{
     ClaimedRemoteReplyV2, PendingRemoteQueryV2, decode_remote_capabilities, execute_prepared_local,
     prepare_remote_query_v2,
@@ -197,14 +197,14 @@ fn remote_limits(
     max_bytes: &BigInt,
     max_collection_members: &BigInt,
     deadline_ms: Option<&BigInt>,
-) -> napi::Result<RemoteLimitsV2> {
-    let build = || -> Result<RemoteLimitsV2, Diagnostic> {
+) -> napi::Result<RemoteModelLimits> {
+    let build = || -> Result<RemoteModelLimits, Diagnostic> {
         // A low-level plan returns no hydration graph, so the graph budgets
         // keep the proxy (wire) defaults this remote request travels under.
         let policy = type_bridge_orm::QueryExecutionResourceLimits::default_for(
             type_bridge_orm::AnswerTransport::Proxy,
         );
-        Ok(RemoteLimitsV2 {
+        Ok(RemoteModelLimits {
             deadline_ms: checked_remote_deadline(
                 deadline_ms
                     .map(|value| remote_limit(value).map(i128::from))

@@ -943,9 +943,10 @@ impl PlanFetchStack {
     ) -> Result<PlanFetchResult<'a>, Diagnostic> {
         use super::plan_hydration::{GraphBuilder, HydrationAuthority, insert_plan_documents};
         use crate::query_plan_exec::PlanAnswer;
+        use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
         use type_bridge_contract::query_remote::RemoteValue;
         use type_bridge_contract::query_remote_v2::{
-            HydratedRowV2, HydrationSlotV2, RemoteOutcomeV2, RemoteReplyDecodeLimitsV2,
+            HydratedRowV2, HydrationSlotV2, RemoteOutcomeV2,
         };
         use type_bridge_contract::query_remote_v3::StagedAnswerV3;
         let fail = || {
@@ -1003,7 +1004,7 @@ impl PlanFetchStack {
             return Err(fail());
         }
         let authority = HydrationAuthority::new(&self.hydration).map_err(shared)?;
-        let reply_limits = RemoteReplyDecodeLimitsV2 {
+        let reply_limits = ModelReplyDecodeLimits {
             max_bytes: limits.bytes,
             max_items: limits.items,
             max_graph_nodes: limits.graph_nodes,

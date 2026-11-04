@@ -21,12 +21,8 @@ use type_bridge_contract::query_plan::CompatibilityValueV2;
 use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
 use type_bridge_contract::query_remote_v3::{StagedRequestV3,StagedReplyV3,StagedOutcomeV3,StagedAnswerV3};
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding, RemoteFieldValue};
-use type_bridge_contract::query_remote_v2::{
-    HydrationAttributeEvidenceV2, HydrationGraphV2, HydrationNodeIdV2,
-    HydrationNodeKindV2, HydrationNodeV2, HydrationReferenceV2, HydrationRoleEvidenceV2,
-    RemoteLimitsV2,
-    query_remote_v2_required_capabilities,
-};
+use type_bridge_contract::query_remote_v2::{HydrationAttributeEvidenceV2, HydrationGraphV2, HydrationNodeIdV2, HydrationNodeKindV2, HydrationNodeV2, HydrationReferenceV2, HydrationRoleEvidenceV2, query_remote_v2_required_capabilities};
+use type_bridge_contract::query_model_limits::{RemoteModelLimits};
 use type_bridge_contract::schema::{DocumentId, OwnsFactId, encode_declared_schema};
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use type_bridge_contract::temporal::{
@@ -732,7 +728,7 @@ async fn foreign_hydration_diagnostic(
         0,
     )]);
     let advertisement = transport.capabilities().await?;
-    let limits = RemoteLimitsV2 {
+    let limits = RemoteModelLimits {
         deadline_ms: Some(30_000),
         max_bytes: 1 << 20,
         max_items: 64,

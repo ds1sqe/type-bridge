@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use type_bridge_contract::limits::{
     ANSWER_LIMIT_FIELDS, LIMIT_SOURCE_CONFIGURED, LIMIT_SOURCE_DEFAULT, answer_limit_field,
 };
-use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
+use type_bridge_contract::query_model_limits::RemoteModelLimits;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
     SdkQueryDiagnosticCategory, SdkQueryDiagnosticPathKind,
@@ -520,7 +520,7 @@ impl QueryExecutionResourceLimits {
     /// Read the policy a remote request budget states.
     #[doc(hidden)]
     #[must_use]
-    pub fn from_remote(limits: RemoteLimitsV2) -> Self {
+    pub fn from_remote(limits: RemoteModelLimits) -> Self {
         Self {
             collect_phase_timestamps: false,
             timeout_milliseconds: QueryTimeout::from_milliseconds(
@@ -683,9 +683,9 @@ impl QueryExecutionResourceLimits {
     /// Derive the exact additive V2 remote wire budget.
     #[doc(hidden)]
     #[must_use]
-    pub const fn remote(self) -> RemoteLimitsV2 {
+    pub const fn remote(self) -> RemoteModelLimits {
         let this = self.effective();
-        RemoteLimitsV2 {
+        RemoteModelLimits {
             deadline_ms: this.timeout_milliseconds.milliseconds(),
             max_bytes: this.bytes,
             max_items: this.items,
@@ -821,7 +821,7 @@ mod tests {
         );
         assert_eq!(
             limits.remote(),
-            RemoteLimitsV2 {
+            RemoteModelLimits {
                 deadline_ms: Some(17),
                 max_bytes: 19,
                 max_items: 2,

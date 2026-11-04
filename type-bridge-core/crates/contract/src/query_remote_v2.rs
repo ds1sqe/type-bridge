@@ -5,6 +5,9 @@
 //! exact format discriminators. The authenticated outer reply and executor
 //! advertisement remain the existing open V1 containers.
 
+use crate::query_model_limits::{
+    DEFAULT_MODEL_MAX_STATEMENTS, ModelReplyDecodeLimits, RemoteModelLimits,
+};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -20,7 +23,7 @@ use crate::fingerprint::{
 };
 use crate::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use crate::limits::{
-    CodecLimits, MAX_CANONICAL_COLLECTION_LEN, MAX_DIAGNOSTIC_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
+    CodecLimits, MAX_DIAGNOSTIC_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
     MAX_SELECTED_SLOTS, QueryLimits, REMOTE_ENVELOPE_CODEC_LIMITS,
 };
 use crate::migration_assertion::BindingId;
@@ -61,9 +64,6 @@ pub const CAP_QUERY_OUTPUT_HYDRATED: &str = "query.output.hydrated";
 pub const CAP_QUERY_SAME_SNAPSHOT_HYDRATION: &str = "query.execution.same-snapshot-hydration";
 /// Admission capability for an explicitly tightened remote statement budget.
 pub const CAP_QUERY_REMOTE_STATEMENT_LIMIT: &str = "query.execution.statement-limit";
-
-/// Backward-compatible statement ceiling used when the V2 wire member is omitted.
-pub const DEFAULT_REMOTE_MAX_STATEMENTS_V2: u32 = 3;
 
 const NONCE_MIN_BYTES: usize = 16;
 const NONCE_MAX_BYTES: usize = 128;
@@ -151,46 +151,6 @@ impl RemoteResultKindV2 {
     }
 }
 
-/// Caller-owned V2 transport and hydration budgets bound into one request.
-///
-/// This is the wire form of an answer policy; generated sessions derive it
-/// from their `QueryExecutionResourceLimits`.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RemoteLimitsV2 {
-    /// Optional execution deadline in milliseconds.
-    pub deadline_ms: Option<u64>,
-    /// Maximum authenticated successful reply bytes.
-    pub max_bytes: u64,
-    /// Maximum rows, page entries, or scalar evidence.
-    pub max_items: u64,
-    /// Maximum aggregate output collection members.
-    pub max_collection_members: u64,
-    /// Maximum hydration graph nodes.
-    pub max_graph_nodes: u64,
-    /// Maximum aggregate hydration attribute values.
-    pub max_attribute_values: u64,
-    /// Maximum aggregate hydration role-player references.
-    pub max_role_players: u64,
-    /// Maximum provider statements for this terminal.
-    ///
-    /// The value three is omitted on encode and reconstructed on decode so
-    /// request bytes emitted before this additive member remain canonical.
-    #[serde(
-        default = "default_remote_max_statements_v2",
-        skip_serializing_if = "is_default_remote_max_statements_v2"
-    )]
-    pub max_statements: u32,
-}
-
-const fn default_remote_max_statements_v2() -> u32 {
-    DEFAULT_REMOTE_MAX_STATEMENTS_V2
-}
-
-fn is_default_remote_max_statements_v2(value: &u32) -> bool {
-    *value == DEFAULT_REMOTE_MAX_STATEMENTS_V2
-}
-
 /// One complete V2 remote invocation of a reusable V2 plan.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -198,7 +158,7 @@ pub struct RemoteQueryRequestV2 {
     advertisement: String,
     expires_at_unix_ms: u64,
     format: String,
-    limits: RemoteLimitsV2,
+    limits: RemoteModelLimits,
     nonce: String,
     plan: serde_json::Value,
     prepared_at_unix_ms: u64,
@@ -225,7 +185,7 @@ impl RemoteQueryRequestV2 {
         invocation: &QueryInvocation,
         result: RemoteResultKindV2,
         advertisement: &RemoteCapabilities,
-        limits: RemoteLimitsV2,
+        limits: RemoteModelLimits,
         nonce: impl Into<String>,
         prepared_at_unix_ms: u64,
     ) -> Result<Self, Diagnostic> {
@@ -244,7 +204,7 @@ impl RemoteQueryRequestV2 {
         for capability in query_remote_v2_required_capabilities(result.carries_hydration_graph()) {
             required.insert(capability);
         }
-        if limits.max_statements != DEFAULT_REMOTE_MAX_STATEMENTS_V2 {
+        if limits.max_statements != DEFAULT_MODEL_MAX_STATEMENTS {
             required.insert(static_capability(CAP_QUERY_REMOTE_STATEMENT_LIMIT));
         }
         required.ensure_supported_by(advertisement.capabilities())?;
@@ -390,7 +350,7 @@ impl RemoteQueryRequestV2 {
 
     /// Return the caller execution budgets.
     #[must_use]
-    pub const fn limits(&self) -> RemoteLimitsV2 {
+    pub const fn limits(&self) -> RemoteModelLimits {
         self.limits
     }
 
@@ -434,7 +394,7 @@ impl RemoteQueryRequestV2 {
         {
             required.insert(capability);
         }
-        if self.limits.max_statements != DEFAULT_REMOTE_MAX_STATEMENTS_V2 {
+        if self.limits.max_statements != DEFAULT_MODEL_MAX_STATEMENTS {
             required.insert(static_capability(CAP_QUERY_REMOTE_STATEMENT_LIMIT));
         }
         required.ensure_supported_by(advertisement.capabilities())
@@ -1014,67 +974,6 @@ pub enum RemoteOutcomeV2 {
     },
 }
 
-/// Caller budgets checked before typed V2 reply evidence is allocated.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RemoteReplyDecodeLimitsV2 {
-    /// Maximum authenticated successful outer-reply bytes.
-    pub max_bytes: u64,
-    /// Maximum rows, page entries, count value, or positive existence item.
-    pub max_items: u64,
-    /// Maximum aggregate output collection members.
-    pub max_collection_members: u64,
-    /// Maximum hydration graph nodes.
-    pub max_graph_nodes: u64,
-    /// Maximum canonical values across hydration attribute evidence.
-    pub max_attribute_values: u64,
-    /// Maximum references across hydration role-player evidence.
-    pub max_role_players: u64,
-}
-
-impl RemoteReplyDecodeLimitsV2 {
-    /// The budgets a reply is bound to when its peers configured none: the
-    /// default envelope and hydration ceilings, with scalar evidence (a
-    /// count) left to the executor's own item budget.
-    pub const DEFAULT_CEILING: Self = Self {
-        max_bytes: MAX_REMOTE_ENVELOPE_BYTES as u64,
-        max_items: u64::MAX,
-        max_collection_members: MAX_CANONICAL_COLLECTION_LEN as u64,
-        max_graph_nodes: MAX_CANONICAL_COLLECTION_LEN as u64,
-        max_attribute_values: MAX_CANONICAL_COLLECTION_LEN as u64,
-        max_role_players: MAX_CANONICAL_COLLECTION_LEN as u64,
-    };
-
-    /// The codec limits a reply under these budgets is encoded and decoded
-    /// with.
-    ///
-    /// They are the default envelope limits, widened where a budget asks for
-    /// more. A budget tighter than the default leaves the codec at the
-    /// default; the budget checks enforce it.
-    #[must_use]
-    pub fn codec(self) -> CodecLimits {
-        let widest = self
-            .max_items
-            .max(self.max_collection_members)
-            .max(self.max_graph_nodes)
-            .max(self.max_attribute_values)
-            .max(self.max_role_players);
-        CodecLimits {
-            max_bytes: self.envelope_bytes(),
-            max_collection_len: REMOTE_ENVELOPE_CODEC_LIMITS
-                .max_collection_len
-                .max(usize::try_from(widest).unwrap_or(usize::MAX)),
-            ..REMOTE_ENVELOPE_CODEC_LIMITS
-        }
-    }
-
-    /// The largest signed reply envelope these budgets admit: the default
-    /// envelope ceiling, or more when the byte budget was raised past it.
-    #[must_use]
-    pub fn envelope_bytes(self) -> usize {
-        MAX_REMOTE_ENVELOPE_BYTES.max(usize::try_from(self.max_bytes).unwrap_or(usize::MAX))
-    }
-}
-
 /// One successful V2 remote execution bound to its request and plan.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1121,7 +1020,7 @@ impl RemoteQueryResponseV2 {
             request,
             expected_result,
             outcome,
-            RemoteReplyDecodeLimitsV2::DEFAULT_CEILING,
+            ModelReplyDecodeLimits::DEFAULT_CEILING,
         )?;
         response.codec = default_reply_codec_v2();
         Ok(response)
@@ -1136,7 +1035,7 @@ impl RemoteQueryResponseV2 {
         request: &RemoteRequestFingerprintV2,
         expected_result: RemoteResultKindV2,
         outcome: RemoteOutcomeV2,
-        limits: RemoteReplyDecodeLimitsV2,
+        limits: ModelReplyDecodeLimits,
     ) -> Result<Self, Diagnostic> {
         let nonce = nonce.into();
         check_nonce_v2(&nonce)?;
@@ -1276,7 +1175,7 @@ impl RemoteQueryResponseV2 {
     fn decode_bound(
         bytes: &[u8],
         expected_result: RemoteResultKindV2,
-        limits: RemoteReplyDecodeLimitsV2,
+        limits: ModelReplyDecodeLimits,
         plan: Option<&QueryPlan>,
     ) -> Result<Self, Diagnostic> {
         let codec = limits.codec();
@@ -1548,7 +1447,7 @@ pub fn decode_remote_reply_v2(
     expected_request: &RemoteRequestFingerprintV2,
     expected_advertisement: &RemoteCapabilitiesFingerprint,
     trusted_key: RemoteSigningPublicKey,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     verifier: &impl RemoteReplyVerifier,
 ) -> Result<RemoteReplyV2, Diagnostic> {
     validate_reply_limits_v2(expected_request_envelope.limits(), limits)?;
@@ -1609,8 +1508,8 @@ pub fn decode_remote_reply_v2(
 }
 
 fn validate_reply_limits_v2(
-    request: RemoteLimitsV2,
-    reply: RemoteReplyDecodeLimitsV2,
+    request: RemoteModelLimits,
+    reply: ModelReplyDecodeLimits,
 ) -> Result<(), Diagnostic> {
     let widened = reply.max_bytes > request.max_bytes
         || reply.max_items > request.max_items
@@ -1824,7 +1723,7 @@ fn check_nonce_v2(nonce: &str) -> Result<(), Diagnostic> {
     }
 }
 
-fn validate_remote_limits_v2(limits: RemoteLimitsV2) -> Result<(), Diagnostic> {
+fn validate_remote_limits_v2(limits: RemoteModelLimits) -> Result<(), Diagnostic> {
     if limits
         .deadline_ms
         .is_some_and(|value| value > MAX_REMOTE_DEADLINE_MS)
@@ -1835,7 +1734,7 @@ fn validate_remote_limits_v2(limits: RemoteLimitsV2) -> Result<(), Diagnostic> {
             "V2 remote deadline exceeds the maximum supported duration",
         ));
     }
-    if limits.max_statements > DEFAULT_REMOTE_MAX_STATEMENTS_V2 {
+    if limits.max_statements > DEFAULT_MODEL_MAX_STATEMENTS {
         return Err(remote_v2_failure(
             DiagnosticCategory::ResourceLimit,
             "query_remote_v2_statement_limit",
@@ -1848,7 +1747,7 @@ fn validate_remote_limits_v2(limits: RemoteLimitsV2) -> Result<(), Diagnostic> {
 fn validate_remote_time_shape_v2(
     prepared_at_unix_ms: u64,
     expires_at_unix_ms: u64,
-    limits: RemoteLimitsV2,
+    limits: RemoteModelLimits,
 ) -> Result<(), Diagnostic> {
     let lifetime = expires_at_unix_ms
         .checked_sub(prepared_at_unix_ms)
@@ -2011,7 +1910,7 @@ fn validate_outcome_kind_v2(
 pub fn validate_remote_outcome_v2(
     outcome: &RemoteOutcomeV2,
     expected: RemoteResultKindV2,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     plan: &QueryPlan,
 ) -> Result<(), Diagnostic> {
     validate_outcome_evidence_v2(outcome, expected, limits, Some(plan))
@@ -2020,7 +1919,7 @@ pub fn validate_remote_outcome_v2(
 fn validate_outcome_evidence_v2(
     outcome: &RemoteOutcomeV2,
     expected: RemoteResultKindV2,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     plan: Option<&QueryPlan>,
 ) -> Result<(), Diagnostic> {
     validate_outcome_kind_v2(outcome, expected)?;
@@ -2137,7 +2036,7 @@ fn validate_model_reduction(
     group: &Option<QueryReductionGroupV2>,
     reducers: &[QueryReductionTermV2],
     rows: &[RemoteReductionRowV2],
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     plan: Option<&QueryPlan>,
     expected: RemoteResultKindV2,
 ) -> Result<(), Diagnostic> {
@@ -2391,7 +2290,7 @@ fn validate_low_level_rows(
 
 fn validate_hydration_graph_budget(
     graph: &HydrationGraphV2,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
 ) -> Result<(), Diagnostic> {
     graph.validate()?;
     if u64::try_from(graph.nodes.len()).unwrap_or(u64::MAX) > limits.max_graph_nodes {
@@ -2423,7 +2322,7 @@ fn validate_hydration_graph_budget(
 fn validate_hydrated_rows(
     graph: &HydrationGraphV2,
     rows: &[HydratedRowV2],
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     plan: Option<&QueryPlan>,
     result: RemoteResultKindV2,
 ) -> Result<(), Diagnostic> {
@@ -2515,7 +2414,7 @@ fn preflight_response_evidence_v2(
     payload: &[u8],
     expected: RemoteResultKindV2,
     output_width: Option<usize>,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
 ) -> Result<(), Diagnostic> {
     let response = serde_json::from_slice::<ResponseOutcomeRaw<'_>>(payload).map_err(|_| {
         remote_v2_failure(
@@ -2620,7 +2519,7 @@ enum StreamingCounter {
 
 struct OutcomeScanSeed<'scan> {
     expected: RemoteResultKindV2,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     output_width: Option<usize>,
     state: &'scan mut StreamingPreflightState,
 }
@@ -2643,7 +2542,7 @@ impl<'de> DeserializeSeed<'de> for OutcomeScanSeed<'_> {
 
 struct OutcomeScanVisitor<'scan> {
     expected: RemoteResultKindV2,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     output_width: Option<usize>,
     state: &'scan mut StreamingPreflightState,
 }
@@ -2786,7 +2685,7 @@ enum ScanChild {
 struct SequenceScanSeed<'scan> {
     child: ScanChild,
     counter: Option<(StreamingCounter, u64, StreamingPreflightFailure)>,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     local_maximum: Option<usize>,
     output_width: Option<usize>,
     state: &'scan mut StreamingPreflightState,
@@ -2813,7 +2712,7 @@ impl<'de> DeserializeSeed<'de> for SequenceScanSeed<'_> {
 struct SequenceScanVisitor<'scan> {
     child: ScanChild,
     counter: Option<(StreamingCounter, u64, StreamingPreflightFailure)>,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     local_maximum: Option<usize>,
     output_width: Option<usize>,
     state: &'scan mut StreamingPreflightState,
@@ -2922,7 +2821,7 @@ enum ScanObject {
 
 struct ObjectScanSeed<'scan> {
     kind: ScanObject,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     output_width: Option<usize>,
     state: &'scan mut StreamingPreflightState,
 }
@@ -2945,7 +2844,7 @@ impl<'de> DeserializeSeed<'de> for ObjectScanSeed<'_> {
 
 struct ObjectScanVisitor<'scan> {
     kind: ScanObject,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     output_width: Option<usize>,
     state: &'scan mut StreamingPreflightState,
 }
@@ -3051,7 +2950,7 @@ impl<'de> Visitor<'de> for ObjectScanVisitor<'_> {
 
 struct OptionalObjectScanSeed<'scan> {
     kind: ScanObject,
-    limits: RemoteReplyDecodeLimitsV2,
+    limits: ModelReplyDecodeLimits,
     output_width: Option<usize>,
     state: &'scan mut StreamingPreflightState,
 }
