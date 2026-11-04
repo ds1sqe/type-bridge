@@ -424,7 +424,9 @@
                 ".delete_many(&[first_employment_iid, second_employment_iid])",
                 "empty person update batch",
                 "empty relation delete batch",
-                "first_after_rollback.aliases()[0].value()"
+                "assert_eq!(value.aliases()[0].value(), expected)",
+                "assert_eq!(partially_matched.input_indexes(), &[0])",
+                "assert_eq!(first_after_commit.aliases()[0].value(), \"matched-update\")"
               ]
             }
           ]
@@ -1376,7 +1378,7 @@
               "path": "tests/integration/schema/test_generated_projection_live.py",
               "anchors": [
                 "detached_counter = generated.Counter",
-                "attached IID or projected key",
+                "^generated manager update and delete require an attached TypeDB IID$",
                 "queried_counter = counter_query.one()",
                 "counter_query.rows(limit=2)"
               ]
