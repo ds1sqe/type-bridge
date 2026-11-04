@@ -387,6 +387,190 @@ static int sibling_query_count(
          manager_query_session_close(&session) == TYPE_BRIDGE_STATUS_OK && ok;
 }
 
+static long manager_trace_offset(void) {
+  const char *path = getenv("SMOKE_TRACE_FILE");
+  FILE *file;
+  long offset;
+  if (path == NULL) return -1;
+  file = fopen(path, "r");
+  if (file == NULL || fseek(file, 0, SEEK_END) != 0) abort();
+  offset = ftell(file);
+  if (offset < 0 || fclose(file) != 0) abort();
+  return offset;
+}
+
+static int check_manager_trace(long offset) {
+  const char *path = getenv("SMOKE_TRACE_FILE");
+  FILE *file;
+  char line[1024];
+  unsigned events = 0u;
+  if (offset < 0) return 0;
+  CHECK(path != NULL);
+  file = fopen(path, "r");
+  CHECK(file != NULL && fseek(file, offset, SEEK_SET) == 0);
+  CHECK(fgets(line, sizeof(line), file) != NULL);
+  CHECK(strstr(line, "\"event\":\"request\"") != NULL);
+  events++;
+  CHECK(fgets(line, sizeof(line), file) != NULL);
+  CHECK(strstr(line, "\"event\":\"plan\"") != NULL);
+  CHECK(strstr(line, "\"index\":0") != NULL);
+  CHECK(strstr(line, "\"result_refs\":0") != NULL);
+  CHECK(strstr(line, "\"writes\":false") != NULL);
+  events++;
+  CHECK(fgets(line, sizeof(line), file) != NULL);
+  CHECK(strstr(line, "\"event\":\"commit\"") != NULL);
+  CHECK(strstr(line, "\"kind\":\"read\"") != NULL);
+  CHECK(strstr(line, "\"committed\":true") != NULL);
+  CHECK(strstr(line, "\"code\":\"ok\"") != NULL);
+  events++;
+  CHECK(fgets(line, sizeof(line), file) == NULL && events == 3u);
+  CHECK(fclose(file) == 0);
+  return 0;
+}
+
+typedef struct manager_read_observation {
+  uint64_t count;
+  uint8_t exists;
+  size_t row_count;
+  char iids[32][256];
+} manager_read_observation_t;
+
+static int compare_manager_iids(const void *left, const void *right) {
+  return strcmp((const char *)left, (const char *)right);
+}
+
+static int check_manager_terminal_twins(
+    const type_bridge_database_t *database,
+    const type_bridge_proxy_connection_t *proxy,
+    const manager_query *query, manager_query_binding_ref_v1_t root,
+    type_bridge_query_terminal_kind_t kind,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  type_bridge_query_terminal_descriptor_v1_t descriptor;
+  type_bridge_query_terminal_t *terminal = NULL;
+  manager_read_observation_t observations[2];
+  size_t target;
+  memset(&descriptor, 0, sizeof(descriptor));
+  memset(observations, 0, sizeof(observations));
+  descriptor.struct_size = (uint32_t)sizeof(descriptor);
+  descriptor.version = TYPE_BRIDGE_QUERY_DESCRIPTOR_VERSION;
+  descriptor.kind = kind;
+  descriptor.cardinality =
+      kind == TYPE_BRIDGE_QUERY_TERMINAL_COUNT || kind == TYPE_BRIDGE_QUERY_TERMINAL_EXISTS
+      ? TYPE_BRIDGE_QUERY_ROWS_EXACTLY_ONE : TYPE_BRIDGE_QUERY_ROWS_BOUNDED_MANY;
+  descriptor.root = root.handle;
+  descriptor.expected_root_model = root.expected_model;
+  descriptor.expected_root_mode = root.expected_mode;
+  CHECK(type_bridge_query_terminal_open_v1(
+            (const type_bridge_query_t *)query, &descriptor, &terminal,
+            diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  for (target = 0u; target < 2u; ++target) {
+    type_bridge_query_result_t *result = NULL;
+    const long offset = target == 1u ? manager_trace_offset() : -1;
+    CHECK((target == 0u
+        ? type_bridge_database_query_execute_v1(database, terminal, kind,
+              NULL, NULL, &result, diagnostics)
+        : type_bridge_proxy_query_execute_v1(proxy, terminal, kind,
+              NULL, NULL, &result, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(check_manager_trace(offset) == 0);
+    if (kind == TYPE_BRIDGE_QUERY_TERMINAL_COUNT) {
+      CHECK(type_bridge_query_result_count(result, &observations[target].count,
+                                          diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    } else if (kind == TYPE_BRIDGE_QUERY_TERMINAL_EXISTS) {
+      CHECK(type_bridge_query_result_exists(result, &observations[target].exists,
+                                           diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    } else {
+      size_t row;
+      CHECK(type_bridge_query_result_row_count(result, TYPE_BRIDGE_QUERY_RESULT_ROWS,
+                &observations[target].row_count, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(observations[target].row_count <= 32u);
+      for (row = 0u; row < observations[target].row_count; ++row) {
+        type_bridge_projected_thing_t *thing = NULL;
+        type_bridge_byte_view_t iid;
+        CHECK(type_bridge_query_result_row_slot_thing_at(result,
+                  TYPE_BRIDGE_QUERY_RESULT_ROWS, row, 0u, 0u, root.expected_model,
+                  root.expected_mode, TYPE_BRIDGE_QUERY_SELECTION_ONE, &thing,
+                  diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(type_bridge_projected_thing_iid(thing, &iid) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(iid.data != NULL && iid.length > 0u && iid.length < 256u);
+        memcpy(observations[target].iids[row], iid.data, iid.length);
+        CHECK(type_bridge_projected_thing_close(&thing) == TYPE_BRIDGE_STATUS_OK);
+      }
+      qsort(observations[target].iids, observations[target].row_count,
+            sizeof(observations[target].iids[0]), compare_manager_iids);
+    }
+    CHECK(type_bridge_query_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(memcmp(&observations[0], &observations[1], sizeof(observations[0])) == 0);
+  CHECK(type_bridge_query_terminal_close(&terminal) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
+static int check_manager_read_twins(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_database_t *database,
+    const type_bridge_proxy_connection_t *proxy,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  manager_person_manager people;
+  manager_networkzhlink_manager links;
+  manager_person_manager_filter *absent_person = NULL;
+  manager_networkzhlink_manager_filter *absent_link = NULL;
+  manager_identifier *absent = NULL;
+  const type_bridge_query_terminal_kind_t kinds[] = {
+      TYPE_BRIDGE_QUERY_TERMINAL_ROWS, TYPE_BRIDGE_QUERY_TERMINAL_FIRST,
+      TYPE_BRIDGE_QUERY_TERMINAL_COUNT, TYPE_BRIDGE_QUERY_TERMINAL_EXISTS};
+  size_t index;
+  memset(&people, 0, sizeof(people));
+  memset(&links, 0, sizeof(links));
+  CHECK(manager_person_manager_open(package, &people, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_manager_open(package, &links, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_identifier_open(package, view_of("manager-absent"), &absent,
+                                diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_filter_identifier_eq(&people,
+            manager_person_manager_filter_root(&people), absent, &absent_person,
+            diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_manager_filter_identifier_eq(&links,
+            manager_networkzhlink_manager_filter_root(&links), absent, &absent_link,
+            diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  for (index = 0u; index < sizeof(kinds) / sizeof(kinds[0]); ++index) {
+    const int first = kinds[index] == TYPE_BRIDGE_QUERY_TERMINAL_FIRST;
+    CHECK(check_manager_terminal_twins(database, proxy,
+              first ? manager_person_manager_filter_ref(absent_person).query : people.root_query,
+              manager_person_query_exact_binding_ref(people.binding), kinds[index], diagnostics) == 0);
+    CHECK(check_manager_terminal_twins(database, proxy,
+              first ? manager_networkzhlink_manager_filter_ref(absent_link).query : links.root_query,
+              manager_networkzhlink_query_exact_binding_ref(links.binding), kinds[index], diagnostics) == 0);
+  }
+  CHECK(manager_networkzhlink_manager_filter_close(&absent_link) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_filter_close(&absent_person) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_identifier_close(&absent) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_manager_close(&links) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_close(&people) == TYPE_BRIDGE_STATUS_OK);
+  puts("06.6 C manager entity/relation direct and HTTP read twins: passed");
+  return 0;
+}
+
+static int check_manager_http_if_requested(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_database_t *database,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  const char *port = getenv("TYPE_BRIDGE_C_MANAGER_REMOTE_PORT");
+  type_bridge_proxy_connection_options_v1_t options;
+  type_bridge_proxy_connection_t *proxy = NULL;
+  char endpoint[64];
+  if (port == NULL) return 0;
+  CHECK(snprintf(endpoint, sizeof(endpoint), "http://127.0.0.1:%s", port) > 0);
+  memset(&options, 0, sizeof(options));
+  options.struct_size = (uint32_t)sizeof(options);
+  options.version = TYPE_BRIDGE_PROXY_CONNECTION_OPTIONS_VERSION;
+  options.endpoint = view_of(endpoint);
+  options.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
+  CHECK(type_bridge_proxy_connection_open_v1(package, &options, NULL, &proxy,
+                                             diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(check_manager_read_twins(package, database, proxy, diagnostics) == 0);
+  CHECK(type_bridge_proxy_connection_close(&proxy) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
 int main(void) {
   const char *address = getenv("TYPE_BRIDGE_MANAGER_LIVE_ADDRESS");
   const char *database_name =
@@ -653,6 +837,9 @@ int main(void) {
                    &limits, &diagnostics, &mask) &&
         mask == 2u);
   CHECK(manager_person_manager_filter_close(&sibling) == TYPE_BRIDGE_STATUS_OK);
+
+  plan_mark("");
+  CHECK(check_manager_http_if_requested(package, database, &diagnostics) == 0);
 
   plan_mark("");
   /*
