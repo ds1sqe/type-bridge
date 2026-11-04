@@ -346,7 +346,9 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                     control.limits,
                     controlled_read_input_bytes(type_id, Some(iid)),
                 )?;
-                let limits = proxy.shared_query_limits();
+                let limits = crate::QueryTarget::Proxy(proxy)
+                    .manager_query_limits(control.deadline, &control.cancellation)
+                    .await?;
                 let (registry, program) = self.manager_read_program(
                     type_id,
                     Some(iid),
@@ -480,7 +482,9 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                     control.limits,
                     controlled_read_input_bytes(type_id, None),
                 )?;
-                let limits = proxy.shared_query_limits();
+                let limits = crate::QueryTarget::Proxy(proxy)
+                    .manager_query_limits(control.deadline, &control.cancellation)
+                    .await?;
                 let (_, program) =
                     self.manager_read_program(type_id, None, ReadTerminal::Count, limits.as_ref())?;
                 let answers = proxy
@@ -7280,6 +7284,234 @@ plays:
         assert_eq!(state.bounded_reads, 0);
         assert_eq!(state.unbounded_queries, 0);
         assert_eq!(state.closes, 1);
+    }
+
+    #[tokio::test]
+    async fn proxy_exact_reads_negotiate_uncached_limits_before_planning() {
+        use crate::query_v2_prepared::QueryAuthority;
+        use crate::query_v2_remote::RemoteReplySigningKey;
+        use crate::session::StagedTransport;
+        use crate::{ProxyQueryConnection, QueryTarget, QueryTargetError};
+        use type_bridge_contract::capability::CapabilityId;
+        use type_bridge_contract::query_remote::RemoteValue;
+        use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
+        use type_bridge_contract::query_remote_v2::CAP_QUERY_REMOTE_STATEMENT_LIMIT;
+        use type_bridge_contract::query_remote_v3::{
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedAnswerV3,
+            StagedKindV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+        };
+
+        struct Transport {
+            schema: type_bridge_contract::schema::DeclaredSchema,
+            advertisement: RemoteCapabilities,
+            signer: RemoteReplySigningKey,
+            expected: Mutex<VecDeque<Vec<u8>>>,
+            calls: std::sync::atomic::AtomicUsize,
+            advertisements: std::sync::atomic::AtomicUsize,
+        }
+        impl StagedTransport for Transport {
+            fn staged_capabilities(&self) -> BoxFuture<'_, Result<Vec<u8>, QueryTargetError>> {
+                Box::pin(async move {
+                    self.advertisements
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Ok(self.advertisement.encode().unwrap())
+                })
+            }
+            fn exchange_staged<'a>(
+                &'a self,
+                bytes: &'a [u8],
+            ) -> BoxFuture<'a, Result<Vec<u8>, QueryTargetError>> {
+                Box::pin(async move {
+                    self.calls
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let request =
+                        StagedRequestV3::decode(bytes, &self.schema, &self.advertisement).unwrap();
+                    assert_eq!(request.kind(), StagedKindV3::Read);
+                    let mut answers = Vec::new();
+                    for entry in request.plans() {
+                        let plan = entry.plan();
+                        assert_eq!(
+                            plan.canonical_bytes().unwrap(),
+                            self.expected.lock().unwrap().pop_front().unwrap()
+                        );
+                        let answer = if matches!(
+                            plan.pipeline().last(),
+                            Some(type_bridge_contract::query_plan::v3::Stage::Fetch(_))
+                        ) {
+                            StagedAnswerV3::Documents { documents: vec![] }
+                        } else {
+                            StagedAnswerV3::Rows {
+                                rows: if plan.pipeline().iter().any(|stage| {
+                                    matches!(
+                                        stage,
+                                        type_bridge_contract::query_plan::v3::Stage::Reduce { .. }
+                                    )
+                                }) {
+                                    vec![vec![RemoteValue::Value {
+                                        value: CanonicalValue::Long(2),
+                                    }]]
+                                } else {
+                                    vec![]
+                                },
+                            }
+                        };
+                        answers.push(answer);
+                    }
+                    Ok(
+                        StagedReplyV3::new(&request, StagedOutcomeV3::Committed, answers)
+                            .unwrap()
+                            .encode_signed(&request, &self.advertisement, &self.signer)
+                            .unwrap(),
+                    )
+                })
+            }
+        }
+        let mut schema_source = String::from(
+            "format: typebridge.schema/v2\nentities:\n  person: {}\nrelations:\n  membership:\n    relates:\n",
+        );
+        for index in 0..20 {
+            schema_source.push_str(&format!("      member-{index}: {{ card: {{ min: 0 }} }}\n"));
+        }
+        schema_source.push_str("plays:\n  person:\n    membership: [");
+        schema_source.push_str(
+            &(0..20)
+                .map(|index| format!("member-{index}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        schema_source.push_str("]\n");
+        let installed = controlled_installed_from(&schema_source);
+        let schema = installed.plan_authority().unwrap().declared().clone();
+        let context = type_bridge_schema::ManagedDeltaContext::new(
+            type_bridge_contract::managed_scope::ManagedScopeId::new("crud-read-target-tests")
+                .unwrap(),
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            type_bridge_schema::schema_authority_capability_vocabulary(),
+        );
+        let verified = type_bridge_schema::build_schema_authority(
+            &schema,
+            schema.required_capabilities(),
+            &context,
+        )
+        .unwrap();
+        let installed = installed.with_schema_authority(&verified);
+        let executor = ProjectedCrudExecutor::new(&installed);
+        let authority = Arc::new(
+            QueryAuthority::from_declared_bytes(
+                &type_bridge_contract::schema::encode_declared_schema(&schema).unwrap(),
+                "crud-read-target-tests",
+                "typedb-3.12.1/v1",
+            )
+            .unwrap(),
+        );
+        let signer = RemoteReplySigningKey::from_secret_bytes([73; 32]);
+        let mut capabilities =
+            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        for capability in [
+            CAP_QUERY_REMOTE_STAGED_V3,
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+            CAP_QUERY_REMOTE_STATEMENT_LIMIT,
+        ] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
+        }
+        let mut server = type_bridge_contract::limits::QueryLimits::V3;
+        server.structural.bindings = 16;
+        server.structural.selected_slots = 16;
+        let server = Arc::new(server);
+        let advertisement = RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("crud-read-target-tests", "crud-read-target-epoch").unwrap(),
+            signer.public_key(),
+        )
+        .with_query_limits(*server)
+        .unwrap();
+
+        let mut client = type_bridge_contract::limits::QueryLimits::V3;
+        client.structural.bindings = 1024;
+        client.structural.selected_slots = 1024;
+        client.structural.boolean_terms = 1024;
+        let client = Arc::new(client);
+        let model = controlled_type(TypeKind::Relation);
+        let legacy = RemoteCapabilities::new(
+            type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary(),
+            advertisement.executor().clone(),
+            signer.public_key(),
+        );
+        for count in [false, true] {
+            let (_, expected) = executor
+                .manager_read_program(
+                    &model,
+                    if count { None } else { Some("0xffff") },
+                    if count {
+                        ReadTerminal::Count
+                    } else {
+                        ReadTerminal::Fetch
+                    },
+                    Some(&server),
+                )
+                .unwrap();
+            let transport = Arc::new(Transport {
+                schema: schema.clone(),
+                advertisement: advertisement.clone(),
+                signer: RemoteReplySigningKey::from_secret_bytes([73; 32]),
+                expected: Mutex::new(
+                    expected
+                        .plans()
+                        .iter()
+                        .map(|plan| plan.canonical_bytes().unwrap())
+                        .collect(),
+                ),
+                calls: 0.into(),
+                advertisements: 0.into(),
+            });
+            let connection = ProxyQueryConnection::with_exchange(
+                legacy.encode().unwrap(),
+                Arc::clone(&authority),
+                QueryExecutionResourceLimits::default(),
+            )
+            .unwrap()
+            .with_query_limits(*client)
+            .unwrap()
+            .with_staged_transport(transport.clone());
+            assert!(connection.staged_advertisement().is_none());
+            assert_eq!(connection.query_limits(), *client);
+            let control =
+                ProjectedCrudInvocationControl::capture(Default::default(), Default::default());
+            if count {
+                assert_eq!(
+                    executor
+                        .count_on_target(QueryTarget::Proxy(&connection), &model, control)
+                        .await
+                        .unwrap(),
+                    2
+                );
+            } else {
+                assert!(
+                    executor
+                        .get_by_iid_on_target(
+                            QueryTarget::Proxy(&connection),
+                            &model,
+                            "0xffff",
+                            control
+                        )
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            assert_eq!(connection.query_limits(), *server);
+            assert_eq!(
+                transport
+                    .advertisements
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+            assert_eq!(
+                transport.calls.load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+            assert!(transport.expected.lock().unwrap().is_empty());
+        }
     }
 
     #[tokio::test]
