@@ -1,6 +1,7 @@
 use super::*;
 use crate::_descriptor::{OwnedAttributeDescriptor, RoleDescriptor};
 use crate::_entity::Annotation;
+use crate::session::backend::QueryResult;
 use crate::{AttributeValue, ValueType};
 
 fn employment_descriptor() -> RelationDescriptor {
@@ -606,7 +607,7 @@ async fn native_write_holds_the_borrowed_mutation_lease_through_materialization(
             }
         };
         let error = if group {
-            let plans = manager.plans.as_ref().unwrap();
+            let plans = &manager.plans;
             let build = |name: &str| {
                 plans
                     .single_write(
