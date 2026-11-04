@@ -28,10 +28,10 @@ use type_bridge_contract::temporal::{
 use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
 };
+use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::query_v2_builder::{
     AuthoredQueryPlan, QUERY_PLAN_BUILDER_OPERATIONS, QueryFunctionTarget, QueryPlanBuilder,
 };
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
 
 const PROFILE: &str = "typedb-3.12.1/v1";
 const SCOPE: &str = "query-v2-builder";

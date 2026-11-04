@@ -3,9 +3,9 @@ use super::*;
 use crate::_dynamic::{DynamicAttributeMap, DynamicRelationRow, DynamicRolePlayerInput};
 use crate::_manager::dynamic::{DynamicEntityManager, DynamicRelationManager};
 use crate::match_request::{MatchResult, SlotValue};
+use crate::plan_authority::QueryAuthority;
 use crate::plan_builders::manager::{ManagerPlans, ManagerWrite};
 use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
-use crate::query_v2_prepared::QueryAuthority;
 use crate::session::ProxyEndpoint;
 use crate::session::backend::AnswerCancellation;
 use crate::{

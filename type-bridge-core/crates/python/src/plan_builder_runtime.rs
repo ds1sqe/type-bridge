@@ -68,7 +68,7 @@ fn invocation_rows(
 #[pyclass(name = "StagedPlan", module = "type_bridge_core", frozen)]
 pub(crate) struct PyStagedPlan {
     pub(crate) entry: StagedPlanV3,
-    pub(crate) authority: Arc<type_bridge_orm::query_v2_prepared::QueryAuthority>,
+    pub(crate) authority: Arc<type_bridge_orm::plan_authority::QueryAuthority>,
 }
 
 #[pymethods]
@@ -1066,7 +1066,7 @@ mod tests {
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
-    use type_bridge_orm::query_v2_prepared::QueryAuthority;
+    use type_bridge_orm::plan_authority::QueryAuthority;
     use type_bridge_schema::{
         ManagedDeltaContext, SchemaDocumentSet, build_schema_authority, normalize_documents,
     };

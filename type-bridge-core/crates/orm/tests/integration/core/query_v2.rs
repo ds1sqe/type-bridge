@@ -2848,10 +2848,9 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
 
     use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
     use type_bridge_contract::schema::encode_declared_schema;
+    use type_bridge_orm::plan_authority::QueryAuthority;
     use type_bridge_orm::query_v2_builder::QueryPlanBuilder;
-    use type_bridge_orm::query_v2_prepared::{
-        QueryAuthority, execute_prepared_local, prepare_remote_query_v2,
-    };
+    use type_bridge_orm::query_v2_prepared::{execute_prepared_local, prepare_remote_query_v2};
     use type_bridge_orm::query_v2_remote::{
         execute_admitted_remote_request_v2, preflight_remote_request_v2,
     };

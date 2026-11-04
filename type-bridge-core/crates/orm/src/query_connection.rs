@@ -17,11 +17,11 @@ use crate::_registry::DescriptorRegistry;
 use crate::error::OrmError;
 use crate::execution_diagnostic::lower_remote_query_diagnostic;
 use crate::match_request::{ValidatedMatchRequest, ValidatedMatchResult};
+use crate::plan_authority::QueryAuthority;
 use crate::plan_model_remote::{
     PendingRemoteModelQuery, RemoteModelQueryError, prepare_remote_model_query_with_policy,
 };
 use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
-use crate::query_v2_prepared::QueryAuthority;
 use crate::session::backend::AnswerCancellation;
 use crate::session::staged::{Transaction, TransactionOptions};
 use crate::session::staged_proxy::{ProxyStaging, Route, StagedTransport};

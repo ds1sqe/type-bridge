@@ -18,7 +18,7 @@ use tracing::Instrument as _;
 use type_bridge_contract::query_plan::v3::{BuiltPlans, decode_query_plan_v3};
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use type_bridge_orm::ProviderRuntimeOwner;
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::session::staged::{
     CommitError, Pending, PendingError, PlanAnswer, Transaction, TransactionKind,
     merge_plan_answers,

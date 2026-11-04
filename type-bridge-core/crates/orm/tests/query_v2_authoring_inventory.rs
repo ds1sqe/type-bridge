@@ -28,6 +28,7 @@ use type_bridge_contract::temporal::{
 use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
 };
+use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::query_v2_builder::{
     AuthoredQueryInvocation, AuthoredQueryPlan, QUERY_BUILDER_COMPARATORS,
     QUERY_BUILDER_LOCAL_RETURNS, QUERY_BUILDER_ORDER_DIRECTIONS, QUERY_BUILDER_REDUCERS,
@@ -40,7 +41,6 @@ use type_bridge_orm::query_v2_builder::{
     query_builder_reducer_name, query_builder_role_players, query_builder_type_kind,
     query_builder_type_kind_name, query_builder_value_type, query_builder_value_type_name,
 };
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
 
 const FACADE_TERMINALS: &[&str] = &["documents"];
 const ISA_MODES: &[&str] = &["exact", "include_subtypes"];

@@ -16,14 +16,14 @@ use type_bridge_contract::id::{
 };
 use type_bridge_contract::limits::{MAX_CANONICAL_STRING_BYTES, MAX_OUTPUT_NAME_BYTES};
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use type_bridge_orm::plan_authority::QueryAuthorityIdentity;
 use type_bridge_orm::query_v2_builder::{
-    AuthoredQueryInvocation, AuthoredQueryPlan, QueryAuthorityIdentity, QueryBindingHandle,
-    QueryBuilderScalarInput, QueryDocumentFieldHandle, QueryInputHandle, QueryInvocationRowBudget,
-    QueryLocalFunctionHandle, QueryLocalReturnHandle, QueryOperandHandle, QueryOrderHandle,
-    QueryPatternHandle, QueryPlanBuilder, QueryReduceAssignmentHandle,
-    query_builder_binding_limit_error, query_builder_boolean_host_type_error,
-    query_builder_bounded_len, query_builder_comparator, query_builder_depth,
-    query_builder_depth_error, query_builder_disjunction_term_limit_error,
+    AuthoredQueryInvocation, AuthoredQueryPlan, QueryBindingHandle, QueryBuilderScalarInput,
+    QueryDocumentFieldHandle, QueryInputHandle, QueryInvocationRowBudget, QueryLocalFunctionHandle,
+    QueryLocalReturnHandle, QueryOperandHandle, QueryOrderHandle, QueryPatternHandle,
+    QueryPlanBuilder, QueryReduceAssignmentHandle, query_builder_binding_limit_error,
+    query_builder_boolean_host_type_error, query_builder_bounded_len, query_builder_comparator,
+    query_builder_depth, query_builder_depth_error, query_builder_disjunction_term_limit_error,
     query_builder_document_output_limit_error, query_builder_function_argument_limit_error,
     query_builder_function_target, query_builder_host_collection_type_error,
     query_builder_local_binding_limit_error, query_builder_local_body_limit_error,
@@ -1039,9 +1039,9 @@ mod tests {
         encode_declared_schema,
     };
     use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+    use type_bridge_orm::plan_authority::QueryAuthority;
     use type_bridge_orm::query_v2_builder::QUERY_PLAN_BUILDER_OPERATIONS;
     use type_bridge_orm::query_v2_builder::QueryPlanBuilder;
-    use type_bridge_orm::query_v2_prepared::QueryAuthority;
 
     use super::{
         PyAuthoredQueryPlan, invocation_rows, python_boolean, python_depth, python_scalar,

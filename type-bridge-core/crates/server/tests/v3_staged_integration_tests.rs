@@ -1820,8 +1820,8 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
     };
     use type_bridge_contract::query_remote_v3::StagedKindV3;
     use type_bridge_contract::schema::{DocumentId, OwnsFactId};
+    use type_bridge_orm::plan_authority::QueryAuthority;
     use type_bridge_orm::projected_crud::ProjectedCrudInvocationControl;
-    use type_bridge_orm::query_v2_prepared::QueryAuthority;
     use type_bridge_orm::{
         AnswerCancellation, InstalledRuntimeProjection, ProjectedAttributeValue,
         ProjectedCrudExecutor, ProjectedManagerComparison, ProjectedManagerFilter,

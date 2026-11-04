@@ -7301,7 +7301,7 @@ entities:
     #[test]
     fn proxy_batch_target_validates_empty_calls_and_reaches_the_staged_transport() {
         use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-        use type_bridge_orm::query_v2_prepared::QueryAuthority;
+        use type_bridge_orm::plan_authority::QueryAuthority;
         use type_bridge_orm::remote_signing::RemoteReplySigningKey;
         let verified = authority(ORDERED_SCHEMA, "node-proxy-batch.yaml");
         let declared =

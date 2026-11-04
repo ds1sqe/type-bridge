@@ -1295,7 +1295,7 @@ fn sdk_staged_advertisement_must_match_the_connection_signer() {
     let fixture = v3_fixture(vouching_pipeline(), false);
     let other = v3_fixture(vouching_pipeline(), false);
     let connection = || {
-        let authority = type_bridge_orm::query_v2_prepared::QueryAuthority::from_declared_bytes(
+        let authority = type_bridge_orm::plan_authority::QueryAuthority::from_declared_bytes(
             &type_bridge_contract::schema::encode_declared_schema(&fixture.declared).unwrap(),
             "sdk-scope",
             "typedb-3.13.6/v1",

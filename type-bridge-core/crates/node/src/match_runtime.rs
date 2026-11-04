@@ -2973,7 +2973,7 @@ mod tests {
     use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
     use type_bridge_orm::ProxyQueryConnection;
-    use type_bridge_orm::query_v2_prepared::QueryAuthority;
+    use type_bridge_orm::plan_authority::QueryAuthority;
     use type_bridge_orm::remote_signing::RemoteReplySigningKey;
     use type_bridge_orm::session::backend::{
         AnswerCancellation, BoundedAnswerLimits, BoundedAnswerReader, BoxFuture, DriverBackend,

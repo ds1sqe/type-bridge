@@ -1151,7 +1151,7 @@ mod tests {
         )
         .unwrap();
         let installed = installed.with_schema_authority(&verified);
-        let authority = crate::query_v2_prepared::QueryAuthority::from_declared_bytes(
+        let authority = crate::plan_authority::QueryAuthority::from_declared_bytes(
             &type_bridge_contract::schema::encode_declared_schema(&schema).unwrap(),
             "single-proxy",
             profile.as_str(),

@@ -23,7 +23,7 @@ use crate::orm_runtime::provider_block_on;
 use crate::query_v2_runtime::{PyQueryV2Authority, PythonBytes};
 use crate::runtime_projection::direct_tls_from_python;
 use crate::staged_transaction_runtime::{PyStagedTransaction, parse_kind};
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::session::staged::TransactionOptions;
 
 /// One connection to a TypeBridge server reached over its HTTP routes.

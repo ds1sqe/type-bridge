@@ -10,7 +10,7 @@ use std::sync::Arc;
 use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_orm::_registry::DescriptorRegistry;
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::session::StagedTransport;
 use type_bridge_orm::session::staged::TransactionOptions;
 use type_bridge_orm::{

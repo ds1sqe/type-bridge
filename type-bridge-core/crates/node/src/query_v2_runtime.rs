@@ -26,9 +26,10 @@ use type_bridge_contract::query_remote::{
 };
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_contract::schema::encode_declared_schema;
+use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::query_v2_prepared::{
-    ClaimedRemoteReplyV2, PendingRemoteQueryV2, QueryAuthority, decode_remote_capabilities,
-    execute_prepared_local, prepare_remote_query_v2, query_v2_host_string_unicode_error,
+    ClaimedRemoteReplyV2, PendingRemoteQueryV2, decode_remote_capabilities, execute_prepared_local,
+    prepare_remote_query_v2, query_v2_host_string_unicode_error,
 };
 use type_bridge_orm::session::backend::{AnswerLimits, BoundedAnswerLimits};
 use type_bridge_schema::{

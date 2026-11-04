@@ -36,7 +36,7 @@ use type_bridge_contract::temporal::{
 use type_bridge_contract::value::{
     CanonicalDouble as ContractDouble, CanonicalString, CanonicalValue, DecimalValue,
 };
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::remote_signing::RemoteReplySigningKey;
 use type_bridge_orm::{
     AnswerCancellation, BindingId, FetchShape, FetchSlot, InstalledRuntimeProjection, MatchBinding,

@@ -10,14 +10,14 @@
 use std::fmt;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::de::{Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, QueryLimits};
+use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan::{
     InputRow, QueryInvocation, QueryOperation, QueryPlan, decode_query_invocation,
@@ -30,20 +30,18 @@ use type_bridge_contract::query_remote::{
 use type_bridge_contract::query_remote_v2::{
     RemoteLimitsV2, RemoteQueryRequestV2, RemoteReplyDecodeLimitsV2, RemoteRequestFingerprintV2,
 };
-use type_bridge_contract::schema::{DeclaredSchema, DocumentId, decode_declared_schema};
-use type_bridge_contract::schema_delta::ManagedSchemaState;
+use type_bridge_contract::schema::DocumentId;
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_core_lib::__internal as tql;
 use type_bridge_core_lib::version::semantic_profile_id;
-use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
-use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
+use type_bridge_query::{ValidatedQuery, validate_query_plan};
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
 use crate::OwnedTransaction as Transaction;
 use crate::error::PlanExecutionError;
+use crate::plan_authority::{QueryAuthority, QueryAuthorityControlPolicy};
 use crate::plan_lowering::{ast, failure};
 use crate::query_execution_limits::QueryExecutionDeadline;
-use crate::query_v2_builder::QueryAuthorityIdentity;
 use crate::query_v2_remote::{
     check_advertised_capabilities_v2, decode_remote_outcome_v2, encode_remote_request_v2_at,
     remote_outcome_v2,
@@ -51,7 +49,7 @@ use crate::query_v2_remote::{
 use crate::session::backend::{
     AnswerCancellation, AnswerLimits, MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryResult,
 };
-use crate::session::database::{Database, DatabaseExecutionIdentity};
+use crate::session::database::Database;
 
 const PREPARED_CLOSE_GRACE: Duration = Duration::from_secs(1);
 const LIVE_AUTHORITY_REBUILD_CONCURRENCY: usize = 4;
@@ -98,185 +96,10 @@ pub async fn acquire_live_authority_rebuild_permit() -> Result<tokio::sync::Owne
         .map_err(|_| ())
 }
 
-/// One owned schema authority prepared plans validate against.
-pub struct QueryAuthority {
-    declared: DeclaredSchema,
-    delta_context: ManagedDeltaContext,
-    identity: QueryAuthorityIdentity,
-    limits: QueryLimits,
-    managed: ManagedSchemaState,
-    resolved: ResolvedSchema,
-    control_policy: QueryAuthorityControlPolicy,
-    adapter_authority: OnceLock<Arc<crate::_registry::InstalledSchemaAuthority>>,
-}
-
-#[derive(Clone)]
-enum QueryAuthorityControlPolicy {
-    Managed,
-    QueryOnly(DatabaseExecutionIdentity),
-}
-
 impl QueryAuthority {
-    pub(crate) fn adapter_authority(&self) -> Arc<crate::_registry::InstalledSchemaAuthority> {
-        Arc::clone(self.adapter_authority.get_or_init(|| {
-            Arc::new(crate::_registry::InstalledSchemaAuthority::new(
-                self.declared.clone(),
-                self.resolved.clone(),
-                self.managed.clone(),
-            ))
-        }))
-    }
-
-    pub(crate) fn scope_id(&self) -> &ManagedScopeId {
-        self.delta_context.scope_id()
-    }
-
-    /// The declared schema plans are decoded and validated against.
-    #[must_use]
-    pub fn declared(&self) -> &DeclaredSchema {
-        &self.declared
-    }
-}
-
-impl QueryAuthority {
-    /// Build one authority from canonical declared-schema bytes.
-    ///
-    /// The caller supplied the schema artifact, so its declared required
-    /// capabilities are the authority for resolution — a schema requiring
-    /// `schema.roles` or any other capability builds exactly as it does on
-    /// the server. Contract-level rejections keep their specific
-    /// diagnostic instead of collapsing into a generic one.
-    pub fn from_declared_bytes(
-        bytes: &[u8],
-        scope: &str,
-        profile: &str,
-    ) -> Result<Self, Diagnostic> {
-        Self::from_declared_bytes_with_policy(
-            bytes,
-            scope,
-            profile,
-            QueryAuthorityControlPolicy::Managed,
-        )
-    }
-
-    /// Build an authority for a database that deliberately has no migration
-    /// control partition.
-    ///
-    /// Query-only mode is explicit and bound to the exact provider authority
-    /// and database name supplied here. It cannot silently downgrade a managed
-    /// authority when control facts disappear.
-    pub fn from_declared_bytes_query_only(
-        bytes: &[u8],
-        scope: &str,
-        profile: &str,
-        database: &Database,
-    ) -> Result<Self, Diagnostic> {
-        Self::from_declared_bytes_with_policy(
-            bytes,
-            scope,
-            profile,
-            QueryAuthorityControlPolicy::QueryOnly(database.execution_identity()),
-        )
-    }
-
-    /// Test whether this authority resolves to one exact semantic schema
-    /// fingerprint.
-    #[doc(hidden)]
-    pub fn matches_semantic_fingerprint(
-        &self,
-        fingerprint: &type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint,
-    ) -> bool {
-        self.resolved.semantic_fingerprint() == fingerprint
-    }
-
-    fn from_declared_bytes_with_policy(
-        bytes: &[u8],
-        scope: &str,
-        profile: &str,
-        control_policy: QueryAuthorityControlPolicy,
-    ) -> Result<Self, Diagnostic> {
-        let declared = decode_declared_schema(bytes)?;
-        let profile = SemanticProfileId::new(profile)?;
-        let resolved = type_bridge_schema::resolve_schema_with_capabilities(
-            &declared,
-            &profile,
-            declared.required_capabilities(),
-        )
-        .map_err(|_| schema_rejected())?;
-        let delta_context = ManagedDeltaContext::new(
-            ManagedScopeId::new(scope)?,
-            profile,
-            declared.required_capabilities().clone(),
-        );
-        let managed = type_bridge_schema::managed_schema_state(&declared, &delta_context).map_err(
-            |error| match error {
-                type_bridge_schema::DeltaError::Contract(diagnostic) => diagnostic,
-                type_bridge_schema::DeltaError::Schema(_) => schema_rejected(),
-            },
-        )?;
-        Ok(Self {
-            declared,
-            delta_context,
-            identity: QueryAuthorityIdentity::fresh(),
-            limits: QueryLimits::CANONICAL,
-            managed,
-            resolved,
-            control_policy,
-            adapter_authority: OnceLock::new(),
-        })
-    }
-
-    /// Author, decode, and validate every plan of this authority under
-    /// `limits` instead of the canonical defaults.
-    ///
-    /// The caller admits untrusted values with [`QueryLimits::validate`]
-    /// first.
-    #[must_use]
-    pub fn with_limits(mut self, limits: QueryLimits) -> Self {
-        self.limits = limits;
-        self
-    }
-
-    /// Derive a distinct authority over the same schema that holds its plans
-    /// to `limits`.
-    ///
-    /// The result has a fresh identity: handles and plans authored under one
-    /// limits policy cannot be replayed under another.
-    #[must_use]
-    pub fn rebound_with_limits(&self, limits: QueryLimits) -> Self {
-        Self {
-            declared: self.declared.clone(),
-            delta_context: self.delta_context.clone(),
-            identity: QueryAuthorityIdentity::fresh(),
-            limits,
-            managed: self.managed.clone(),
-            resolved: self.resolved.clone(),
-            control_policy: self.control_policy.clone(),
-            adapter_authority: self.adapter_authority.clone(),
-        }
-    }
-
-    /// Return the limits plans of this authority are held to.
-    #[must_use]
-    pub const fn limits(&self) -> QueryLimits {
-        self.limits
-    }
-
-    /// Borrow the validation context this authority represents.
-    #[must_use]
-    pub fn context(&self) -> MigrationAssertionValidationContext<'_> {
-        MigrationAssertionValidationContext::new(&self.resolved, &self.managed)
-    }
-
-    /// Return the opaque identity of this exact authority instance.
-    #[must_use]
-    pub fn identity(&self) -> QueryAuthorityIdentity {
-        self.identity.clone()
-    }
-
     fn validate(&self, plan_bytes: &[u8]) -> Result<(QueryPlan, ValidatedQuery), Diagnostic> {
-        let plan = decode_query_plan_with_limits(plan_bytes, self.limits)?;
-        let validated = validate_query_plan(&plan, &self.context(), self.limits.structural)?;
+        let plan = decode_query_plan_with_limits(plan_bytes, self.limits())?;
+        let validated = validate_query_plan(&plan, &self.context(), self.limits().structural)?;
         Ok((plan, validated))
     }
 }
@@ -1451,14 +1274,6 @@ pub fn decode_remote_capabilities(advertisement_bytes: &[u8]) -> Result<Vec<Stri
         .iter()
         .map(|capability| capability.as_str().to_owned())
         .collect())
-}
-
-fn schema_rejected() -> Diagnostic {
-    failure(
-        DiagnosticCategory::InvalidContract,
-        "query_prepared_schema_rejected",
-        "the declared schema does not resolve under this profile",
-    )
 }
 
 fn outcome_json(outcome: &crate::query_v2::QueryV2Outcome) -> Result<String, Diagnostic> {

@@ -100,9 +100,7 @@ impl MatchRequestAdapterAuthority {
         ))))
     }
 
-    pub(crate) fn from_query_authority(
-        authority: &crate::query_v2_prepared::QueryAuthority,
-    ) -> Self {
+    pub(crate) fn from_query_authority(authority: &crate::plan_authority::QueryAuthority) -> Self {
         Self(authority.adapter_authority())
     }
 

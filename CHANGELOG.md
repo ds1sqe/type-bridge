@@ -200,6 +200,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust `query_v2_prepared::QueryAuthority` and
+  `query_v2_builder::QueryAuthorityIdentity` move to `plan_authority`;
+  generated reads and staged plans share this schema-authority owner.
+
 - Rust `query_v2::QueryV2ExecutionError` moves to
   `error::PlanExecutionError`, shared by native plan execution and hydration.
 

@@ -545,7 +545,7 @@ impl crate::remote::ProxyExchange for RemoteOriginTransport {
             StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
         };
         use type_bridge_contract::value::{CanonicalString, CanonicalValue};
-        use type_bridge_orm::query_v2_prepared::QueryAuthority;
+        use type_bridge_orm::plan_authority::QueryAuthority;
         self.exchanges.fetch_add(1, Ordering::SeqCst);
         let authority = QueryAuthority::from_declared_bytes(
             successor_package()

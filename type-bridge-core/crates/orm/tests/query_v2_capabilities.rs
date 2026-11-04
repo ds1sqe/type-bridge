@@ -29,9 +29,8 @@ use type_bridge_contract::value::{
     CanonicalString, CanonicalValue, ValueTypeTag, ValueTypeTag as Tag,
 };
 use type_bridge_contract::{query_given_rows_capability, query_plan_capability_vocabulary};
-use type_bridge_orm::query_v2_prepared::{
-    QueryAuthority, decode_remote_capabilities, prepare_remote_query_v2,
-};
+use type_bridge_orm::plan_authority::QueryAuthority;
+use type_bridge_orm::query_v2_prepared::{decode_remote_capabilities, prepare_remote_query_v2};
 use type_bridge_orm::query_v2_remote::{
     decode_remote_outcome_v2, encode_remote_request_v2, encode_remote_request_v2_at,
     preflight_remote_request_v2, preflight_remote_request_v2_at,

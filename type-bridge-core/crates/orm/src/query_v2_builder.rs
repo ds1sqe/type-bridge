@@ -35,7 +35,7 @@ use type_bridge_query::{
     validate_query_plan,
 };
 
-use crate::query_v2_prepared::QueryAuthority;
+use crate::plan_authority::{QueryAuthority, QueryAuthorityIdentity};
 
 /// Frozen low-level operation inventory shared by native wrapper parity gates.
 pub const QUERY_PLAN_BUILDER_OPERATIONS: &[&str] = &[
@@ -691,34 +691,6 @@ pub fn query_builder_unsigned_error() -> Diagnostic {
         "query_builder_unsigned_integer_range",
         "row offset or limit must be an exact unsigned 64-bit integer",
     )
-}
-
-/// Opaque identity of one exact [`QueryAuthority`].
-///
-/// Equality is allocation identity, not schema-value equality: separately
-/// constructed authorities remain distinct even when their canonical schema
-/// bytes are equal.
-#[derive(Clone)]
-pub struct QueryAuthorityIdentity(Arc<()>);
-
-impl QueryAuthorityIdentity {
-    pub(crate) fn fresh() -> Self {
-        Self(Arc::new(()))
-    }
-}
-
-impl PartialEq for QueryAuthorityIdentity {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for QueryAuthorityIdentity {}
-
-impl fmt::Debug for QueryAuthorityIdentity {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("QueryAuthorityIdentity([OPAQUE])")
-    }
 }
 
 #[derive(Clone)]

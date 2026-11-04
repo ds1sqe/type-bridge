@@ -20,7 +20,7 @@ use type_bridge_contract::query_remote_v3::{
 };
 use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
 use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticDetailValue, SdkDiagnosticName};
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::remote_signing::RemoteReplySigningKey;
 use type_bridge_orm::session::backend::{AnswerLimits, BoundedAnswerLimits};
 use type_bridge_orm::session::staged::{TransactionKind, TransactionOptions};

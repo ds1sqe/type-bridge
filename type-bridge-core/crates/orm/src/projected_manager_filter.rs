@@ -1871,7 +1871,7 @@ mod invocation_control_tests {
 #[cfg(test)]
 mod target_tests {
     use super::*;
-    use crate::query_v2_prepared::QueryAuthority;
+    use crate::plan_authority::QueryAuthority;
     use type_bridge_contract::capability::CapabilityId;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::limits::QueryLimits;

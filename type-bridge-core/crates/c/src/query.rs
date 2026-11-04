@@ -20,7 +20,7 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
 };
 use type_bridge_orm::_registry::DescriptorRegistry;
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::{
     BindingHandle, FieldHandle, FunctionArgumentHandle, FunctionCallHandle, FunctionHandle,
     FunctionValueHandle, MatchMode, MissingOrder, OrderHandle, PredicateHandle,

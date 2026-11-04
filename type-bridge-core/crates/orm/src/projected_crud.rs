@@ -7288,7 +7288,7 @@ plays:
 
     #[tokio::test]
     async fn proxy_exact_reads_negotiate_uncached_limits_before_planning() {
-        use crate::query_v2_prepared::QueryAuthority;
+        use crate::plan_authority::QueryAuthority;
         use crate::remote_signing::RemoteReplySigningKey;
         use crate::session::StagedTransport;
         use crate::{ProxyQueryConnection, QueryTarget, QueryTargetError};
@@ -7516,7 +7516,7 @@ plays:
 
     #[tokio::test]
     async fn proxy_exact_reads_keep_native_plan_bytes_and_application_errors() {
-        use crate::query_v2_prepared::QueryAuthority;
+        use crate::plan_authority::QueryAuthority;
         use crate::remote_signing::RemoteReplySigningKey;
         use crate::session::StagedTransport;
         use crate::{ProxyQueryConnection, QueryTarget, QueryTargetError};

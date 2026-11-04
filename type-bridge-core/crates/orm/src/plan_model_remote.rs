@@ -12,12 +12,12 @@ use crate::match_request::{
     MatchError, MatchErrorCategory, MatchErrorPathSegment, ValidatedMatchRequest,
     ValidatedMatchResult,
 };
+use crate::plan_authority::QueryAuthority;
 use crate::plan_lowering::failure;
 use crate::query_execution_limits::{
     AnswerTransport, QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
 use crate::query_plan_exec::PlanAnswer;
-use crate::query_v2_prepared::QueryAuthority;
 use crate::session::backend::AnswerCancellation;
 use rand_core::{OsRng, RngCore};
 use std::sync::{
@@ -677,7 +677,7 @@ mod tests {
         MatchResult, MissingOrder, ReduceTerm, ReducedValue, Reduction, RowCardinality,
         SessionHandle, SortDirection, ThingKind, Window, validate_match_request,
     };
-    use crate::query_v2_prepared::QueryAuthority;
+    use crate::plan_authority::QueryAuthority;
     use crate::remote_signing::RemoteReplySigningKey;
     use crate::{InstalledRuntimeProjection, ProjectedAttributeValue};
 

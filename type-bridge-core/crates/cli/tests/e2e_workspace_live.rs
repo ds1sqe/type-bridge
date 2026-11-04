@@ -27,7 +27,8 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_orm::TxType;
-use type_bridge_orm::query_v2_prepared::{QueryAuthority, execute_prepared_local};
+use type_bridge_orm::plan_authority::QueryAuthority;
+use type_bridge_orm::query_v2_prepared::execute_prepared_local;
 use type_bridge_orm::session::backend::AnswerLimits;
 use type_bridge_orm::session::database::Database;
 use type_bridge_orm::{ConnectOptions, SecureConnectOptions, TlsMode};

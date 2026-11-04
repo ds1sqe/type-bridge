@@ -29,8 +29,8 @@ use crate::match_request::{
     BindingHandle, ComparisonOp, MissingOrder, PredicateHandle, RowCardinality, SessionHandle,
     SortDirection, ValidatedMatchRequest, Window,
 };
+use crate::plan_authority::QueryAuthority;
 use crate::plan_model_remote::prepare_remote_model_query_with_policy;
-use crate::query_v2_prepared::QueryAuthority;
 use crate::remote_signing::RemoteReplySigningKey;
 use crate::session::backend::AnswerCancellation;
 use crate::{QueryExecutionDeadline, QueryExecutionResourceLimits};
