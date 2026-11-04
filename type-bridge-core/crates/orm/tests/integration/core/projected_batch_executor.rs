@@ -3872,14 +3872,27 @@ async fn wide_sequential_and_full_match_puts_preserve_loop_answers_live() {
         let mut raw_answer_counts = Vec::new();
         for fields in &rows {
             let string_literal = |value: &AttributeValue| {
-                let AttributeValue::String(value) = value else { panic!("string fixture") };
+                let AttributeValue::String(value) = value else {
+                    panic!("string fixture")
+                };
                 serde_json::to_string(value).unwrap()
             };
-            let key_literal = string_literal(&fields.iter().find(|(name, _)| name == "partial-key").unwrap().1);
-            let insert_tags = fields.iter().filter(|(name, _)| name == "partial-tag")
+            let key_literal = string_literal(
+                &fields
+                    .iter()
+                    .find(|(name, _)| name == "partial-key")
+                    .unwrap()
+                    .1,
+            );
+            let insert_tags = fields
+                .iter()
+                .filter(|(name, _)| name == "partial-tag")
                 .map(|(_, value)| format!("$e has partial-tag {};", string_literal(value)))
-                .collect::<Vec<_>>().join(" ");
-            let query = format!("put $e isa partial-person, has partial-key {key_literal}; match $e isa partial-person, has partial-key {key_literal}; try {{ $e has partial-tag $old; }}; delete try {{ $old of $e; }}; insert {insert_tags} fetch {{ \"iid\": iid($e) }};");
+                .collect::<Vec<_>>()
+                .join(" ");
+            let query = format!(
+                "put $e isa partial-person, has partial-key {key_literal}; match $e isa partial-person, has partial-key {key_literal}; try {{ $e has partial-tag $old; }}; delete try {{ $old of $e; }}; insert {insert_tags} fetch {{ \"iid\": iid($e) }};"
+            );
             let QueryResult::Documents(documents) = tx.query(&query).await.unwrap() else {
                 panic!("raw Put documents");
             };

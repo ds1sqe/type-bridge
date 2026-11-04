@@ -935,7 +935,11 @@ async fn sync_schema_rejects_an_anchor_bound_cutover_before_user_typeql() {
         "{error}"
     );
     let queries = queries.lock().unwrap();
-    assert_eq!(queries.len(), 9, "native fence preserves its statement count");
+    assert_eq!(
+        queries.len(),
+        9,
+        "native fence preserves its statement count"
+    );
     assert!(
         queries
             .iter()
