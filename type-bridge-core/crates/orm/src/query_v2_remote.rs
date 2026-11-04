@@ -12,11 +12,9 @@
 //! engine, and encodes the typed outcome. Transport stays out: callers move
 //! the envelope bytes however they like.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
-use rand_core::OsRng;
+use crate::remote_signing::{Ed25519RemoteReplyVerifier, RemoteReplySigningKey};
 use serde::Serialize;
 
 use type_bridge_contract::codec::to_canonical_json_with_limits;
@@ -24,8 +22,7 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::limits::REMOTE_ENVELOPE_CODEC_LIMITS;
 use type_bridge_contract::query_plan::{QueryInvocation, QueryOperation, QueryPlanFingerprint};
 use type_bridge_contract::query_remote::{
-    RemoteCapabilities, RemoteCapabilitiesFingerprint, RemoteFieldValue, RemoteReplySignature,
-    RemoteReplySigner, RemoteReplySigningDigest, RemoteReplyVerifier, RemoteSigningPublicKey,
+    RemoteCapabilities, RemoteCapabilitiesFingerprint, RemoteFieldValue, RemoteSigningPublicKey,
     RemoteValue,
 };
 use type_bridge_contract::query_remote_v2::{
@@ -44,75 +41,6 @@ use crate::query_v2::{
     preflight_invocation_transport,
 };
 use crate::session::backend::{AnswerLimits, BoundedAnswerLimits};
-
-/// Process- or deployment-epoch Ed25519 key used only for V2 reply authentication.
-#[derive(Clone)]
-pub struct RemoteReplySigningKey(Arc<SigningKey>);
-
-impl RemoteReplySigningKey {
-    /// Generate one fresh signer for a standalone executor lifetime.
-    #[must_use]
-    pub fn generate() -> Self {
-        Self(Arc::new(SigningKey::generate(&mut OsRng)))
-    }
-
-    /// Construct a signer from an explicitly managed secret seed.
-    ///
-    /// This supports a shared execution epoch whose replay store and signer are
-    /// provisioned together. The secret is never exposed by `Debug` or errors.
-    #[must_use]
-    pub fn from_secret_bytes(secret: [u8; 32]) -> Self {
-        Self(Arc::new(SigningKey::from_bytes(&secret)))
-    }
-
-    /// Return the exact public key carried by the capability advertisement.
-    #[must_use]
-    pub fn public_key(&self) -> RemoteSigningPublicKey {
-        RemoteSigningPublicKey::from_bytes(self.0.verifying_key().to_bytes())
-    }
-}
-
-impl std::fmt::Debug for RemoteReplySigningKey {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RemoteReplySigningKey")
-            .field("public_key", &self.public_key())
-            .field("secret", &"<redacted>")
-            .finish()
-    }
-}
-
-impl RemoteReplySigner for RemoteReplySigningKey {
-    fn public_key(&self) -> RemoteSigningPublicKey {
-        self.public_key()
-    }
-
-    fn sign(&self, digest: &RemoteReplySigningDigest) -> RemoteReplySignature {
-        RemoteReplySignature::from_bytes(self.0.sign(digest.as_bytes()).to_bytes())
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-/// Stateless Ed25519 verifier for authenticated remote reply digests.
-pub struct Ed25519RemoteReplyVerifier;
-
-impl RemoteReplyVerifier for Ed25519RemoteReplyVerifier {
-    fn verify(
-        &self,
-        key: RemoteSigningPublicKey,
-        digest: &RemoteReplySigningDigest,
-        signature: &RemoteReplySignature,
-    ) -> bool {
-        let Ok(key) = VerifyingKey::from_bytes(key.as_bytes()) else {
-            return false;
-        };
-        key.verify_strict(
-            digest.as_bytes(),
-            &Signature::from_bytes(signature.as_bytes()),
-        )
-        .is_ok()
-    }
-}
 
 struct RemoteResponseWireMeterV2 {
     encoded_bytes: u64,

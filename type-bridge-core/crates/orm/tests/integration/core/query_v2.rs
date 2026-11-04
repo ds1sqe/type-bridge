@@ -32,7 +32,7 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2::{QueryRowValue, QueryV2Outcome, execute_validated_query};
-use type_bridge_orm::query_v2_remote::{Ed25519RemoteReplyVerifier, RemoteReplySigningKey};
+use type_bridge_orm::remote_signing::{Ed25519RemoteReplyVerifier, RemoteReplySigningKey};
 use type_bridge_orm::session::backend::{AnswerCancellation, AnswerLimits, BoundedAnswerLimits};
 use type_bridge_orm::{Database, TxType};
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};

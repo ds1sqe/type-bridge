@@ -6723,7 +6723,7 @@ mod tests {
     use type_bridge_core_lib::ast::{
         TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
     };
-    use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
+    use type_bridge_orm::remote_signing::RemoteReplySigningKey;
     use type_bridge_orm::session::backend::{
         AnswerConsumer, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader, BoundedAnswerStats,
         BoxFuture, DriverBackend, QueryResult, TransactionOps,
@@ -13939,7 +13939,7 @@ mod tests {
             &request,
             &fixture.contract,
             fixture.signer.public_key(),
-            &type_bridge_orm::query_v2_remote::Ed25519RemoteReplyVerifier,
+            &type_bridge_orm::remote_signing::Ed25519RemoteReplyVerifier,
         )
         .unwrap();
         assert!(verified.committed());

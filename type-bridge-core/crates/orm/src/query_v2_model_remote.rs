@@ -229,7 +229,7 @@ impl ClaimedRemoteModelReplyV2 {
             &self.prepared.staged,
             &self.state.advertisement,
             self.state.advertisement.reply_key(),
-            &crate::query_v2_remote::Ed25519RemoteReplyVerifier,
+            &crate::remote_signing::Ed25519RemoteReplyVerifier,
         )
         .map_err(|error| annotate_refusal(error, self.state.wanted, self.state.held))?;
         check_reply_budget(self.state.deadline, cancellation, false)?;
@@ -678,7 +678,7 @@ mod tests {
         SessionHandle, SortDirection, ThingKind, Window, validate_match_request,
     };
     use crate::query_v2_prepared::QueryAuthority;
-    use crate::query_v2_remote::RemoteReplySigningKey;
+    use crate::remote_signing::RemoteReplySigningKey;
     use crate::{InstalledRuntimeProjection, ProjectedAttributeValue};
 
     fn native_capabilities() -> QueryCapabilitySet {

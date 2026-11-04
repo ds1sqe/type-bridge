@@ -590,7 +590,7 @@ async fn production_binary_serves_staged_and_removed_routes() {
         StagedAnswerV3, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3,
         VerifiedStagedReplyV3,
     };
-    use type_bridge_orm::query_v2_remote::Ed25519RemoteReplyVerifier;
+    use type_bridge_orm::remote_signing::Ed25519RemoteReplyVerifier;
     use type_bridge_schema::{build_schema_authority, encode_schema_authority};
 
     let name = staged_live::live_database::name("binary");

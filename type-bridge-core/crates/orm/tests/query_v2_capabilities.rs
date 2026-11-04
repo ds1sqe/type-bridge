@@ -33,9 +33,10 @@ use type_bridge_orm::query_v2_prepared::{
     QueryAuthority, decode_remote_capabilities, prepare_remote_query_v2,
 };
 use type_bridge_orm::query_v2_remote::{
-    RemoteReplySigningKey, decode_remote_outcome_v2, encode_remote_request_v2,
-    encode_remote_request_v2_at, preflight_remote_request_v2, preflight_remote_request_v2_at,
+    decode_remote_outcome_v2, encode_remote_request_v2, encode_remote_request_v2_at,
+    preflight_remote_request_v2, preflight_remote_request_v2_at,
 };
+use type_bridge_orm::remote_signing::RemoteReplySigningKey;
 use type_bridge_orm::session::backend::AnswerLimits;
 use type_bridge_query::MigrationAssertionValidationContext;
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};

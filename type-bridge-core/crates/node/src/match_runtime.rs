@@ -2974,7 +2974,7 @@ mod tests {
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
     use type_bridge_orm::ProxyQueryConnection;
     use type_bridge_orm::query_v2_prepared::QueryAuthority;
-    use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
+    use type_bridge_orm::remote_signing::RemoteReplySigningKey;
     use type_bridge_orm::session::backend::{
         AnswerCancellation, BoundedAnswerLimits, BoundedAnswerReader, BoxFuture, DriverBackend,
         QueryResult, TransactionOps, TxType,

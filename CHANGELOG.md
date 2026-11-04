@@ -200,6 +200,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust `query_v2_remote::{RemoteReplySigningKey, Ed25519RemoteReplyVerifier}`
+  move to `remote_signing::{RemoteReplySigningKey, Ed25519RemoteReplyVerifier}`;
+  staged reply authentication no longer depends on the V2 executor.
+
 - Python and Rust `insert_many`, `put_many`, `update_many`, and
   `delete_many_returning`, and Node `insertMany`, `putMany`, `updateMany`,
   and `deleteManyReturning`, now return `BatchWriteResult`. Read `items`

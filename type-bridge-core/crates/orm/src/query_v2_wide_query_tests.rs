@@ -31,7 +31,7 @@ use crate::match_request::{
 };
 use crate::query_v2_model_remote::prepare_remote_model_query_with_policy;
 use crate::query_v2_prepared::QueryAuthority;
-use crate::query_v2_remote::RemoteReplySigningKey;
+use crate::remote_signing::RemoteReplySigningKey;
 use crate::session::backend::AnswerCancellation;
 use crate::{QueryExecutionDeadline, QueryExecutionResourceLimits};
 

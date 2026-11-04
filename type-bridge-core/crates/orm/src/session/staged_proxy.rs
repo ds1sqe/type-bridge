@@ -18,7 +18,7 @@ use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use super::backend::{AnswerCancellation, BoxFuture};
 use super::proxy_connection::ProxyHttpTransport;
 use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
-use crate::query_v2_remote::Ed25519RemoteReplyVerifier;
+use crate::remote_signing::Ed25519RemoteReplyVerifier;
 
 /// Caller-owned exchange of one staged request for its exact reply bytes.
 pub type StagedExchangeFn = Arc<
@@ -310,7 +310,7 @@ mod tests {
                 &registry,
             )
             .unwrap();
-        let signer = crate::query_v2_remote::RemoteReplySigningKey::from_secret_bytes([0x62; 32]);
+        let signer = crate::remote_signing::RemoteReplySigningKey::from_secret_bytes([0x62; 32]);
         let advertisement = RemoteCapabilities::new(
             type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary(),
             RemoteExecutorBinding::new("invalid-match-limits", "epoch-00000000001").unwrap(),

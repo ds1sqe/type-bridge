@@ -20,8 +20,8 @@ use type_bridge_orm::query_v2_prepared::{
     acquire_live_authority_rebuild_permit, verify_managed_query_control_scope,
 };
 #[cfg(test)]
-use type_bridge_orm::query_v2_remote::Ed25519RemoteReplyVerifier;
-use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
+use type_bridge_orm::remote_signing::Ed25519RemoteReplyVerifier;
+use type_bridge_orm::remote_signing::RemoteReplySigningKey;
 use type_bridge_orm::session::backend::{AnswerLimits, MAX_QUERY_V2_SCHEMA_FENCE_DURATION};
 use type_bridge_orm::session::database::Database;
 use type_bridge_schema::ManagedDeltaContext;

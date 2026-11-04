@@ -29,7 +29,7 @@ use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_orm::TxType;
-use type_bridge_orm::query_v2_remote::Ed25519RemoteReplyVerifier;
+use type_bridge_orm::remote_signing::Ed25519RemoteReplyVerifier;
 use type_bridge_orm::session::staged::TransactionOptions;
 
 use staged_live::{

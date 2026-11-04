@@ -729,7 +729,7 @@ mod tests {
     use type_bridge_orm::OrmError;
     use type_bridge_orm::match_request::CapabilitySet as MatchCapabilitySet;
     use type_bridge_orm::match_request::SessionHandle;
-    use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
+    use type_bridge_orm::remote_signing::RemoteReplySigningKey;
     use type_bridge_orm::session::backend::{
         BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType,
     };

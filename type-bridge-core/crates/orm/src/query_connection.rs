@@ -1085,7 +1085,7 @@ mod policy_tests {
 
     struct WriteStackTransport {
         advertisement: RemoteCapabilities,
-        signer: crate::query_v2_remote::RemoteReplySigningKey,
+        signer: crate::remote_signing::RemoteReplySigningKey,
         mode: u8,
         seen: Arc<Mutex<Vec<Vec<u8>>>>,
         entered: Arc<tokio::sync::Notify>,
@@ -1149,7 +1149,7 @@ mod policy_tests {
         }
     }
     fn write_stack_fixture(mode: u8) -> (ProxyQueryConnection, Arc<WriteStackTransport>) {
-        let signer = crate::query_v2_remote::RemoteReplySigningKey::from_secret_bytes([0x47; 32]);
+        let signer = crate::remote_signing::RemoteReplySigningKey::from_secret_bytes([0x47; 32]);
         let mut caps = type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
         for name in [
             type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,

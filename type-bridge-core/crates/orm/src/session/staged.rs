@@ -2787,7 +2787,7 @@ mod tests {
             capabilities.insert(type_bridge_contract::capability::CapabilityId::new(name).unwrap());
         }
         let signer =
-            Arc::new(crate::query_v2_remote::RemoteReplySigningKey::from_secret_bytes([0x45; 32]));
+            Arc::new(crate::remote_signing::RemoteReplySigningKey::from_secret_bytes([0x45; 32]));
         let advertisement = RemoteCapabilities::new(
             capabilities,
             RemoteExecutorBinding::new("proxy-match-tests", "epoch-00000000001").unwrap(),
@@ -3542,7 +3542,7 @@ mod tests {
                     .insert(type_bridge_contract::capability::CapabilityId::new(cap).unwrap());
             }
             let signer = Arc::new(
-                crate::query_v2_remote::RemoteReplySigningKey::from_secret_bytes([0x46; 32]),
+                crate::remote_signing::RemoteReplySigningKey::from_secret_bytes([0x46; 32]),
             );
             let advertisement = RemoteCapabilities::new(
                 capabilities,
