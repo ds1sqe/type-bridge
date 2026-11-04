@@ -466,7 +466,108 @@ async fn wide_manager_proxy_preserves_plural_roots_and_rolls_back_last_piece() {
         )]
     );
     assert_transaction(&trace(&path)[before..], count, false);
+    if std::env::var("TYPE_BRIDGE_WIDE_BENCHMARK").as_deref() == Ok("1") {
+        benchmark_count(&proxy, &installed, &plans, &path).await;
+    }
     drop(server);
     db.delete_database().await.unwrap();
     db.close().unwrap();
+}
+
+async fn benchmark_count(
+    proxy: &ProxyQueryConnection,
+    installed: &InstalledRuntimeProjection,
+    plans: &ManagerPlans,
+    path: &std::path::Path,
+) {
+    use crate::plan_builders::manager::{ManagerRead, ReadTerminal};
+    use crate::projected_crud::ProjectedCrudInvocationControl;
+    use crate::session::staged::{TransactionKind, TransactionOptions};
+    use type_bridge_contract::query_remote::RemoteValue;
+    use type_bridge_contract::query_remote_v3::{StagedAnswerV3, StagedPlanV3};
+
+    let manager = crate::ProjectedCrudExecutor::new(installed);
+    let type_id = TypeId::new(TypeKind::Entity, "proxy-person").unwrap();
+    let ManagerRead::Scalar { plan } = plans
+        .read(
+            "proxy-person",
+            true,
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            ReadTerminal::Count,
+        )
+        .unwrap()
+    else {
+        panic!("one manager count plan")
+    };
+    let entries = vec![
+        StagedPlanV3::new(plan.local(), vec![], plans.authority().unwrap().declared()).unwrap(),
+    ];
+    let schema = Arc::new(plans.authority().unwrap().declared().clone());
+    let resources = QueryExecutionResourceLimits::default();
+    let cancellation = AnswerCancellation::default();
+    let before = trace(path).len();
+    let mut manager_times = Vec::new();
+    let mut manual_times = Vec::new();
+    for index in 0..22 {
+        let start = Instant::now();
+        let count = manager
+            .count_on_target(
+                crate::QueryTarget::Proxy(proxy),
+                &type_id,
+                ProjectedCrudInvocationControl::capture(resources, cancellation.clone()),
+            )
+            .await
+            .unwrap();
+        let manager_elapsed = start.elapsed();
+        assert_eq!(count, 2);
+        let start = Instant::now();
+        let mut transaction = proxy
+            .staged_transaction(
+                TransactionOptions::default().with_kind(TransactionKind::Read),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        let pending = transaction
+            .stage_plan_stack(entries.clone(), Arc::clone(&schema))
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let answer = pending[0]
+            .get()
+            .unwrap()
+            .to_staged_v3(plan.local())
+            .unwrap();
+        let manual_elapsed = start.elapsed();
+        assert_eq!(
+            answer,
+            StagedAnswerV3::Rows {
+                rows: vec![vec![RemoteValue::Value {
+                    value: CanonicalValue::Long(2)
+                }]]
+            }
+        );
+        if index >= 2 {
+            manager_times.push(manager_elapsed.as_secs_f64() * 1000.0);
+            manual_times.push(manual_elapsed.as_secs_f64() * 1000.0);
+        }
+    }
+    let events = trace(path);
+    assert_eq!(events.len() - before, 44 * 3);
+    for group in events[before..].chunks_exact(3) {
+        assert_transaction(group, 1, true);
+        assert_eq!(group[1]["writes"], false);
+        assert_eq!(group[2]["kind"], "read");
+    }
+    for (name, mut times) in [("manager", manager_times), ("manual", manual_times)] {
+        times.sort_by(f64::total_cmp);
+        println!(
+            "proxy-count bench {name}: n=20 median_ms={:.3} mean_ms={:.3}; oneHTTP/oneplan/oneTX",
+            (times[9] + times[10]) / 2.0,
+            times.iter().sum::<f64>() / 20.0
+        );
+    }
 }
