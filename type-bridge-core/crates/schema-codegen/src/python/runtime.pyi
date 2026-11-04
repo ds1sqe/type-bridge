@@ -4,6 +4,7 @@ from enum import Enum, StrEnum
 from typing import Any, ClassVar, Literal, Never, TypedDict, Unpack, overload
 
 from type_bridge_core import (
+    ProxyConnection,
     PyRuntimeProjection,
     QueryCancellation,
     QueryExecutionResourceLimits,
@@ -86,7 +87,7 @@ class ModelBase:
     @classmethod
     def manager[ModelT: ModelBase](
         cls: type[ModelT],
-        connection: Database | TransactionContext,
+        connection: Database | TransactionContext | ProxyConnection,
     ) -> ProjectedModelManager[ModelT]: ...
     @overload
     @classmethod

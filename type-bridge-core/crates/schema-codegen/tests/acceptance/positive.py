@@ -7,6 +7,7 @@ from typing import assert_type
 from generated_v2 import (
     Actor,
     Aliases,
+    BatchWriteResult,
     BoundVar,
     Container,
     Counter,
@@ -54,7 +55,6 @@ from generated_v2 import (
     ValDecimal,
     ValDouble,
     ValDuration,
-    BatchWriteResult,
     WriteResult,
     aggregate,
     connect_proxy,
@@ -66,6 +66,11 @@ from type_bridge_core import Pending
 from type_bridge_core import Transaction as StagedTransaction
 
 from type_bridge.session import Database
+
+
+def proxy_managers(proxy: ProxyConnection) -> None:
+    assert_type(Person.manager(proxy), ProjectedModelManager[Person])
+    assert_type(Employment.manager(proxy), ProjectedModelManager[Employment])
 
 
 @dataclass(frozen=True, slots=True)

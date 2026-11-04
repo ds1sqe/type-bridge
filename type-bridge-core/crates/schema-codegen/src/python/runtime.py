@@ -37,6 +37,7 @@ from type_bridge.write_result import BatchWriteResult, WriteResult
 
 if TYPE_CHECKING:
     from type_bridge_core import (
+        ProxyConnection,
         PyProjectedManagerFilter,
         PyProjectedModelManager,
         PyRuntimeProjection,
@@ -237,7 +238,7 @@ class ModelBase:
     @classmethod
     def manager(
         cls,
-        connection: Database | TransactionContext,
+        connection: Database | TransactionContext | ProxyConnection,
     ) -> ProjectedModelManager[Self]:
         from type_bridge._runtime_projection import projected_manager_for
 

@@ -76,6 +76,8 @@ class _GeneratedPerson(Protocol):
     score: _IntegerValue
     aliases: list[_StringValue] | tuple[_StringValue, ...]
 
+    def attach_runtime_iid(self, iid: str) -> None: ...
+
 
 # The answer policy every caller-exchanged session in this module runs under.
 _REMOTE_RESOURCES = QueryExecutionResourceLimits(
@@ -3383,6 +3385,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     with pytest.raises(ValueError, match="require an attached TypeDB IID"):
         person_manager.update(detached_update)
     assert detached_update.iid is None
+    assert batch_people[0].iid is not None
     detached_update.attach_runtime_iid(batch_people[0].iid)
     assert person_manager.update(detached_update).item is detached_update
     assert detached_update.iid == batch_people[0].iid
@@ -3533,6 +3536,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     with pytest.raises(ValueError, match="require an attached TypeDB IID"):
         person_manager.delete(detached_delete)
     assert detached_delete.iid is None
+    assert detached_delete_source.iid is not None
     detached_delete.attach_runtime_iid(detached_delete_source.iid)
     assert person_manager.delete(detached_delete) is detached_delete
     assert detached_delete.iid == detached_delete_source.iid
@@ -3727,6 +3731,222 @@ def test_generated_single_delete_by_iid_live(
         assert person_manager.get_by_iid(staged.iid) is not None
     assert person_manager.get_by_iid(staged.iid) is None
     assert membership_manager.get_by_iid(staged_membership.iid) is None
+
+
+def test_generated_managers_share_direct_and_http_proxy_terminals(
+    clean_db: Database,
+    generated_package: ModuleType,
+    tmp_path: Path,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    workers = [
+        _make_generated_person(generated, f"manager-seed-{index}", index) for index in range(2)
+    ]
+    generated.Person.manager(clean_db).insert_many(workers)
+    players = [
+        _make_generated_person(generated, worker.identifier.value, index)
+        for index, worker in enumerate(workers)
+    ]
+    trace = tmp_path / "manager-events.jsonl"
+
+    def program(connection: Any, *, remote: bool) -> list[dict[str, int]]:
+        def exercise(model: Any, make: Callable[[str, str], Any]) -> dict[str, int]:
+            manager = model.manager(connection)
+            calls = 0
+
+            def terminal(call: Callable[[], Any], *, writes: bool = False) -> Any:
+                nonlocal calls
+                before = trace.read_text().splitlines() if remote else []
+                result = call()
+                calls += 1
+                if remote:
+                    events = [
+                        json.loads(line) for line in trace.read_text().splitlines()[len(before) :]
+                    ]
+                    assert [event["event"] for event in events] == ["request", "plan", "commit"]
+                    assert len({event["id"] for event in events}) == 1
+                    assert events[1]["index"] == 0
+                    assert events[1]["writes"] is writes
+                    assert events[1]["result_refs"] == 0
+                    assert events[2]["committed"] is True
+                    assert events[2]["kind"] == ("write" if writes else "read")
+                    assert events[2]["code"] == "ok"
+                return result
+
+            baseline = len(terminal(manager.all))
+            assert terminal(manager.count) == baseline
+            assert terminal(manager.exists) is (baseline != 0)
+            assert terminal(lambda: manager.get_by_iid("0xffff")) is None
+            canonical = manager.where()
+            assert len(terminal(canonical.all)) == baseline
+            assert terminal(canonical.count) == baseline
+            assert terminal(canonical.exists) is (baseline != 0)
+            absent = generated.Identifier("manager-absent")
+            assert (
+                terminal(
+                    manager.where(
+                        model.identifier, generated.ProjectedManagerComparison.EQ, absent
+                    ).first
+                )
+                is None
+            )
+            compatibility = manager.filter()
+            assert len(terminal(compatibility.all)) == baseline
+            assert terminal(compatibility.count) == baseline
+            assert terminal(compatibility.exists) is (baseline != 0)
+            assert terminal(manager.filter(identifier=absent).first) is None
+
+            def single(result: Any, version: str) -> Any:
+                assert result.count == 1
+                assert len(result.items) == 1
+                assert result.item is result.items[0]
+                assert type(result.item) is model
+                assert result.item.nickname.value == version
+                return result.item
+
+            inserted = single(
+                terminal(lambda: manager.insert(make("a", "insert")), writes=True), "insert"
+            )
+            first_iid = inserted.iid
+            put = single(terminal(lambda: manager.put(make("a", "put")), writes=True), "put")
+            assert put.iid == first_iid
+            put.nickname = generated.Nickname("update")
+            updated = single(terminal(lambda: manager.update(put), writes=True), "update")
+            assert updated.iid == first_iid
+            assert terminal(lambda: manager.delete(updated), writes=True) is updated
+
+            many = terminal(
+                lambda: manager.insert_many([make(key, "many-insert") for key in ("b", "c", "d")]),
+                writes=True,
+            )
+            assert many.count == 3
+            assert sorted(many.input_indexes) == [0, 1, 2]
+            iids = {
+                index: item.iid for item, index in zip(many.items, many.input_indexes, strict=True)
+            }
+            assert all(item.nickname.value == "many-insert" for item in many.items)
+            put_many = terminal(
+                lambda: manager.put_many([make(key, "many-put") for key in ("b", "c", "d")]),
+                writes=True,
+            )
+            assert put_many.count == 3
+            assert sorted(put_many.input_indexes) == [0, 1, 2]
+            for item, index in zip(put_many.items, put_many.input_indexes, strict=True):
+                assert item.iid == iids[index]
+                assert item.nickname.value == "many-put"
+                item.nickname = generated.Nickname("many-update")
+            update_many = terminal(lambda: manager.update_many(put_many.items), writes=True)
+            assert update_many.count == 3
+            assert sorted(update_many.input_indexes) == [0, 1, 2]
+            by_index = dict(zip(update_many.input_indexes, update_many.items, strict=True))
+            for index, item in by_index.items():
+                assert item.iid == iids[index]
+                assert item.nickname.value == "many-update"
+            assert terminal(lambda: manager.delete_many([by_index[0]]), writes=True) == [
+                by_index[0]
+            ]
+            by_index[1].nickname = generated.Nickname("caller-only")
+            deleted = single(
+                terminal(lambda: manager.delete_returning(by_index[1]), writes=True), "many-update"
+            )
+            assert deleted.iid == iids[1]
+            assert deleted.deleted
+            by_index[2].nickname = generated.Nickname("caller-only")
+            deleted_many = terminal(
+                lambda: manager.delete_many_returning([by_index[2]]), writes=True
+            )
+            assert deleted_many.count == 1
+            assert list(deleted_many.input_indexes) == [0]
+            assert deleted_many.items[0].iid == iids[2]
+            assert deleted_many.items[0].nickname.value == "many-update"
+            assert deleted_many.items[0].deleted
+            assert calls == 22
+            return {"baseline": baseline, "terminals": calls, "batch_count": 3, "snapshots": 2}
+
+        return [
+            exercise(
+                generated.Person,
+                lambda key, version: _make_generated_person(
+                    generated, f"manager-person-{key}", 7, nickname=version
+                ),
+            ),
+            exercise(
+                generated.NetworkLink,
+                lambda key, version: generated.NetworkLink(
+                    identifier=generated.Identifier(f"manager-link-{key}"),
+                    nickname=generated.Nickname(version),
+                    origin=players[0],
+                    destination=players[1],
+                    participant=players,
+                ),
+            ),
+        ]
+
+    direct = program(clean_db, remote=False)
+    assert generated.__file__ is not None
+    authority = (
+        Path(generated.__file__)
+        .resolve()
+        .parent.parent.joinpath("schema-authority.json")
+        .read_bytes()
+    )
+    port = _free_port()
+    supplied_server = os.environ.get("TYPE_BRIDGE_V2_SMOKE_SERVER")
+    command = (
+        [supplied_server]
+        if supplied_server
+        else [
+            "cargo",
+            "run",
+            "--quiet",
+            "-p",
+            "type-bridge-server",
+            "--example",
+            "staged_smoke_server",
+        ]
+    )
+    with (tmp_path / "manager-server.log").open("w+") as server_log:
+        server = subprocess.Popen(
+            command,
+            cwd=ROOT if supplied_server else CORE,
+            env={
+                **os.environ,
+                "SMOKE_TYPEDB_ADDRESS": clean_db.address,
+                "SMOKE_TYPEDB_USERNAME": clean_db.username or "admin",
+                "SMOKE_TYPEDB_PASSWORD": clean_db.password or "password",
+                "SMOKE_TYPEDB_HTTP_PORT": str(clean_db.http_port),
+                "SMOKE_DATABASE": clean_db.database_name,
+                "SMOKE_AUTHORITY_B64": base64.b64encode(authority).decode(),
+                "SMOKE_PORT": str(port),
+                "SMOKE_ALLOW_STAGED_WRITES": "true",
+                "SMOKE_TRACE_FILE": str(trace),
+            },
+            stdout=server_log,
+            stderr=server_log,
+        )
+        try:
+            _wait_for_port(port, server, timeout=300)
+            proxy = generated.connect_proxy(f"http://127.0.0.1:{port}")
+            assert program(proxy, remote=True) == direct
+            events = [json.loads(line) for line in trace.read_text().splitlines()]
+            assert sum(event["event"] == "request" for event in events) == 44
+            assert (
+                sum(event["event"] == "commit" and event["kind"] == "write" for event in events)
+                == 20
+            )
+        except BaseException:
+            server_log.seek(0)
+            print(f"manager server status={server.poll()}: {server_log.read()}")
+            raise
+        finally:
+            server.terminate()
+            try:
+                server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait(timeout=10)
 
 
 def test_generated_projection_round_trips_live_models(
