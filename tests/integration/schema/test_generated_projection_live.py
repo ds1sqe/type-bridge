@@ -3752,6 +3752,12 @@ def test_generated_managers_share_direct_and_http_proxy_terminals(
     trace = tmp_path / "manager-events.jsonl"
 
     def program(connection: Any, *, remote: bool) -> list[dict[str, int]]:
+        before_empty = trace.read_text() if remote else ""
+        empty = generated.Membership.manager(connection).put_many([])
+        assert empty.count == 0 and empty.items == [] and list(empty.input_indexes) == []
+        if remote:
+            assert trace.read_text() == before_empty
+
         def exercise(model: Any, make: Callable[[str, str], Any]) -> dict[str, int]:
             manager = model.manager(connection)
             calls = 0
@@ -4116,7 +4122,10 @@ def test_generated_projection_round_trips_live_models(
 
     counter_manager = generated.Counter.manager(clean_db)
     detached_counter = generated.Counter(counter_value=generated.CounterValue(42))
-    with pytest.raises(ValueError, match="attached IID or projected key"):
+    with pytest.raises(
+        ValueError,
+        match="^generated manager update and delete require an attached TypeDB IID$",
+    ):
         counter_manager.delete(detached_counter)
     assert counter_manager.insert(detached_counter).item is detached_counter
     assert detached_counter.iid
