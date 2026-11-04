@@ -200,6 +200,9 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust `query_v2::QueryV2ExecutionError` moves to
+  `error::PlanExecutionError`, shared by native plan execution and hydration.
+
 - Rust staged model-read APIs drop their obsolete V2 names:
   `RemoteModelQueryV2Error` → `RemoteModelQueryError`,
   `PendingRemoteModelQueryV2` → `PendingRemoteModelQuery`,

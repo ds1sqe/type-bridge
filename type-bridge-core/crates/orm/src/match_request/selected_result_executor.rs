@@ -21,11 +21,11 @@ use super::result_validation::validated_match_result_from_plan_stack;
 use super::validation::ValidatedMatchRequest;
 use crate::_registry::DescriptorRegistry;
 use crate::error::OrmError;
+#[cfg(test)]
+use crate::error::PlanExecutionError;
 use crate::query_execution_limits::{
     AnswerTransport, QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
-#[cfg(test)]
-use crate::query_v2::QueryV2ExecutionError;
 use crate::session::backend::{AnswerCancellation, BoundedAnswerLimits, TxType};
 use crate::session::{Database, OwnedTransaction as Transaction, TransactionContext};
 
@@ -818,10 +818,10 @@ fn plan_execution_error(error: OrmError) -> OrmError {
 }
 
 #[cfg(test)]
-fn compatibility_execution_error(error: QueryV2ExecutionError) -> OrmError {
+fn compatibility_execution_error(error: PlanExecutionError) -> OrmError {
     match error {
-        QueryV2ExecutionError::Provider(error) => provider_statement_error(error),
-        QueryV2ExecutionError::Validation(diagnostic) => {
+        PlanExecutionError::Provider(error) => provider_statement_error(error),
+        PlanExecutionError::Validation(diagnostic) => {
             released_plan_execution_error(&diagnostic).into()
         }
     }
@@ -1611,8 +1611,7 @@ mod tests {
             message: &str,
             path: Vec<MatchErrorPathSegment>,
         ) {
-            let error =
-                compatibility_execution_error(QueryV2ExecutionError::Validation(diagnostic));
+            let error = compatibility_execution_error(PlanExecutionError::Validation(diagnostic));
             let error = match_error(&error);
             assert_eq!(error.category(), category);
             assert_eq!(error.code().as_str(), code);

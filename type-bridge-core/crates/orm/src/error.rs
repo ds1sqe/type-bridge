@@ -187,3 +187,14 @@ impl OrmError {
         }
     }
 }
+
+/// Failure executing one lowered invocation.
+#[derive(Debug, thiserror::Error)]
+pub enum PlanExecutionError {
+    /// The provider call failed.
+    #[error("query execution provider call failed: {0}")]
+    Provider(crate::error::OrmError),
+    /// Lowering, preflight, or result-evidence validation failed.
+    #[error("query execution validation failed: {0}")]
+    Validation(type_bridge_contract::diagnostic::Diagnostic),
+}

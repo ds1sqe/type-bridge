@@ -18,7 +18,8 @@ use type_bridge_query::{
     DocumentColumnShape, DocumentSchema, OutputSchema, RowSchema, ValidatedQuery,
 };
 
-pub(crate) use crate::plan_lowering::{ast, failure};
+use crate::error::PlanExecutionError;
+use crate::plan_lowering::{ast, failure};
 use crate::plan_lowering::{
     given_rows_spec, local_variable, lower_functions, lower_scoped_patterns, reducer_keyword,
 };
@@ -561,16 +562,16 @@ fn query_v2_provider_resource_error(
     .into()
 }
 
-fn query_v2_result_validation_error(diagnostic: Diagnostic) -> QueryV2ExecutionError {
+fn query_v2_result_validation_error(diagnostic: Diagnostic) -> PlanExecutionError {
     if diagnostic.category() == DiagnosticCategory::ResourceLimit
         && diagnostic.code().as_str() == "query_v2_document_member_limit"
     {
-        return QueryV2ExecutionError::Provider(query_v2_provider_resource_error(
+        return PlanExecutionError::Provider(query_v2_provider_resource_error(
             "query_v2_document_member_limit",
             diagnostic.message().to_owned(),
         ));
     }
-    QueryV2ExecutionError::Validation(diagnostic)
+    PlanExecutionError::Validation(diagnostic)
 }
 
 /// Return the output projection columns of one validated plan.
@@ -663,17 +664,6 @@ pub enum QueryV2Outcome {
     Exists(bool),
 }
 
-/// Failure executing one lowered invocation.
-#[derive(Debug, thiserror::Error)]
-pub enum QueryV2ExecutionError {
-    /// The provider call failed.
-    #[error("query execution provider call failed: {0}")]
-    Provider(crate::error::OrmError),
-    /// Lowering, preflight, or result-evidence validation failed.
-    #[error("query execution validation failed: {0}")]
-    Validation(Diagnostic),
-}
-
 /// Internal observer invoked after evidence validation and before retention.
 pub(crate) trait QueryV2ValidatedItemObserver: Send {
     fn observe_row(&mut self, row: &QueryResultRow) -> Result<(), Diagnostic>;
@@ -692,12 +682,12 @@ pub async fn execute_validated_query(
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
     limits: crate::session::backend::AnswerLimits,
-) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
+) -> Result<QueryV2Outcome, PlanExecutionError> {
     preflight_invocation_transport(validated.plan(), invocation)
-        .map_err(QueryV2ExecutionError::Validation)?;
+        .map_err(PlanExecutionError::Validation)?;
     let transaction = transaction
         .provider_mut()
-        .map_err(QueryV2ExecutionError::Provider)?;
+        .map_err(PlanExecutionError::Provider)?;
     let mut provider = crate::migration_assertion::TransactionAssertionProvider { transaction };
     execute_with_provider(&mut provider, validated, invocation, limits).await
 }
@@ -709,7 +699,7 @@ pub(crate) async fn execute_with_provider<
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
     limits: crate::session::backend::AnswerLimits,
-) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
+) -> Result<QueryV2Outcome, PlanExecutionError> {
     execute_with_provider_observer(provider, validated, invocation, limits, None).await
 }
 
@@ -721,7 +711,7 @@ pub(crate) async fn execute_with_provider_observer<
     invocation: &QueryInvocation,
     limits: crate::session::backend::AnswerLimits,
     mut observer: Option<&mut dyn QueryV2ValidatedItemObserver>,
-) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
+) -> Result<QueryV2Outcome, PlanExecutionError> {
     let mut semantic_limits = limits;
     semantic_limits.max_collection_members = semantic_limits
         .max_collection_members
@@ -738,7 +728,7 @@ pub(crate) async fn execute_with_provider_observer<
         Some(semantic_limits.max_collection_members),
         Some(provider_item_sentinel),
     )
-    .map_err(QueryV2ExecutionError::Validation)?;
+    .map_err(PlanExecutionError::Validation)?;
     let allow_input_echo = lowered.given_rows().is_some();
 
     // The statement itself is finite at the semantic item/list sentinels, and
@@ -754,7 +744,7 @@ pub(crate) async fn execute_with_provider_observer<
     let mut meter = crate::answer_meter::AnswerMeter::new(&semantic_limits.answer);
     let max_collection_members = semantic_limits.max_collection_members;
     let mut collection_members = 0_u64;
-    let mut deferred_error: Option<QueryV2ExecutionError> = None;
+    let mut deferred_error: Option<PlanExecutionError> = None;
     let mut consumer = |item| {
         // Once a deterministic first failure is known, keep draining the
         // finite statement without parsing or retaining any later evidence.
@@ -763,7 +753,7 @@ pub(crate) async fn execute_with_provider_observer<
         }
 
         if let Err(error) = meter.accept(&item) {
-            deferred_error = Some(QueryV2ExecutionError::Provider(error));
+            deferred_error = Some(PlanExecutionError::Provider(error));
             return Ok(crate::session::backend::AnswerControl::Continue);
         }
 
@@ -817,7 +807,7 @@ pub(crate) async fn execute_with_provider_observer<
     let provider_result = match lowered.given_rows() {
         Some(spec) => {
             if !provider.supports_given_rows() {
-                return Err(QueryV2ExecutionError::Validation(failure(
+                return Err(PlanExecutionError::Validation(failure(
                     DiagnosticCategory::InvalidContract,
                     "query_v2_given_transport_unsupported",
                     "this invocation requires the native given transport capability",
@@ -844,9 +834,9 @@ pub(crate) async fn execute_with_provider_observer<
     if let Some(error) = deferred_error {
         return Err(error);
     }
-    let stats = provider_result.map_err(QueryV2ExecutionError::Provider)?;
+    let stats = provider_result.map_err(PlanExecutionError::Provider)?;
     if stats.stopped_early {
-        return Err(QueryV2ExecutionError::Validation(failure(
+        return Err(PlanExecutionError::Validation(failure(
             DiagnosticCategory::InvalidContract,
             "query_v2_provider_stream_not_exhausted",
             "provider stopped before the bounded query statement reached its terminal frame",
@@ -1769,7 +1759,7 @@ mod tests {
         let error = execute_with_provider(&mut provider, &validated, &invocation, limits())
             .await
             .expect_err("two emitted identity branches exceed the one-node validation budget");
-        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+        let PlanExecutionError::Validation(diagnostic) = error else {
             panic!("lowering must reject before the provider seam");
         };
         assert_eq!(
@@ -1930,7 +1920,7 @@ mod tests {
         )
         .await
         .expect_err("the sentinel row proves the semantic item budget was exceeded");
-        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+        let PlanExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
             panic!("the released provider resource-error surface is preserved");
         };
         assert_eq!(
@@ -1973,7 +1963,7 @@ mod tests {
         )
         .await
         .expect_err("the first semantic failure wins over a later drain failure");
-        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+        let PlanExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
             panic!("the item-budget resource error must not be overwritten");
         };
         assert_eq!(error.code().as_str(), "processed_item_limit");
@@ -2009,7 +1999,7 @@ mod tests {
         )
         .await
         .expect_err("the first document exceeds the semantic byte budget");
-        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+        let PlanExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
             panic!("the released provider resource-error surface is preserved");
         };
         assert_eq!(error.code().as_str(), "response_byte_limit");
@@ -2045,7 +2035,7 @@ mod tests {
         )
         .await
         .expect_err("raw ignored provider data must still meet the finite provider ceiling");
-        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+        let PlanExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
             panic!("provider byte ceiling retains the stable resource surface");
         };
         assert_eq!(error.code().as_str(), "response_byte_limit");
@@ -2199,7 +2189,7 @@ mod tests {
         let error = execute_with_provider(&mut provider, &validated, &invocation, limits())
             .await
             .expect_err("early-stop stats cannot prove bounded existence");
-        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+        let PlanExecutionError::Validation(diagnostic) = error else {
             panic!("false exhaustion proof is a validation failure")
         };
         assert_eq!(
@@ -2258,7 +2248,7 @@ mod tests {
         )
         .await
         .expect_err("the first matching row exceeds a zero-item budget");
-        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+        let PlanExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
             panic!("the stable provider item-limit surface is preserved");
         };
         assert_eq!(error.code().as_str(), "processed_item_limit");
@@ -2290,7 +2280,7 @@ mod tests {
         )
         .await
         .expect_err("foreign evidence must fail after the finite stream is exhausted");
-        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+        let PlanExecutionError::Validation(diagnostic) = error else {
             panic!("forged evidence remains a validation failure");
         };
         assert_eq!(diagnostic.code().as_str(), "query_v2_result_type_mismatch");
@@ -2435,7 +2425,7 @@ mod tests {
         )
         .await
         .expect_err("an unterminated rows stream is not complete evidence");
-        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+        let PlanExecutionError::Validation(diagnostic) = error else {
             panic!("false exhaustion proof is a validation failure");
         };
         assert_eq!(
@@ -2471,7 +2461,7 @@ mod tests {
         )
         .await
         .expect_err("a foreign concept type is not evidence");
-        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+        let PlanExecutionError::Validation(diagnostic) = error else {
             panic!("forged evidence must surface as validation failure");
         };
         assert_eq!(diagnostic.code().as_str(), "query_v2_result_type_mismatch");
@@ -2490,7 +2480,7 @@ mod tests {
         )
         .await
         .expect_err("a sparse row is not evidence");
-        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+        let PlanExecutionError::Validation(diagnostic) = error else {
             panic!("sparse evidence must surface as validation failure");
         };
         assert_eq!(
@@ -2529,7 +2519,7 @@ mod tests {
         let error = execute_with_provider(&mut provider, &validated, &invocation, bounded)
             .await
             .expect_err("aggregate list members exceed the caller ceiling");
-        let QueryV2ExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
+        let PlanExecutionError::Provider(crate::error::OrmError::Match(error)) = error else {
             panic!("member budget rejection preserves the bounded-provider surface");
         };
         assert_eq!(

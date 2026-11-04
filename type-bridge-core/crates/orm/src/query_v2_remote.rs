@@ -34,11 +34,11 @@ use type_bridge_query::{
     MigrationAssertionValidationContext, OutputSchema, ValidatedQuery, validate_query_plan,
 };
 
+use crate::plan_lowering::failure;
 use crate::query_execution_limits::{AnswerTransport, QueryExecutionResourceLimits};
 use crate::query_v2::{
     DocumentFieldValue, QueryResultDocument, QueryResultRow, QueryRowValue, QueryV2Outcome,
-    QueryV2ValidatedItemObserver, execute_with_provider_observer, failure,
-    preflight_invocation_transport,
+    QueryV2ValidatedItemObserver, execute_with_provider_observer, preflight_invocation_transport,
 };
 use crate::session::backend::{AnswerLimits, BoundedAnswerLimits};
 
@@ -749,14 +749,12 @@ async fn run_admitted_request_v2(
     // exact signed response remains under the caller-bound `byte_budget`.
     execution_limits.answer.max_bytes = provider_byte_budget;
     let execution_diagnostic = |error| match error {
-        crate::query_v2::QueryV2ExecutionError::Validation(diagnostic) => diagnostic,
-        crate::query_v2::QueryV2ExecutionError::Provider(error) => {
-            crate::query_v2::provider_diagnostic(
-                &error,
-                "query_remote_v2_provider_failed",
-                "the V2 executor provider call failed",
-            )
-        }
+        crate::error::PlanExecutionError::Validation(diagnostic) => diagnostic,
+        crate::error::PlanExecutionError::Provider(error) => crate::query_v2::provider_diagnostic(
+            &error,
+            "query_remote_v2_provider_failed",
+            "the V2 executor provider call failed",
+        ),
     };
     let model_result = matches!(
         result,

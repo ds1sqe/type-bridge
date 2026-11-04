@@ -34,6 +34,7 @@ use type_bridge_core_lib::ast::{
 };
 use type_bridge_query::ValidatedQuery;
 
+use crate::error::PlanExecutionError;
 use crate::match_request::descriptor_plan::adapt_value;
 use crate::match_request::reducer::reduce_rows;
 use crate::match_request::reducer::{
@@ -47,7 +48,8 @@ use crate::match_request::result_validation::released_attribute_value;
 use crate::match_request::{
     BindingId as MatchBindingId, BoundFieldId, DescriptorId, FieldId, Reduction, ThingKind,
 };
-use crate::query_v2::{QueryV2ExecutionError, failure, preflight_invocation_transport};
+use crate::plan_lowering::failure;
+use crate::query_v2::preflight_invocation_transport;
 use crate::query_v2_compatibility::{
     CompatibilityProviderPlan, lower_validated_compatibility_query,
 };
@@ -58,7 +60,7 @@ use crate::session::backend::{
 use crate::session::transaction::OwnedTransaction as Transaction;
 use crate::value::AttributeValue;
 
-type ExecResult<T> = Result<T, QueryV2ExecutionError>;
+type ExecResult<T> = Result<T, PlanExecutionError>;
 type HydrationBatchPlan = (Vec<TypedHydrateThings>, BTreeSet<(u16, String)>);
 const MAX_MODEL_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 const TUPLE_PROOF_ROWS: u64 = 2;
@@ -97,7 +99,7 @@ async fn execute_validated_model_query_in_target(
     max_statements: u8,
 ) -> ExecResult<RemoteOutcomeV2> {
     preflight_invocation_transport(validated.plan(), invocation)
-        .map_err(QueryV2ExecutionError::Validation)?;
+        .map_err(PlanExecutionError::Validation)?;
     let model = validated
         .plan()
         .v2_compatibility()
@@ -110,7 +112,7 @@ async fn execute_validated_model_query_in_target(
         })?;
     let lowered =
         lower_validated_compatibility_query(validated, invocation, invocation.operation())
-            .map_err(QueryV2ExecutionError::Validation)?
+            .map_err(PlanExecutionError::Validation)?
             .ok_or_else(|| {
                 validation_error(
                     "query_v2_model_provider_plan_missing",
@@ -235,7 +237,7 @@ async fn execute_validated_model_query_in_target(
         }
     };
     validate_remote_outcome_v2(&outcome, expected, reply_limits, validated.plan())
-        .map_err(QueryV2ExecutionError::Validation)?;
+        .map_err(PlanExecutionError::Validation)?;
     Ok(outcome)
 }
 
@@ -361,7 +363,7 @@ impl ExecutionBudget {
             tokio::pin!(deadline);
             tokio::select! {
                 biased;
-                result = &mut future => result.map_err(QueryV2ExecutionError::Provider),
+                result = &mut future => result.map_err(PlanExecutionError::Provider),
                 () = &mut cancellation => Err(cancelled_error(
                     "provider_cancelled",
                     "provider answer processing was cancelled",
@@ -374,7 +376,7 @@ impl ExecutionBudget {
         } else {
             tokio::select! {
                 biased;
-                result = &mut future => result.map_err(QueryV2ExecutionError::Provider),
+                result = &mut future => result.map_err(PlanExecutionError::Provider),
                 () = &mut cancellation => Err(cancelled_error(
                     "provider_cancelled",
                     "provider answer processing was cancelled",
@@ -401,7 +403,7 @@ struct ModelDrainingConsumer<'a> {
     response_bytes: u64,
     drained_items: u64,
     drained_bytes: u64,
-    first_error: Option<QueryV2ExecutionError>,
+    first_error: Option<PlanExecutionError>,
     consumer_stopped: bool,
 }
 
@@ -431,7 +433,7 @@ impl<'a> ModelDrainingConsumer<'a> {
         Ok(stats)
     }
 
-    fn reject(&mut self, error: QueryV2ExecutionError) -> AnswerControl {
+    fn reject(&mut self, error: PlanExecutionError) -> AnswerControl {
         if self.first_error.is_none() {
             self.first_error = Some(error);
         }
@@ -1220,7 +1222,7 @@ async fn execute_rows(
         ));
     }
     if cardinality == QueryRowCardinalityV2::BoundedMany && limit == 0 {
-        let graph = HydrationGraphV2::new(Vec::new()).map_err(QueryV2ExecutionError::Validation)?;
+        let graph = HydrationGraphV2::new(Vec::new()).map_err(PlanExecutionError::Validation)?;
         return Ok(RemoteOutcomeV2::HydratedRows {
             graph,
             rows: Vec::new(),
@@ -1540,7 +1542,7 @@ async fn execute_page(
         ));
     }
     if roots.is_empty() {
-        let graph = HydrationGraphV2::new(Vec::new()).map_err(QueryV2ExecutionError::Validation)?;
+        let graph = HydrationGraphV2::new(Vec::new()).map_err(PlanExecutionError::Validation)?;
         return Ok(RemoteOutcomeV2::HydratedPage {
             entries: Vec::new(),
             graph,
@@ -1734,7 +1736,7 @@ async fn execute_reduction(
         usize::try_from(reply_limits.max_items).unwrap_or(usize::MAX),
         usize::try_from(budget.remaining_collection_members).unwrap_or(usize::MAX),
     )
-    .map_err(QueryV2ExecutionError::Provider)?;
+    .map_err(PlanExecutionError::Provider)?;
     if u64::try_from(rows.len()).unwrap_or(u64::MAX) > reply_limits.max_items {
         return Err(resource_error(
             "query_v2_model_item_limit",
@@ -1820,7 +1822,7 @@ fn provider_reduction_solution(
                         .iter()
                         .map(released_attribute_value)
                         .collect::<Result<Vec<_>, _>>()
-                        .map_err(|error| QueryV2ExecutionError::Provider(error.into()))?;
+                        .map_err(|error| PlanExecutionError::Provider(error.into()))?;
                     Ok(HydratedAttribute::new(reduction_field_id(field), values))
                 })
                 .collect::<ExecResult<Vec<_>>>()?;
@@ -1954,7 +1956,7 @@ fn encode_reduction_row(
                     "canonical field-grouped reduction row lost its scalar group evidence",
                 )
             })?)
-            .map_err(QueryV2ExecutionError::Validation)?,
+            .map_err(PlanExecutionError::Validation)?,
         )),
         Some(QueryReductionGroupV2::Fields { .. }) => Some(RemoteReductionGroupV2::fields(
             row.field_groups()
@@ -1967,7 +1969,7 @@ fn encode_reduction_row(
                 .iter()
                 .map(adapt_value)
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(QueryV2ExecutionError::Validation)?,
+                .map_err(PlanExecutionError::Validation)?,
         )),
     };
     let values = row
@@ -2006,8 +2008,8 @@ fn validate_solution_predicate(
     }
 }
 
-fn cardinality_error(actual: usize) -> QueryV2ExecutionError {
-    QueryV2ExecutionError::Validation(
+fn cardinality_error(actual: usize) -> PlanExecutionError {
+    PlanExecutionError::Validation(
         failure(
             DiagnosticCategory::InvalidContract,
             "query_v2_model_exactly_one",
@@ -2017,8 +2019,8 @@ fn cardinality_error(actual: usize) -> QueryV2ExecutionError {
     )
 }
 
-fn cancelled_error(code: &'static str, message: &'static str) -> QueryV2ExecutionError {
-    QueryV2ExecutionError::Validation(failure(DiagnosticCategory::Cancelled, code, message))
+fn cancelled_error(code: &'static str, message: &'static str) -> PlanExecutionError {
+    PlanExecutionError::Validation(failure(DiagnosticCategory::Cancelled, code, message))
 }
 
 #[cfg(test)]

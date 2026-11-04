@@ -40,8 +40,9 @@ use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
 use crate::OwnedTransaction as Transaction;
+use crate::error::PlanExecutionError;
+use crate::plan_lowering::{ast, failure};
 use crate::query_execution_limits::QueryExecutionDeadline;
-use crate::query_v2::{QueryV2ExecutionError, ast, failure};
 use crate::query_v2_builder::QueryAuthorityIdentity;
 use crate::query_v2_remote::{
     check_advertised_capabilities_v2, decode_remote_outcome_v2, encode_remote_request_v2_at,
@@ -638,14 +639,14 @@ pub async fn execute_prepared_local(
         Some(deadline) => {
             match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), execute).await {
                 Ok(executed) => executed,
-                Err(_) => Err(QueryV2ExecutionError::Validation(deadline_exceeded())),
+                Err(_) => Err(PlanExecutionError::Validation(deadline_exceeded())),
             }
         }
         None => execute.await,
     };
     let execution = executed.map_err(|error| match error {
-        QueryV2ExecutionError::Validation(diagnostic) => diagnostic,
-        QueryV2ExecutionError::Provider(error) => crate::query_v2::provider_diagnostic(
+        PlanExecutionError::Validation(diagnostic) => diagnostic,
+        PlanExecutionError::Provider(error) => crate::query_v2::provider_diagnostic(
             &error,
             "query_prepared_provider_failed",
             "the executor provider call failed",

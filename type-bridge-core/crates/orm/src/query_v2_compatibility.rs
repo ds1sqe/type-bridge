@@ -25,7 +25,7 @@ use type_bridge_core_lib::ast::{
 use type_bridge_core_lib::compiler::QueryCompiler;
 use type_bridge_query::ValidatedQuery;
 
-use crate::query_v2::failure;
+use crate::plan_lowering::failure;
 
 /// Closed operation-specific provider plan for one compatibility model.
 // These short-lived plans retain their typed ASTs by value so lowering and

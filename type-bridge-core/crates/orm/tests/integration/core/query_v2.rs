@@ -1379,9 +1379,9 @@ async fn document_fetch_returns_typed_documents_live() {
     let error = execute_validated_query(&mut transaction, &validated, &invocation, one_member)
         .await
         .expect_err("the second age is the over-limit sentinel");
-    let type_bridge_orm::query_v2::QueryV2ExecutionError::Provider(
-        type_bridge_orm::OrmError::Match(error),
-    ) = error
+    let type_bridge_orm::error::PlanExecutionError::Provider(type_bridge_orm::OrmError::Match(
+        error,
+    )) = error
     else {
         panic!("document member limit must surface from the bounded provider: {error}");
     };

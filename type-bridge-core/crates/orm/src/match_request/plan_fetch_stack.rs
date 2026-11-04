@@ -958,8 +958,8 @@ impl PlanFetchStack {
             )
         };
         let shared = |error| match error {
-            crate::query_v2::QueryV2ExecutionError::Validation(error) => error,
-            crate::query_v2::QueryV2ExecutionError::Provider(_) => fail(),
+            crate::error::PlanExecutionError::Validation(error) => error,
+            crate::error::PlanExecutionError::Provider(_) => fail(),
         };
         let index = self.selection.ok_or_else(fail)?;
         let selection = answers[index];

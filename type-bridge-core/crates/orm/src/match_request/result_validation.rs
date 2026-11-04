@@ -525,10 +525,10 @@ pub fn validated_match_result_from_plan(
 ) -> Result<(ValidatedMatchRequest, ValidatedMatchResult), MatchError> {
     super::plan_hydration::validate_plan_documents(plan, documents, limits).map_err(|error| {
         match error {
-            crate::query_v2::QueryV2ExecutionError::Validation(error) => {
+            crate::error::PlanExecutionError::Validation(error) => {
                 super::selected_result_executor::released_plan_execution_error(&error)
             }
-            crate::query_v2::QueryV2ExecutionError::Provider(_) => {
+            crate::error::PlanExecutionError::Provider(_) => {
                 result_error("query_plan_hydration_document", "model hydration failed")
             }
         }
@@ -662,7 +662,7 @@ pub(crate) fn validated_match_result_from_verified_plan(
         registry, &request, plan, documents, limits,
     )
     .map_err(|error| match error {
-        crate::query_v2::QueryV2ExecutionError::Validation(error) => {
+        crate::error::PlanExecutionError::Validation(error) => {
             if error.code().as_str().starts_with("query_plan_hydration_") {
                 MatchError::new(
                     MatchErrorCategory::ResultDecode,
@@ -674,7 +674,7 @@ pub(crate) fn validated_match_result_from_verified_plan(
                 super::selected_result_executor::released_plan_execution_error(&error)
             }
         }
-        crate::query_v2::QueryV2ExecutionError::Provider(_) => {
+        crate::error::PlanExecutionError::Provider(_) => {
             result_error("query_plan_hydration_document", "model hydration failed")
         }
     })?;

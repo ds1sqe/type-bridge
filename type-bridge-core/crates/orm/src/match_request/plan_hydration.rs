@@ -1,8 +1,8 @@
 //! Shared pure hydration, coalescing, order and predicate validation.
 
+use crate::error::PlanExecutionError;
 use crate::match_request::descriptor_plan::adapt_value;
 use crate::plan_lowering::failure;
-use crate::query_v2::QueryV2ExecutionError;
 use crate::value::AttributeValue;
 use regex::Regex;
 use serde::Deserialize;
@@ -24,7 +24,7 @@ use type_bridge_contract::query_remote_v2::{
 use type_bridge_contract::value::ValueTypeTag;
 use unicase::UniCase;
 
-type ExecResult<T> = Result<T, QueryV2ExecutionError>;
+type ExecResult<T> = Result<T, PlanExecutionError>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Solution {
@@ -348,7 +348,7 @@ impl GraphBuilder {
                 roles,
             ));
         }
-        let graph = HydrationGraphV2::new(nodes).map_err(QueryV2ExecutionError::Validation)?;
+        let graph = HydrationGraphV2::new(nodes).map_err(PlanExecutionError::Validation)?;
         Ok(FinishedGraph { graph, ids })
     }
 }
@@ -813,7 +813,7 @@ pub(crate) fn decode_exact_roles(
             let projected = authority.descriptor_by_label(&player.concrete_type)?;
             validate_wire_kind(player.kind, projected.descriptor().kind())?;
             let declared = TypeId::new(projected.descriptor().kind(), player.declared_type)
-                .map_err(QueryV2ExecutionError::Validation)?;
+                .map_err(PlanExecutionError::Validation)?;
             let compatible = role.players().iter().any(|authority| {
                 authority.declared_descriptor() == &declared
                     && authority
@@ -931,7 +931,7 @@ pub(crate) fn compatibility_value_from_json(
             "hydration attribute value does not match its validated scalar domain",
         )
     })?;
-    adapt_value(&value).map_err(QueryV2ExecutionError::Validation)
+    adapt_value(&value).map_err(PlanExecutionError::Validation)
 }
 
 pub(crate) const fn value_type_label(value_type: ValueTypeTag) -> &'static str {
@@ -1607,26 +1607,26 @@ pub(crate) fn compatibility_string(value: &CompatibilityValueV2) -> ExecResult<S
     })
 }
 
-pub(crate) fn validation_error(code: &'static str, message: &'static str) -> QueryV2ExecutionError {
-    QueryV2ExecutionError::Validation(failure(DiagnosticCategory::InvalidContract, code, message))
+pub(crate) fn validation_error(code: &'static str, message: &'static str) -> PlanExecutionError {
+    PlanExecutionError::Validation(failure(DiagnosticCategory::InvalidContract, code, message))
 }
 
-pub(crate) fn evidence_error(code: &'static str, message: &'static str) -> QueryV2ExecutionError {
-    QueryV2ExecutionError::Validation(evidence_failure(code, message))
+pub(crate) fn evidence_error(code: &'static str, message: &'static str) -> PlanExecutionError {
+    PlanExecutionError::Validation(evidence_failure(code, message))
 }
 
 pub(crate) fn field_evidence_error(
     code: &'static str,
     message: &'static str,
     field: &QueryFieldV2,
-) -> QueryV2ExecutionError {
+) -> PlanExecutionError {
     let owner_kind = match field.descriptor().kind() {
         type_bridge_contract::id::TypeKind::Entity => "entity",
         type_bridge_contract::id::TypeKind::Relation => "relation",
         type_bridge_contract::id::TypeKind::Attribute => "attribute",
         type_bridge_contract::id::TypeKind::Struct => "struct",
     };
-    QueryV2ExecutionError::Validation(
+    PlanExecutionError::Validation(
         evidence_failure(code, message)
             .with_detail(
                 "field_owner",
@@ -1643,7 +1643,7 @@ pub(crate) fn compare_optional_field_values(
     field: &QueryFieldV2,
 ) -> ExecResult<Ordering> {
     compare_optional_values(left, right, missing).map_err(|error| match error {
-        QueryV2ExecutionError::Validation(diagnostic)
+        PlanExecutionError::Validation(diagnostic)
             if diagnostic.code().as_str() == "query_v2_model_order_missing" =>
         {
             field_evidence_error(
@@ -1652,7 +1652,7 @@ pub(crate) fn compare_optional_field_values(
                 field,
             )
         }
-        QueryV2ExecutionError::Validation(diagnostic)
+        PlanExecutionError::Validation(diagnostic)
             if diagnostic.code().as_str() == "query_v2_model_order_value_type" =>
         {
             field_evidence_error(
@@ -1665,8 +1665,8 @@ pub(crate) fn compare_optional_field_values(
     })
 }
 
-pub(crate) fn resource_error(code: &'static str, message: &'static str) -> QueryV2ExecutionError {
-    QueryV2ExecutionError::Validation(failure(DiagnosticCategory::ResourceLimit, code, message))
+pub(crate) fn resource_error(code: &'static str, message: &'static str) -> PlanExecutionError {
+    PlanExecutionError::Validation(failure(DiagnosticCategory::ResourceLimit, code, message))
 }
 
 pub(crate) fn evidence_failure(code: &'static str, message: &'static str) -> Diagnostic {
@@ -1683,13 +1683,13 @@ pub(crate) fn graph_from_verified_plan_documents(
 ) -> ExecResult<(HydrationGraphV2, Vec<HydrationReferenceV2>)> {
     use super::descriptor_plan::{MatchRequestAdapterAuthority, build_hydration};
     let metadata = MatchRequestAdapterAuthority::from_registry(registry)
-        .map_err(QueryV2ExecutionError::Validation)?;
+        .map_err(PlanExecutionError::Validation)?;
     let projection = build_hydration(
         request.request(),
         registry,
         metadata.context().resolved_schema(),
     )
-    .map_err(QueryV2ExecutionError::Validation)?;
+    .map_err(PlanExecutionError::Validation)?;
     let authority = HydrationAuthority::new(&projection)?;
     let declared = authority.binding(0)?.declared_descriptor().clone();
     let mut graph = GraphBuilder::new(RemoteReplyDecodeLimitsV2 {
@@ -1736,10 +1736,10 @@ pub(crate) fn validate_plan_documents(
     }
     let answer = crate::query_plan_exec::PlanAnswer::Documents(documents.to_vec())
         .to_staged_v3(plan)
-        .map_err(QueryV2ExecutionError::Validation)?;
+        .map_err(PlanExecutionError::Validation)?;
     answer
         .validate_for(plan)
-        .map_err(QueryV2ExecutionError::Validation)?;
+        .map_err(PlanExecutionError::Validation)?;
     if answer.item_count() > limits.items {
         return Err(resource_error(
             "processed_item_limit",

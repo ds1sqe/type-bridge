@@ -25,10 +25,10 @@ fn failure(code: &'static str, message: &'static str) -> Diagnostic {
     crate::plan_lowering::failure(DiagnosticCategory::Integrity, code, message)
 }
 
-fn shared(error: crate::query_v2::QueryV2ExecutionError) -> Diagnostic {
+fn shared(error: crate::error::PlanExecutionError) -> Diagnostic {
     match error {
-        crate::query_v2::QueryV2ExecutionError::Validation(error) => error,
-        crate::query_v2::QueryV2ExecutionError::Provider(_) => failure(
+        crate::error::PlanExecutionError::Validation(error) => error,
+        crate::error::PlanExecutionError::Provider(_) => failure(
             "query_plan_result_state",
             "pure plan result validation returned a provider failure",
         ),
