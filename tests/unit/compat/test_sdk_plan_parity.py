@@ -131,17 +131,17 @@ def test_transport_budgets_are_checked_independently_from_the_plan_twin() -> Non
         "advertisement": parity.advertisement_digest(advertisement),
         "nonce": "test-nonce-00000001",
         "prepared_at_unix_ms": 1000,
-        "expires_at_unix_ms": 1025,
+        "expires_at_unix_ms": 61_000,
         "limits": limits,
         "plans": [
             {"plan_bytes": parity.canonical_json_bytes(plan).removesuffix(b"\n").hex(), "rows": []}
         ],
     }
 
-    def evidence(value: dict) -> dict:
+    def evidence(value: dict, advertisement_bytes: bytes = advertisement) -> dict:
         return {
             "request_hex": json.dumps(value).encode().hex(),
-            "advertisement_hex": advertisement.hex(),
+            "advertisement_hex": advertisement_bytes.hex(),
             "caller": policy,
             "session": policy,
             "proxy_defaults": policy,
@@ -149,6 +149,33 @@ def test_transport_budgets_are_checked_independently_from_the_plan_twin() -> Non
         }
 
     assert parity.checked_exchange(evidence(request)) == [{"plan": plan, "rows": []}]
+    shorter_admission = copy.deepcopy(request)
+    shorter_admission["limits"]["admission_window_milliseconds"] = 17
+    shorter_admission["expires_at_unix_ms"] = 1017
+    assert parity.checked_exchange(evidence(shorter_admission)) == [{"plan": plan, "rows": []}]
+    tighter_advertisement = parity.canonical_json_bytes(
+        {"answer_limits": {"items": 7}, "admission_window_milliseconds": 16}
+    ).removesuffix(b"\n")
+    shorter_admission["advertisement"] = parity.advertisement_digest(tighter_advertisement)
+    with pytest.raises(parity.ContractError, match="plan_envelope_deadline"):
+        parity.checked_exchange(evidence(shorter_admission, tighter_advertisement))
+    shorter_admission["limits"]["admission_window_milliseconds"] = 16
+    shorter_admission["expires_at_unix_ms"] = 1016
+    assert parity.checked_exchange(evidence(shorter_admission, tighter_advertisement)) == [
+        {"plan": plan, "rows": []}
+    ]
+    for window in (0, -1, False, "17", 60_001, 2**64):
+        changed = copy.deepcopy(request)
+        changed["limits"]["admission_window_milliseconds"] = window
+        if type(window) is int:
+            changed["expires_at_unix_ms"] = 1000 + window
+        with pytest.raises(parity.ContractError, match="plan_envelope_deadline"):
+            parity.checked_exchange(evidence(changed))
+    for expiry in (1025, 60_999, 61_001):
+        changed = copy.deepcopy(request)
+        changed["expires_at_unix_ms"] = expiry
+        with pytest.raises(parity.ContractError, match="plan_envelope_deadline"):
+            parity.checked_exchange(evidence(changed))
     for field, value, code in [
         ("max_items", 8, "plan_envelope_budget"),
         ("deadline_ms", 0, "plan_envelope_deadline"),

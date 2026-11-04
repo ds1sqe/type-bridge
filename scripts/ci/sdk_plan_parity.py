@@ -20,6 +20,7 @@ from sdk_conformance_common import (
 ROOT = Path(__file__).resolve().parents[2]
 BINDINGS = ("python", "node", "rust", "c")
 FORMAT = "typebridge.sdk-plan-witness/v1"
+DEFAULT_ADMISSION_WINDOW_MILLISECONDS = 60_000
 IID = re.compile(r"0x(?:[0-9a-f]{2})+\Z")
 IID_SHAPED = re.compile(r"0[xX][0-9a-fA-F]+\Z")
 CALL = re.compile(r"[a-z][a-z0-9_.-]{0,159}\Z")
@@ -355,7 +356,8 @@ def checked_exchange(evidence: Any) -> list[dict[str, Any]]:
 
     advertised_policy = defaults | advertised_limits
     limits = wire["limits"]
-    if set(limits) != set(dimensions.values()) | {"max_staged_plans", "max_write_statements"}:
+    required_limits = set(dimensions.values()) | {"max_staged_plans", "max_write_statements"}
+    if not required_limits <= set(limits) <= required_limits | {"admission_window_milliseconds"}:
         _fail("plan_envelope_budget", "request limits must retain exactly the known dimensions")
     for name, field in dimensions.items():
         expected = min(bound(policy, name) for policy in (caller, session, advertised_policy))
@@ -378,16 +380,28 @@ def checked_exchange(evidence: Any) -> list[dict[str, Any]]:
             "plan_envelope_budget",
             "request must retain the staged protocol's plan and write ceilings",
         )
+    admission_window = limits.get(
+        "admission_window_milliseconds", DEFAULT_ADMISSION_WINDOW_MILLISECONDS
+    )
+    advertised_window = advertised.get(
+        "admission_window_milliseconds", DEFAULT_ADMISSION_WINDOW_MILLISECONDS
+    )
+    if (
+        type(admission_window) is not int
+        or type(advertised_window) is not int
+        or not 0 < admission_window <= advertised_window < 2**64
+    ):
+        _fail("plan_envelope_deadline", "request admission window exceeds its advertised ceiling")
     if (
         any(
             type(wire[field]) is not int or not 0 <= wire[field] < 2**64
             for field in ("prepared_at_unix_ms", "expires_at_unix_ms")
         )
-        or wire["expires_at_unix_ms"] != wire["prepared_at_unix_ms"] + limits["deadline_ms"]
+        or wire["expires_at_unix_ms"] != wire["prepared_at_unix_ms"] + admission_window
     ):
         _fail(
             "plan_envelope_deadline",
-            "request expiry must retain its exact preparation-time deadline",
+            "request expiry must retain its exact preparation-time admission window",
         )
     return plans
 
