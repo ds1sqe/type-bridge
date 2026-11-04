@@ -3240,3 +3240,39 @@ async fn registry_relation_update_without_iid_keeps_multiple_root_semantics() {
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }
+
+#[tokio::test]
+async fn native_control_authority_reads_the_frozen_schema_in_one_transaction() {
+    let Some(db) = live_database("control_plans").await else {
+        return;
+    };
+    db.execute_raw(
+        type_bridge_schema_compat::MANAGED_FENCE_SCHEMA_TYPEQL,
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    // The legacy database-deletion guard requires its frozen ledger alongside
+    // managed control state; keep cleanup on the normal database API.
+    db.execute_raw(
+        type_bridge_schema_compat::LEGACY_LEDGER_SCHEMA_TYPEQL,
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    db.execute_raw(
+        "insert $control isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-control-scope \"native-control\", has typebridge-internal-v2-lease-fence \"1\", has typebridge-internal-v2-lease-state \"free\";",
+        TxType::Write,
+    ).await.unwrap();
+    let mut tx = db.read_transaction().await.unwrap();
+    type_bridge_orm::plan_authority::verify_managed_query_control_scope(
+        &mut tx,
+        &type_bridge_contract::managed_scope::ManagedScopeId::new("native-control").unwrap(),
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(30)),
+        &type_bridge_orm::AnswerCancellation::default(),
+    )
+    .await
+    .unwrap();
+    tx.close().await.unwrap();
+    db.delete_database().await.unwrap();
+}

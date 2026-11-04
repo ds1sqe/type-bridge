@@ -1,9 +1,7 @@
 //! Schema authority and identity shared by generated queries and staged plans.
 
 use crate::OwnedTransaction as Transaction;
-use crate::plan_lowering::ast;
 use crate::plan_lowering::failure;
-use crate::session::backend::QueryResult;
 use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, LazyLock, OnceLock};
@@ -13,7 +11,6 @@ use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::schema::{DeclaredSchema, decode_declared_schema};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
-use type_bridge_core_lib::__internal as tql;
 use type_bridge_query::MigrationAssertionValidationContext;
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
 
@@ -266,9 +263,9 @@ pub async fn verify_managed_query_control_scope(
     deadline: Option<std::time::Instant>,
     cancellation: &crate::session::backend::AnswerCancellation,
 ) -> Result<(), Diagnostic> {
-    let control_query = managed_control_query()?;
-    let documents =
-        managed_control_documents(transaction, &control_query, deadline, cancellation).await?;
+    let plans = managed_control_plans()?;
+    let answer = managed_control_answer(transaction, &plans[0], deadline, cancellation).await?;
+    let documents = managed_control_documents(&answer, &plans[0])?;
     if documents.len() != 1 {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -317,16 +314,15 @@ pub async fn verify_managed_query_control_scope(
             "the executor database has an active or invalid migration fence",
         ));
     }
-    let holder = managed_control_documents(
-        transaction,
-        "match $control isa typebridge-internal-v2-migration-control, \
-         has typebridge-internal-v2-lease-holder $holder; \
-         limit 1; fetch { \"holder\": $holder };",
-        deadline,
-        cancellation,
-    )
-    .await?;
-    if !holder.is_empty() {
+    let holder = managed_control_answer(transaction, &plans[1], deadline, cancellation).await?;
+    let crate::session::staged::PlanAnswer::Exists(held) = holder else {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "query_prepared_control_invalid",
+            "the executor managed holder authority returned an invalid answer",
+        ));
+    };
+    if held {
         return Err(failure(
             DiagnosticCategory::Integrity,
             "query_prepared_migration_in_progress",
@@ -339,30 +335,76 @@ pub async fn verify_managed_query_control_scope(
     Ok(())
 }
 
-async fn managed_control_documents(
+async fn managed_control_answer(
     transaction: &mut Transaction,
-    typeql: &str,
+    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
     deadline: Option<std::time::Instant>,
     cancellation: &crate::session::backend::AnswerCancellation,
-) -> Result<Vec<serde_json::Value>, Diagnostic> {
-    let query = transaction.query(typeql);
+) -> Result<crate::session::staged::PlanAnswer, Diagnostic> {
+    let policy = crate::QueryExecutionResourceLimits::default();
+    let plan_deadline = deadline.map_or_else(
+        || crate::QueryExecutionDeadline::from_timeout_milliseconds(0),
+        crate::QueryExecutionDeadline::from_instant,
+    );
+    let query = transaction.execute_plans(
+        std::slice::from_ref(plan),
+        &policy,
+        cancellation,
+        plan_deadline,
+    );
     let result = await_authority_stage(query, deadline, cancellation)
         .await?
-        .map_err(|_| {
+        .map_err(|error| {
+            if matches!(&error, crate::OrmError::Match(error) if matches!(error.category(), crate::match_request::MatchErrorCategory::ResultDecode)) {
+                return failure(DiagnosticCategory::Integrity, "query_prepared_control_invalid", "the executor managed control row is malformed");
+            }
             failure(
                 DiagnosticCategory::Integrity,
                 "query_prepared_control_unavailable",
                 "the executor could not read managed control authority",
             )
         })?;
-    match result {
-        QueryResult::Documents(documents) => Ok(documents),
-        QueryResult::Rows(_) | QueryResult::Ok => Err(failure(
+    result.into_iter().next().ok_or_else(|| {
+        failure(
             DiagnosticCategory::Integrity,
             "query_prepared_control_invalid",
-            "the executor managed control authority returned no document result",
-        )),
-    }
+            "the executor managed control returned no answer",
+        )
+    })
+}
+
+fn managed_control_documents(
+    answer: &crate::session::staged::PlanAnswer,
+    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+) -> Result<Vec<serde_json::Value>, Diagnostic> {
+    let invalid = || {
+        failure(
+            DiagnosticCategory::Integrity,
+            "query_prepared_control_invalid",
+            "the executor managed control row is malformed",
+        )
+    };
+    answer
+        .scalar_rows(plan)
+        .map_err(|_| invalid())?
+        .into_iter()
+        .map(|row| {
+            let fields = plan.bindings()[1..]
+                .iter()
+                .zip(row)
+                .map(|(binding, value)| {
+                    let type_bridge_contract::value::CanonicalValue::String(value) = value else {
+                        return Err(invalid());
+                    };
+                    Ok((
+                        binding.variable().as_str().to_owned(),
+                        serde_json::Value::String(value.as_str().to_owned()),
+                    ))
+                })
+                .collect::<Result<serde_json::Map<_, _>, Diagnostic>>()?;
+            Ok(serde_json::Value::Object(fields))
+        })
+        .collect()
 }
 
 fn provider_scalar(value: &serde_json::Value) -> Option<&str> {
@@ -381,35 +423,105 @@ pub(crate) fn deadline_exceeded() -> Diagnostic {
     )
 }
 
-fn managed_control_query() -> Result<String, Diagnostic> {
-    let mut constraints = vec![ast(tql::isa(
-        "typebridge-internal-v2-migration-control",
-        false,
-    ))?];
-    for (attribute, variable) in [
-        ("typebridge-internal-v2-control-scope", "scope"),
-        ("typebridge-internal-v2-lease-fence", "fence"),
-        ("typebridge-internal-v2-lease-state", "state"),
-    ] {
-        constraints.push(ast(tql::has(attribute, ast(tql::var(variable))?))?);
-    }
-    let fields = ["scope", "fence", "state"]
-        .into_iter()
-        .map(|name| Ok((name, tql::fetch_expr(ast(tql::var(name))?))))
-        .collect::<Result<Vec<_>, Diagnostic>>()?;
-    ast(tql::render(&tql::pipeline(vec![
-        tql::match_stage(vec![ast(tql::thing("control", constraints))?]),
-        tql::limit(2),
-        ast(tql::fetch(fields))?,
-    ])))
+fn managed_control_plans()
+-> Result<&'static [type_bridge_contract::query_plan::v3::QueryPlanV3; 2], Diagnostic> {
+    use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+    use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+    use type_bridge_contract::query_plan::v3::{Operation, PlanSpec, QueryPlanV3, Stage};
+    use type_bridge_contract::query_plan::{OrderDirection, OrderTerm, QueryOutput, QueryPattern};
+    use type_bridge_contract::reserved::{
+        MANAGED_CONTROL_ENTITY, MANAGED_CONTROL_LEASE_FENCE, MANAGED_CONTROL_LEASE_HOLDER,
+        MANAGED_CONTROL_LEASE_STATE, MANAGED_CONTROL_SCOPE,
+    };
+    use type_bridge_contract::schema::DocumentId;
+    use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
+    use type_bridge_schema_compat::MANAGED_FENCE_SCHEMA_TYPEQL;
+
+    static PLANS: LazyLock<Result<[QueryPlanV3; 2], Diagnostic>> = LazyLock::new(|| {
+        let schema = type_bridge_schema_compat::typeql_to_declared(
+            DocumentId::new("managed-control-plans.typeql")?,
+            MANAGED_FENCE_SCHEMA_TYPEQL,
+        )
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "query_prepared_control_invalid",
+                "the frozen managed control schema is invalid",
+            )
+        })?;
+        let semantics = ManagedSemanticSchemaFingerprint::compute(
+            SemanticProfileId::new("typedb-3.12.1/v1")?,
+            MANAGED_FENCE_SCHEMA_TYPEQL.as_bytes(),
+        )?;
+        let read = |columns: &[(&str, &str)], limit: Option<u64>| {
+            let root = BindingId::new(0)?;
+            let mut bindings = vec![AssertionBinding::new(root, QueryVariable::new("control")?)];
+            let mut patterns = vec![
+                QueryPattern::Isa {
+                    binding: root,
+                    type_id: TypeId::new(TypeKind::Entity, MANAGED_CONTROL_ENTITY)?,
+                    include_subtypes: true,
+                }
+                .into(),
+            ];
+            let mut output = Vec::new();
+            for (index, (attribute, alias)) in columns.iter().enumerate() {
+                let binding = BindingId::new((index + 1) as u16)?;
+                bindings.push(AssertionBinding::new(binding, QueryVariable::new(*alias)?));
+                patterns.push(
+                    QueryPattern::Has {
+                        owner: root,
+                        attribute: binding,
+                        attribute_id: AttributeId::new(*attribute)?,
+                    }
+                    .into(),
+                );
+                output.push(binding);
+            }
+            let mut pipeline = vec![Stage::Match { patterns }];
+            if let Some(rows) = limit {
+                // Native truncation requires ordering. Sorting scope preserves the
+                // duplicate-row check; a valid control table has only one row.
+                pipeline.push(Stage::Sort {
+                    terms: vec![OrderTerm::new(
+                        BindingId::new(1)?,
+                        OrderDirection::Ascending,
+                    )],
+                });
+                pipeline.push(Stage::Limit { rows });
+            }
+            QueryPlanV3::new(
+                PlanSpec {
+                    bindings,
+                    inputs: vec![],
+                    given_rows: None,
+                    operation: if limit.is_some() {
+                        Operation::Rows
+                    } else {
+                        Operation::Exists
+                    },
+                    pipeline,
+                    output: QueryOutput::Rows { columns: output },
+                    managed_semantics: semantics.clone(),
+                    functions: vec![],
+                },
+                &schema,
+            )
+        };
+        Ok([
+            read(
+                &[
+                    (MANAGED_CONTROL_SCOPE, "scope"),
+                    (MANAGED_CONTROL_LEASE_FENCE, "fence"),
+                    (MANAGED_CONTROL_LEASE_STATE, "state"),
+                ],
+                Some(2),
+            )?,
+            read(&[(MANAGED_CONTROL_LEASE_HOLDER, "holder")], None)?,
+        ])
+    });
+    PLANS.as_ref().map_err(Clone::clone)
 }
 
-#[test]
-fn managed_control_query_preserves_the_released_read() {
-    let old = "match $control isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-control-scope $scope, has typebridge-internal-v2-lease-fence $fence, has typebridge-internal-v2-lease-state $state; limit 2; fetch { \"scope\": $scope, \"fence\": $fence, \"state\": $state };";
-    let canonical = |source: &str| typeql::parse_query(source).unwrap().to_string();
-    assert_eq!(
-        typeql::parse_query(&canonical(old)).unwrap(),
-        typeql::parse_query(&canonical(&managed_control_query().unwrap())).unwrap()
-    );
-}
+#[cfg(test)]
+mod tests;
