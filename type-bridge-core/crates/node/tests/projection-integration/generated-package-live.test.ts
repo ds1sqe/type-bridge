@@ -984,9 +984,9 @@ async function sdkModelsCounterPlanLifecycle(generated: any, database: any): Pro
   assert.equal(pending.result(), before + 2n);
   transaction.close();
   modelPlanMark("update");
-  const updated = manager.update(values[0].iid, generated.Counter.create({
+  const updated = oneWritten(manager.update(values[0].iid, generated.Counter.create({
     counterValue: generated.CounterValue.create(11n),
-  }));
+  })));
   modelPlanMark();
   assert.equal(updated.iid, values[0].iid);
   assert.equal(updated.counterValue.value, 11n);
@@ -1004,7 +1004,7 @@ async function sdkModelsCounterPlanLifecycle(generated: any, database: any): Pro
   const returnedInputs = manager.insertMany([1n,2n].map((value) => generated.Counter.create({ counterValue: generated.CounterValue.create(value) }))).items;
   returnedInputs.forEach((value: any,index: number) => modelPlanIdentity(index === 0 ? "counter-left" : "counter-right",value.iid));
   modelPlanMark("manager_returning_delete.entity");
-  const snapshot = manager.deleteReturning(returnedInputs[0].iid);
+  const snapshot = oneWritten(manager.deleteReturning(returnedInputs[0].iid));
   modelPlanMark();
   assert.equal(snapshot.counterValue.value,1n);
   modelPlanMark("manager_returning_delete.entity_many");
@@ -1029,18 +1029,18 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
   });
   const people = g.Person.manager(database);
   modelPlanMark("ordered_distinct_collections.entity_insert");
-  const ada = people.insert(person());
+  const ada = oneWritten(people.insert(person()));
   modelPlanMark();
   modelPlanIdentity("data-ada", ada.iid);
   assert.deepEqual(ada.aliases, []);
   modelPlanMark("ordered_distinct_collections.entity_put");
-  assert.equal(people.put(person()).iid, ada.iid);
+  assert.equal(oneWritten(people.put(person())).iid, ada.iid);
   modelPlanMark();
   modelPlanMark("ordered_distinct_collections.entity_count");
   assert.equal(people.count(), 1n);
   modelPlanMark();
   modelPlanMark("ordered_distinct_collections.entity_update");
-  people.update(ada.iid, person());
+  oneWritten(people.update(ada.iid, person()));
   modelPlanMark();
   modelPlanMark("ordered_distinct_collections.entity_read");
   assert.deepEqual(people.getByIid(ada.iid).aliases, []);
@@ -1051,25 +1051,25 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
     participant: nonempty ? [ada] : [],
   });
   modelPlanMark("ordered_distinct_collections.role_insert");
-  const link = links.insert(linkInput());
+  const link = oneWritten(links.insert(linkInput()));
   modelPlanMark();
   modelPlanIdentity("link-forward", link.iid);
   assert.deepEqual(link.participant, []);
   modelPlanMark("ordered_distinct_collections.role_put");
-  assert.equal(links.put(linkInput()).iid, link.iid);
+  assert.equal(oneWritten(links.put(linkInput())).iid, link.iid);
   modelPlanMark();
   modelPlanMark("ordered_distinct_collections.role_count");
   assert.equal(links.count(), 1n);
   modelPlanMark();
   modelPlanMark("ordered_distinct_collections.role_update");
-  links.update(link.iid, linkInput());
+  oneWritten(links.update(link.iid, linkInput()));
   modelPlanMark();
   modelPlanMark("ordered_distinct_collections.role_read");
   assert.deepEqual(links.getByIid(link.iid).participant, []);
   modelPlanMark();
   for (const [manager, value] of [[people, person(true)], [links, linkInput(true)]]) {
     modelPlanMark("ordered_distinct_collections.refused_nonempty");
-    assert.throws(() => manager.insert(value), (error: unknown) => {
+    assert.throws(() => oneWritten(manager.insert(value)), (error: unknown) => {
       assert.ok(error instanceof Error);
       const diagnostic = JSON.parse(error.message);
       assert.equal(diagnostic.code, "query_plan_ordered_collection_unsupported");
@@ -1107,7 +1107,7 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
   const returnedInputs = links.insertMany(inputs).items;
   returnedInputs.forEach((value: any,index: number) => modelPlanIdentity(index === 0 ? "link-forward" : "link-return",value.iid));
   modelPlanMark("manager_returning_delete.relation");
-  const snapshot = links.deleteReturning(returnedInputs[0].iid);
+  const snapshot = oneWritten(links.deleteReturning(returnedInputs[0].iid));
   modelPlanMark();
   assert.equal(snapshot.identifier.value,"data-link-forward");
   assert.equal(snapshot.origin.iid,ada.iid);
@@ -1664,27 +1664,27 @@ async function runSdkQueriesJourney(
     }
     insertedCount = inserted.length;
 
-    employee = employeeManager.insert(employeeInput);
+    employee = oneWritten(employeeManager.insert(employeeInput));
     assert.equal(sdkQueriesKey(employee), sdkQueriesKey(employeeInput));
     inserted.push([employeeManager, employee]);
     insertedCount = inserted.length;
 
-    manager = managerManager.insert(managerInput);
+    manager = oneWritten(managerManager.insert(managerInput));
     assert.equal(sdkQueriesKey(manager), sdkQueriesKey(managerInput));
     inserted.push([managerManager, manager]);
     insertedCount = inserted.length;
 
-    membership = membershipManager.insert(Membership.create({ member: people[0] }));
+    membership = oneWritten(membershipManager.insert(Membership.create({ member: people[0] })));
     inserted.push([membershipManager, membership]);
     insertedCount = inserted.length;
 
-    network = networkManager.insert(NetworkLink.create({
+    network = oneWritten(networkManager.insert(NetworkLink.create({
       destination: people[1],
       identifier: Identifier.create(networkFields.identifier.value),
       nickname: Nickname.create(networkFields.nickname.value),
       origin: people[0],
       participant: people,
-    }));
+    })));
     assert.equal(sdkQueriesKey(network), networkFields.identifier.value);
     inserted.push([networkManager, network]);
     insertedCount = inserted.length;
@@ -1824,6 +1824,134 @@ function run(command: string, args: readonly string[], cwd: string): void {
   }
 }
 
+function managerPersonInput(g: any, identifier: string, nickname: string): any {
+  return g.Person.create({
+    identifier: g.Identifier.create(identifier), nickname: g.Nickname.create(nickname),
+    score: g.Score.create(7n), valBool: g.ValBool.create(true),
+    valConstrained: g.ValConstrained.create(20n),
+    valDate: g.ValDate.create(new Date("2026-07-29T00:00:00Z")),
+    valDatetime: g.ValDatetime.create(new Date("2026-07-29T12:34:56Z")),
+    valDatetimeTz: g.ValDatetimeTz.create(new Date("2026-07-29T12:34:56Z")),
+    valDecimal: g.ValDecimal.create("3.5"), valDouble: g.ValDouble.create(3.5),
+    valDuration: g.ValDuration.create("PT3S"),
+  });
+}
+
+function managerHttpProgram(
+  g: any,
+  connection: any,
+  workers: readonly any[],
+  trace?: string,
+): unknown {
+  const beforeEmpty = trace === undefined ? "" : readFileSync(trace, "utf8");
+  assert.deepEqual(g.Membership.manager(connection).putMany([]), { count: 0, items: [], inputIndexes: [] });
+  if (trace !== undefined) assert.equal(readFileSync(trace, "utf8"), beforeEmpty);
+  function exercise(model: any, make: (key: string, version: string) => any): unknown {
+    const manager = model.manager(connection);
+    let calls = 0;
+    function terminal<T>(call: () => T, writes = false): T {
+      const before = trace === undefined ? [] : readFileSync(trace, "utf8").trim().split("\n").filter(Boolean);
+      const result = call();
+      calls += 1;
+      if (trace !== undefined) {
+        const events = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).slice(before.length)
+          .map((line) => JSON.parse(line));
+        assert.deepEqual(events.map((event) => event.event), ["request", "plan", "commit"]);
+        assert.equal(new Set(events.map((event) => event.id)).size, 1);
+        assert.equal(events[1].index, 0);
+        assert.equal(events[1].writes, writes);
+        assert.equal(events[1].result_refs, 0);
+        assert.equal(events[2].committed, true);
+        assert.equal(events[2].kind, writes ? "write" : "read");
+        assert.equal(events[2].code, "ok");
+      }
+      return result;
+    }
+    const baseline = terminal(() => manager.all()).length;
+    assert.equal(terminal(() => manager.count()), BigInt(baseline));
+    assert.equal(terminal(() => manager.exists()), baseline !== 0);
+    assert.equal(terminal(() => manager.getByIid("0xffff")), null);
+    const canonical = manager.where();
+    assert.equal(terminal(() => canonical.all()).length, baseline);
+    assert.equal(terminal(() => canonical.count()), BigInt(baseline));
+    assert.equal(terminal(() => canonical.exists()), baseline !== 0);
+    assert.equal(terminal(() => manager.where(model.identifier, "eq", g.Identifier.create("manager-absent")).first()), null);
+    const compatibility = manager.filter({});
+    assert.equal(terminal(() => compatibility.all()).length, baseline);
+    assert.equal(terminal(() => compatibility.count()), BigInt(baseline));
+    assert.equal(terminal(() => compatibility.exists()), baseline !== 0);
+    assert.equal(terminal(() => manager.filter({ identifier: g.Identifier.create("manager-absent") }).first()), null);
+    function single(result: any, version: string): any {
+      const item: any = oneWritten(result);
+      assert.equal(item.__typebridgeModel, model.typeKey);
+      assert.equal(item.nickname.value, version);
+      return item;
+    }
+    const inserted = single(terminal(() => manager.insert(make("a", "insert")), true), "insert");
+    const iid = inserted.iid;
+    assert.equal(single(terminal(() => manager.put(make("a", "put")), true), "put").iid, iid);
+    assert.equal(single(terminal(() => manager.update(iid, make("a", "update")), true), "update").iid, iid);
+    terminal(() => manager.delete(iid), true);
+    const keys = ["b", "c", "d"];
+    const many = terminal(() => manager.insertMany(keys.map((key) => make(key, "many-insert"))), true);
+    assert.equal(many.count, 3);
+    assert.deepEqual([...many.inputIndexes].sort(), [0, 1, 2]);
+    const iids = new Map<number, string>();
+    many.items.forEach((item: any, index: number) => {
+      assert.equal(item.nickname.value, "many-insert");
+      iids.set(many.inputIndexes[index], item.iid);
+    });
+    const putMany = terminal(() => manager.putMany(keys.map((key) => make(key, "many-put"))), true);
+    assert.equal(putMany.count, 3);
+    assert.deepEqual([...putMany.inputIndexes].sort(), [0, 1, 2]);
+    putMany.items.forEach((item: any, index: number) => {
+      assert.equal(item.iid, iids.get(putMany.inputIndexes[index]));
+      assert.equal(item.nickname.value, "many-put");
+    });
+    const updated = terminal(() => manager.updateMany(keys.map((key, index) => [iids.get(index), make(key, "many-update")])), true);
+    assert.equal(updated.count, 3);
+    assert.deepEqual([...updated.inputIndexes].sort(), [0, 1, 2]);
+    updated.items.forEach((item: any, index: number) => {
+      assert.equal(item.iid, iids.get(updated.inputIndexes[index]));
+      assert.equal(item.nickname.value, "many-update");
+    });
+    terminal(() => manager.deleteMany([iids.get(0)]), true);
+    const deleted = single(terminal(() => manager.deleteReturning(iids.get(1)), true), "many-update");
+    assert.equal(deleted.iid, iids.get(1));
+    assert.equal(deleted.deleted, true);
+    const deletedMany = terminal(() => manager.deleteManyReturning([iids.get(2)]), true);
+    assert.equal(deletedMany.count, 1);
+    assert.deepEqual(deletedMany.inputIndexes, [0]);
+    assert.equal(deletedMany.items[0].iid, iids.get(2));
+    assert.equal(deletedMany.items[0].nickname.value, "many-update");
+    assert.equal(deletedMany.items[0].deleted, true);
+    assert.equal(calls, 22);
+    return { baseline, terminals: calls, batchCount: 3, snapshots: 2 };
+  }
+  return [
+    exercise(g.Person, (key, version) => managerPersonInput(g, `manager-person-${key}`, version)),
+    exercise(g.NetworkLink, (key, version) => g.NetworkLink.create({
+      identifier: g.Identifier.create(`manager-link-${key}`),
+      nickname: g.Nickname.create(version),
+      origin: workers[0],
+      destination: workers[1],
+      participant: workers,
+    })),
+  ];
+}
+
+function oneWritten(result: {
+  readonly count: number;
+  readonly items: readonly any[];
+  readonly item: any;
+}): any {
+  assert.equal(result.count, 1);
+  assert.equal(result.items.length, 1);
+  assert.equal(result.item, result.items[0]);
+  assert.notEqual(result.item, null);
+  return result.item;
+}
+
 function assertIid(value: unknown): asserts value is string {
   assert.equal(typeof value, "string");
   assert.notEqual(value, "");
@@ -1916,6 +2044,71 @@ test("generated profile server gate follows the package profile", () => {
     { TYPE_BRIDGE_EXPECTED_SERVER_VERSION: "3.14.0" }), /actual detected TypeDB server version 3\.14\.0/);
   assert.throws(() => requireProfileServerVersion("typedb-3.12.1/v1", "3.14.0",
     { TYPE_BRIDGE_EXPECTED_SERVER_VERSION: "3.14.0" }), /server_profile_mismatch/);
+});
+
+test("generated managers share direct and HTTP proxy terminals", { timeout: 360_000 }, async () => {
+  const stage = await mkdtemp(join(tmpdir(), "type-bridge-node-manager-"));
+  const generatedDirectory = resolve(stage, "generated_v2");
+  let database;
+  let server: ChildProcess | undefined;
+  let serverStderr = "";
+  try {
+    run(resolve(ROOT, "scripts/ci/prepare_generated_live_fixture.sh"), ["node", stage], ROOT);
+    const packageScope = resolve(stage, "node_modules/@type-bridge");
+    await mkdir(packageScope, { recursive: true });
+    await symlink(NODE_RUNTIME_PACKAGE, resolve(packageScope, "node"), process.platform === "win32" ? "junction" : "dir");
+    run(resolve(NODE_SOURCE_PACKAGE, "node_modules/.bin/tsc"), ["--project", resolve(generatedDirectory, "tsconfig.json")], generatedDirectory);
+    const generated = await import(pathToFileURL(resolve(generatedDirectory, "dist/index.js")).href);
+    requireProfileServerVersion(REMOTE_PROFILE, await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT));
+    database = connectIntegration();
+    database.resetDatabase();
+    defineSchema(database, await readFile(PROVIDER_SCHEMA, "utf8"));
+    generated.Person.manager(database).insertMany([0, 1].map((index) =>
+      managerPersonInput(generated, `manager-seed-${index}`, "seed")));
+    const players = [0, 1].map((index) => managerPersonInput(generated, `manager-seed-${index}`, "seed"));
+    const direct = managerHttpProgram(generated, database, players);
+    const authority = await readFile(resolve(stage, "schema-authority.json"));
+    const trace = resolve(stage, "manager-events.jsonl");
+    const port = await freePort();
+    const suppliedServer = process.env.TYPE_BRIDGE_V2_SMOKE_SERVER;
+    server = spawn(suppliedServer ?? "cargo", suppliedServer === undefined
+      ? ["run", "--quiet", "-p", "type-bridge-server", "--example", "staged_smoke_server"] : [], {
+      cwd: CORE,
+      env: {
+        ...process.env,
+        SMOKE_TYPEDB_ADDRESS: TYPEDB_ADDRESS, SMOKE_TYPEDB_HTTP_PORT: String(TYPEDB_HTTP_PORT),
+        SMOKE_TYPEDB_USERNAME: TYPEDB_USERNAME, SMOKE_TYPEDB_PASSWORD: TYPEDB_PASSWORD,
+        SMOKE_DATABASE: INTG_DATABASE, SMOKE_AUTHORITY_B64: authority.toString("base64"),
+        SMOKE_PORT: String(port), SMOKE_ALLOW_STAGED_WRITES: "true", SMOKE_TRACE_FILE: trace,
+        ...(process.env.TYPEDB_TLS_ROOT_CA === undefined ? {} : {
+          SMOKE_TYPEDB_TLS: "true", SMOKE_TYPEDB_TLS_ROOT_CA: process.env.TYPEDB_TLS_ROOT_CA,
+        }),
+        SMOKE_TLS_CERT: undefined, SMOKE_TLS_KEY: undefined,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    server.stderr?.on("data", (chunk: Buffer) => { serverStderr += chunk.toString(); });
+    await waitForPort(port, server, 300_000);
+    const proxy = await generated.connectProxy(`http://127.0.0.1:${port}`);
+    assert.deepEqual(managerHttpProgram(generated, proxy, players, trace), direct);
+    const events = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(events.filter((event) => event.event === "request").length, 44);
+    assert.equal(events.filter((event) => event.event === "commit" && event.kind === "write").length, 20);
+  } catch (error) {
+    process.stderr.write(serverStderr);
+    throw error;
+  } finally {
+    if (server !== undefined && server.exitCode === null) {
+      const exited = new Promise((resolveExit) => server!.once("exit", resolveExit));
+      server.kill("SIGKILL");
+      await exited;
+    }
+    try {
+      database?.deleteDatabase();
+    } finally {
+      await rm(stage, { recursive: true, force: true });
+    }
+  }
 });
 
 test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, { timeout: 360_000 }, async () => {
@@ -2101,11 +2294,11 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     });
     assert.deepEqual(personManager.insertMany([]).items, []);
     assert.deepEqual(personManager.putMany([]).items, []);
-    const insertedPerson = personManager.insert(personInput);
+    const insertedPerson = oneWritten(personManager.insert(personInput));
     assertIid(insertedPerson.iid);
     assert.equal(insertedPerson.__typebridgeModel, Person.typeKey);
     assert.equal(insertedPerson.__typebridgeForm, "complete");
-    const putPerson = personManager.put(Person.create({
+    const putPerson = oneWritten(personManager.put(Person.create({
       identifier: Identifier.create("person-1"),
       nickname: Nickname.create("alice"),
       aliases: [Aliases.create("alpha"), Aliases.create("beta")],
@@ -2120,7 +2313,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       valDecimal: ValDecimal.create("3.5"),
       valDouble: ValDouble.create(3.5),
       valDuration: ValDuration.create("PT3S"),
-    }));
+    })));
     assert.equal(putPerson.iid, insertedPerson.iid);
     assert.deepEqual(
       personManager.filter({ score__gte: Score.create(3n) }).all().map((candidate) => candidate.iid),
@@ -2186,48 +2379,48 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       (alias: { readonly __typebridgeModel: string }) => alias.__typebridgeModel === Aliases.typeKey,
     ));
 
-    const updatedPerson = personManager.update(
+    const updatedPerson = oneWritten(personManager.update(
       insertedPerson.iid,
       generatedPersonWithOwnerships("person-1", 3n, "ada", ["alpha", "beta"]),
-    );
+    ));
     assert.equal(updatedPerson.iid, insertedPerson.iid);
     const updatedStoredPerson = personManager.getByIid(insertedPerson.iid);
     assert.notEqual(updatedStoredPerson, null);
     assert.equal(updatedStoredPerson.nickname.value, "ada");
     const specialAlias = "quote'\"\\line\nunicode-λ";
-    personManager.update(
+    oneWritten(personManager.update(
       insertedPerson.iid,
       generatedPersonWithOwnerships("person-1", 3n, null, [specialAlias]),
-    );
+    ));
     const replacedOwnerships = personManager.getByIid(insertedPerson.iid);
     assert.notEqual(replacedOwnerships, null);
     assert.equal(replacedOwnerships.nickname, null);
     assert.deepEqual(replacedOwnerships.aliases.map((alias) => alias.value), [specialAlias]);
-    personManager.update(
+    oneWritten(personManager.update(
       insertedPerson.iid,
       generatedPersonWithOwnerships("person-1", 3n, null, []),
-    );
+    ));
     const clearedOwnerships = personManager.getByIid(insertedPerson.iid);
     assert.notEqual(clearedOwnerships, null);
     assert.equal(clearedOwnerships.nickname, null);
     assert.deepEqual(clearedOwnerships.aliases, []);
-    personManager.update(
+    oneWritten(personManager.update(
       insertedPerson.iid,
       generatedPersonWithOwnerships("person-1", 3n, "ada", ["alpha", "beta"]),
-    );
-    const keyPreserved = personManager.update(
+    ));
+    const keyPreserved = oneWritten(personManager.update(
       insertedPerson.iid,
       generatedPersonWithOwnerships("person-key-mutated", 3n, "ada", ["alpha", "beta"]),
-    );
+    ));
     assert.equal(keyPreserved.identifier.value, "person-1");
     assert.equal(personManager.getByIid(insertedPerson.iid)?.identifier.value, "person-1");
 
-    const stalePerson = personManager.insert(generatedPerson("person-stale-update", 4n));
+    const stalePerson = oneWritten(personManager.insert(generatedPerson("person-stale-update", 4n)));
     assertIid(stalePerson.iid);
     personManager.delete(stalePerson.iid);
-    assert.throws(
-      () => personManager.update(stalePerson.iid, generatedPerson("person-stale-update", 5n)),
-      /not found after update/i,
+    assert.deepEqual(
+      personManager.update(stalePerson.iid, generatedPerson("person-stale-update", 5n)),
+      { count: 0, items: [], item: null },
     );
 
     const batchPeople = [
@@ -2243,17 +2436,17 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     );
     assert.deepEqual(personManager.putMany(insertedBatch).items.map((candidate) => candidate.iid), batchIids);
 
-    const insertedEmployee = Employee.manager(database).insert(Employee.create({
+    const insertedEmployee = oneWritten(Employee.manager(database).insert(Employee.create({
       identifier: Identifier.create("employee-1"),
       partyName: PartyName.create("employee"),
       rank: Rank.create(1n),
-    }));
-    const insertedManager = Manager.manager(database).insert(Manager.create({
+    })));
+    const insertedManager = oneWritten(Manager.manager(database).insert(Manager.create({
       identifier: Identifier.create("manager-1"),
       managerNote: ManagerNote.create("lead"),
       partyName: PartyName.create("manager"),
       rank: Rank.create(2n),
-    }));
+    })));
     assertIid(insertedEmployee.iid);
     assertIid(insertedManager.iid);
 
@@ -2262,7 +2455,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     let transactionPersonIid: string | null = null;
     try {
       const transactionManager = Person.manager(writeTransaction);
-      transactionPersonIid = transactionManager.insert(transactionPerson).iid;
+      transactionPersonIid = oneWritten(transactionManager.insert(transactionPerson)).iid;
       assert.notEqual(transactionPersonIid, null);
       writeTransaction.commit();
     } catch (error) {
@@ -2274,7 +2467,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     const rollbackTransaction = database.transaction("write");
     const rollbackPerson = generatedPerson("person-rollback", 11n);
     const rollbackManager = Person.manager(rollbackTransaction);
-    const rollbackIid = rollbackManager.insert(rollbackPerson).iid;
+    const rollbackIid = oneWritten(rollbackManager.insert(rollbackPerson)).iid;
     assertIid(rollbackIid);
     assert.equal(rollbackManager.getByIid(rollbackIid)?.iid, rollbackIid);
     rollbackTransaction.rollback();
@@ -2283,7 +2476,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       false,
     );
 
-    const reusedAfterRollback = rollbackManager.insert(generatedPerson("person-rollback-reuse", 12n));
+    const reusedAfterRollback = oneWritten(rollbackManager.insert(generatedPerson("person-rollback-reuse", 12n)));
     rollbackTransaction.commit();
     assert.notEqual(personManager.getByIid(reusedAfterRollback.iid), null);
     personManager.delete(reusedAfterRollback.iid);
@@ -2308,7 +2501,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     const membershipManager = Membership.manager(database);
     assert.deepEqual(membershipManager.insertMany([]).items, []);
     assert.deepEqual(membershipManager.putMany([]).items, []);
-    const insertedMembership = membershipManager.insert(Membership.create({ member: updatedPerson }));
+    const insertedMembership = oneWritten(membershipManager.insert(Membership.create({ member: updatedPerson })));
     assertIid(insertedMembership.iid);
     const storedMembership = membershipManager.getByIid(insertedMembership.iid);
     assert.notEqual(storedMembership, null);
@@ -2317,7 +2510,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.equal(storedMembership.member.iid, insertedPerson.iid);
 
     const employmentManager = Employment.manager(database);
-    const insertedEmployment = employmentManager.insert(Employment.create({ employee: updatedPerson }));
+    const insertedEmployment = oneWritten(employmentManager.insert(Employment.create({ employee: updatedPerson })));
     assertIid(insertedEmployment.iid);
     const storedEmployment = employmentManager.getByIid(insertedEmployment.iid);
     assert.notEqual(storedEmployment, null);
@@ -2330,7 +2523,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.ok(membershipManager.all().every((model: { readonly iid: string }) => model.iid !== insertedEmployment.iid));
 
     const eventManager = Event.manager(database);
-    const insertedEvent = eventManager.insert(Event.create({ subject: updatedPerson }));
+    const insertedEvent = oneWritten(eventManager.insert(Event.create({ subject: updatedPerson })));
     assertIid(insertedEvent.iid);
     const storedEvent = eventManager.getByIid(insertedEvent.iid);
     assert.notEqual(storedEvent, null);
@@ -2339,9 +2532,9 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.equal(storedEvent.subject.iid, insertedPerson.iid);
 
     const containerManager = Container.manager(database);
-    const insertedContainer = containerManager.insert(Container.create({
+    const insertedContainer = oneWritten(containerManager.insert(Container.create({
       item: [Event.reference(insertedEvent.iid, {})],
-    }));
+    })));
     assertIid(insertedContainer.iid);
     const storedContainer = containerManager.getByIid(insertedContainer.iid);
     assert.notEqual(storedContainer, null);
@@ -2355,29 +2548,29 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.equal(Object.hasOwn(storedEventReference, "subject"), false);
 
     const networkManager = NetworkLink.manager(database);
-    const insertedNetwork = networkManager.insert(NetworkLink.create({
+    const insertedNetwork = oneWritten(networkManager.insert(NetworkLink.create({
       destination: insertedBatch[0],
       identifier: Identifier.create("network-1"),
       nickname: Nickname.create("primary"),
       origin: insertedPerson,
       participant: [insertedPerson, insertedBatch[0]],
-    }));
+    })));
     assertIid(insertedNetwork.iid);
-    const putNetwork = networkManager.put(NetworkLink.create({
+    const putNetwork = oneWritten(networkManager.put(NetworkLink.create({
       destination: insertedBatch[0],
       identifier: Identifier.create("network-1"),
       nickname: Nickname.create("primary"),
       origin: insertedPerson,
       participant: [insertedPerson, insertedBatch[0]],
-    }));
+    })));
     assert.equal(putNetwork.iid, insertedNetwork.iid);
-    const updatedNetwork = networkManager.update(insertedNetwork.iid, NetworkLink.create({
+    const updatedNetwork = oneWritten(networkManager.update(insertedNetwork.iid, NetworkLink.create({
       destination: insertedBatch[0],
       identifier: Identifier.create("network-1"),
       nickname: Nickname.create("updated"),
       origin: insertedPerson,
       participant: [insertedPerson, insertedBatch[0]],
-    }));
+    })));
     assert.equal(updatedNetwork.iid, insertedNetwork.iid);
     assert.equal(networkManager.getByIid(insertedNetwork.iid)?.nickname?.value, "updated");
     const filteredNetworks = networkManager.filter({ identifier: Identifier.create("network-1") });
@@ -2433,7 +2626,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       () => counterManager.delete(detachedCounter),
       /attached TypeDB IID/,
     );
-    const insertedCounter = counterManager.insert(detachedCounter);
+    const insertedCounter = oneWritten(counterManager.insert(detachedCounter));
     assertIid(insertedCounter.iid);
     const storedCounter = counterManager.getByIid(insertedCounter.iid);
     assert.notEqual(storedCounter, null);
@@ -2462,9 +2655,9 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.equal(counterManager.count(), 0n);
 
     const plainActivityManager = PlainActivity.manager(database);
-    const insertedPlainActivity = plainActivityManager.insert(
+    const insertedPlainActivity = oneWritten(plainActivityManager.insert(
       PlainActivity.create({ participant: insertedPerson }),
-    );
+    ));
     assertIid(insertedPlainActivity.iid);
     const storedPlainActivity = plainActivityManager.getByIid(insertedPlainActivity.iid);
     assert.notEqual(storedPlainActivity, null);
@@ -2514,7 +2707,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     const insertedRobot = insertedRobots[0];
     assert.notEqual(insertedRobot, undefined);
     assertIid(insertedRobot.iid);
-    const robotMembership = membershipManager.insert(Membership.create({ member: insertedRobot }));
+    const robotMembership = oneWritten(membershipManager.insert(Membership.create({ member: insertedRobot })));
     assertIid(robotMembership.iid);
     const storedRobotMembership = membershipManager.getByIid(robotMembership.iid);
     assert.notEqual(storedRobotMembership, null);
@@ -2962,7 +3155,10 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         [27004602n, await proxy.transaction()],
       ] as const) {
         transaction.stage(Plan.build(() => Robot.insert({ robotId: key, valConstrained: 7n })));
-        const session = new QuerySession(transaction);
+        const session = new QuerySession(transaction, {
+          // Seven single statements, a three-statement page and the authored insert.
+          resources: new QueryExecutionResourceLimits({ statements: 11n }),
+        });
         const root = session.exact(Robot);
         const query = session.query(root).where(root.field(Robot.robotId).eq(RobotId.create(key)));
         const orderBy = [root.field(Robot.robotId).asc()];
@@ -3230,14 +3426,14 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
     membershipManager.delete(insertedMembership);
     assert.equal(membershipManager.getByIid(insertedMembership.iid), null);
-    const deletedNetwork = networkManager.deleteReturning(insertedNetwork.iid);
+    const deletedNetwork = oneWritten(networkManager.deleteReturning(insertedNetwork.iid));
     assert.notEqual(deletedNetwork, null);
     assert.equal(deletedNetwork?.identifier.value, insertedNetwork.identifier.value);
     assert.equal(deletedNetwork?.origin.iid, insertedNetwork.origin.iid);
     assert.ok(deletedNetwork);
     assert.throws(() => networkManager.delete(deletedNetwork), /thing_deleted/);
     assert.equal(networkManager.getByIid(insertedNetwork.iid), null);
-    const deletedPerson = personManager.deleteReturning(transactionPersonIid);
+    const deletedPerson = oneWritten(personManager.deleteReturning(transactionPersonIid));
     assert.equal(deletedPerson?.iid, transactionPersonIid);
     assert.equal(personManager.getByIid(transactionPersonIid), null);
     assert.deepEqual(personManager.deleteManyReturning([transactionPersonIid]).items, []);
@@ -3727,7 +3923,7 @@ test(
       defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
       const personManager = Person.manager(database);
       const employmentManager = Employment.manager(database);
-      const person = personManager.insert(Person.create({
+      const person = oneWritten(personManager.insert(Person.create({
         aliases: [],
         identifier: Identifier.create("v5-live-person"),
         score: Score.create(70n),
@@ -3739,8 +3935,8 @@ test(
         valDecimal: ValDecimal.create("128.45"),
         valDouble: ValDouble.create(8.14),
         valDuration: ValDuration.create("P6D"),
-      }));
-      const employment = employmentManager.insert(Employment.create({ employee: person }));
+      })));
+      const employment = oneWritten(employmentManager.insert(Employment.create({ employee: person })));
 
       // One employment query, run on the direct and the exchange connection.
       const employmentPair = async (session: any): Promise<[any, any]> => {
@@ -3822,7 +4018,7 @@ test(
       const detached = Person.decodeSnapshot(entitySnapshot);
       let detachedCode: string | undefined;
       try {
-        employmentManager.insert(Employment.create({ employee: detached }));
+        oneWritten(employmentManager.insert(Employment.create({ employee: detached })));
       } catch (error) {
         detachedCode = String(error).match(/"code":"([a-z0-9_]+)"/)?.[1];
       }
@@ -3831,10 +4027,10 @@ test(
         .filter({ identifier: Identifier.create("v5-live-person") })
         .first();
       assert.notEqual(rebound, null);
-      employmentManager.update(
+      oneWritten(employmentManager.update(
         employment.iid,
         Employment.create({ employee: rebound }),
-      );
+      ));
       assert.equal(employmentManager.getByIid(employment.iid)?.iid, employment.iid);
 
       await publishSdkReport(evidencePath!, {
