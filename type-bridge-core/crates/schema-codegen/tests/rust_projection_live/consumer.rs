@@ -5406,6 +5406,18 @@ async fn manager_program(
     workers: &[Person; 2],
     exchanges: Option<&AtomicUsize>,
 ) -> Value {
+    let before_empty = exchanges.map_or(0, |counter| counter.load(Ordering::SeqCst));
+    let empty = connection
+        .relations::<Membership>()
+        .put_many(vec![])
+        .await
+        .unwrap();
+    assert_eq!(empty.count(), 0);
+    assert!(empty.items().is_empty());
+    assert!(empty.input_indexes().is_empty());
+    if let Some(counter) = exchanges {
+        assert_eq!(counter.load(Ordering::SeqCst), before_empty);
+    }
     macro_rules! exercise {
         ($manager:expr, $field:expr, $label:expr, $make:expr, $observe:expr) => {{
             let manager = $manager;
