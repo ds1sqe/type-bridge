@@ -16,7 +16,7 @@ use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBindi
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_orm::OwnedTransaction as Transaction;
-use type_bridge_orm::query_v2_prepared::{
+use type_bridge_orm::plan_authority::{
     acquire_live_authority_rebuild_permit, verify_managed_query_control_scope,
 };
 #[cfg(test)]

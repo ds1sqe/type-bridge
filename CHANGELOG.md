@@ -200,6 +200,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust live-authority helpers `acquire_live_authority_rebuild_permit` and
+  `verify_managed_query_control_scope` move from `query_v2_prepared` to
+  `plan_authority`, shared by native staged execution and the server.
+
 - Staged pre-request refusals now use `typebridge.query-remote-failure/v3`.
   Decode them with `query_remote_v3::decode_signed_staged_failure` and
   `StagedFailureV3`; servers encode them with

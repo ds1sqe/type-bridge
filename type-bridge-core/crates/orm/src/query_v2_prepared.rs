@@ -8,9 +8,8 @@
 //! either path — the Rust engine is the only semantic implementation.
 
 use std::fmt;
-use std::future::Future;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::de::{Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -18,7 +17,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
-use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan::{
     InputRow, QueryInvocation, QueryOperation, QueryPlan, decode_query_invocation,
     decode_query_plan_with_limits,
@@ -32,27 +30,29 @@ use type_bridge_contract::query_remote_v2::{
 };
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_contract::value::CanonicalValue;
-use type_bridge_core_lib::__internal as tql;
 use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_query::{ValidatedQuery, validate_query_plan};
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
 use crate::OwnedTransaction as Transaction;
 use crate::error::PlanExecutionError;
-use crate::plan_authority::{QueryAuthority, QueryAuthorityControlPolicy};
-use crate::plan_lowering::{ast, failure};
+use crate::plan_authority::{
+    QueryAuthority, QueryAuthorityControlPolicy, acquire_live_authority_rebuild_permit,
+    await_authority_stage, check_authority_cancellation, deadline_exceeded,
+    verify_managed_query_control_scope,
+};
+use crate::plan_lowering::failure;
 use crate::query_execution_limits::QueryExecutionDeadline;
 use crate::query_v2_remote::{
     check_advertised_capabilities_v2, decode_remote_outcome_v2, encode_remote_request_v2_at,
     remote_outcome_v2,
 };
 use crate::session::backend::{
-    AnswerCancellation, AnswerLimits, MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryResult,
+    AnswerCancellation, AnswerLimits, MAX_QUERY_V2_SCHEMA_FENCE_DURATION,
 };
 use crate::session::database::Database;
 
 const PREPARED_CLOSE_GRACE: Duration = Duration::from_secs(1);
-const LIVE_AUTHORITY_REBUILD_CONCURRENCY: usize = 4;
 
 /// Return the binding-neutral diagnostic for a host string that cannot be
 /// represented as a Rust/JSON Unicode scalar sequence.
@@ -74,26 +74,6 @@ pub fn query_v2_host_string_type_error() -> Diagnostic {
         "query_v2_host_string_type",
         "host string input must be a string value",
     )
-}
-
-static LIVE_AUTHORITY_REBUILD_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> = LazyLock::new(|| {
-    Arc::new(tokio::sync::Semaphore::new(
-        LIVE_AUTHORITY_REBUILD_CONCURRENCY,
-    ))
-});
-
-/// Acquire one process-wide slot for bounded live-schema reconstruction.
-///
-/// The owned permit is moved into the blocking task, so deadline cancellation
-/// cannot detach an unbounded number of CPU- and memory-heavy parses.
-#[doc(hidden)]
-#[allow(clippy::result_unit_err)]
-pub async fn acquire_live_authority_rebuild_permit() -> Result<tokio::sync::OwnedSemaphorePermit, ()>
-{
-    Arc::clone(&LIVE_AUTHORITY_REBUILD_SLOTS)
-        .acquire_owned()
-        .await
-        .map_err(|_| ())
 }
 
 impl QueryAuthority {
@@ -364,8 +344,8 @@ pub async fn execute_prepared_local(
         ));
     }
     verify_database_identity(database, authority)?;
-    check_prepared_cancellation(&cancellation)?;
-    let advisory_rebuild_permit = await_prepared_stage(
+    check_authority_cancellation(&cancellation)?;
+    let advisory_rebuild_permit = await_authority_stage(
         acquire_live_authority_rebuild_permit(),
         deadline,
         &cancellation,
@@ -378,7 +358,7 @@ pub async fn execute_prepared_local(
             "the local executor could not reserve live-schema verification capacity",
         )
     })?;
-    let advisory_export = await_prepared_stage(database.schema_text(), deadline, &cancellation)
+    let advisory_export = await_authority_stage(database.schema_text(), deadline, &cancellation)
         .await?
         .map_err(|_| {
             failure(
@@ -395,7 +375,7 @@ pub async fn execute_prepared_local(
         advisory_rebuild_permit,
     )
     .await?;
-    let exact_rebuild_permit = await_prepared_stage(
+    let exact_rebuild_permit = await_authority_stage(
         acquire_live_authority_rebuild_permit(),
         deadline,
         &cancellation,
@@ -410,7 +390,7 @@ pub async fn execute_prepared_local(
     })?;
     let fence_timeout = schema_fence_timeout(deadline)?;
     let open = database.schema_fenced_read_transaction(fence_timeout);
-    let opened = await_prepared_stage(open, deadline, &cancellation).await?;
+    let opened = await_authority_stage(open, deadline, &cancellation).await?;
     let (mut transaction, fenced_schema) = opened.map_err(|_| {
         failure(
             DiagnosticCategory::Integrity,
@@ -499,7 +479,7 @@ async fn verify_live_authority_export_with_permit(
     cancellation: &crate::session::backend::AnswerCancellation,
     rebuild_permit: tokio::sync::OwnedSemaphorePermit,
 ) -> Result<(), Diagnostic> {
-    check_prepared_cancellation(cancellation)?;
+    check_authority_cancellation(cancellation)?;
     if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
         return Err(deadline_exceeded());
     }
@@ -510,7 +490,7 @@ async fn verify_live_authority_export_with_permit(
         let _rebuild_permit = rebuild_permit;
         rebuild_live_query_authority(document, &export, &declared, &context)
     });
-    let live = await_prepared_stage(rebuild, deadline, cancellation)
+    let live = await_authority_stage(rebuild, deadline, cancellation)
         .await?
         .map_err(|_| {
             failure(
@@ -621,60 +601,6 @@ fn schema_fence_timeout(deadline: Option<std::time::Instant>) -> Result<Duration
     }
 }
 
-fn cancelled() -> Diagnostic {
-    failure(
-        DiagnosticCategory::Cancelled,
-        "provider_cancelled",
-        "provider answer processing was cancelled",
-    )
-}
-
-fn check_prepared_cancellation(
-    cancellation: &crate::session::backend::AnswerCancellation,
-) -> Result<(), Diagnostic> {
-    if cancellation.is_cancelled() {
-        Err(cancelled())
-    } else {
-        Ok(())
-    }
-}
-
-async fn await_prepared_stage<F>(
-    future: F,
-    deadline: Option<std::time::Instant>,
-    cancellation: &crate::session::backend::AnswerCancellation,
-) -> Result<F::Output, Diagnostic>
-where
-    F: Future,
-{
-    check_prepared_cancellation(cancellation)?;
-    tokio::pin!(future);
-    let output = match deadline {
-        Some(deadline) => {
-            let timeout = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
-            tokio::pin!(timeout);
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Err(cancelled()),
-                _ = &mut timeout => return Err(deadline_exceeded()),
-                output = &mut future => output,
-            }
-        }
-        None => {
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Err(cancelled()),
-                output = &mut future => output,
-            }
-        }
-    };
-    check_prepared_cancellation(cancellation)?;
-    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-        return Err(deadline_exceeded());
-    }
-    Ok(output)
-}
-
 async fn verify_transaction_control_scope(
     transaction: &mut Transaction,
     authority: &QueryAuthority,
@@ -694,130 +620,6 @@ async fn verify_transaction_control_scope(
         cancellation,
     )
     .await
-}
-
-/// Verify the one global managed control row inside the same schema-fenced
-/// transaction that will execute a V2 query.
-#[doc(hidden)]
-pub async fn verify_managed_query_control_scope(
-    transaction: &mut Transaction,
-    expected_scope: &ManagedScopeId,
-    deadline: Option<std::time::Instant>,
-    cancellation: &crate::session::backend::AnswerCancellation,
-) -> Result<(), Diagnostic> {
-    let control_query = managed_control_query()?;
-    let documents =
-        managed_control_documents(transaction, &control_query, deadline, cancellation).await?;
-    if documents.len() != 1 {
-        return Err(failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_control_invalid",
-            "the executor database must have exactly one managed control row",
-        ));
-    }
-    let scalar = |key: &str| {
-        documents[0]
-            .get(key)
-            .and_then(provider_scalar)
-            .ok_or_else(|| {
-                failure(
-                    DiagnosticCategory::Integrity,
-                    "query_prepared_control_invalid",
-                    "the executor managed control row is malformed",
-                )
-            })
-    };
-    if scalar("scope")? != expected_scope.as_str() {
-        return Err(failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_managed_scope_mismatch",
-            "the executor database is bound to a different managed scope",
-        ));
-    }
-    let fence = scalar("fence")?;
-    let parsed_fence = fence.parse::<u64>().map_err(|_| {
-        failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_control_invalid",
-            "the executor managed fence is not a canonical unsigned integer",
-        )
-    })?;
-    if parsed_fence == 0 || parsed_fence.to_string() != fence {
-        return Err(failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_control_invalid",
-            "the executor managed fence is not a canonical unsigned integer",
-        ));
-    }
-    if scalar("state")? != "free" {
-        return Err(failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_migration_in_progress",
-            "the executor database has an active or invalid migration fence",
-        ));
-    }
-    let holder = managed_control_documents(
-        transaction,
-        "match $control isa typebridge-internal-v2-migration-control, \
-         has typebridge-internal-v2-lease-holder $holder; \
-         limit 1; fetch { \"holder\": $holder };",
-        deadline,
-        cancellation,
-    )
-    .await?;
-    if !holder.is_empty() {
-        return Err(failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_migration_in_progress",
-            "the executor database has an active or invalid migration fence",
-        ));
-    }
-    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-        return Err(deadline_exceeded());
-    }
-    Ok(())
-}
-
-async fn managed_control_documents(
-    transaction: &mut Transaction,
-    typeql: &str,
-    deadline: Option<std::time::Instant>,
-    cancellation: &crate::session::backend::AnswerCancellation,
-) -> Result<Vec<serde_json::Value>, Diagnostic> {
-    let query = transaction.query(typeql);
-    let result = await_prepared_stage(query, deadline, cancellation)
-        .await?
-        .map_err(|_| {
-            failure(
-                DiagnosticCategory::Integrity,
-                "query_prepared_control_unavailable",
-                "the executor could not read managed control authority",
-            )
-        })?;
-    match result {
-        QueryResult::Documents(documents) => Ok(documents),
-        QueryResult::Rows(_) | QueryResult::Ok => Err(failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_control_invalid",
-            "the executor managed control authority returned no document result",
-        )),
-    }
-}
-
-fn provider_scalar(value: &serde_json::Value) -> Option<&str> {
-    match value {
-        serde_json::Value::String(value) => Some(value),
-        serde_json::Value::Object(value) => value.get("value").and_then(provider_scalar),
-        _ => None,
-    }
-}
-
-fn deadline_exceeded() -> Diagnostic {
-    failure(
-        DiagnosticCategory::ResourceLimit,
-        "transaction_deadline_exceeded",
-        "provider transaction deadline expired",
-    )
 }
 
 /// One additive V2 request and its one-shot authenticated reply decoder.
@@ -2556,37 +2358,4 @@ mod tests {
         assert_eq!(metrics.opens.load(Ordering::SeqCst), 0);
         assert_eq!(metrics.queries.load(Ordering::SeqCst), 0);
     }
-}
-
-fn managed_control_query() -> Result<String, Diagnostic> {
-    let mut constraints = vec![ast(tql::isa(
-        "typebridge-internal-v2-migration-control",
-        false,
-    ))?];
-    for (attribute, variable) in [
-        ("typebridge-internal-v2-control-scope", "scope"),
-        ("typebridge-internal-v2-lease-fence", "fence"),
-        ("typebridge-internal-v2-lease-state", "state"),
-    ] {
-        constraints.push(ast(tql::has(attribute, ast(tql::var(variable))?))?);
-    }
-    let fields = ["scope", "fence", "state"]
-        .into_iter()
-        .map(|name| Ok((name, tql::fetch_expr(ast(tql::var(name))?))))
-        .collect::<Result<Vec<_>, Diagnostic>>()?;
-    ast(tql::render(&tql::pipeline(vec![
-        tql::match_stage(vec![ast(tql::thing("control", constraints))?]),
-        tql::limit(2),
-        ast(tql::fetch(fields))?,
-    ])))
-}
-
-#[test]
-fn managed_control_query_preserves_the_released_read() {
-    let old = "match $control isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-control-scope $scope, has typebridge-internal-v2-lease-fence $fence, has typebridge-internal-v2-lease-state $state; limit 2; fetch { \"scope\": $scope, \"fence\": $fence, \"state\": $state };";
-    let canonical = |source: &str| typeql::parse_query(source).unwrap().to_string();
-    assert_eq!(
-        typeql::parse_query(&canonical(old)).unwrap(),
-        typeql::parse_query(&canonical(&managed_control_query().unwrap())).unwrap()
-    );
 }
