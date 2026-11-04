@@ -2696,7 +2696,7 @@ impl RuntimeTransaction {
     }
 
     /// Execute V2 TypeQL with an additive document collection-member limit.
-    pub fn query_v2_bounded<'a>(
+    pub fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         limits: QueryV2RuntimeAnswerLimits,
@@ -2722,7 +2722,9 @@ impl RuntimeTransaction {
             items.push(item);
             Ok(RuntimeAnswerControl::Continue)
         };
-        let stats = self.query_v2_bounded(typeql, limits, &mut consumer).await?;
+        let stats = self
+            .query_plan_bounded(typeql, limits, &mut consumer)
+            .await?;
         Ok(materialize_runtime_answer(stats, items))
     }
 
@@ -2754,9 +2756,9 @@ impl RuntimeTransaction {
                 self.query_with_rows_bounded(typeql, rows, limits.answer, &mut consumer)
                     .await
             }
-            (None, true) => self.query_v2_bounded(typeql, limits, &mut consumer).await,
+            (None, true) => self.query_plan_bounded(typeql, limits, &mut consumer).await,
             (Some(rows), true) => {
-                self.query_v2_with_rows_bounded(typeql, rows, limits, &mut consumer)
+                self.query_plan_with_rows_bounded(typeql, rows, limits, &mut consumer)
                     .await
             }
         };
@@ -2874,7 +2876,7 @@ impl RuntimeTransaction {
     }
 
     /// Execute a V2 `given` query with an additive collection-member limit.
-    pub fn query_v2_with_rows_bounded<'a>(
+    pub fn query_plan_with_rows_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,

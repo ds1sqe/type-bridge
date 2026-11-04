@@ -287,3 +287,24 @@ pub fn query_v2_prepare_remote(
         pending: Arc::new(pending),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn local_provider_wait_does_not_use_napi_async_work() {
+        let source = include_str!("query_v2_runtime.rs");
+        let start = source
+            .find("pub fn query_v2_execute_local")
+            .expect("local entry point");
+        let end = source[start..]
+            .find("fn remote_limit(")
+            .map(|offset| start + offset)
+            .expect("next entry point");
+        let local = &source[start..end];
+
+        assert!(local.contains("create_deferred"));
+        assert!(local.contains("runtime.spawn"));
+        assert!(!local.contains("AsyncTask"));
+        assert!(!local.contains("block_on"));
+    }
+}

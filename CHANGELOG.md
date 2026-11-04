@@ -200,6 +200,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust bounded provider methods `query_v2_bounded` and
+  `query_v2_with_rows_bounded` become `query_plan_bounded` and
+  `query_plan_with_rows_bounded`, including `TransactionOps` implementations.
+  `MAX_QUERY_V2_SCHEMA_FENCE_DURATION` becomes `MAX_SCHEMA_FENCE_DURATION`;
+  its duration and execution behavior are unchanged.
+
 - Rust shared model vocabulary remains under `query_plan` with native names:
   `CompatibilityValueV2` → `ModelValue`, `ReleasedValueKindV2` → `ModelValueKind`,
   `QueryFieldV2` → `ModelField`, `QueryComparatorV2` → `ModelComparator`,

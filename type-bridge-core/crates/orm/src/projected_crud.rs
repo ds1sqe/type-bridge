@@ -6303,7 +6303,7 @@ mod tests {
             Box::pin(async { panic!("controlled CRUD used an unbounded provider query") })
         }
 
-        fn query_v2_bounded<'a>(
+        fn query_plan_bounded<'a>(
             &'a mut self,
             _typeql: &'a str,
             limits: AnswerLimits,
@@ -6317,7 +6317,7 @@ mod tests {
             stream_controlled_response(self.response(), limits.answer, consumer, _typeql)
         }
 
-        fn query_v2_with_rows_bounded<'a>(
+        fn query_plan_with_rows_bounded<'a>(
             &'a mut self,
             _typeql: &'a str,
             _rows: GivenRowsSpec,

@@ -566,24 +566,6 @@ mod tests {
         assert_eq!(snapshot.len(), MAX_REMOTE_ENVELOPE_BYTES + 1);
         assert_eq!(snapshot, response[..MAX_REMOTE_ENVELOPE_BYTES + 1]);
     }
-
-    #[test]
-    fn local_provider_wait_does_not_use_napi_async_work() {
-        let source = include_str!("query_v2_runtime.rs");
-        let start = source
-            .find("pub fn query_v2_execute_local")
-            .expect("local entry point");
-        let end = source[start..]
-            .find("fn remote_limit(")
-            .map(|offset| start + offset)
-            .expect("next entry point");
-        let local = &source[start..end];
-
-        assert!(local.contains("create_deferred"));
-        assert!(local.contains("runtime.spawn"));
-        assert!(!local.contains("AsyncTask"));
-        assert!(!local.contains("block_on"));
-    }
 }
 
 fn oversized_scalar(value_type: ValueTypeTag) -> Diagnostic {

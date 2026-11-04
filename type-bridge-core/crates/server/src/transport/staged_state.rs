@@ -22,7 +22,7 @@ use type_bridge_orm::plan_authority::{
 #[cfg(test)]
 use type_bridge_orm::remote_signing::Ed25519RemoteReplyVerifier;
 use type_bridge_orm::remote_signing::RemoteReplySigningKey;
-use type_bridge_orm::session::backend::{AnswerLimits, MAX_QUERY_V2_SCHEMA_FENCE_DURATION};
+use type_bridge_orm::session::backend::{AnswerLimits, MAX_SCHEMA_FENCE_DURATION};
 use type_bridge_orm::session::database::Database;
 use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
@@ -604,7 +604,7 @@ impl StagedQueryState {
                 })?;
         let fence_timeout = deadline
             .saturating_duration_since(Instant::now())
-            .min(MAX_QUERY_V2_SCHEMA_FENCE_DURATION);
+            .min(MAX_SCHEMA_FENCE_DURATION);
         if fence_timeout.is_zero() {
             return Err(diagnostic(
                 DiagnosticCategory::ResourceLimit,

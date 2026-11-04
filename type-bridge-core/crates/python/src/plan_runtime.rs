@@ -418,15 +418,31 @@ mod tests {
         MAX_CANONICAL_STRING_BYTES, MAX_QUERY_INVOCATION_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
     };
     use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_contract::query_plan::v3::PlanBuilder;
     use type_bridge_contract::schema::{
         DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
         encode_declared_schema,
     };
-    use type_bridge_orm::query_v2_builder::QueryPlanBuilder;
     use type_bridge_schema::{
         BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet,
         build_schema_authority, encode_schema_authority, normalize_documents,
     };
+
+    fn build_person_plan(authority: &type_bridge_orm::plan_authority::QueryAuthority) {
+        let mut builder = PlanBuilder::new();
+        let person = builder.exact(TypeId::new(TypeKind::Entity, "person").unwrap());
+        builder.returning(vec![person]);
+        builder
+            .build(
+                authority.declared(),
+                authority
+                    .context()
+                    .managed_state()
+                    .managed_semantic_schema()
+                    .clone(),
+            )
+            .expect("verified authority drives the native plan builder");
+    }
 
     fn generated_authority_fixture(source: &str) -> (Vec<u8>, Vec<u8>) {
         let documents = SchemaDocumentSet::parse([(
@@ -458,9 +474,7 @@ mod tests {
             generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  person: {}\n");
         let installed = build_plan_authority_from_schema_authority(&authority, &semantic)
             .expect("verified generated authority installs");
-        QueryPlanBuilder::new(installed.authority())
-            .binding("person")
-            .expect("verified authority drives the shared builder");
+        build_person_plan(&installed.authority());
 
         let (_, foreign_semantic) =
             generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  robot: {}\n");
@@ -590,9 +604,7 @@ mod tests {
                 PyString::new(py, "typedb-3.12.1/v1").as_any(),
             )
             .expect("public class constructor");
-            QueryPlanBuilder::new(authority.authority())
-                .binding("person")
-                .expect("constructed authority drives the shared builder");
+            build_person_plan(&authority.authority());
         });
     }
 

@@ -237,7 +237,7 @@ pub(crate) trait AssertionProviderCall: Send {
         })
     }
 
-    fn query_v2_bounded<'a>(
+    fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         limits: AnswerLimits,
@@ -246,7 +246,7 @@ pub(crate) trait AssertionProviderCall: Send {
         self.query_bounded(typeql, limits.answer, consumer)
     }
 
-    fn query_v2_with_rows_bounded<'a>(
+    fn query_plan_with_rows_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         rows: crate::session::backend::GivenRowsSpec,
@@ -286,16 +286,17 @@ impl<T: TransactionOps + ?Sized> AssertionProviderCall for TransactionAssertionP
             .query_with_rows_bounded(typeql, rows, limits, consumer)
     }
 
-    fn query_v2_bounded<'a>(
+    fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        self.transaction.query_v2_bounded(typeql, limits, consumer)
+        self.transaction
+            .query_plan_bounded(typeql, limits, consumer)
     }
 
-    fn query_v2_with_rows_bounded<'a>(
+    fn query_plan_with_rows_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         rows: crate::session::backend::GivenRowsSpec,
@@ -303,7 +304,7 @@ impl<T: TransactionOps + ?Sized> AssertionProviderCall for TransactionAssertionP
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.transaction
-            .query_v2_with_rows_bounded(typeql, rows, limits, consumer)
+            .query_plan_with_rows_bounded(typeql, rows, limits, consumer)
     }
 }
 
@@ -381,7 +382,7 @@ async fn execute_with_provider<P: AssertionProviderCall + ?Sized>(
         Ok(AnswerControl::Continue)
     };
     let provider_result = provider
-        .query_v2_bounded(
+        .query_plan_bounded(
             lowered.typeql(),
             AnswerLimits {
                 answer: BoundedAnswerLimits {
@@ -1260,7 +1261,7 @@ mod tests {
             self.respond(typeql, limits, consumer)
         }
 
-        fn query_v2_bounded<'a>(
+        fn query_plan_bounded<'a>(
             &'a mut self,
             typeql: &'a str,
             limits: AnswerLimits,

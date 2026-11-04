@@ -814,7 +814,7 @@ pub(crate) async fn execute_with_provider_observer<
                 )));
             }
             provider
-                .query_v2_with_rows_bounded(
+                .query_plan_with_rows_bounded(
                     lowered.typeql(),
                     spec.clone(),
                     provider_limits,
@@ -824,7 +824,7 @@ pub(crate) async fn execute_with_provider_observer<
         }
         None => {
             provider
-                .query_v2_bounded(lowered.typeql(), provider_limits, &mut consumer)
+                .query_plan_bounded(lowered.typeql(), provider_limits, &mut consumer)
                 .await
         }
     };
@@ -1360,7 +1360,7 @@ mod tests {
             panic!("V2 execution must use the additive V2 provider seam")
         }
 
-        fn query_v2_bounded<'a>(
+        fn query_plan_bounded<'a>(
             &'a mut self,
             typeql: &'a str,
             limits: AnswerLimits,
@@ -1419,7 +1419,7 @@ mod tests {
             panic!("V2 execution must use the additive V2 provider seam")
         }
 
-        fn query_v2_bounded<'a>(
+        fn query_plan_bounded<'a>(
             &'a mut self,
             _typeql: &'a str,
             limits: AnswerLimits,

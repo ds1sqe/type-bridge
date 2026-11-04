@@ -24,8 +24,8 @@ use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment
 pub(crate) const MAX_ERROR_DRAIN_ITEMS: u64 = 16;
 /// Maximum encoded provider bytes consumed after the first sticky decode failure.
 pub(crate) const MAX_ERROR_DRAIN_BYTES: u64 = 64 * 1024;
-/// Maximum server-side lifetime of a V2 schema-excluding query transaction.
-pub const MAX_QUERY_V2_SCHEMA_FENCE_DURATION: Duration = Duration::from_secs(5 * 60);
+/// Maximum server-side lifetime of a schema-excluding plan transaction.
+pub const MAX_SCHEMA_FENCE_DURATION: Duration = Duration::from_secs(5 * 60);
 
 /// Result of a query execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -736,14 +736,14 @@ pub trait TransactionOps: Send {
         })
     }
 
-    /// Execute a V2 query with its additive collection-member budget.
+    /// Execute a plan query with its collection-member budget.
     ///
     /// The default preserves third-party backend implementations by routing
-    /// through their released bounded seam. The V2 TypeQL lowering already
+    /// through their released bounded seam. The plan lowering already
     /// caps every fetched list before provider materialization; real drivers
     /// override this method to repeat the aggregate check while converting
     /// provider documents.
-    fn query_v2_bounded<'a>(
+    fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         limits: AnswerLimits,
@@ -752,8 +752,8 @@ pub trait TransactionOps: Send {
         self.query_bounded(typeql, limits.answer, consumer)
     }
 
-    /// Execute a V2 `given` query with its additive collection-member budget.
-    fn query_v2_with_rows_bounded<'a>(
+    /// Execute a plan `given` query with its collection-member budget.
+    fn query_plan_with_rows_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,

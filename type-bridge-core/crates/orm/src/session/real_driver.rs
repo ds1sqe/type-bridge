@@ -489,7 +489,7 @@ impl TransactionOps for RealTransaction {
         })
     }
 
-    fn query_v2_with_rows_bounded<'a>(
+    fn query_plan_with_rows_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,
@@ -532,7 +532,7 @@ impl TransactionOps for RealTransaction {
             };
             let result = self
                 .inner
-                .query_v2_with_rows_bounded(typeql, rows, runtime_limits, &mut adapter)
+                .query_plan_with_rows_bounded(typeql, rows, runtime_limits, &mut adapter)
                 .await;
             if matches!(&result, Err(runtime::RuntimeError::AnswerConsumer))
                 && let Some(error) = consumer_error
@@ -597,7 +597,7 @@ impl TransactionOps for RealTransaction {
         })
     }
 
-    fn query_v2_bounded<'a>(
+    fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         limits: AnswerLimits,
@@ -638,7 +638,7 @@ impl TransactionOps for RealTransaction {
             };
             let result = self
                 .inner
-                .query_v2_bounded(typeql, runtime_limits, &mut adapter)
+                .query_plan_bounded(typeql, runtime_limits, &mut adapter)
                 .await;
             if matches!(&result, Err(runtime::RuntimeError::AnswerConsumer))
                 && let Some(error) = consumer_error

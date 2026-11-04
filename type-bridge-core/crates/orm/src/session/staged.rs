@@ -396,7 +396,7 @@ async fn collect_counted_given(
         Ok(AnswerControl::Continue)
     };
     let result = ops
-        .query_v2_with_rows_bounded(typeql, rows, limits, &mut consumer)
+        .query_plan_with_rows_bounded(typeql, rows, limits, &mut consumer)
         .await;
     if let Some(error) = deferred {
         return Err(error);

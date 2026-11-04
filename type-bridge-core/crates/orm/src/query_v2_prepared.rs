@@ -46,9 +46,7 @@ use crate::query_v2_remote::{
     check_advertised_capabilities_v2, decode_remote_outcome_v2, encode_remote_request_v2_at,
     remote_outcome_v2,
 };
-use crate::session::backend::{
-    AnswerCancellation, AnswerLimits, MAX_QUERY_V2_SCHEMA_FENCE_DURATION,
-};
+use crate::session::backend::{AnswerCancellation, AnswerLimits, MAX_SCHEMA_FENCE_DURATION};
 use crate::session::database::Database;
 
 const PREPARED_CLOSE_GRACE: Duration = Duration::from_secs(1);
@@ -572,9 +570,9 @@ fn schema_fence_timeout(deadline: Option<std::time::Instant>) -> Result<Duration
         Some(deadline) => deadline
             .checked_duration_since(std::time::Instant::now())
             .filter(|remaining| !remaining.is_zero())
-            .map(|remaining| remaining.min(MAX_QUERY_V2_SCHEMA_FENCE_DURATION))
+            .map(|remaining| remaining.min(MAX_SCHEMA_FENCE_DURATION))
             .ok_or_else(deadline_exceeded),
-        None => Ok(MAX_QUERY_V2_SCHEMA_FENCE_DURATION),
+        None => Ok(MAX_SCHEMA_FENCE_DURATION),
     }
 }
 

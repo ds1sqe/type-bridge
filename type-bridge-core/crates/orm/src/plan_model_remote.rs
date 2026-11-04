@@ -658,7 +658,6 @@ mod tests {
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
     use type_bridge_contract::query_plan::query_given_rows_capability;
     use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-    use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
     use type_bridge_contract::value::CanonicalValue;
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
@@ -1060,13 +1059,7 @@ functions:
     }
 
     fn executor_advertisement(limits: QueryLimits) -> RemoteCapabilities {
-        let mut capabilities = native_capabilities()
-            .iter()
-            .cloned()
-            .collect::<QueryCapabilitySet>();
-        for capability in query_remote_v2_required_capabilities(false) {
-            capabilities.insert(capability);
-        }
+        let capabilities = native_capabilities();
         RemoteCapabilities::new(
             capabilities,
             RemoteExecutorBinding::new("remote-limits-executor", "epoch-00000000001")
@@ -1276,10 +1269,7 @@ functions:
         };
         let authority = matching_authority(&registry);
         let signer = RemoteReplySigningKey::from_secret_bytes([0x53; 32]);
-        let mut capabilities = native_capabilities();
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
-        }
+        let capabilities = native_capabilities();
         let advertisement = RemoteCapabilities::new(
             capabilities,
             RemoteExecutorBinding::new("remote-model-reduction", "epoch-00000000001")

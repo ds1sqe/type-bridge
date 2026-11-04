@@ -988,7 +988,7 @@ impl TransactionOps for CountingTransaction {
         self.log.lock().unwrap().statements.push(typeql.to_owned());
         self.inner.query_bounded(typeql, limits, consumer)
     }
-    fn query_v2_bounded<'a>(
+    fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         limits: AnswerLimits,
@@ -996,9 +996,12 @@ impl TransactionOps for CountingTransaction {
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.log.lock().unwrap().statements.push(typeql.to_owned());
         let fail = self.fail_requested();
-        after_counted(self.inner.query_v2_bounded(typeql, limits, consumer), fail)
+        after_counted(
+            self.inner.query_plan_bounded(typeql, limits, consumer),
+            fail,
+        )
     }
-    fn query_v2_with_rows_bounded<'a>(
+    fn query_plan_with_rows_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,
@@ -1009,7 +1012,7 @@ impl TransactionOps for CountingTransaction {
         let fail = self.fail_requested();
         after_counted(
             self.inner
-                .query_v2_with_rows_bounded(typeql, rows, limits, consumer),
+                .query_plan_with_rows_bounded(typeql, rows, limits, consumer),
             fail,
         )
     }

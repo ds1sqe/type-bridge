@@ -224,7 +224,7 @@ impl TransactionContextMutationLease {
                     self.mutate_v2_with_rows_bounded(&query.typeql, rows, limits, consumer)
                         .await
                 } else {
-                    self.query_v2_with_rows_bounded(&query.typeql, rows, limits, consumer)
+                    self.query_plan_with_rows_bounded(&query.typeql, rows, limits, consumer)
                         .await
                 }
             }
@@ -238,7 +238,7 @@ impl TransactionContextMutationLease {
                     self.phase = MutationLeasePhase::PossibleEffect;
                 }
                 self.transaction()?
-                    .query_v2_bounded(&query.typeql, limits, consumer)
+                    .query_plan_bounded(&query.typeql, limits, consumer)
                     .await
             }
         }
@@ -247,7 +247,7 @@ impl TransactionContextMutationLease {
     /// Execute a bounded scalar-`given` prerequisite while retaining the
     /// exclusive lifecycle fence. This does not arm rollback-only because no
     /// mutation has yet been dispatched.
-    pub(crate) async fn query_v2_with_rows_bounded(
+    pub(crate) async fn query_plan_with_rows_bounded(
         &mut self,
         typeql: &str,
         rows: GivenRowsSpec,
@@ -260,7 +260,7 @@ impl TransactionContextMutationLease {
             ));
         }
         self.transaction()?
-            .query_v2_with_rows_bounded(typeql, rows, limits, consumer)
+            .query_plan_with_rows_bounded(typeql, rows, limits, consumer)
             .await
     }
 
@@ -283,7 +283,7 @@ impl TransactionContextMutationLease {
             self.phase = MutationLeasePhase::PossibleEffect;
         }
         self.transaction()?
-            .query_v2_with_rows_bounded(typeql, rows, limits, consumer)
+            .query_plan_with_rows_bounded(typeql, rows, limits, consumer)
             .await
     }
 
@@ -450,10 +450,10 @@ impl TransactionContext {
         let tx = active_transaction(&mut guard)?;
         match query.rows.as_ref() {
             Some(rows) => {
-                tx.query_v2_with_rows_bounded(&query.typeql, rows.clone(), limits, consumer)
+                tx.query_plan_with_rows_bounded(&query.typeql, rows.clone(), limits, consumer)
                     .await
             }
-            None => tx.query_v2_bounded(&query.typeql, limits, consumer).await,
+            None => tx.query_plan_bounded(&query.typeql, limits, consumer).await,
         }
     }
 

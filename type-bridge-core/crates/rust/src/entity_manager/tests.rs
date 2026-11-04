@@ -1551,7 +1551,7 @@ impl TransactionOps for Tx {
         self.state.lock().unwrap().query_modes.push("canonical");
         self.query_recorded(q)
     }
-    fn query_v2_bounded<'a>(
+    fn query_plan_bounded<'a>(
         &'a mut self,
         source: &'a str,
         limits: type_bridge_orm::session::backend::AnswerLimits,
