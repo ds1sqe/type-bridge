@@ -152,6 +152,7 @@ impl TypeDbStateStore {
             .transaction_context(TxType::Read)
             .await
             .map_err(map_orm_error)?;
+        // Schema-only read, excepted like define/undefine (06.8).
         let checked = ctx
             .query(&check_query)
             .await
@@ -589,6 +590,7 @@ async fn legacy_state_schema_presence(
         .collect::<BTreeSet<_>>();
     let mut expected_labels_seen_in_any_kind = 0_usize;
     for (kind, expected) in expected_by_root {
+        // Schema-only read, excepted like define/undefine (06.8).
         let result = transaction
             .query(&schema_kind_query(kind, true)?)
             .await

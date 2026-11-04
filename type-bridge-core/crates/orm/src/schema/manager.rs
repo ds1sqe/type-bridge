@@ -198,6 +198,7 @@ impl<'db> SchemaManager<'db> {
         let mut info = SchemaInfo::default();
 
         // ── 1. Query all user-defined attribute types ──────────────
+        // Schema-only read, excepted like define/undefine (06.8).
         let attr_query = schema_scan_query("attribute").map_err(query_error)?;
         if let Ok(QueryResult::Documents(docs)) =
             self.db.execute_raw(&attr_query, TxType::Read).await
@@ -217,6 +218,7 @@ impl<'db> SchemaManager<'db> {
         }
 
         // ── 2. Query all entity types with owned attributes ────────
+        // Schema-only read, excepted like define/undefine (06.8).
         let entity_query = schema_scan_query("entity").map_err(query_error)?;
         if let Ok(QueryResult::Documents(docs)) =
             self.db.execute_raw(&entity_query, TxType::Read).await
@@ -246,6 +248,7 @@ impl<'db> SchemaManager<'db> {
         }
 
         // ── 3. Query all relation types with roles and attributes ──
+        // Schema-only read, excepted like define/undefine (06.8).
         let relation_query = schema_scan_query("relation").map_err(query_error)?;
         if let Ok(QueryResult::Documents(docs)) =
             self.db.execute_raw(&relation_query, TxType::Read).await
@@ -287,6 +290,7 @@ impl<'db> SchemaManager<'db> {
     ) -> Vec<OwnedAttributeEntry> {
         use crate::session::backend::QueryResult;
 
+        // Schema-only read, excepted like define/undefine (06.8).
         let Ok(query) = schema_capability_query(type_name, false) else {
             return Vec::new();
         };
@@ -319,6 +323,7 @@ impl<'db> SchemaManager<'db> {
     async fn introspect_roles(&self, relation_name: &str) -> Vec<RoleEntry> {
         use crate::session::backend::QueryResult;
 
+        // Schema-only read, excepted like define/undefine (06.8).
         let Ok(query) = schema_capability_query(relation_name, true) else {
             return Vec::new();
         };
