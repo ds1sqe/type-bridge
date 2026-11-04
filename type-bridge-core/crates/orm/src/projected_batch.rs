@@ -560,6 +560,23 @@ impl ProjectedBatch {
         Self::try_finalize_internal::<false>(installed, model, operation, &mut rows, control, probe)
     }
 
+    /// Validate an exact public single-delete invocation, preserving its plan form.
+    #[doc(hidden)]
+    pub fn try_single_delete(
+        installed: &InstalledRuntimeProjection,
+        model: TypeId,
+        iid: String,
+        control: &ProjectedBatchInvocationControl,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        Self::try_single_write(
+            installed,
+            model,
+            ProjectedBatchOperation::Delete,
+            ProjectedBatchRow::Delete { iid },
+            control,
+        )
+    }
+
     pub(crate) fn try_single_write(
         installed: &InstalledRuntimeProjection,
         model: TypeId,

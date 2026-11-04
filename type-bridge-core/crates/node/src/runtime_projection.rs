@@ -3641,11 +3641,10 @@ impl NodeProjectedModelManager {
     pub fn delete_by_iid(&self, iid: String) -> napi::Result<()> {
         let control =
             ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
-        let batch = ProjectedBatch::try_new_for_invocation(
+        let batch = ProjectedBatch::try_single_delete(
             self.package.projection.as_ref(),
             self.type_id.clone(),
-            ProjectedBatchOperation::Delete,
-            vec![ProjectedBatchRow::Delete { iid }],
+            iid,
             &control,
         )
         .map_err(napi_sdk_diagnostic)?;

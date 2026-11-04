@@ -3311,7 +3311,16 @@ impl PyProjectedModelManager {
     /// Delete one thing through the projected executor, which runs it as a
     /// delete plan when the projection carries plan authority.
     fn delete_projected(&self, py: Python<'_>, iid: &str) -> PyResult<()> {
-        self.delete_many_projected(py, vec![iid.to_owned()])
+        let control =
+            ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+        let batch = ProjectedBatch::try_single_delete(
+            self.package.projection.as_ref(),
+            self.type_id.clone(),
+            iid.to_owned(),
+            &control,
+        )
+        .map_err(py_sdk_diagnostic)?;
+        self.execute_projected_delete(py, batch, control)
     }
 
     fn get_projected(&self, py: Python<'_>, iid: &str) -> PyResult<Option<ProjectedThing>> {
@@ -3622,6 +3631,15 @@ impl PyProjectedModelManager {
 
     fn delete_many_projected(&self, py: Python<'_>, iids: Vec<String>) -> PyResult<()> {
         let (batch, control) = self.prepare_delete_batch(iids)?;
+        self.execute_projected_delete(py, batch, control)
+    }
+
+    fn execute_projected_delete(
+        &self,
+        py: Python<'_>,
+        batch: ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+    ) -> PyResult<()> {
         if !batch.is_empty()
             && let Some(transaction) = self.transaction()
         {

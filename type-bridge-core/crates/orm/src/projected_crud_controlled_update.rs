@@ -814,6 +814,22 @@ mod tests {
     }
 
     fn wide_single_projection_with_ordered(ordered: bool) -> InstalledRuntimeProjection {
+        wide_single_projection_for_target(ordered, BindingTarget::Python)
+    }
+
+    fn wide_single_projection_for_target(
+        ordered: bool,
+        target: BindingTarget,
+    ) -> InstalledRuntimeProjection {
+        let (config, handler) = match target {
+            BindingTarget::Python => (ProjectionConfig::python(), ProjectionHandler::python_v2()),
+            BindingTarget::TypeScript => (
+                ProjectionConfig::typescript(),
+                ProjectionHandler::typescript_v2(),
+            ),
+            BindingTarget::Rust => (ProjectionConfig::rust(), ProjectionHandler::rust_v2()),
+            _ => unreachable!(),
+        };
         let source = "format: typebridge.schema/v2\nattributes:\n  item-key: { value: string }\n  item-tag: { value: string }\nentities:\n  wide-item:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\nrelations:\n  wide-edge:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\n    relates:\n      member: { card: { min: 0, max: 4 } }\nplays:\n  wide-item:\n    wide-edge: [member]\n  wide-edge:\n    wide-edge: [member]\n";
         let source = if ordered {
             source.replace(
@@ -837,14 +853,7 @@ mod tests {
         )
         .unwrap();
         InstalledRuntimeProjection::try_new(
-            project(
-                &resolved,
-                BindingTarget::Python,
-                &ProjectionConfig::python(),
-                &[ProjectionHandler::python_v2()],
-                &[],
-            )
-            .unwrap(),
+            project(&resolved, target, &config, &[handler], &[]).unwrap(),
         )
         .unwrap()
     }
@@ -1876,70 +1885,89 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ordered_proxy_single_and_many_deletes_keep_native_matched_plan_and_one_exchange() {
-        for kind in [TypeKind::Entity, TypeKind::Relation] {
-            for count in [1, 3] {
-                for roots in [0, 1] {
-                    let model = TypeId::new(
-                        kind,
-                        if kind == TypeKind::Entity {
-                            "wide-item"
-                        } else {
-                            "wide-edge"
-                        },
-                    )
-                    .unwrap();
-                    let (installed, proxy, transport) = single_proxy_fixture_with_projection(
-                        model.clone(),
-                        roots,
-                        0,
-                        type_bridge_contract::limits::QueryLimits::V3,
-                        wide_single_projection_with_ordered(true),
-                    );
-                    let control = ProjectedBatchInvocationControl::capture(
-                        Default::default(),
-                        Default::default(),
-                    );
-                    let batch = ProjectedBatch::try_new_for_invocation(
-                        &installed,
-                        model,
-                        ProjectedBatchOperation::Delete,
-                        ["0x20", "0x21", "0x22"]
-                            .into_iter()
-                            .take(count)
-                            .map(|iid| ProjectedBatchRow::Delete { iid: iid.into() })
-                            .collect(),
-                        &control,
-                    )
-                    .unwrap();
-                    let direct = crate::projected_batch_executor::inline_batch_plan_bytes_for_test(
-                        &installed,
-                        &batch,
-                        proxy.execution_identity(),
-                        false,
-                    )
-                    .unwrap();
-                    let output = ProjectedBatchExecutor::new(&installed)
-                        .execute_on_target_mapped(
-                            crate::QueryTarget::Proxy(&proxy),
-                            &batch,
-                            control,
-                            None,
-                            |result| Ok(Some(result)),
+    async fn ordered_proxy_single_and_many_deletes_preserve_call_plan_and_one_exchange() {
+        for target in [
+            BindingTarget::Python,
+            BindingTarget::TypeScript,
+            BindingTarget::Rust,
+        ] {
+            for kind in [TypeKind::Entity, TypeKind::Relation] {
+                for (single, count) in [(true, 1), (false, 1), (false, 2)] {
+                    for roots in [0, 1] {
+                        let model = TypeId::new(
+                            kind,
+                            if kind == TypeKind::Entity {
+                                "wide-item"
+                            } else {
+                                "wide-edge"
+                            },
                         )
-                        .await
                         .unwrap();
-                    assert!(matches!(output, Some(ProjectedBatchResult::Deleted)));
-                    let seen = transport.seen.lock().unwrap();
-                    assert_eq!(seen.len(), 1);
-                    assert_eq!(seen[0].plans().len(), 1);
-                    assert_eq!(seen[0].plans()[0].plan().canonical_bytes().unwrap(), direct);
-                    assert_eq!(
+                        let (installed, proxy, transport) = single_proxy_fixture_with_projection(
+                            model.clone(),
+                            roots,
+                            0,
+                            type_bridge_contract::limits::QueryLimits::V3,
+                            wide_single_projection_for_target(true, target),
+                        );
                         transport
-                            .dispatched_writes
-                            .load(std::sync::atomic::Ordering::Relaxed),
-                        1
-                    );
+                            .mutation_columns
+                            .store(1, std::sync::atomic::Ordering::Relaxed);
+                        let control = ProjectedBatchInvocationControl::capture(
+                            Default::default(),
+                            Default::default(),
+                        );
+                        let batch = if single {
+                            ProjectedBatch::try_single_delete(
+                                &installed,
+                                model,
+                                "0x20".into(),
+                                &control,
+                            )
+                        } else {
+                            ProjectedBatch::try_new_for_invocation(
+                                &installed,
+                                model,
+                                ProjectedBatchOperation::Delete,
+                                ["0x20", "0x21", "0x22"]
+                                    .into_iter()
+                                    .take(count)
+                                    .map(|iid| ProjectedBatchRow::Delete { iid: iid.into() })
+                                    .collect(),
+                                &control,
+                            )
+                        }
+                        .unwrap();
+                        let direct =
+                            crate::projected_batch_executor::inline_batch_plan_bytes_for_test(
+                                &installed,
+                                &batch,
+                                proxy.execution_identity(),
+                                false,
+                            )
+                            .unwrap();
+                        let output = ProjectedBatchExecutor::new(&installed)
+                            .execute_on_target_mapped(
+                                crate::QueryTarget::Proxy(&proxy),
+                                &batch,
+                                control,
+                                None,
+                                |result| Ok(Some(result)),
+                            )
+                            .await
+                            .unwrap();
+                        assert!(matches!(output, Some(ProjectedBatchResult::Deleted)));
+                        let seen = transport.seen.lock().unwrap();
+                        assert_eq!(seen.len(), 1);
+                        assert_eq!(seen[0].plans().len(), 1);
+                        assert_eq!(seen[0].plans()[0].plan().canonical_bytes().unwrap(), direct);
+                        assert_eq!(
+                            transport
+                                .dispatched_writes
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                            1
+                        );
+                    }
                 }
             }
         }

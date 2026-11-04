@@ -17,8 +17,8 @@ use crate::error::{Error, ModelValidationPhase};
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, ModelKind};
 use crate::projected_batch::{
     checked_batch_ordinal, create_operation, create_rows, delete_rows, encode_batch_create,
-    execute_owned_delete, execute_owned_things, prepare_batch, project_encoded_batch_create,
-    reserved_binding_vec, validate_binding_row_count,
+    execute_owned_delete, execute_owned_things, prepare_batch, prepare_single_delete,
+    project_encoded_batch_create, reserved_binding_vec, validate_binding_row_count,
 };
 use crate::projected_codec::{materialize_projected, project_create};
 use type_bridge_orm::{ProjectedManagerFilterExecutor, QueryTarget};
@@ -599,11 +599,7 @@ where
             ModelValidationPhase::Input,
             true,
         )?;
-        let mut rows = reserved_binding_vec(1)?;
-        rows.push(ProjectedBatchRow::Delete {
-            iid: iid.to_owned(),
-        });
-        let batch = prepare_batch(installed, id, ProjectedBatchOperation::Delete, rows)?;
+        let batch = prepare_single_delete(installed, id, iid)?;
         execute_owned_delete(target, installed, &batch).await
     }
 

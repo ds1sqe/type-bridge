@@ -343,6 +343,20 @@ pub(crate) async fn execute_borrowed_delete(
         .map_err(map_execution_error)
 }
 
+pub(crate) fn prepare_single_delete(
+    installed: &InstalledRuntimeProjection,
+    model: TypeId,
+    iid: &str,
+) -> Result<ProjectedBatch> {
+    ProjectedBatch::try_single_delete(
+        installed,
+        model,
+        iid.to_owned(),
+        &ProjectedBatchInvocationControl::capture(Default::default(), Default::default()),
+    )
+    .map_err(|error| Error::from_projected_batch(error, ModelValidationPhase::Input))
+}
+
 pub(crate) fn prepare_batch(
     installed: &InstalledRuntimeProjection,
     model: TypeId,

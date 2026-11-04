@@ -181,38 +181,32 @@ impl BatchPlan<'_> {
         &self,
         rows: GivenRowsSpec,
     ) -> std::result::Result<BuiltPlan, SdkExecutionDiagnostic> {
-        // Ordered models retain the native literal-IID deletion plan from 06.0.
+        // Public single deletes retain the native literal-IID plan for ordered models.
         // Compiled field routes already exclude ordered ownership.
-        if self.field_routes.len() != self.model.create().fields().len()
-            || self
-                .model
-                .query_tokens()
-                .roles()
-                .values()
-                .any(|role| !role.multiplicity().collection_mode().is_unordered())
+        if self.single_input
+            && (self.field_routes.len() != self.model.create().fields().len()
+                || self
+                    .model
+                    .query_tokens()
+                    .roles()
+                    .values()
+                    .any(|role| !role.multiplicity().collection_mode().is_unordered()))
         {
-            let iids = rows
-                .rows
-                .iter()
-                .map(|row| {
-                    let Some(GivenValue::String(iid)) = row.get(1) else {
-                        return Err(SdkExecutionDiagnostic::internal_failure());
-                    };
-                    Ok(iid.clone())
-                })
-                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let [row] = rows.rows.as_slice() else {
+                return Err(SdkExecutionDiagnostic::internal_failure());
+            };
+            let Some(GivenValue::String(iid)) = row.get(1) else {
+                return Err(SdkExecutionDiagnostic::internal_failure());
+            };
             let registry = self
                 .installed
                 .manager_registry()
                 .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?;
             let manager = crate::plan_builders::manager::ManagerPlans::new(registry)
                 .with_query_limits(self.authority.shared_query_limits());
-            return if let [iid] = iids.as_slice() {
-                manager.delete(self.model.id().label().as_str(), iid, true, false)
-            } else {
-                manager.delete_many(self.model.id().label().as_str(), &iids, true, false)
-            }
-            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write));
+            return manager
+                .delete(self.model.id().label().as_str(), iid, true, false)
+                .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write));
         }
         let columns = [(ValueTypeTag::Long, false), (ValueTypeTag::String, false)];
         let mut draft = BatchDraft::new(&self.authority, rows, &columns).map_err(diagnostic)?;
@@ -1625,17 +1619,29 @@ mod native_input_tests {
                         "link-forward",
                     ),
                 ] {
-                    for count in [1, 2] {
-                        let batch = ProjectedBatch::try_new(
-                            &installed,
-                            TypeId::new(kind, label).unwrap(),
-                            ProjectedBatchOperation::Delete,
-                            ["0x10", "0x11"]
-                                .into_iter()
-                                .take(count)
-                                .map(|iid| ProjectedBatchRow::Delete { iid: iid.into() })
-                                .collect(),
-                        )
+                    for (single, count) in [(true, 1), (false, 1), (false, 2)] {
+                        let batch = if single {
+                            ProjectedBatch::try_single_delete(
+                                &installed,
+                                TypeId::new(kind, label).unwrap(),
+                                "0x10".into(),
+                                &ProjectedBatchInvocationControl::capture(
+                                    Default::default(),
+                                    Default::default(),
+                                ),
+                            )
+                        } else {
+                            ProjectedBatch::try_new(
+                                &installed,
+                                TypeId::new(kind, label).unwrap(),
+                                ProjectedBatchOperation::Delete,
+                                ["0x10", "0x11"]
+                                    .into_iter()
+                                    .take(count)
+                                    .map(|iid| ProjectedBatchRow::Delete { iid: iid.into() })
+                                    .collect(),
+                            )
+                        }
                         .unwrap();
                         let prepared = PreparedProjectedBatchInvocation::try_new(
                             &installed,
@@ -1651,8 +1657,8 @@ mod native_input_tests {
                             BatchPlan::compile(&installed, &prepared, &identity, false, None)
                                 .unwrap();
                         let native = plan.native_delete(plan.delete_rows().unwrap()).unwrap();
-                        assert!(matched_delete(native.local()));
-                        if count == 1 {
+                        assert_eq!(matched_delete(native.local()), single);
+                        if single {
                             assert!(native.local().given_rows().is_none());
                             let mut actual: Value =
                                 serde_json::from_slice(&native.local().canonical_bytes().unwrap())
@@ -1673,10 +1679,53 @@ mod native_input_tests {
                                 expected
                             );
                         } else {
-                            // The native many-delete uses IID inputs without batch ordinals.
-                            assert_eq!(native.local().given_rows().unwrap().len(), 2);
-                            assert_eq!(native.local().inputs().len(), 1);
+                            assert_eq!(native.local().given_rows().unwrap().len(), count);
+                            assert_eq!(native.local().inputs().len(), 2);
                             assert_eq!(native.local().pipeline().len(), 2);
+                            if kind == TypeKind::Relation && count == 2 {
+                                let mut actual: Value = serde_json::from_slice(
+                                    &native.local().canonical_bytes().unwrap(),
+                                )
+                                .unwrap();
+                                for (index, record) in
+                                    ["link-forward", "link-return"].into_iter().enumerate()
+                                {
+                                    actual["bindings"][index]["variable"] =
+                                        serde_json::json!(format!("b{index}"));
+                                    actual["given_rows"][index][1]["value"] =
+                                        serde_json::json!(format!("@record/{record}"));
+                                }
+                                let rows = actual["given_rows"].clone();
+                                let path = format!(
+                                    "{}/../../../tests/contracts/sdk_conformance/models/plans/{}/relation_batch_update_delete_atomic.delete.json",
+                                    env!("CARGO_MANIFEST_DIR"),
+                                    profile.replace('/', "_")
+                                );
+                                let expected: Value =
+                                    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                                assert_eq!(
+                                    serde_json::json!([{ "plan": actual, "rows": rows }]),
+                                    expected
+                                );
+                            }
+                            let mut identities = DeleteIdentityConsumer::new(count).unwrap();
+                            accept_native_answer(
+                                native.local(),
+                                query_plan_exec::PlanAnswer::Rows(vec![]),
+                                Reply::Mutation,
+                                &mut identities,
+                            )
+                            .unwrap();
+                            assert!(
+                                accept_native_answer(
+                                    native.local(),
+                                    query_plan_exec::PlanAnswer::Matched(0),
+                                    Reply::Mutation,
+                                    &mut identities
+                                )
+                                .is_err()
+                            );
+                            continue;
                         }
                         let mut identities = DeleteIdentityConsumer::new(count).unwrap();
                         for matched in [0, count as u64] {
