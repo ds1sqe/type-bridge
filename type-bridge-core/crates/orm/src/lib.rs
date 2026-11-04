@@ -50,6 +50,8 @@ pub mod hooks;
 mod live_database;
 pub mod match_request;
 pub mod migration_assertion;
+#[cfg(test)]
+mod plan_adapter_tests;
 pub mod plan_authority;
 mod plan_builders;
 pub mod plan_explain;

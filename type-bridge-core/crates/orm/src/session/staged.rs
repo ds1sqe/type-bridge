@@ -3855,8 +3855,7 @@ mod tests {
         use type_bridge_contract::schema::OwnsFactId;
         use type_bridge_contract::value::{CanonicalString, CanonicalValue};
         for empty in [false, true] {
-            let (registry, _) =
-                crate::query_v2_adapter_tests::generic_model_selection(&[0, 1], false);
+            let (registry, _) = crate::plan_adapter_tests::generic_model_selection(&[0, 1], false);
             let authority =
                 crate::match_request::descriptor_plan::MatchRequestAdapterAuthority::from_registry(
                     &registry,
@@ -3955,8 +3954,7 @@ mod tests {
         use type_bridge_contract::value::CanonicalValue;
         for ordered in [false, true] {
             for populated in [false, true] {
-                let (original, _) =
-                    crate::query_v2_adapter_tests::generic_model_selection(&[0], false);
+                let (original, _) = crate::plan_adapter_tests::generic_model_selection(&[0], false);
                 let registry = Arc::new(DescriptorRegistry::new());
                 for descriptor in original.snapshot() {
                     match descriptor {
@@ -4110,7 +4108,7 @@ mod tests {
         use type_bridge_contract::value::CanonicalValue;
         for fail in [false, true] {
             let (registry, plan) =
-                crate::query_v2_adapter_tests::generic_model_selection(&[0, 1], false);
+                crate::plan_adapter_tests::generic_model_selection(&[0, 1], false);
             let source = Arc::new(
                 crate::match_request::build_plan_fetch_stack(
                     &registry,
