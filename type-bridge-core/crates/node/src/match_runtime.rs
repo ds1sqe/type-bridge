@@ -503,21 +503,6 @@ impl NodeMatchSessionHandle {
     }
 }
 
-fn supports_projected_query_companion(installed: &InstalledRuntimeProjection) -> bool {
-    installed.projection().models().values().any(|model| {
-        model
-            .query_tokens()
-            .fields()
-            .values()
-            .any(|field| !field.multiplicity().collection_mode().is_unordered())
-            || model
-                .query_tokens()
-                .roles()
-                .values()
-                .any(|role| !role.multiplicity().collection_mode().is_unordered())
-    })
-}
-
 #[napi]
 impl NodeMatchSessionHandle {
     #[napi]
@@ -679,11 +664,7 @@ impl NodeMatchSessionHandle {
             .query(shape.inner.clone())
             .map(|inner| NodeMatchQueryHandle {
                 inner,
-                installed: self
-                    .installed
-                    .as_ref()
-                    .filter(|installed| supports_projected_query_companion(installed))
-                    .map(Arc::clone),
+                installed: self.installed.as_ref().map(Arc::clone),
                 output: Arc::clone(&shape.output),
                 lineage: Arc::new(()),
                 resources: self.resources,
@@ -3299,9 +3280,13 @@ plays:
     }
 
     fn ordered_query_projection() -> Arc<InstalledRuntimeProjection> {
+        query_projection(ORDERED_QUERY_SCHEMA)
+    }
+
+    fn query_projection(schema: &str) -> Arc<InstalledRuntimeProjection> {
         let documents = SchemaDocumentSet::parse([(
             DocumentId::new("node-ordered-query.yaml").unwrap(),
-            ORDERED_QUERY_SCHEMA,
+            schema,
         )])
         .unwrap();
         let declared = normalize_documents(&documents).unwrap();
@@ -3334,6 +3319,29 @@ plays:
                 .unwrap()
                 .with_schema_authority(&authority),
         )
+    }
+
+    #[test]
+    fn unordered_generated_queries_retain_the_projected_materializer() {
+        let schema = ORDERED_QUERY_SCHEMA.replace("        ordered: true\n", "");
+        let installed = query_projection(&schema);
+        let registry = Arc::new(installed.match_registry().unwrap());
+        let session = NodeMatchSessionHandle::from_installed(
+            Arc::clone(&installed),
+            registry,
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+            QueryLimits::CANONICAL,
+        );
+        let person = session.inner.exact("person").unwrap();
+        let shape = NodeMatchShapeHandle {
+            inner: session.inner.positional([person.one()]).unwrap(),
+            output: Arc::new(NodeOutputShape::Positional {
+                slots: vec![NodeOutputSlotKind::One],
+            }),
+        };
+        let query = session.query(&shape).unwrap();
+        assert!(Arc::ptr_eq(query.installed.as_ref().unwrap(), &installed));
     }
 
     fn projected_query_database(
