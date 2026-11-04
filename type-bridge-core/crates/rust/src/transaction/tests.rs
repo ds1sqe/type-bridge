@@ -828,9 +828,27 @@ async fn sdk_models_rust_data_plane_fragment() {
     assert_eq!(policy_debug, "DirectConnectionPolicy([REDACTED])");
     assert!(!policy_debug.contains("secret-that-must-not-appear"));
 
-    // The frozen journey records the proxy wire policy on every binding.
-    let wire_limits =
-        QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy);
+    // Historical-policy replay: 07.0 changed the default timeout from 30 s to 60 s.
+    assert_eq!(
+        QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy)
+            .timeout_milliseconds
+            .milliseconds(),
+        Some(60_000),
+    );
+    let wire_limits = QueryExecutionResourceLimits {
+        collect_phase_timestamps: false,
+        timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(30_000),
+        items: 65_536,
+        bytes: 33_554_432,
+        graph_nodes: 65_536,
+        attribute_values: 65_536,
+        collection_members: 65_536,
+        role_players: 65_536,
+        statements: Some(3),
+    }
+    .validate()
+    .expect("historical policy is accepted");
+    assert_eq!(effective.constrained_by(wire_limits), wire_limits);
     let dimensions = [
         (
             "timeout_milliseconds",
