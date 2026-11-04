@@ -6,7 +6,7 @@ import pytest
 import type_bridge_core
 from type_bridge_core import ProxyConnection
 
-from tests.unit.query.test_query_v2_remote_runtime import (
+from tests.unit.query.remote_fixture import (
     PLAN_CAPABILITIES,
     _advertisement,
     _authority,
@@ -15,7 +15,7 @@ from tests.unit.typed_query.test_core_limits import _closed_endpoint
 
 
 def _connection() -> ProxyConnection:
-    # A pinned v2 advertisement connects without reaching the endpoint.
+    # A pinned advertisement connects without reaching the endpoint.
     return ProxyConnection.connect(
         _authority(),
         _closed_endpoint(),
@@ -41,7 +41,9 @@ def test_transaction_fetches_the_staged_advertisement_and_fails_typed() -> None:
     # The staged advertisement is fetched at open; an unreachable server is
     # a typed provider failure, not a transaction that fails later at commit.
     with pytest.raises(Exception) as raised:
-        _connection().transaction("write")
+        ProxyConnection.connect(
+            _authority(), _closed_endpoint(), advertisement=_advertisement([])
+        ).transaction("write")
     assert not isinstance(raised.value, (ValueError, TypeError))
     assert type(raised.value).__module__.startswith("type_bridge")
 

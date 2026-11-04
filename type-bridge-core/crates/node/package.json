@@ -11,11 +11,6 @@
       "require": "./dist/public.js",
       "default": "./dist/public.js"
     },
-    "./query-v2": {
-      "types": "./dist/query-v2.d.ts",
-      "require": "./dist/query-v2.js",
-      "default": "./dist/query-v2.js"
-    },
     "./runtime-projection": {
       "types": "./dist/runtime-projection.d.ts",
       "require": "./dist/runtime-projection.js",

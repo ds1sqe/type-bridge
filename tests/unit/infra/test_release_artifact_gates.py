@@ -1012,7 +1012,7 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     assert documented not in rust_integration
     # The same live job gates two recovery probes, generated Rust, generated C,
     # and C runtime; the retired-server live probe was removed with its lane.
-    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) - 1 + 9
+    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) - 1 + 8
     assert "unsupported_server_apply_creates_neither_database_live" not in rust_integration
     assert "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3" in rust_integration
     assert "control_schema_and_fenced_lease_round_trip_on_3_12_3" in rust_integration
@@ -1035,8 +1035,8 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     assert test_script.count("run_with_timeout ") >= 6
 
 
-def test_generated_and_low_level_queries_are_required_in_the_tls_lane() -> None:
-    """TLS must cover generated applications as well as the retained low-level facade."""
+def test_generated_queries_are_required_in_the_tls_lane() -> None:
+    """TLS covers the generated native applications."""
     test_script = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
     start = test_script.index("run_tls_transport_steps() {")
     end = test_script.index("\n}\n", start)
@@ -1047,12 +1047,6 @@ def test_generated_and_low_level_queries_are_required_in_the_tls_lane() -> None:
         "::test_generated_package_preserves_application_operation_outcomes_live"
     ) in tls_lane
     assert 'npm --prefix "$NODE_DIR" run test:projection-integration' in tls_lane
-    assert (
-        "tests/integration/queries/test_query_v2_binding_smoke.py"
-        "::test_prepared_plan_executes_locally_and_remotely"
-    ) in tls_lane
-    assert 'node "$NODE_DIR/scripts/run-integration.js"' in tls_lane
-    assert "tests/integration/queries/query-v2-smoke.test.js" in tls_lane
     node_parity = tls_lane.split('run_step "TLS generated Node application parity"', 1)[1]
     assert 'TYPEDB_VERSION="$lane_server"' in node_parity
     assert "test_remote_query_session_parity.py" not in tls_lane
@@ -1194,32 +1188,6 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     assert needs_line(job_block(workflow, "publish-node-npm")) == (
         "    needs: [channel-preflight, release-tag-preflight]"
     )
-
-
-def test_low_level_query_smokes_use_compiled_server_authority() -> None:
-    fixture = REPO_ROOT / "tests/fixtures/query-v2-binding-smoke"
-    manifest = (fixture / "typebridge.yaml").read_text(encoding="utf-8")
-    schema_set = (fixture / "schema/schema.yaml").read_text(encoding="utf-8")
-    assert "format: typebridge.workspace/v1" in manifest
-    assert "managed-scope: binding-smoke" in manifest
-    assert "schema-authority:" in manifest
-    assert "output: generated/schema-authority.json" in manifest
-    assert "format: typebridge.schema-set/v1" in schema_set
-
-    consumers = (
-        REPO_ROOT / "tests/integration/queries/test_query_v2_binding_smoke.py",
-        REPO_ROOT / "type-bridge-core/crates/node/tests/integration/queries/query-v2-smoke.test.ts",
-    )
-    for path in consumers:
-        source = path.read_text(encoding="utf-8")
-        assert "PlanAuthority" in source
-        assert "query-v2-binding-smoke" in source
-        assert "type-bridge-cli" in source
-        assert "schema-authority.json" in source
-        assert "SMOKE_AUTHORITY_B64" in source
-        assert "SMOKE_DECLARED_B64" not in source
-        assert "SMOKE_SCOPE" not in source
-        assert "SMOKE_PROFILE" not in source
 
 
 def test_npm_publication_uses_the_accepted_tarball() -> None:

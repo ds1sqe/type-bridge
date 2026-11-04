@@ -303,51 +303,6 @@ fn collected_roles_and_scalar_fields_are_default_preserving_and_fail_closed() {
 }
 
 #[test]
-fn frozen_plan_constructors_refuse_the_native_only_iid_node() {
-    use type_bridge_contract::query_plan::{QueryPlan, ReadStage};
-    let source = spec(vec![], vec![0]);
-    for nested in [false, true] {
-        let iid = QueryPattern::Iid {
-            binding: id(0),
-            iid: string("0x10"),
-        };
-        let pattern = if nested {
-            QueryPattern::Not {
-                patterns: vec![iid],
-            }
-        } else {
-            iid
-        };
-        let pipeline = vec![ReadStage::Match {
-            patterns: vec![isa(0, entity("account")), pattern],
-        }];
-        for v2 in [false, true] {
-            let result = if v2 {
-                QueryPlan::new_v2(
-                    source.bindings.clone(),
-                    source.inputs.clone(),
-                    pipeline.clone(),
-                    source.output.clone(),
-                    source.managed_semantics.clone(),
-                )
-            } else {
-                QueryPlan::new(
-                    source.bindings.clone(),
-                    source.inputs.clone(),
-                    pipeline.clone(),
-                    source.output.clone(),
-                    source.managed_semantics.clone(),
-                )
-            };
-            assert_eq!(
-                result.unwrap_err().code().as_str(),
-                "query_plan_nested_iid_requires_v3"
-            );
-        }
-    }
-}
-
-#[test]
 fn document_scalars_capture_bound_thing_iids_and_optional_absence() {
     use std::collections::BTreeMap;
     use type_bridge_contract::migration_assertion::QueryVariable;

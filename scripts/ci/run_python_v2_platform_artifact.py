@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install one native wheel pair and author a V2 plan on its target runner."""
+"""Install one native wheel pair and author a native plan on its target runner."""
 
 from __future__ import annotations
 
@@ -40,13 +40,9 @@ for distribution in ("type-bridge", "type-bridge-core"):
 
 import type_bridge
 import type_bridge_core
-from type_bridge.query_v2 import (
-    AuthoredQueryInvocation,
-    AuthoredQueryPlan,
-    QueryPlanBuilder,
-    PlanAuthority,
-)
-from type_bridge_core import PlanError
+from type_bridge.plan import PlanBuilder
+from type_bridge_core import PlanAuthority
+from types import SimpleNamespace
 
 for module in (type_bridge, type_bridge_core):
     module_path = Path(module.__file__).resolve()
@@ -60,8 +56,8 @@ for module in (type_bridge, type_bridge_core):
             f"{module.__name__} escaped the artifact environment: {module_path}"
         )
 
-if QueryPlanBuilder is not type_bridge_core.QueryPlanBuilder:
-    raise SystemExit("public QueryPlanBuilder is not the packaged native authority")
+if PlanBuilder is not type_bridge.PlanBuilder:
+    raise SystemExit("public PlanBuilder does not match the installed facade")
 if PlanAuthority is not type_bridge_core.PlanAuthority:
     raise SystemExit("public PlanAuthority is not the packaged native authority")
 
@@ -71,55 +67,36 @@ authority = PlanAuthority(
     "model-remote-parity",
     "typedb-3.12.1/v1",
 )
-builder = QueryPlanBuilder(authority)
-person = builder.binding("person")
-name = builder.binding("name")
-wanted = builder.input("wanted_name", "string", False)
-builder.match(
-    (
-        builder.isa(person, "entity", "parity-person", True),
-        builder.has(person, name, "parity-person-name"),
-        builder.value(
-            "equal",
-            builder.binding_operand(name),
-            builder.input_operand(wanted),
-        ),
-    )
-)
-builder.select((person, name))
-builder.require((name,))
-builder.distinct()
-builder.sort((builder.order(name, "ascending"),))
-builder.limit(10)
-plan: AuthoredQueryPlan = builder.finalize_rows((person, name))
-invocation: AuthoredQueryInvocation = plan.rows((("Alice",),))
+class Person:
+    __type_id__ = '{"kind":"entity","label":"parity-person"}'
 
-if plan.format != "typebridge.query-plan/v2":
-    raise SystemExit(f"unexpected authored plan format: {plan.format!r}")
-if len(plan.fingerprint) != 64:
-    raise SystemExit(f"unexpected authored fingerprint: {plan.fingerprint!r}")
-if invocation.plan_fingerprint != plan.fingerprint:
-    raise SystemExit("authored invocation is not bound to its plan")
-if not plan.canonical_bytes or not invocation.canonical_bytes:
-    raise SystemExit("authored canonical bytes are empty")
-if tuple(plan.required_capabilities) != tuple(sorted(plan.required_capabilities)):
+name_token = SimpleNamespace(owner=Person, fact={"id": {
+    "owner": json.loads(Person.__type_id__), "attribute": "parity-person-name"
+}})
+builder = PlanBuilder()
+person = builder.subtypes(Person)
+name = builder.field(person, name_token)
+wanted = builder.input("wanted_name", "string")
+builder.where_(name.eq(wanted)).returning([person, name])
+builder.row([wanted.value("Alice")])
+plan = builder.build(authority)
+wire = json.loads(plan.canonical_bytes())
+if wire["format"] != "typebridge.query-plan/v3":
+    raise SystemExit(f"unexpected authored plan format: {wire['format']!r}")
+if len(plan.fingerprint()) != 64:
+    raise SystemExit(f"unexpected authored fingerprint: {plan.fingerprint()!r}")
+if not wire["given_rows"]:
+    raise SystemExit("native plan lost its exact input row")
+if wire["required_capabilities"] != sorted(wire["required_capabilities"]):
     raise SystemExit("authored capabilities are not lexically ordered")
-
-try:
-    builder.binding("after_finalize")
-except PlanError as error:
-    if error.code != "query_builder_finalized":
-        raise SystemExit(f"unexpected finalized diagnostic: {error.code!r}") from error
-else:
-    raise SystemExit("finalized builder accepted a new binding")
 
 print(
     json.dumps(
         {
             "status": "ok",
             "version": expected_version,
-            "plan_fingerprint": plan.fingerprint,
-            "capabilities": list(plan.required_capabilities),
+            "plan_fingerprint": plan.fingerprint(),
+            "capabilities": wire["required_capabilities"],
             "python": sys.version.split()[0],
         },
         sort_keys=True,

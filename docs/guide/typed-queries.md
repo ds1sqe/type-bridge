@@ -43,49 +43,16 @@ Bindings, field tokens, role tokens, predicates, selections, and queries are
 immutable and carry one projection identity. Cross-package composition fails
 before execution.
 
-## Low-level Query V2 plans
+## Native plans
 
-The generated facade is the usual application API. The separately retained
-`@type-bridge/node/query-v2` entry point authors a complete prepared plan when
-an application needs the low-level Query V2 vocabulary without model classes.
-Rust owns its identities, validation, canonical bytes, and capabilities.
+For explicit read/write programs, use `PlanBuilder` and `Plan` from
+`type_bridge.plan` or `@type-bridge/node`. Build against the generated
+package's schema authority, then stage the plan in a direct or proxy
+transaction. Rust uses the same native V3 builder and validation.
 
-The equivalent Node authoring uses the same operation names and order. Keep the
-low-level authority outside this builder function so the plan vocabulary cannot
-silently replace the generated package's authority:
-
-```typescript
-import {
-  QueryPlanBuilder,
-  type AuthoredQueryInvocation,
-  type PlanAuthority,
-} from "@type-bridge/node/query-v2";
-
-function authorInvocation(authority: PlanAuthority): AuthoredQueryInvocation {
-  const builder = new QueryPlanBuilder(authority);
-  const person = builder.binding("person");
-  const name = builder.binding("name");
-  const wanted = builder.input("wanted_name", "string", false);
-  builder.match([
-    builder.isa(person, "entity", "smoke-person", true),
-    builder.has(person, name, "smoke-name"),
-    builder.value(
-      "equal",
-      builder.bindingOperand(name),
-      builder.inputOperand(wanted),
-    ),
-  ]);
-  return builder.finalizeRows([person, name]).rows([["Alice"]]);
-}
-```
-
-Builder transitions perform no provider or network I/O. Finalization is
-terminal, and a rejected transition leaves the builder at its preceding valid
-state. Explicit construction of `PlanAuthority` remains a low-level API for
-integrators that already own canonical declared-schema bytes and their trust
-policy. `schema export-declared` is retained only as a debug/compatibility tool;
-generated sessions do not call it, read its JSON, or use it as an authoring
-input.
+See the [TypeScript staged-plan examples](typescript.md) and
+[3.0 upgrade guide](upgrade-3.0.md#native-plan-execution-replaces-v1v2).
+The former V1/V2 builders and separate invocation objects have been removed.
 
 ## Connectivity and explicit cross joins
 

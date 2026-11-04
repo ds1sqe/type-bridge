@@ -6716,7 +6716,7 @@ mod tests {
         Operation, Stage, query_plan_v3_capability_vocabulary,
     };
     use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-    use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
+
     use type_bridge_contract::query_remote_v3::{
         StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
     };
@@ -7804,9 +7804,6 @@ mod tests {
             type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
         ] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
-        }
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
         }
         let contract = RemoteCapabilities::new(
             capabilities,

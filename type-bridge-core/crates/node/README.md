@@ -16,7 +16,7 @@ npm run build
 The package entry is `dist/public.js`, with declarations emitted to
 `dist/public.d.ts`. Generated packages consume the exported
 `./runtime-projection` subpath. The separately retained low-level Query V2 plan
-builder is exported from `./query-v2`.
+builder is exported from the package root.
 
 For local smoke runs after `cargo build -p type-bridge-node`, copy the built
 library to a `.node` file or point the loader at one:
@@ -131,12 +131,11 @@ and subtype closures come only from the installed generated projection. See the
 [typed-query guide](https://ds1sqe.github.io/type-bridge/guide/typed-queries/)
 for the complete contract and transaction rules.
 
-## V2 Plan Authoring and Prepared Execution
+## Native plans and proxy execution
 
-The `./query-v2` subpath exposes `QueryPlanBuilder`,
-`AuthoredQueryPlan`, and `AuthoredQueryInvocation`. Every operation delegates
-to the shared Rust builder through opaque native handles; Node never assembles
-mutable plan JSON or owns a second validator.
+The package root exposes `PlanBuilder` and `Plan`. Builder calls forward
+to Rust; build with the generated schema authority and stage the result with
+`db.stagedTransaction()` or the proxy connection's staged transaction.
 
 A generated session reaches a TypeBridge server through a proxy connection
 passed to the same `QuerySession`. Each awaited terminal performs exactly one
@@ -165,69 +164,11 @@ Generated sessions never read a schema-authority file or accept a low-level
 `ProxyConnection`, `ProxyConnectionOptions`, and `ProxyTlsMode` from
 `@type-bridge/node/runtime-projection`.
 
-The package root retains a lower-level prepared-plan execution boundary for
-integrators that already own independently verified authority. It is not part
-of the generated-model workflow and does not replace `schema generate`; see
-[Low-level Query V2 plans](https://github.com/ds1sqe/type-bridge/blob/master/docs/guide/typed-queries.md#low-level-query-v2-plans)
-for its separation rules.
-
-`QueryV2RemoteLimits.maxBytes` limits the complete signed wire size of a
-successful typed response. Authenticated structured failures instead use the protocol hard ceiling, so a
-zero or otherwise tiny success budget can still return the bound diagnostic
-explaining why no success could fit.
-
-The low-level `PlanAuthority` constructor creates managed/offline authority
-for prepared remote execution. For local execution against a database with no
-migration controls, bind a separate local-only handle:
-
-```ts
-import {
-  PlanAuthority,
-  queryV2ExecuteLocal,
-} from "@type-bridge/node";
-
-const localAuthority = PlanAuthority.queryOnly(
-  database,
-  trustedDeclaredSchemaBytes,
-  managedScope,
-  semanticProfile,
-);
-const outcomeJson = await queryV2ExecuteLocal(
-  database,
-  localAuthority,
-  planBytes,
-  JSON.stringify({ operation: "rows", rows: [] }),
-);
-```
-
-`queryOnly` binds the exact native database identity, requires both V2 and
-legacy migration controls to be absent, and is rejected by
-`queryV2PrepareRemote`. Managed local execution instead requires the exact V2
-migration-control singleton to be free.
-
-Low-level callers must obtain `trustedDeclaredSchemaBytes` through an explicit
-trust boundary. Canonical JSON is an internal codec, not a user-maintained
-schema source; generated applications use the embedded authority instead.
-
-An authored plan and a generated model query travel in the same remote
-envelope (`typebridge.query-remote-request/v2`); the executor must advertise
-`query.plan.v2`, `query.remote.envelope-v2`, and
-`query.remote.structured-diagnostic`, and a remote failure carries its
-complete structured diagnostic.
-
-Each pending request accepts exactly one reply. A second `decodeReply` call is
-rejected before parsing the supplied bytes, including when the first reply was
-a remote failure. Reply parsing and typed evidence validation run on a worker
-and `decodeReply` returns a `Promise`, so maximal envelopes do not block the
-JavaScript event loop. Preparation binds the exact capability advertisement
-and its executor epoch and reply-signing identity into the request. The
-advertisement is an explicit trust input: retrieve it over authenticated TLS
-for the intended executor or pin/provision its exact bytes or fingerprint out
-of band. Fetching it over unauthenticated HTTP is discovery only and cannot
-authenticate the key an intermediary supplies. `deadlineMs` is resolved once to an
-absolute expiry (30 seconds by default and at most five minutes), so a captured
-request cannot regain a fresh relative deadline after replay-cache eviction or
-a standalone executor restart.
+Native plans use the authenticated V3 staged protocol. The capability
+advertisement is a trust input: retrieve it over authenticated TLS for the
+intended executor or pin its bytes or fingerprint out of band.
+See the [3.0 upgrade guide](https://ds1sqe.github.io/type-bridge/guide/upgrade-3.0/)
+for replacements for the removed V1/V2 entry points.
 
 ## Descriptor Shape
 

@@ -157,7 +157,7 @@ existence checks, bounded reachability, or one-exchange remote execution.
 | Persist a known keyed model | `update()` / `update_many()` |
 | Read one model type | manager `get`, `filter`, `all`, `first`, `count` |
 | Match connected model types | immutable `QuerySession` |
-| Author binding-neutral V2 plans | `type_bridge.query_v2` or Node `query-v2` |
+| Author native plans | `type_bridge.plan` or the Node package root |
 | Execute handcrafted TypeQL | raw query API, only when typed surfaces do not fit |
 
 Require a key for `put()` and `update()`. For relation writes, prefer hydrated
@@ -185,7 +185,7 @@ authorization for database recreation and data loss.
 - Use the generated Python or TypeScript package's `QuerySession` for
   owner-aware, connected, multi-model matches. Create variables from one
   session and never mix handles or tokens between generated packages.
-- Use `type_bridge.query_v2` or `@type-bridge/node/query-v2` for complete
+- Use `type_bridge.plan` or `@type-bridge/node` for complete
   binding-neutral plan authoring. Let Rust create canonical bytes and
   fingerprints; never assemble mutable plan JSON in a facade.
 - Use raw TypeQL only when the higher-level surfaces cannot express the

@@ -18,9 +18,8 @@ use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-use type_bridge_contract::query_plan::{
-    OrderDirection, OrderTerm, QueryOutput, QueryPattern, QueryPlan, ReadStage,
-};
+use type_bridge_contract::query_plan::v3::{Operation, PlanSpec, QueryPlanV3, Stage};
+use type_bridge_contract::query_plan::{OrderDirection, OrderTerm, QueryOutput, QueryPattern};
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
     SubFact, SubFactId, TypeFact, ValueFact, ValueFactId, encode_declared_schema,
@@ -28,9 +27,8 @@ use type_bridge_contract::schema::{
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_orm::TxType;
 use type_bridge_orm::plan_authority::QueryAuthority;
-use type_bridge_orm::query_v2_prepared::execute_prepared_local;
-use type_bridge_orm::session::backend::AnswerLimits;
 use type_bridge_orm::session::database::Database;
+use type_bridge_orm::session::staged::TransactionOptions;
 use type_bridge_orm::{ConnectOptions, SecureConnectOptions, TlsMode};
 
 #[path = "../../../../tests/support/typedb_database_move.rs"]
@@ -180,49 +178,67 @@ fn declared_bytes_with_nickname(include_nickname: bool) -> Vec<u8> {
     encode_declared_schema(&declared).unwrap()
 }
 
-fn person_name_plan_bytes(authority: &QueryAuthority) -> Vec<u8> {
+fn person_name_plan(authority: &QueryAuthority) -> QueryPlanV3 {
     let binding = |id: u16, variable: &str| {
         AssertionBinding::new(
             BindingId::new(id).unwrap(),
             QueryVariable::new(variable).unwrap(),
         )
     };
-    let plan = QueryPlan::new(
-        vec![binding(0, "person"), binding(1, "name")],
-        Vec::new(),
-        vec![
-            ReadStage::Match {
-                patterns: vec![
-                    QueryPattern::Isa {
-                        binding: BindingId::new(0).unwrap(),
-                        include_subtypes: true,
-                        type_id: TypeId::new(TypeKind::Entity, "person").unwrap(),
-                    },
-                    QueryPattern::Has {
-                        attribute: BindingId::new(1).unwrap(),
-                        attribute_id: AttributeId::new("name").unwrap(),
-                        owner: BindingId::new(0).unwrap(),
-                    },
-                ],
+    QueryPlanV3::new(
+        PlanSpec {
+            bindings: vec![binding(0, "person"), binding(1, "name")],
+            inputs: vec![],
+            functions: vec![],
+            given_rows: None,
+            operation: Operation::Rows,
+            pipeline: vec![
+                Stage::Match {
+                    patterns: vec![
+                        QueryPattern::Isa {
+                            binding: BindingId::new(0).unwrap(),
+                            include_subtypes: true,
+                            type_id: TypeId::new(TypeKind::Entity, "person").unwrap(),
+                        },
+                        QueryPattern::Has {
+                            attribute: BindingId::new(1).unwrap(),
+                            attribute_id: AttributeId::new("name").unwrap(),
+                            owner: BindingId::new(0).unwrap(),
+                        },
+                    ]
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                },
+                Stage::Sort {
+                    terms: vec![OrderTerm::new(
+                        BindingId::new(1).unwrap(),
+                        OrderDirection::Ascending,
+                    )],
+                },
+            ],
+            output: QueryOutput::Rows {
+                columns: vec![BindingId::new(0).unwrap(), BindingId::new(1).unwrap()],
             },
-            ReadStage::Sort {
-                terms: vec![OrderTerm::new(
-                    BindingId::new(1).unwrap(),
-                    OrderDirection::Ascending,
-                )],
-            },
-        ],
-        QueryOutput::Rows {
-            columns: vec![BindingId::new(0).unwrap(), BindingId::new(1).unwrap()],
+            managed_semantics: authority
+                .context()
+                .managed_state()
+                .managed_semantic_schema()
+                .clone(),
         },
-        authority
-            .context()
-            .managed_state()
-            .managed_semantic_schema()
-            .clone(),
+        authority.declared(),
     )
-    .unwrap();
-    plan.canonical_bytes().unwrap()
+    .unwrap()
+}
+
+async fn execute_plan(
+    database: &Database,
+    plan: &QueryPlanV3,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut transaction = database.transaction(TransactionOptions::default());
+    let answer = transaction.stage_plan(plan)?;
+    transaction.commit().await?;
+    Ok(format!("{:?}", answer.get()?))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -308,17 +324,8 @@ async fn empty_workspace_to_replayed_history_live() {
         &live_profile(),
     )
     .expect("first authority");
-    let plan = person_name_plan_bytes(&authority);
-    let invocation = r#"{"operation":"rows","rows":[]}"#;
-    let outcome = execute_prepared_local(
-        &database,
-        &authority,
-        &plan,
-        invocation,
-        AnswerLimits::default(),
-    )
-    .await
-    .expect("typed query");
+    let plan = person_name_plan(&authority);
+    let outcome = execute_plan(&database, &plan).await.expect("typed query");
     assert!(outcome.contains("\"ada\""), "{outcome}");
     assert!(outcome.contains("\"bob\""), "{outcome}");
 
@@ -362,16 +369,10 @@ async fn empty_workspace_to_replayed_history_live() {
         &live_profile(),
     )
     .expect("evolved authority");
-    let evolved_plan = person_name_plan_bytes(&evolved_authority);
-    let outcome = execute_prepared_local(
-        &database,
-        &evolved_authority,
-        &evolved_plan,
-        invocation,
-        AnswerLimits::default(),
-    )
-    .await
-    .expect("evolved typed query");
+    let evolved_plan = person_name_plan(&evolved_authority);
+    let outcome = execute_plan(&database, &evolved_plan)
+        .await
+        .expect("evolved typed query");
     assert!(outcome.contains("\"ada\""), "{outcome}");
 
     // Replay the complete history from an empty database.
@@ -399,15 +400,9 @@ async fn empty_workspace_to_replayed_history_live() {
         )
         .await
         .expect("replayed schema accepts data");
-    let outcome = execute_prepared_local(
-        &replayed,
-        &evolved_authority,
-        &evolved_plan,
-        invocation,
-        AnswerLimits::default(),
-    )
-    .await
-    .expect("replayed typed query");
+    let outcome = execute_plan(&replayed, &evolved_plan)
+        .await
+        .expect("replayed typed query");
     assert!(outcome.contains("\"eve\""), "{outcome}");
 
     for managed_database in [&primary, &replay] {

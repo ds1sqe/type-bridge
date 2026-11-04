@@ -18,7 +18,6 @@ use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::{Fingerprint, MAX_FINGERPRINT_IDENTIFIER_BYTES};
 use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES};
-use type_bridge_contract::query_remote::remote_limit_invalid;
 use type_bridge_contract::schema::encode_declared_schema;
 use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::plan_scalar::host_string_unicode_error;
@@ -26,8 +25,6 @@ use type_bridge_schema::{
     MAX_SCHEMA_AUTHORITY_BYTES, SchemaAuthorityError, SchemaAuthorityErrorCode,
     decode_schema_authority, schema_authority_capability_vocabulary,
 };
-
-use crate::orm_runtime::PyDatabase;
 
 pyo3::create_exception!(
     type_bridge_core,
@@ -103,18 +100,6 @@ impl PyPlanAuthority {
         profile: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
         build_plan_authority(py, declared_schema, scope, profile)
-    }
-
-    /// Build a local-only authority for a database with no migration controls.
-    #[staticmethod]
-    fn query_only(
-        py: Python<'_>,
-        database: &PyDatabase,
-        declared_schema: &Bound<'_, PyAny>,
-        scope: &Bound<'_, PyAny>,
-        profile: &Bound<'_, PyAny>,
-    ) -> PyResult<Self> {
-        build_plan_query_only_authority(py, database, declared_schema, scope, profile)
     }
 }
 
@@ -300,35 +285,6 @@ fn build_plan_authority_from_schema_authority(
     })
 }
 
-fn build_plan_query_only_authority(
-    py: Python<'_>,
-    database: &PyDatabase,
-    declared_schema: &Bound<'_, PyAny>,
-    scope: &Bound<'_, PyAny>,
-    profile: &Bound<'_, PyAny>,
-) -> PyResult<PyPlanAuthority> {
-    let declared_schema = PythonBytes::extract(declared_schema, "declared_schema")?;
-    let scope = PythonString::extract(scope, "scope")?;
-    let profile = PythonString::extract(profile, "profile")?;
-    let declared_schema = declared_schema.bounded_snapshot(MAX_CANONICAL_BYTES.saturating_add(1));
-    let scope = scope.bounded_snapshot(MAX_CANONICAL_STRING_BYTES)?;
-    let profile = profile.bounded_snapshot(MAX_FINGERPRINT_IDENTIFIER_BYTES)?;
-    let (database, _) = database.handles();
-    let authority = py
-        .detach(move || {
-            QueryAuthority::from_declared_bytes_query_only(
-                &declared_schema,
-                &scope,
-                &profile,
-                &database,
-            )
-        })
-        .map_err(|diagnostic| value_error(&diagnostic))?;
-    Ok(PyPlanAuthority {
-        authority: Arc::new(authority),
-    })
-}
-
 /// Build one authority from canonical declared-schema bytes.
 #[pyfunction]
 pub fn plan_authority(
@@ -357,55 +313,68 @@ pub fn plan_authority_from_schema_authority(
     .map_err(|diagnostic| value_error(&diagnostic))
 }
 
-/// Build a local-only authority for a database with no migration controls.
-#[pyfunction]
-pub fn plan_query_only_authority(
-    py: Python<'_>,
-    database: &PyDatabase,
-    declared_schema: &Bound<'_, PyAny>,
-    scope: &Bound<'_, PyAny>,
-    profile: &Bound<'_, PyAny>,
-) -> PyResult<PyPlanAuthority> {
-    build_plan_query_only_authority(py, database, declared_schema, scope, profile)
-}
-
-/// Build the local execution budget from a checked optional deadline.
-pub(crate) fn python_limit(value: &Bound<'_, PyAny>) -> Result<i128, Diagnostic> {
-    let integer = value
-        .cast_exact::<PyInt>()
-        .map_err(|_| remote_limit_invalid())?;
-    integer
-        .extract::<u64>()
-        .map(i128::from)
-        .map_err(|_| remote_limit_invalid())
-}
-
-pub(crate) fn python_optional_limit(
-    value: Option<&Bound<'_, PyAny>>,
-) -> Result<Option<i128>, Diagnostic> {
-    value.map(python_limit).transpose()
-}
-
 /// Register shared plan authority and diagnostics on the native module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PlanError", m.py().get_type::<PlanError>())?;
     m.add_class::<PyPlanAuthority>()?;
     m.add_function(wrap_pyfunction!(plan_authority, m)?)?;
     m.add_function(wrap_pyfunction!(plan_authority_from_schema_authority, m)?)?;
-    m.add_function(wrap_pyfunction!(plan_query_only_authority, m)?)?;
     Ok(())
+}
+
+pub(crate) fn python_scalar(
+    value_type: ValueTypeTag,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<CanonicalValue> {
+    let input = match value_type {
+        ValueTypeTag::String
+        | ValueTypeTag::Date
+        | ValueTypeTag::DateTime
+        | ValueTypeTag::DateTimeTz
+        | ValueTypeTag::Decimal
+        | ValueTypeTag::Duration => {
+            let value = PythonString::extract(value, "value")
+                .map_err(|_| value_error(&plan_scalar_host_type_error()))?
+                .bounded_snapshot_with_unicode_error(
+                    MAX_CANONICAL_STRING_BYTES,
+                    plan_scalar_unicode_error,
+                )?;
+            PlanScalarInput::Text(value)
+        }
+        ValueTypeTag::Long => {
+            let integer = value
+                .cast_exact::<PyInt>()
+                .map_err(|_| value_error(&plan_scalar_host_type_error()))?;
+            let integer = integer
+                .extract::<i64>()
+                .map_err(|_| value_error(&plan_scalar_integer_range_error()))?;
+            PlanScalarInput::Long(integer)
+        }
+        ValueTypeTag::Double => {
+            let number = value
+                .cast_exact::<PyFloat>()
+                .map_err(|_| value_error(&plan_scalar_host_type_error()))?;
+            PlanScalarInput::Double(number.extract::<f64>()?)
+        }
+        ValueTypeTag::Boolean => {
+            let boolean = value
+                .cast_exact::<PyBool>()
+                .map_err(|_| value_error(&plan_scalar_host_type_error()))?;
+            PlanScalarInput::Boolean(boolean.extract::<bool>()?)
+        }
+    };
+    plan_scalar(value_type, input).map_err(|error| value_error(&error))
 }
 
 #[cfg(test)]
 mod tests {
-    use pyo3::ffi;
     use pyo3::prelude::*;
     use pyo3::types::{PyByteArray, PyBytes, PyString};
     use pythonize::depythonize;
 
     use super::{
         MAX_FINGERPRINT_IDENTIFIER_BYTES, PlanError, PyPlanAuthority, PythonBytes, PythonString,
-        build_plan_authority_from_schema_authority, python_limit, value_error,
+        build_plan_authority_from_schema_authority, value_error,
     };
     use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
     use type_bridge_contract::codec::{FormatVersion, to_canonical_json};
@@ -609,19 +578,6 @@ mod tests {
     }
 
     #[test]
-    fn python_limits_require_exact_integers_like_the_node_bigint_surface() {
-        Python::initialize();
-        Python::attach(|py| {
-            let integer = py.eval(ffi::c_str!("1"), None, None).expect("integer");
-            assert_eq!(python_limit(&integer), Ok(1));
-
-            let boolean = py.eval(ffi::c_str!("True"), None, None).expect("boolean");
-            let diagnostic = python_limit(&boolean).expect_err("bool is not an exact integer");
-            assert_eq!(diagnostic.code().as_str(), "query_remote_limit_invalid");
-        });
-    }
-
-    #[test]
     fn reply_snapshots_are_bounded_for_bytes_and_bytearrays() {
         Python::initialize();
         Python::attach(|py| {
@@ -734,48 +690,4 @@ mod tests {
             );
         });
     }
-}
-
-pub(crate) fn python_scalar(
-    value_type: ValueTypeTag,
-    value: &Bound<'_, PyAny>,
-) -> PyResult<CanonicalValue> {
-    let input = match value_type {
-        ValueTypeTag::String
-        | ValueTypeTag::Date
-        | ValueTypeTag::DateTime
-        | ValueTypeTag::DateTimeTz
-        | ValueTypeTag::Decimal
-        | ValueTypeTag::Duration => {
-            let value = PythonString::extract(value, "value")
-                .map_err(|_| value_error(&plan_scalar_host_type_error()))?
-                .bounded_snapshot_with_unicode_error(
-                    MAX_CANONICAL_STRING_BYTES,
-                    plan_scalar_unicode_error,
-                )?;
-            PlanScalarInput::Text(value)
-        }
-        ValueTypeTag::Long => {
-            let integer = value
-                .cast_exact::<PyInt>()
-                .map_err(|_| value_error(&plan_scalar_host_type_error()))?;
-            let integer = integer
-                .extract::<i64>()
-                .map_err(|_| value_error(&plan_scalar_integer_range_error()))?;
-            PlanScalarInput::Long(integer)
-        }
-        ValueTypeTag::Double => {
-            let number = value
-                .cast_exact::<PyFloat>()
-                .map_err(|_| value_error(&plan_scalar_host_type_error()))?;
-            PlanScalarInput::Double(number.extract::<f64>()?)
-        }
-        ValueTypeTag::Boolean => {
-            let boolean = value
-                .cast_exact::<PyBool>()
-                .map_err(|_| value_error(&plan_scalar_host_type_error()))?;
-            PlanScalarInput::Boolean(boolean.extract::<bool>()?)
-        }
-    };
-    plan_scalar(value_type, input).map_err(|error| value_error(&error))
 }

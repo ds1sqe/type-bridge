@@ -20,7 +20,6 @@ use crate::id::TypeId;
 use crate::limits::{
     MAX_REMOTE_ENVELOPE_BYTES, QueryLimits, REMOTE_ENVELOPE_CODEC_LIMITS, answer_limit_field,
 };
-use crate::query_plan::{QueryPlan, decode_query_plan_with_limits};
 use crate::value::CanonicalValue;
 
 /// The authenticated outer reply format used for both successes and failures.
@@ -614,34 +613,6 @@ impl RemoteCapabilities {
     }
 }
 
-/// Attribute a request-envelope codec failure: its byte ceiling is the
-/// remote request budget, not the plan artifact ceiling the code table names.
-pub(crate) fn annotate_request_envelope(limits: QueryLimits, diagnostic: Diagnostic) -> Diagnostic {
-    if diagnostic.code().as_str() == "canonical_json_too_large" {
-        limits.annotate_limit(diagnostic, "remote_request_bytes")
-    } else {
-        limits.annotate(diagnostic)
-    }
-}
-
-/// Hold one plan to an executor's advertised limits before anything is sent.
-///
-/// Returns the merged limits the request must also be encoded under. The
-/// plan is re-decoded only where the advertisement is stricter than the
-/// limits it was built under, which is the same check the executor runs.
-pub(crate) fn negotiate_query_limits(
-    plan: &QueryPlan,
-    advertisement: &RemoteCapabilities,
-) -> Result<QueryLimits, Diagnostic> {
-    let configured = plan.limits();
-    let negotiated = configured.min(advertisement.query_limits());
-    if negotiated != configured {
-        decode_query_plan_with_limits(&plan.canonical_bytes()?, negotiated)
-            .map_err(|diagnostic| negotiated.mark_advertised(configured, diagnostic))?;
-    }
-    Ok(negotiated)
-}
-
 fn advertised_limits_invalid() -> Diagnostic {
     envelope_failure(
         DiagnosticCategory::InvalidContract,
@@ -792,17 +763,6 @@ pub(crate) fn encode_signed_reply_payload(
     encode_signed_reply(payload, advertisement, signer)
 }
 
-/// Encode additive versioned payload bytes under the envelope byte ceiling
-/// the two peers agreed on.
-pub(crate) fn encode_signed_reply_payload_bounded(
-    payload: &[u8],
-    advertisement: &RemoteCapabilitiesFingerprint,
-    signer: &impl RemoteReplySigner,
-    max_bytes: usize,
-) -> Result<Vec<u8>, Diagnostic> {
-    encode_signed_reply_bounded(payload, advertisement, signer, max_bytes)
-}
-
 /// Encode already bounded, canonical additive payload bytes.
 ///
 /// This is used only by the fixed internal-failure fallback after the normal
@@ -840,32 +800,6 @@ fn encode_signed_reply_unchecked(
         payload,
         &signature,
     )
-}
-
-fn signed_reply_encoded_len(
-    payload: &[u8],
-    advertisement: &RemoteCapabilitiesFingerprint,
-    key: RemoteSigningPublicKey,
-) -> usize {
-    canonical_signed_reply(
-        &advertisement.digest_hex(),
-        QUERY_REMOTE_SIGNED_REPLY_FORMAT_V1,
-        &key.to_hex(),
-        &RemoteSigningKeyId::for_public_key(key).to_hex(),
-        payload,
-        &encode_hex(&[0_u8; 64]),
-    )
-    .len()
-}
-
-/// Return the exact unchanged signed-envelope length for additive payload
-/// bytes without constructing a signature.
-pub(crate) fn signed_reply_payload_encoded_len(
-    payload: &[u8],
-    advertisement: &RemoteCapabilitiesFingerprint,
-    key: RemoteSigningPublicKey,
-) -> usize {
-    signed_reply_encoded_len(payload, advertisement, key)
 }
 
 fn remote_reply_signing_digest(

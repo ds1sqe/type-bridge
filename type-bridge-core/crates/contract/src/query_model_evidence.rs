@@ -309,15 +309,6 @@ pub enum HydrationSlot {
     },
 }
 
-impl HydrationSlot {
-    pub(crate) fn references(&self) -> &[HydrationReference] {
-        match self {
-            Self::Singular { value } => std::slice::from_ref(value),
-            Self::Collection { values } => values,
-        }
-    }
-}
-
 /// One ordered hydrated output row.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -117,17 +117,11 @@ type-bridge --manifest typebridge.yaml migration verify --environment production
 Read-only recovery, ledger import, and replay remain available after the
 cutover; they cannot reopen the archived write path.
 
-## Retained query facades
+## Query facades in 3.0
 
-The Python `Query`/`QueryBuilder`, Node `TypedQuery`/`TypedGroupByQuery`, and
-Rust `MatchRequest` facades have no removal schedule. They remain available for
-raw or compatibility queries and are not schema authoring authority.
-
-New generated code can use model-owned direct queries or prepare complete
-Query V2 plans through `type_bridge.query_v2`,
-`@type-bridge/node/query-v2`, or the Rust SDK. Local and one-exchange remote
-paths share canonical plans, validation, result ordering, structured
-diagnostics, and concrete-subtype hydration.
+The V1/V2 plan and prepared-execution facades described by earlier 2.x
+releases are removed in 3.0. Use generated model queries or native `PlanBuilder`
+programs with staged transactions. See the [3.0 replacements](upgrade-3.0.md#native-plan-execution-replaces-v1v2).
 
 ## TLS and exact server identity
 

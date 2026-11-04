@@ -35,7 +35,7 @@ pub mod migration_assertion;
 /// Closed binding-neutral migration backfill plans and fingerprints.
 pub mod migration_backfill;
 pub use migration_assertion::migration_assertion_capability_vocabulary;
-pub use query_plan::{query_given_rows_capability, query_plan_capability_vocabulary};
+pub use query_plan::query_given_rows_capability;
 mod migration_assertion_wire;
 /// Target-independent canonical generated-model records and ordered archives.
 pub mod projected_record;
@@ -51,13 +51,10 @@ pub mod query_plan;
 pub mod query_remote;
 /// Bounded structured diagnostics shared by remote plan transports.
 pub mod query_remote_diagnostic;
-/// Additive V2 remote envelopes and hydrated model-result evidence.
-pub mod query_remote_v2;
 /// Additive staged transaction envelopes and authenticated replies.
 pub mod query_remote_v3;
 pub mod reserved;
 
-mod query_invocation_wire;
 mod query_plan_wire;
 
 mod declared_schema_wire;

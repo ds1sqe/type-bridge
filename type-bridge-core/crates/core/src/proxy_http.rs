@@ -1,5 +1,5 @@
-//! Blocking HTTP client for the standalone server's `/v2/capabilities` and
-//! `/v2/query` routes.
+//! Blocking HTTP client for the standalone server's `/v3/capabilities` and
+//! `/v3/staged` routes.
 //!
 //! The client follows no redirects and ignores ambient proxy variables, like
 //! the TypeDB version probe: a redirect or an intermediary could otherwise
@@ -165,51 +165,11 @@ impl ProxyHttpClient {
         })
     }
 
-    /// Fetch the exact capability advertisement bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProxyHttpError::Transport`], [`ProxyHttpError::Status`] for
-    /// a non-200 answer, or [`ProxyHttpError::ResponseTooLarge`].
-    pub fn capabilities(
-        &self,
-        timeout: Option<Duration>,
-        max_bytes: usize,
-    ) -> Result<Vec<u8>, ProxyHttpError> {
-        const ROUTE: &str = "/v2/capabilities";
-        let request = self.request(
-            "GET",
-            ROUTE,
-            Some(timeout.map_or(CONNECT_TIMEOUT, |timeout| timeout.min(CONNECT_TIMEOUT))),
-        );
-        read_response(ROUTE, request.call(), max_bytes)
-    }
-
-    /// Send one canonical request to `/v2/query` and return the exact reply
-    /// bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProxyHttpError::Transport`], [`ProxyHttpError::Status`] for
-    /// a non-200 answer, or [`ProxyHttpError::ResponseTooLarge`].
-    pub fn exchange(
-        &self,
-        request: &[u8],
-        timeout: Option<Duration>,
-        max_bytes: usize,
-    ) -> Result<Vec<u8>, ProxyHttpError> {
-        const ROUTE: &str = "/v2/query";
-        let call = self
-            .request("POST", ROUTE, timeout)
-            .set("content-type", "application/json");
-        read_response(ROUTE, call.send_bytes(request), max_bytes)
-    }
-
     /// Fetch the exact staged (`/v3/capabilities`) advertisement bytes.
     ///
     /// # Errors
     ///
-    /// As [`Self::capabilities`].
+    /// Returns transport, non-200 status, or response-size errors.
     pub fn staged_capabilities(
         &self,
         timeout: Option<Duration>,
@@ -229,7 +189,7 @@ impl ProxyHttpClient {
     ///
     /// # Errors
     ///
-    /// As [`Self::exchange`].
+    /// Returns transport, non-200 status, or response-size errors.
     pub fn exchange_staged(
         &self,
         request: &[u8],
@@ -472,11 +432,11 @@ mod tests {
         )
         .unwrap();
         let reply = client
-            .exchange(b"{\"a\":1}", Some(Duration::from_secs(5)), 5)
+            .exchange_staged(b"{\"a\":1}", Some(Duration::from_secs(5)), 5)
             .unwrap();
         assert_eq!(reply, b"reply");
         let (head, body) = server.join().unwrap();
-        assert!(head.starts_with("POST /v2/query HTTP/1.1\r\n"), "{head}");
+        assert!(head.starts_with("POST /v3/staged HTTP/1.1\r\n"), "{head}");
         let head = head.to_ascii_lowercase();
         assert!(head.contains("authorization: bearer token\r\n"));
         assert!(head.contains("content-type: application/json\r\n"));
@@ -488,7 +448,7 @@ mod tests {
         let (endpoint, server) = serve_once(b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nreply!");
         let client = ProxyHttpClient::new(&endpoint, &ProxyTrust::Plaintext, &[]).unwrap();
         let error = client
-            .capabilities(Some(Duration::from_secs(5)), 5)
+            .staged_capabilities(Some(Duration::from_secs(5)), 5)
             .unwrap_err();
         assert_eq!(error.code(), "proxy_response_too_large");
         assert!(
@@ -496,7 +456,7 @@ mod tests {
                 .join()
                 .unwrap()
                 .0
-                .starts_with("GET /v2/capabilities ")
+                .starts_with("GET /v3/capabilities ")
         );
 
         for response in [
@@ -507,7 +467,7 @@ mod tests {
             let (endpoint, server) = serve_once(response);
             let client = ProxyHttpClient::new(&endpoint, &ProxyTrust::Plaintext, &[]).unwrap();
             let error = client
-                .exchange(b"{}", Some(Duration::from_secs(5)), 64)
+                .exchange_staged(b"{}", Some(Duration::from_secs(5)), 64)
                 .unwrap_err();
             assert_eq!(error.code(), "proxy_http_status");
             server.join().unwrap();

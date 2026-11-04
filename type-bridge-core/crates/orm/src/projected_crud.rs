@@ -7295,7 +7295,6 @@ plays:
         use type_bridge_contract::capability::CapabilityId;
         use type_bridge_contract::query_remote::RemoteValue;
         use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-        use type_bridge_contract::query_remote_v2::CAP_QUERY_REMOTE_STATEMENT_LIMIT;
         use type_bridge_contract::query_remote_v3::{
             CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedAnswerV3,
             StagedKindV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
@@ -7410,7 +7409,6 @@ plays:
         for capability in [
             CAP_QUERY_REMOTE_STAGED_V3,
             CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
-            CAP_QUERY_REMOTE_STATEMENT_LIMIT,
         ] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
@@ -7433,7 +7431,7 @@ plays:
         let client = Arc::new(client);
         let model = controlled_type(TypeKind::Relation);
         let legacy = RemoteCapabilities::new(
-            type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary(),
+            type_bridge_contract::capability::CapabilitySet::new(),
             advertisement.executor().clone(),
             signer.public_key(),
         );
@@ -7523,7 +7521,6 @@ plays:
         use type_bridge_contract::capability::CapabilityId;
         use type_bridge_contract::query_remote::RemoteValue;
         use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-        use type_bridge_contract::query_remote_v2::CAP_QUERY_REMOTE_STATEMENT_LIMIT;
         use type_bridge_contract::query_remote_v3::{
             CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedAnswerV3,
             StagedKindV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
@@ -7614,7 +7611,6 @@ plays:
         for capability in [
             CAP_QUERY_REMOTE_STAGED_V3,
             CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
-            CAP_QUERY_REMOTE_STATEMENT_LIMIT,
         ] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }

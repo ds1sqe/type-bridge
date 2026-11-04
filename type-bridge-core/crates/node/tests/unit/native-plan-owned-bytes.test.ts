@@ -21,7 +21,7 @@ function assertDetachedSnapshot(
   assert.notEqual(captured.buffer, source.buffer);
 }
 
-test("public loadNative snapshots every V2 byte input before N-API", async (context) => {
+test("public loadNative snapshots native plan byte inputs before N-API", async (context) => {
   const nativePath = process.env["TYPE_BRIDGE_NODE_NATIVE_PATH"];
   assert.ok(nativePath, "native test path");
 
@@ -46,51 +46,21 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
   };
 
   let synchronousDecodeFailures = 0;
-  const rawPending = {
-    requestBytes: (): Uint8Array => Buffer.from([0x51]),
-    decodeReply: (response: Uint8Array): Promise<string> => {
-      captured.set("decodeReply", [response]);
-      if (response[0] === 0xee) {
-        synchronousDecodeFailures += 1;
-        throw new Error(
-          synchronousDecodeFailures === 1
-            ? "native synchronous decode failure"
-            : "query_remote_reply_replayed",
-        );
-      }
-      return Promise.resolve("decoded");
-    },
-  };
   const rawModelContext = Object.freeze({});
   const rawModelPending = {
     requestBytes: (): Uint8Array => Buffer.from([0x52]),
     decodeReply: (response: Uint8Array): Promise<object> => {
       captured.set("decodeModelReply", [response]);
+      if (response[0] === 0xee) {
+        synchronousDecodeFailures += 1;
+        throw new Error(synchronousDecodeFailures === 1
+          ? "native synchronous decode failure" : "query_remote_reply_replayed");
+      }
       return Promise.resolve(Object.freeze({}));
     },
   };
   const authority = Object.freeze({});
   raw["planAuthority"] = remember("planAuthority", [0], authority);
-  raw["planQueryOnlyAuthority"] = remember(
-    "planQueryOnlyAuthority",
-    [1],
-    authority,
-  );
-  raw["queryV2ExecuteLocal"] = remember(
-    "queryV2ExecuteLocal",
-    [2],
-    Promise.resolve("local"),
-  );
-  raw["queryV2RemoteCapabilities"] = remember(
-    "queryV2RemoteCapabilities",
-    [0],
-    [],
-  );
-  raw["queryV2PrepareRemote"] = remember(
-    "queryV2PrepareRemote",
-    [1, 3],
-    rawPending,
-  );
   raw["planRemoteModelContextWithResources"] = remember(
     "planRemoteModelContextWithResources",
     [1],
@@ -115,57 +85,6 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
     declared,
     [1, 2, 3],
   );
-
-  const queryOnlyDeclared = sharedBytes([4, 5, 6]);
-  native["planQueryOnlyAuthority"]({}, queryOnlyDeclared, "scope", "profile");
-  assertDetachedSnapshot(
-    captured.get("planQueryOnlyAuthority")![0],
-    queryOnlyDeclared,
-    [4, 5, 6],
-  );
-
-  const plan = sharedBytes([7, 8, 9]);
-  await native["queryV2ExecuteLocal"]({}, authority, plan, "{}", null);
-  assertDetachedSnapshot(
-    captured.get("queryV2ExecuteLocal")![0],
-    plan,
-    [7, 8, 9],
-  );
-
-  const capabilities = sharedBytes([10, 11, 12]);
-  native["queryV2RemoteCapabilities"](capabilities);
-  assertDetachedSnapshot(
-    captured.get("queryV2RemoteCapabilities")![0],
-    capabilities,
-    [10, 11, 12],
-  );
-
-  const remotePlan = sharedBytes([13, 14, 15]);
-  const advertisement = sharedBytes([16, 17, 18]);
-  const pending = native["queryV2PrepareRemote"](
-    authority,
-    remotePlan,
-    "{}",
-    advertisement,
-    1n,
-    1n,
-    1n,
-    null,
-  ) as { decodeReply(response: Uint8Array): Promise<string> };
-  assertDetachedSnapshot(
-    captured.get("queryV2PrepareRemote")![0],
-    remotePlan,
-    [13, 14, 15],
-  );
-  assertDetachedSnapshot(
-    captured.get("queryV2PrepareRemote")![1],
-    advertisement,
-    [16, 17, 18],
-  );
-
-  const reply = sharedBytes([19, 20, 21]);
-  assert.equal(await pending.decodeReply(reply), "decoded");
-  assertDetachedSnapshot(captured.get("decodeReply")![0], reply, [19, 20, 21]);
 
   const modelAdvertisement = sharedBytes([22, 23, 24]);
   const modelContext = native["planRemoteModelContextWithResources"](
@@ -196,16 +115,9 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
     [25, 26, 27],
   );
 
-  const failingPending = native["queryV2PrepareRemote"](
-    authority,
-    remotePlan,
-    "{}",
-    advertisement,
-    1n,
-    1n,
-    1n,
-    null,
-  ) as { decodeReply(response: Uint8Array): Promise<string> };
+  const failingPending = native["planPrepareRemoteModelRows"](
+    {}, modelContext, [], 0n, 1n, "exactly_one",
+  ) as { decodeReply(response: Uint8Array): Promise<object> };
   assert.throws(
     () => failingPending.decodeReply(sharedBytes([0xee])),
     /native synchronous decode failure/,

@@ -1477,7 +1477,7 @@ mod policy_tests {
             }
         }
         let legacy = RemoteCapabilities::new(
-            type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary(),
+            type_bridge_contract::capability::CapabilitySet::new(),
             RemoteExecutorBinding::new("proxy-transport-test", "epoch-transport-test").unwrap(),
             RemoteSigningPublicKey::from_bytes([7; 32]),
         );

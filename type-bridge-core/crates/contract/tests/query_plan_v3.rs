@@ -327,7 +327,7 @@ fn relation_insert_seeds_require_a_later_player_attachment() {
 }
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryOutput, QueryPattern,
-    QueryPlan, ReadStage, ReduceAssignment, Reducer,
+    ReduceAssignment, Reducer,
 };
 
 fn stage_plans() -> BTreeMap<&'static str, QueryPlanV3> {
@@ -2101,16 +2101,6 @@ fn native_output_columns_use_the_binding_budget_while_v1_remains_frozen() {
         .collect();
     let plan = QueryPlanV3::new(wide.clone(), &schema()).unwrap();
     assert_eq!(plan.limits().structural.selected_slots, MAX_BINDINGS);
-    assert!(
-        QueryPlan::new(
-            wide.bindings.clone(),
-            vec![],
-            vec![ReadStage::Match { patterns }],
-            wide.output.clone(),
-            wide.managed_semantics.clone()
-        )
-        .is_err()
-    );
     let lower =
         QueryPlanV3::new_with_limits(wide.clone(), &schema(), QueryLimits::CANONICAL).unwrap_err();
     assert_eq!(lower.code().as_str(), "query_plan_output_limit");
@@ -2471,21 +2461,6 @@ fn native_optional_unions_keep_branch_visibility_and_legacy_fences() {
             .canonical_bytes()
             .unwrap(),
         bytes
-    );
-    assert_eq!(
-        QueryPlan::new(
-            request.bindings,
-            vec![],
-            vec![ReadStage::Match {
-                patterns: vec![optional]
-            }],
-            request.output,
-            request.managed_semantics
-        )
-        .unwrap_err()
-        .code()
-        .as_str(),
-        "query_plan_v1_disjunction_unsupported"
     );
     let not_in_every_branch = QueryPattern::Try {
         patterns: vec![QueryPattern::Or {

@@ -816,9 +816,6 @@ type LoadedNativeModule =
   & NativeProxyConnectionModule
   & NativePlanBuilderModule
   & NativeRuntimeProjectionModule;
-type LoadedNativePendingQueryV2Remote = ReturnType<
-  LoadedNativeModule["queryV2PrepareRemote"]
->;
 type LoadedNativePendingRemoteModelQuery = ReturnType<
   LoadedNativeModule["planPrepareRemoteModelRows"]
 >;
@@ -831,39 +828,6 @@ type LoadedNativePendingRemoteModelQuery = ReturnType<
 // fallback for atypical build layouts.
 
 let _cached: LoadedNativeModule | null = null;
-
-function protectedPendingQueryV2Remote(
-  pending: LoadedNativePendingQueryV2Remote,
-  maxEnvelopeBytes: number,
-): LoadedNativePendingQueryV2Remote {
-  const requestBytes = pending.requestBytes.bind(pending);
-  const decodeReply = pending.decodeReply.bind(pending);
-  let decodeStarted = false;
-  return Object.freeze({
-    requestBytes: (): Uint8Array => requestBytes(),
-    decodeReply: (response: Uint8Array): Promise<string> => {
-      if (decodeStarted) {
-        // The native one-shot claim rejects replay before inspecting this
-        // argument, so do not snapshot attacker-sized replay input.
-        return decodeReply(response);
-      }
-      decodeStarted = true;
-      let snapshot: Buffer;
-      try {
-        snapshot = ownedByteSnapshot(response, maxEnvelopeBytes);
-      } catch {
-        // Preserve the native claim-first contract for an invalid first
-        // argument. The addon consumes the one-shot before its metadata check,
-        // while a replay returns without inspecting this value.
-        return decodeReply(response);
-      }
-      // Do not catch a synchronous native rejection here. The claim has
-      // already been consumed, so retrying would mask the original diagnostic
-      // with the one-shot replay error.
-      return decodeReply(snapshot);
-    },
-  });
-}
 
 function protectedPendingRemoteModelQuery(
   pending: LoadedNativePendingRemoteModelQuery,
@@ -931,10 +895,6 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
   const maxCanonicalBytes = native.MAX_CANONICAL_BYTES;
   const maxEnvelopeBytes = native.MAX_REMOTE_ENVELOPE_BYTES;
   const planAuthority = native.planAuthority.bind(native);
-  const planQueryOnlyAuthority = native.planQueryOnlyAuthority.bind(native);
-  const queryV2ExecuteLocal = native.queryV2ExecuteLocal.bind(native);
-  const queryV2RemoteCapabilities = native.queryV2RemoteCapabilities.bind(native);
-  const queryV2PrepareRemote = native.queryV2PrepareRemote.bind(native);
   const planRemoteModelContextWithResources =
     native.planRemoteModelContextWithResources.bind(native);
   const planPrepareRemoteModelRows =
@@ -964,77 +924,6 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
       )) as (
       ...args: never[]
     ) => unknown,
-  );
-  descriptors["planQueryOnlyAuthority"] = protectedMethodDescriptor(
-    native,
-    "planQueryOnlyAuthority",
-    ((
-      database: NativeRustDatabase,
-      declaredSchema: Uint8Array,
-      scope: string,
-      profile: string,
-    ) =>
-      planQueryOnlyAuthority(
-        database,
-        ownedByteSnapshot(declaredSchema, maxCanonicalBytes),
-        scope,
-        profile,
-      )) as (...args: never[]) => unknown,
-  );
-  descriptors["queryV2ExecuteLocal"] = protectedMethodDescriptor(
-    native,
-    "queryV2ExecuteLocal",
-    ((
-      database: NativeRustDatabase,
-      authority: Parameters<LoadedNativeModule["queryV2ExecuteLocal"]>[1],
-      plan: Uint8Array,
-      invocationJson: string,
-      deadlineMs?: bigint | null,
-    ) =>
-      queryV2ExecuteLocal(
-        database,
-        authority,
-        ownedByteSnapshot(plan, maxCanonicalBytes),
-        invocationJson,
-        deadlineMs,
-      )) as (...args: never[]) => unknown,
-  );
-  descriptors["queryV2RemoteCapabilities"] = protectedMethodDescriptor(
-    native,
-    "queryV2RemoteCapabilities",
-    ((advertisement: Uint8Array) =>
-      queryV2RemoteCapabilities(
-        ownedByteSnapshot(advertisement, maxEnvelopeBytes),
-      )) as (
-      ...args: never[]
-    ) => unknown,
-  );
-  descriptors["queryV2PrepareRemote"] = protectedMethodDescriptor(
-    native,
-    "queryV2PrepareRemote",
-    ((
-      authority: Parameters<LoadedNativeModule["queryV2PrepareRemote"]>[0],
-      plan: Uint8Array,
-      invocationJson: string,
-      advertisement: Uint8Array,
-      maxItems: bigint,
-      maxBytes: bigint,
-      maxCollectionMembers: bigint,
-      deadlineMs?: bigint | null,
-    ) =>
-      protectedPendingQueryV2Remote(
-        queryV2PrepareRemote(
-          authority,
-          ownedByteSnapshot(plan, maxCanonicalBytes),
-          invocationJson,
-          ownedByteSnapshot(advertisement, maxEnvelopeBytes),
-          maxItems,
-          maxBytes,
-          maxCollectionMembers,
-          deadlineMs,
-        ),
-        maxEnvelopeBytes,
-      )) as (...args: never[]) => unknown,
   );
   descriptors["planRemoteModelContextWithResources"] = protectedMethodDescriptor(
     native,

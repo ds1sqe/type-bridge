@@ -29,7 +29,7 @@ from pathlib import Path
 from queue import Empty
 from typing import Any, Protocol
 
-from type_bridge_core import PlanAuthority, PyDatabase, plan_query_only_authority
+from type_bridge_core import PlanAuthority, PyDatabase
 
 from type_bridge.plan import Count, Matched, Plan
 
@@ -317,7 +317,7 @@ def connect(target: Target) -> PyDatabase:
 
 
 def authority_for(db: PyDatabase, target: Target) -> PlanAuthority:
-    return plan_query_only_authority(db, target.declared, SCOPE, target.profile)
+    return PlanAuthority(target.declared, SCOPE, target.profile)
 
 
 def fresh_database(base: Target, label: str, seed: Iterable[str]) -> Target:

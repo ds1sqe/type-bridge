@@ -70,56 +70,11 @@ pub mod query;
 mod query_connection;
 mod query_execution_limits;
 mod query_plan_exec;
-pub mod query_v2;
-#[cfg(any(test, feature = "integration-tests"))]
-mod query_v2_adapter;
-#[cfg(test)]
-mod query_v2_adapter_tests;
-pub mod query_v2_builder;
-mod query_v2_compatibility;
-mod query_v2_model;
-pub mod query_v2_prepared;
-pub mod query_v2_remote;
-#[cfg(test)]
-mod query_v2_wide_query_tests;
 pub mod remote_signing;
 pub mod runtime_projection;
 pub mod session;
 pub mod value;
 mod write_result;
-
-/// Integration-test bridge for exercising the production-internal V1-to-V2
-/// adapter from the live integration-test crate.
-///
-/// This public test seam exists only when the explicitly test-only
-/// `integration-tests` feature is enabled. The adapter itself is compiled in
-/// the frozen V2 parity feature; production uses the native plan adapter.
-#[cfg(feature = "integration-tests")]
-#[doc(hidden)]
-pub mod integration_test_support {
-    use type_bridge_contract::diagnostic::Diagnostic;
-
-    use type_bridge_contract::query_plan::QueryOperation;
-    use type_bridge_query::ValidatedQuery;
-
-    use crate::_registry::DescriptorRegistry;
-    use crate::match_request::ValidatedMatchRequest;
-
-    use crate::query_v2_adapter::{MatchRequestAdapterAuthority, adapt_match_request};
-
-    /// Adapt a validated V1 request through the production registry authority.
-    ///
-    /// Deriving the authority here keeps the live parity gate on the same
-    /// descriptor projection as public execution.
-    pub fn adapt_match_request_for_live_test(
-        validated: &ValidatedMatchRequest,
-        registry: &DescriptorRegistry,
-    ) -> Result<(ValidatedQuery, QueryOperation), Diagnostic> {
-        let authority = MatchRequestAdapterAuthority::from_registry(registry)?;
-        let adapted = adapt_match_request(validated, registry, &authority.context())?;
-        Ok((adapted.validated().clone(), adapted.operation()))
-    }
-}
 
 // Generated/runtime execution exports.
 pub use _attribute::ValueType;

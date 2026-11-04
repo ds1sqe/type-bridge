@@ -718,9 +718,7 @@ mod tests {
         Operation, Stage, query_plan_v3_capability_vocabulary,
     };
     use type_bridge_contract::query_remote::RemoteExecutorBinding;
-    use type_bridge_contract::query_remote_v2::{
-        CAP_QUERY_REMOTE_STATEMENT_LIMIT, query_remote_v2_required_capabilities,
-    };
+
     use type_bridge_contract::query_remote_v3::{
         CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedAnswerV3,
         StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
@@ -1880,10 +1878,6 @@ mod tests {
         ] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
-        }
-        capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_STATEMENT_LIMIT).unwrap());
         let advertisement_contract = RemoteCapabilities::new(
             capabilities,
             RemoteExecutorBinding::new("rust-client-test", "epoch-00000000003").unwrap(),
@@ -2126,9 +2120,6 @@ mod tests {
         ] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
-        }
         let advertisement_contract = RemoteCapabilities::new(
             capabilities,
             RemoteExecutorBinding::new("rust-generated-acceptance", "epoch-00000000002").unwrap(),
@@ -2299,10 +2290,6 @@ mod tests {
         ] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
-        }
-        capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_STATEMENT_LIMIT).unwrap());
         let advertisement_contract = RemoteCapabilities::new(
             capabilities,
             RemoteExecutorBinding::new("rust-client-test", "epoch-00000000001").unwrap(),
@@ -2479,9 +2466,6 @@ mod tests {
             CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
         ] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
-        }
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
         }
         let advertisement_contract = RemoteCapabilities::new(
             capabilities,

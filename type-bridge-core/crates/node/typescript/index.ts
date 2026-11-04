@@ -12,7 +12,6 @@ import {
   planNativePromise,
   registerPlanAuthorityHandle,
   type NativePlanAuthority,
-  type NativeQueryV2BuilderRuntime,
 } from "./plan-internals.js";
 import {
   registerRustDatabaseHandle,
@@ -393,17 +392,7 @@ export interface NativeRustTransactionContext {
   transactionType(): TransactionType;
 }
 
-interface NativePendingQueryV2Remote {
-  requestBytes(): Uint8Array;
-  decodeReply(response: Uint8Array): Promise<string>;
-}
-
-export interface PendingQueryV2Remote {
-  requestBytes(): Uint8Array;
-  decodeReply(response: Uint8Array): Promise<string>;
-}
-
-interface NativeQueryV2Runtime {
+interface NativePlanAuthorityRuntime {
   planAuthority(
     declaredSchema: Uint8Array,
     scope: string,
@@ -413,30 +402,6 @@ interface NativeQueryV2Runtime {
     schemaAuthorityJson: string,
     semanticFingerprintJson: string,
   ): NativePlanAuthority;
-  planQueryOnlyAuthority(
-    database: NativeRustDatabase,
-    declaredSchema: Uint8Array,
-    scope: string,
-    profile: string,
-  ): NativePlanAuthority;
-  queryV2ExecuteLocal(
-    database: NativeRustDatabase,
-    authority: NativePlanAuthority,
-    plan: Uint8Array,
-    invocationJson: string,
-    deadlineMs?: bigint | null,
-  ): Promise<string>;
-  queryV2RemoteCapabilities(advertisement: Uint8Array): string[];
-  queryV2PrepareRemote(
-    authority: NativePlanAuthority,
-    plan: Uint8Array,
-    invocationJson: string,
-    advertisement: Uint8Array,
-    maxItems: bigint,
-    maxBytes: bigint,
-    maxCollectionMembers: bigint,
-    deadlineMs?: bigint | null,
-  ): NativePendingQueryV2Remote;
 }
 
 export interface NativeRuntime {
@@ -475,8 +440,7 @@ export interface NativeRuntime {
 /** Package-private native contract used by retained runtime entry points. */
 export interface NativeModule
   extends NativeRuntime,
-    NativeQueryV2Runtime,
-    NativeQueryV2BuilderRuntime {}
+    NativePlanAuthorityRuntime {}
 
 export interface DatabaseConnectOptions {
   username?: string | null;
@@ -538,7 +502,7 @@ export class MigrationPlan {
   }
 
   execute(database: Database, holder: string): MigrationExecutionReport {
-    return this.#native.execute(preparedV2DatabaseHandle(database), holder);
+    return this.#native.execute(planDatabaseHandle(database), holder);
   }
 
   executeControlled(
@@ -551,7 +515,7 @@ export class MigrationPlan {
     } = {},
   ): MigrationExecutionReport {
     return this.#native.executeControlled(
-      preparedV2DatabaseHandle(database),
+      planDatabaseHandle(database),
       holder,
       options.timeoutMilliseconds,
       options.resources?.nativeHandle(),
@@ -669,11 +633,11 @@ export class MigrationCatalog {
   }
 
   verify(database: Database): MigrationVerificationReport {
-    return this.#native.verify(preparedV2DatabaseHandle(database));
+    return this.#native.verify(planDatabaseHandle(database));
   }
 
   appliedMigrations(database: Database): MigrationIdentity[] {
-    return this.#native.appliedMigrations(preparedV2DatabaseHandle(database));
+    return this.#native.appliedMigrations(planDatabaseHandle(database));
   }
 
   previewApply(
@@ -752,114 +716,16 @@ export class PlanAuthority {
     return authority;
   }
 
-  static queryOnly(
-    database: Database,
-    declaredSchema: Uint8Array,
-    scope: string,
-    profile: string,
-  ): PlanAuthority {
-    const authority = Object.create(
-      PlanAuthority.prototype,
-    ) as PlanAuthority;
-    registerPlanAuthorityHandle(
-      authority,
-      planNativeCall(() =>
-        loadNative().planQueryOnlyAuthority(
-          preparedV2DatabaseHandle(database),
-          declaredSchema,
-          scope,
-          profile,
-        ),
-      ),
-    );
-    return authority;
-  }
 }
 
-export interface QueryV2RemoteLimits {
-  readonly maxItems: bigint;
-  readonly maxBytes: bigint;
-  readonly maxCollectionMembers: bigint;
-  readonly deadlineMs?: bigint | null;
-}
-
-function preparedV2DatabaseHandle(database: Database): NativeRustDatabase {
+function planDatabaseHandle(database: Database): NativeRustDatabase {
   const native = rustDatabaseHandle(database);
   if (native === undefined) {
     throw new TypeError(
-      "queryV2ExecuteLocal requires a type-bridge Database",
+      "plan authority requires a type-bridge Database",
     );
   }
   return native;
-}
-
-function preparedV2AuthorityHandle(
-  authority: PlanAuthority,
-): NativePlanAuthority {
-  const native = planAuthorityHandle(authority);
-  if (native === undefined) {
-    throw new TypeError(
-      "prepared V2 execution requires a type-bridge PlanAuthority",
-    );
-  }
-  return native;
-}
-
-export function queryV2ExecuteLocal(
-  database: Database,
-  authority: PlanAuthority,
-  plan: Uint8Array,
-  invocationJson: string,
-  deadlineMs?: bigint | null,
-): Promise<string> {
-  return planNativePromise(
-    planNativeCall(() =>
-      loadNative().queryV2ExecuteLocal(
-        preparedV2DatabaseHandle(database),
-        preparedV2AuthorityHandle(authority),
-        plan,
-        invocationJson,
-        deadlineMs,
-      ),
-    ),
-  );
-}
-
-export function queryV2RemoteCapabilities(
-  advertisement: Uint8Array,
-): readonly string[] {
-  return planNativeCall(() =>
-    loadNative().queryV2RemoteCapabilities(advertisement),
-  );
-}
-
-export function queryV2PrepareRemote(
-  authority: PlanAuthority,
-  plan: Uint8Array,
-  invocationJson: string,
-  advertisement: Uint8Array,
-  limits: QueryV2RemoteLimits,
-): PendingQueryV2Remote {
-  const pending = planNativeCall(() =>
-    loadNative().queryV2PrepareRemote(
-      preparedV2AuthorityHandle(authority),
-      plan,
-      invocationJson,
-      advertisement,
-      limits.maxItems,
-      limits.maxBytes,
-      limits.maxCollectionMembers,
-      limits.deadlineMs,
-    ),
-  );
-  return Object.freeze({
-    requestBytes: (): Uint8Array =>
-      planNativeCall(() => new Uint8Array(pending.requestBytes())),
-    decodeReply: (response: Uint8Array): Promise<string> =>
-      planNativePromise(
-        planNativeCall(() => pending.decodeReply(response)),
-      ),
-  });
 }
 
 export class Database {

@@ -33,7 +33,6 @@ pub(crate) struct Solution {
 pub(crate) struct HydrationAuthority<'plan> {
     pub(crate) projection: &'plan HydrationProjection,
     pub(crate) bindings: BTreeMap<u16, &'plan HydrationBinding>,
-    pub(crate) descriptors: BTreeMap<TypeId, &'plan HydrationDescriptor>,
 }
 
 impl<'plan> HydrationAuthority<'plan> {
@@ -59,7 +58,6 @@ impl<'plan> HydrationAuthority<'plan> {
         Ok(Self {
             projection,
             bindings,
-            descriptors,
         })
     }
 
@@ -68,15 +66,6 @@ impl<'plan> HydrationAuthority<'plan> {
             validation_error(
                 "query_v2_model_hydration_binding",
                 "provider hydration references an unknown binding",
-            )
-        })
-    }
-
-    pub(crate) fn descriptor(&self, descriptor: &TypeId) -> ExecResult<&'plan HydrationDescriptor> {
-        self.descriptors.get(descriptor).copied().ok_or_else(|| {
-            validation_error(
-                "query_v2_model_hydration_descriptor",
-                "provider hydration references a descriptor outside the projection",
             )
         })
     }
@@ -415,16 +404,7 @@ pub(crate) struct HydratedPlayerWire {
     pub(crate) attributes: Vec<HydratedAttributeWire>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RematchSolutionWire {
-    pub(crate) bindings: Vec<HydratedThingWire>,
-    #[serde(default)]
-    pub(crate) satisfied_role_edges: Vec<u16>,
-}
-
 pub(crate) struct DecodedThing {
-    pub(crate) binding: u16,
     pub(crate) node: NodeDraft,
     pub(crate) nested: Vec<NodeDraft>,
 }
@@ -494,7 +474,6 @@ pub(crate) fn decode_hydrated_document(
         (Vec::new(), Vec::new())
     };
     Ok(DecodedThing {
-        binding,
         node: NodeDraft {
             iid,
             concrete: projected.descriptor().clone(),
@@ -526,7 +505,6 @@ pub(crate) fn decode_exact_thing(
         ));
     };
     Ok(DecodedThing {
-        binding: wire.binding,
         node: NodeDraft {
             iid: wire.concept_id,
             concrete: projected.descriptor().clone(),
@@ -1226,14 +1204,6 @@ pub(crate) fn compare_solutions_by_order(
     Ok(Ordering::Equal)
 }
 
-pub(crate) fn charge_solution_semantics(
-    solutions: &[Solution],
-    graph: &GraphBuilder,
-    limits: ModelReplyDecodeLimits,
-) -> ExecResult<()> {
-    charge_selected_solution_semantics(solutions, graph, limits, None)
-}
-
 pub(crate) fn charge_selected_solution_semantics(
     solutions: &[Solution],
     graph: &GraphBuilder,
@@ -1313,14 +1283,6 @@ pub(crate) fn node_attribute_value_count(node: &NodeDraft) -> ExecResult<u64> {
 }
 
 pub(crate) type PredicateWitnesses = BTreeMap<(u16, String, AttributeId), Vec<ModelValue>>;
-
-pub(crate) fn evaluate_pattern(
-    pattern: &ModelPredicate,
-    solution: &Solution,
-    graph: &GraphBuilder,
-) -> ExecResult<bool> {
-    evaluate_pattern_with_witnesses(pattern, solution, graph, None)
-}
 
 fn predicate_field_values<'a>(
     solution: &Solution,

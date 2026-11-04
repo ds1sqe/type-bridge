@@ -1832,7 +1832,7 @@ impl Scope<'_> {
             self.bindings,
             &reads,
             None,
-            Some(crate::plan_lowering::PatternTypeDomains::Plan(self.plan)),
+            Some(self.plan),
             Some(self.rows),
             Some(self.literal_policy),
         )?;

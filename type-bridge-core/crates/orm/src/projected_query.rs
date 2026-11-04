@@ -1512,11 +1512,11 @@ mod tests {
     use super::*;
     use crate::OrmError;
     use crate::ProjectedCrudExecutor;
-    use crate::match_request::result::{ConceptId, HydratedRole, ReductionRow};
-    use crate::match_request::result_validation::validated_match_result_from_model;
-    use crate::match_request::v2_outcome_fixture::{
+    use crate::match_request::model_outcome_fixture::{
         distinct_count, distinct_exists, hydrated_page, hydrated_rows, model_reduction,
     };
+    use crate::match_request::result::{ConceptId, HydratedRole, ReductionRow};
+    use crate::match_request::result_validation::validated_match_result_from_model;
     use crate::match_request::{
         BindingPair, ComparisonOp, MatchBinding, MatchPlan, MatchRequest, ReduceTerm, Reduction,
         RowCardinality, SessionHandle, ThingKind, validate_match_request,

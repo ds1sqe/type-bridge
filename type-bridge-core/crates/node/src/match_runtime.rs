@@ -2968,9 +2968,9 @@ mod tests {
     use tokio::sync::Notify;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-    use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
+    use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
     use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-    use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
+
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
     use type_bridge_orm::ProxyQueryConnection;
     use type_bridge_orm::plan_authority::QueryAuthority;
@@ -3772,10 +3772,7 @@ plays:
             "typedb-3.12.1/v1",
         )
         .unwrap();
-        let mut capabilities = query_plan_v2_capability_vocabulary();
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
-        }
+        let capabilities = query_plan_v3_capability_vocabulary();
         let advertisement = RemoteCapabilities::new(
             capabilities,
             RemoteExecutorBinding::new("node-ceiling-test", "epoch-00000000001").unwrap(),

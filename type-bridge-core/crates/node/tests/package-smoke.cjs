@@ -23,9 +23,6 @@ const retainedFunctions = [
   "ensureDatabase",
   "long",
   "longFromNumberUnsafe",
-  "queryV2ExecuteLocal",
-  "queryV2PrepareRemote",
-  "queryV2RemoteCapabilities",
   "string",
 ];
 for (const name of retainedFunctions) {
@@ -39,6 +36,10 @@ assert.deepEqual(typeBridge.long(9223372036854775807n), {
 assert.throws(() => typeBridge.long(1), /bigint/);
 
 const removedAuthoringNames = [
+  "queryV2ExecuteLocal",
+  "queryV2PrepareRemote",
+  "queryV2RemoteCapabilities",
+
   "Attribute",
   "AttributeFlags",
   "Card",
@@ -191,6 +192,7 @@ for (const forbiddenSubpath of [
   "./native",
   "./parser",
   "./typed",
+  "./query-v2",
 ]) {
   assert.equal(
     Object.hasOwn(packageJson.exports, forbiddenSubpath),
@@ -198,15 +200,6 @@ for (const forbiddenSubpath of [
     `${forbiddenSubpath} must not be a package export`,
   );
 }
-
-const queryV2 = require("@type-bridge/node/query-v2");
-assert.deepEqual(Object.keys(queryV2).sort(), [
-  "AuthoredQueryInvocation",
-  "AuthoredQueryPlan",
-  "PlanAuthority",
-  "QueryPlanBuilder",
-]);
-assert.equal(queryV2.PlanAuthority, typeBridge.PlanAuthority);
 
 const runtimeProjection = require("@type-bridge/node/runtime-projection");
 assert.deepEqual(Object.keys(runtimeProjection).sort(), [
@@ -252,8 +245,6 @@ const packedFiles = packInfo.files.map((file) => file.path);
 for (const required of [
   "dist/public.js",
   "dist/public.d.ts",
-  "dist/query-v2.js",
-  "dist/query-v2.d.ts",
   "dist/runtime-projection.js",
   "dist/runtime-projection.d.ts",
   "THIRD_PARTY_NOTICES.md",

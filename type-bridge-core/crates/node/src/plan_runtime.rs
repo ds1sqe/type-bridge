@@ -24,8 +24,6 @@ use type_bridge_schema::{
     decode_schema_authority, schema_authority_capability_vocabulary,
 };
 
-use crate::NodeRustDatabase;
-
 pub(crate) fn napi_error(diagnostic: &Diagnostic) -> napi::Error {
     napi::Error::from_reason(serde_json::to_string(diagnostic).unwrap_or_else(|_| {
         r#"{"category":"invalid_contract","code":"query_v2_diagnostic_unencodable","message":"the structured query diagnostic could not be encoded","path":[],"details":{}}"#
@@ -213,14 +211,6 @@ pub(crate) fn bounded_string_with_unicode_error(
         BoundedNodeString::Oversized => Err(napi_error(&oversized())),
         BoundedNodeString::InvalidUnicode => Err(napi_error(&invalid_unicode())),
     }
-}
-
-pub(crate) fn invocation_input_too_large() -> Diagnostic {
-    binding_diagnostic(
-        DiagnosticCategory::ResourceLimit,
-        "query_invocation_input_byte_limit",
-        "invocation input rows exceed the structural byte ceiling",
-    )
 }
 
 fn managed_scope_id_too_large() -> Diagnostic {
@@ -439,39 +429,54 @@ pub fn plan_authority_from_schema_authority(
     .map_err(|diagnostic| napi_error(&diagnostic))
 }
 
-/// Build a local-only authority for a database with no migration controls.
-#[napi(js_name = "planQueryOnlyAuthority")]
-pub fn plan_query_only_authority(
-    env: Env,
-    database: &NodeRustDatabase,
-    declared_schema: Unknown,
-    scope: Unknown,
-    profile: Unknown,
-) -> napi::Result<NodePlanAuthority> {
-    let declared_schema = non_shared_buffer(&env, declared_schema)?;
-    let scope = bounded_string(
-        &env,
-        scope,
-        MAX_CANONICAL_STRING_BYTES,
-        managed_scope_id_too_large,
-    )?;
-    let profile = bounded_string(
-        &env,
-        profile,
-        MAX_FINGERPRINT_IDENTIFIER_BYTES,
-        semantic_profile_id_too_large,
-    )?;
-    let (database, _) = database.handles();
-    let authority = QueryAuthority::from_declared_bytes_query_only(
-        bounded_buffer(&declared_schema, MAX_CANONICAL_BYTES.saturating_add(1)),
-        &scope,
-        &profile,
-        &database,
+fn oversized_scalar(value_type: ValueTypeTag) -> Diagnostic {
+    plan_scalar(
+        value_type,
+        PlanScalarInput::Text(" ".repeat(MAX_CANONICAL_STRING_BYTES.saturating_add(1))),
     )
-    .map_err(|diagnostic| napi_error(&diagnostic))?;
-    Ok(NodePlanAuthority {
-        authority: Arc::new(authority),
-    })
+    .expect_err("oversized text marker cannot be canonical")
+}
+
+pub(crate) fn node_scalar(
+    env: &Env,
+    value_type: ValueTypeTag,
+    value: Unknown,
+) -> napi::Result<CanonicalValue> {
+    let input = match value_type {
+        ValueTypeTag::String
+        | ValueTypeTag::Date
+        | ValueTypeTag::DateTime
+        | ValueTypeTag::DateTimeTz
+        | ValueTypeTag::Decimal
+        | ValueTypeTag::Duration => {
+            if value.get_type()? != ValueType::String {
+                return Err(napi_error(&plan_scalar_host_type_error()));
+            }
+            PlanScalarInput::Text(bounded_string_with_unicode_error(
+                env,
+                value,
+                MAX_CANONICAL_STRING_BYTES,
+                || oversized_scalar(value_type),
+                plan_scalar_unicode_error,
+            )?)
+        }
+        ValueTypeTag::Long => {
+            let integer = BigInt::from_unknown(value)
+                .map_err(|_| napi_error(&plan_scalar_host_type_error()))?;
+            let (integer, lossless) = integer.get_i64();
+            if !lossless {
+                return Err(napi_error(&plan_scalar_integer_range_error()));
+            }
+            PlanScalarInput::Long(integer)
+        }
+        ValueTypeTag::Double => PlanScalarInput::Double(
+            f64::from_unknown(value).map_err(|_| napi_error(&plan_scalar_host_type_error()))?,
+        ),
+        ValueTypeTag::Boolean => PlanScalarInput::Boolean(
+            bool::from_unknown(value).map_err(|_| napi_error(&plan_scalar_host_type_error()))?,
+        ),
+    };
+    plan_scalar(value_type, input).map_err(|error| napi_error(&error))
 }
 
 #[cfg(test)]
@@ -566,54 +571,4 @@ mod tests {
         assert_eq!(snapshot.len(), MAX_REMOTE_ENVELOPE_BYTES + 1);
         assert_eq!(snapshot, response[..MAX_REMOTE_ENVELOPE_BYTES + 1]);
     }
-}
-
-fn oversized_scalar(value_type: ValueTypeTag) -> Diagnostic {
-    plan_scalar(
-        value_type,
-        PlanScalarInput::Text(" ".repeat(MAX_CANONICAL_STRING_BYTES.saturating_add(1))),
-    )
-    .expect_err("oversized text marker cannot be canonical")
-}
-
-pub(crate) fn node_scalar(
-    env: &Env,
-    value_type: ValueTypeTag,
-    value: Unknown,
-) -> napi::Result<CanonicalValue> {
-    let input = match value_type {
-        ValueTypeTag::String
-        | ValueTypeTag::Date
-        | ValueTypeTag::DateTime
-        | ValueTypeTag::DateTimeTz
-        | ValueTypeTag::Decimal
-        | ValueTypeTag::Duration => {
-            if value.get_type()? != ValueType::String {
-                return Err(napi_error(&plan_scalar_host_type_error()));
-            }
-            PlanScalarInput::Text(bounded_string_with_unicode_error(
-                env,
-                value,
-                MAX_CANONICAL_STRING_BYTES,
-                || oversized_scalar(value_type),
-                plan_scalar_unicode_error,
-            )?)
-        }
-        ValueTypeTag::Long => {
-            let integer = BigInt::from_unknown(value)
-                .map_err(|_| napi_error(&plan_scalar_host_type_error()))?;
-            let (integer, lossless) = integer.get_i64();
-            if !lossless {
-                return Err(napi_error(&plan_scalar_integer_range_error()));
-            }
-            PlanScalarInput::Long(integer)
-        }
-        ValueTypeTag::Double => PlanScalarInput::Double(
-            f64::from_unknown(value).map_err(|_| napi_error(&plan_scalar_host_type_error()))?,
-        ),
-        ValueTypeTag::Boolean => PlanScalarInput::Boolean(
-            bool::from_unknown(value).map_err(|_| napi_error(&plan_scalar_host_type_error()))?,
-        ),
-    };
-    plan_scalar(value_type, input).map_err(|error| napi_error(&error))
 }

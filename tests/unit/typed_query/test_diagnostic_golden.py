@@ -13,7 +13,7 @@ from type_bridge_core import (
     _QueryDescriptorRegistry,
 )
 
-from tests.unit.query.test_query_v2_remote_runtime import (
+from tests.unit.query.remote_fixture import (
     PLAN_CAPABILITIES,
     _advertisement,
     _authority,

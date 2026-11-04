@@ -3,11 +3,7 @@
 #![deny(missing_docs)]
 
 mod engine;
-mod query_v2_claims;
-mod query_validation;
 mod safety_condition;
-
-pub use query_validation::{ValidatedQuery, validate_query_local_function, validate_query_plan};
 
 pub use safety_condition::{lower_condition_to_plan, safety_condition_to_assertion_plan};
 
@@ -62,13 +58,6 @@ pub struct BindingDomain {
 }
 
 impl BindingDomain {
-    pub(crate) const fn new(type_ids: BTreeSet<TypeId>, value_type: Option<ValueTypeTag>) -> Self {
-        Self {
-            type_ids,
-            value_type,
-        }
-    }
-
     /// Return possible concrete runtime types.
     pub const fn type_ids(&self) -> &BTreeSet<TypeId> {
         &self.type_ids
@@ -90,20 +79,6 @@ pub struct RowColumn {
 }
 
 impl RowColumn {
-    pub(crate) const fn new(
-        binding: BindingId,
-        domain: BindingDomain,
-        variable: QueryVariable,
-        optional: bool,
-    ) -> Self {
-        Self {
-            binding,
-            domain,
-            optional,
-            variable,
-        }
-    }
-
     /// Return the output binding.
     pub const fn binding(&self) -> BindingId {
         self.binding
@@ -132,10 +107,6 @@ pub struct RowSchema {
 }
 
 impl RowSchema {
-    pub(crate) const fn new(columns: Vec<RowColumn>) -> Self {
-        Self { columns }
-    }
-
     /// Return ordered output columns.
     pub fn columns(&self) -> &[RowColumn] {
         &self.columns
@@ -169,10 +140,6 @@ pub struct DocumentColumn {
 }
 
 impl DocumentColumn {
-    pub(crate) const fn new(key: QueryVariable, shape: DocumentColumnShape) -> Self {
-        Self { key, shape }
-    }
-
     /// Return the document key.
     pub const fn key(&self) -> &QueryVariable {
         &self.key
@@ -191,10 +158,6 @@ pub struct DocumentSchema {
 }
 
 impl DocumentSchema {
-    pub(crate) const fn new(columns: Vec<DocumentColumn>) -> Self {
-        Self { columns }
-    }
-
     /// Return ordered document columns.
     pub fn columns(&self) -> &[DocumentColumn] {
         &self.columns
@@ -300,11 +263,9 @@ pub fn validate_migration_assertion_plan(
     let converted = convert_assertion_patterns(plan.patterns());
     let engine::PatternAnalysis {
         domains,
-        optional_positive: _,
         positive,
         scoped_positive,
         used,
-        value_bindings: _,
     } = engine::analyze_patterns(
         &converted,
         plan.bindings().len(),
@@ -556,22 +517,6 @@ const ASSERTION_ENGINE_CODES: engine::EngineCodes = engine::EngineCodes {
     try_binding_shared: engine::EngineCode {
         code: "migration_assertion_unknown_binding",
         message: "assertion patterns cannot express optional blocks",
-    },
-    local_unbound: engine::EngineCode {
-        code: "migration_assertion_unknown_binding",
-        message: "assertion patterns cannot define local functions",
-    },
-    local_uncorrelated: engine::EngineCode {
-        code: "migration_assertion_unknown_binding",
-        message: "assertion patterns cannot define local functions",
-    },
-    empty_local_domain: engine::EngineCode {
-        code: "migration_assertion_unknown_binding",
-        message: "assertion patterns cannot define local functions",
-    },
-    local_return_domain: engine::EngineCode {
-        code: "migration_assertion_unknown_binding",
-        message: "assertion patterns cannot define local functions",
     },
 };
 

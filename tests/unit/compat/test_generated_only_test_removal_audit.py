@@ -17,6 +17,13 @@ ALLOWED_DISPOSITIONS = {
     "split_yaml_schema_successor",
 }
 CURRENT_EVIDENCE = {
+    "type-bridge-core/crates/node/tests/unit/query-v2-authoring.test.ts": {
+        "path": "type-bridge-core/crates/node/tests/unit/plan-builder.test.ts",
+        "needles": [
+            "PlanBuilder",
+            "builder calls never throw on content; build reports the first error",
+        ],
+    },
     "tests/unit/migration/test_state_reader.py": {
         "path": "tests/unit/compat/test_generated_only_python_root.py",
         "needles": ['"migration.state"', "test_legacy_modules_are_absent"],
@@ -39,7 +46,7 @@ def test_every_additional_removed_test_path_has_source_tied_disposition() -> Non
     operation_paths = {item["path"] for item in operation_map["case_inventory"]}
     assert len(operation_paths) == audit["operation_inventory_paths"]
     removed_operation_paths = {path for path in operation_paths if not (ROOT / path).exists()}
-    assert len(removed_operation_paths) == audit["operation_removed_paths"] + 2
+    assert len(removed_operation_paths) == audit["operation_removed_paths"] + 4
 
     family_ids: set[str] = set()
     removed_paths: set[str] = set()
@@ -83,7 +90,7 @@ def test_every_additional_removed_test_path_has_source_tied_disposition() -> Non
     assert len(removed_paths) == audit["additional_removed_paths"]
     assert (
         len(removed_paths | removed_operation_paths)
-        == audit["total_removed_test_and_support_paths"] + 2
+        == audit["total_removed_test_and_support_paths"] + 4
     )
 
 
@@ -91,9 +98,9 @@ def test_retained_query_tests_are_active_and_not_reclassified_as_authoring() -> 
     audit = _load(AUDIT)
     removed = {path for family in audit["families"] for path in family["removed_paths"]}
     retained = {
-        "tests/unit/query/test_query_v2_authoring_facade.py",
-        "type-bridge-core/crates/node/tests/unit/query-v2-authoring.test.ts",
-        "type-bridge-core/crates/node/tests/unit/query-v2-remote-failures.test.ts",
+        "tests/unit/typed_query/test_plan_builder.py",
+        "type-bridge-core/crates/node/tests/unit/plan-builder.test.ts",
+        "type-bridge-core/crates/node/tests/unit/plan-structured-errors.test.ts",
         "type-bridge-core/crates/orm/tests/query_tests.rs",
     }
     assert removed.isdisjoint(retained)

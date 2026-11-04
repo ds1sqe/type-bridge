@@ -740,7 +740,7 @@ impl QueryPlanV3 {
         }
         let reads: Vec<_> = spec.pipeline.iter().filter_map(Stage::read_stage).collect();
         let mut required_capabilities =
-            derive_capabilities(&reads, &spec.functions, &spec.inputs, &spec.output, None)?;
+            derive_capabilities(&reads, &spec.functions, &spec.inputs, &spec.output)?;
         insert_capability(&mut required_capabilities, "query.plan.v3")?;
         if has_wide_strings(&spec) {
             insert_capability(&mut required_capabilities, CAP_QUERY_INPUT_WIDE_STRINGS)?;

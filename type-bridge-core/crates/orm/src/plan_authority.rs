@@ -4,7 +4,6 @@ use crate::OwnedTransaction as Transaction;
 use crate::plan_lowering::ast;
 use crate::plan_lowering::failure;
 use crate::session::backend::QueryResult;
-use crate::session::database::{Database, DatabaseExecutionIdentity};
 use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, LazyLock, OnceLock};
@@ -54,14 +53,7 @@ pub struct QueryAuthority {
     limits: QueryLimits,
     pub(crate) managed: ManagedSchemaState,
     resolved: ResolvedSchema,
-    pub(crate) control_policy: QueryAuthorityControlPolicy,
     adapter_authority: OnceLock<Arc<crate::_registry::InstalledSchemaAuthority>>,
-}
-
-#[derive(Clone)]
-pub(crate) enum QueryAuthorityControlPolicy {
-    Managed,
-    QueryOnly(DatabaseExecutionIdentity),
 }
 
 impl QueryAuthority {
@@ -87,46 +79,6 @@ impl QueryAuthority {
 }
 
 impl QueryAuthority {
-    /// Build one authority from canonical declared-schema bytes.
-    ///
-    /// The caller supplied the schema artifact, so its declared required
-    /// capabilities are the authority for resolution — a schema requiring
-    /// `schema.roles` or any other capability builds exactly as it does on
-    /// the server. Contract-level rejections keep their specific
-    /// diagnostic instead of collapsing into a generic one.
-    pub fn from_declared_bytes(
-        bytes: &[u8],
-        scope: &str,
-        profile: &str,
-    ) -> Result<Self, Diagnostic> {
-        Self::from_declared_bytes_with_policy(
-            bytes,
-            scope,
-            profile,
-            QueryAuthorityControlPolicy::Managed,
-        )
-    }
-
-    /// Build an authority for a database that deliberately has no migration
-    /// control partition.
-    ///
-    /// Query-only mode is explicit and bound to the exact provider authority
-    /// and database name supplied here. It cannot silently downgrade a managed
-    /// authority when control facts disappear.
-    pub fn from_declared_bytes_query_only(
-        bytes: &[u8],
-        scope: &str,
-        profile: &str,
-        database: &Database,
-    ) -> Result<Self, Diagnostic> {
-        Self::from_declared_bytes_with_policy(
-            bytes,
-            scope,
-            profile,
-            QueryAuthorityControlPolicy::QueryOnly(database.execution_identity()),
-        )
-    }
-
     /// Test whether this authority resolves to one exact semantic schema
     /// fingerprint.
     #[doc(hidden)]
@@ -137,11 +89,11 @@ impl QueryAuthority {
         self.resolved.semantic_fingerprint() == fingerprint
     }
 
-    fn from_declared_bytes_with_policy(
+    /// Build an authority from canonical declared-schema bytes.
+    pub fn from_declared_bytes(
         bytes: &[u8],
         scope: &str,
         profile: &str,
-        control_policy: QueryAuthorityControlPolicy,
     ) -> Result<Self, Diagnostic> {
         let declared = decode_declared_schema(bytes)?;
         let profile = SemanticProfileId::new(profile)?;
@@ -169,7 +121,6 @@ impl QueryAuthority {
             limits: QueryLimits::CANONICAL,
             managed,
             resolved,
-            control_policy,
             adapter_authority: OnceLock::new(),
         })
     }
@@ -199,7 +150,6 @@ impl QueryAuthority {
             limits,
             managed: self.managed.clone(),
             resolved: self.resolved.clone(),
-            control_policy: self.control_policy.clone(),
             adapter_authority: self.adapter_authority.clone(),
         }
     }

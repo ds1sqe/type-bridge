@@ -7,7 +7,7 @@ import socket
 import type_bridge_core
 from type_bridge_core import ProxyConnection, QueryExecutionResourceLimits
 
-from tests.unit.query.test_query_v2_remote_runtime import (
+from tests.unit.query.remote_fixture import (
     PLAN_CAPABILITIES,
     _advertisement,
     _authority,
@@ -147,7 +147,7 @@ def test_proxy_query_limits_intersect_independent_advertised_dimensions() -> Non
 
     from type_bridge_core import QueryLimits
 
-    from tests.unit.query.test_query_v2_remote_runtime import _canonical
+    from tests.unit.query.remote_fixture import _canonical
 
     raw = json.loads(_advertisement(PLAN_CAPABILITIES))
     raw["capabilities"] = sorted(

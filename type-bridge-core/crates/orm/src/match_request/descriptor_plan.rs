@@ -679,27 +679,6 @@ pub(crate) fn descriptor_type(descriptor: &str, kind: ThingKind) -> Result<TypeI
     }
 }
 
-#[cfg(any(test, feature = "integration-tests"))]
-pub(crate) fn binding_ordinal(index: usize) -> Result<BindingId, Diagnostic> {
-    u16::try_from(index)
-        .map_err(|_| {
-            reject(
-                "query_v2_adapter_binding_limit",
-                "adapted binding count exceeds the dense ordinal range",
-            )
-        })
-        .and_then(BindingId::new)
-}
-
-#[cfg(any(test, feature = "integration-tests"))]
-pub(crate) fn reject(code: &'static str, message: &'static str) -> Diagnostic {
-    Diagnostic::new(
-        DiagnosticCategory::InvalidContract,
-        DiagnosticCode::new(code).expect("static adapter diagnostic code"),
-        message,
-    )
-}
-
 pub(crate) fn integrity(code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         DiagnosticCategory::Integrity,

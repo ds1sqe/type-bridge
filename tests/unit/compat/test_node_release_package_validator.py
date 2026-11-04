@@ -78,8 +78,6 @@ def write_tarball(
         "dist/public.js": b"module.exports = {};\n",
         "dist/plan-internals.d.ts": b"export {};\n",
         "dist/plan-internals.js": b"module.exports = {};\n",
-        "dist/query-v2.d.ts": b"export {};\n",
-        "dist/query-v2.js": b"module.exports = {};\n",
         "dist/query.d.ts": b"export {};\n",
         "dist/query.js": b"module.exports = {};\n",
         "dist/runtime-handles.d.ts": b"export {};\n",

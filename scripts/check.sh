@@ -98,9 +98,6 @@ run_python() {
     run_step "pyright tests/" \
         uv run pyright tests/
 
-    run_step "query-v2 authoring negative Pyright contract" \
-        uv run python tests/unit/typed_query/check_query_negative.py
-
     run_step "schema-codegen Python projection acceptance" \
         uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
 

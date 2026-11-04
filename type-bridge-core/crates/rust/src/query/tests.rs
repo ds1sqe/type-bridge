@@ -592,7 +592,7 @@ impl crate::remote::ProxyExchange for RemoteOriginTransport {
 fn remote_origin_transport() -> (RemoteOriginTransport, Arc<AtomicUsize>) {
     use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
     use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-    use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
+
     use type_bridge_orm::remote_signing::RemoteReplySigningKey;
 
     let signer = RemoteReplySigningKey::from_secret_bytes([0x52; 32]);
@@ -603,9 +603,6 @@ fn remote_origin_transport() -> (RemoteOriginTransport, Arc<AtomicUsize>) {
     ] {
         capabilities
             .insert(type_bridge_contract::capability::CapabilityId::new(capability).unwrap());
-    }
-    for capability in query_remote_v2_required_capabilities(true) {
-        capabilities.insert(capability);
     }
     let advertisement_contract = RemoteCapabilities::new(
         capabilities,

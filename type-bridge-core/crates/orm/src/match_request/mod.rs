@@ -13,6 +13,8 @@ pub mod handles;
 pub mod ids;
 pub mod limits;
 pub mod model;
+#[cfg(test)]
+pub(crate) mod model_outcome_fixture;
 pub(crate) mod plan_adapter;
 pub(crate) mod plan_diagnostic;
 pub(crate) mod plan_fetch_stack;
@@ -24,8 +26,6 @@ pub(crate) mod reducer;
 pub mod result;
 pub(crate) mod result_validation;
 pub(crate) mod selected_result_executor;
-#[cfg(test)]
-pub(crate) mod v2_outcome_fixture;
 pub mod validation;
 
 pub use capability::{Capability, CapabilitySet, derive_required_capabilities};

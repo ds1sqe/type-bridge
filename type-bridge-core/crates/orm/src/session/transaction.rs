@@ -1,13 +1,7 @@
 //! Transaction wrapper for TypeDB operations.
 
-use super::backend::{
-    AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec, QueryResult,
-    TransactionOps, TxType,
-};
+use super::backend::{GivenRowsSpec, QueryResult, TransactionOps, TxType};
 use crate::error::{ClassifiedCommitError, Result};
-use type_bridge_core_lib::ast::{
-    TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
-};
 
 /// A single TypeDB transaction.
 ///
@@ -62,70 +56,6 @@ impl OwnedTransaction {
         rows: GivenRowsSpec,
     ) -> Result<QueryResult> {
         self.inner.query_with_rows(typeql, rows).await
-    }
-
-    /// Execute one internal typed selected-row statement with bounded reading.
-    pub(crate) async fn query_typed_bounded(
-        &mut self,
-        query: &TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        self.inner
-            .query_typed_bounded(query, limits, consumer)
-            .await
-    }
-
-    pub(crate) fn supports_exactly_one_tuple_proof(&self) -> Result<bool> {
-        self.inner.supports_exactly_one_tuple_proof()
-    }
-
-    /// Execute one internal distinct selected-tuple identity scan.
-    pub(crate) async fn query_tuple_typed_bounded(
-        &mut self,
-        query: &TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        self.inner
-            .query_tuple_typed_bounded(query, limits, consumer)
-            .await
-    }
-
-    /// Execute one internal complete batched selected-thing hydration.
-    pub(crate) async fn hydrate_typed_bounded(
-        &mut self,
-        query: &TypedHydrateThings,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        self.inner
-            .hydrate_typed_bounded(query, limits, consumer)
-            .await
-    }
-
-    /// Execute one internal typed distinct-root stream.
-    pub(crate) async fn query_root_typed_bounded(
-        &mut self,
-        query: &TypedRootScan,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        self.inner
-            .query_root_typed_bounded(query, limits, consumer)
-            .await
-    }
-
-    /// Execute one internal exact batched page re-match/hydration.
-    pub(crate) async fn rematch_page_typed_bounded(
-        &mut self,
-        query: &TypedPageRematch,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        self.inner
-            .rematch_page_typed_bounded(query, limits, consumer)
-            .await
     }
 
     /// Commit this transaction.

@@ -1,7 +1,7 @@
 import type { QueryLimits } from "./runtime-projection.js";
 import type { NativeStagedTransaction, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
-import { type NativePlanAuthority, type NativeQueryV2BuilderRuntime } from "./plan-internals.js";
+import { type NativePlanAuthority } from "./plan-internals.js";
 export { PlanError } from "./plan-internals.js";
 export type { ProviderFailure, PlanErrorCategory, PlanErrorDetail, PlanErrorPathSegment, } from "./plan-internals.js";
 export type ValueType = "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime-tz" | "decimal" | "duration";
@@ -266,21 +266,9 @@ export interface NativeRustTransactionContext {
     close(): void;
     transactionType(): TransactionType;
 }
-interface NativePendingQueryV2Remote {
-    requestBytes(): Uint8Array;
-    decodeReply(response: Uint8Array): Promise<string>;
-}
-export interface PendingQueryV2Remote {
-    requestBytes(): Uint8Array;
-    decodeReply(response: Uint8Array): Promise<string>;
-}
-interface NativeQueryV2Runtime {
+interface NativePlanAuthorityRuntime {
     planAuthority(declaredSchema: Uint8Array, scope: string, profile: string): NativePlanAuthority;
     planAuthorityFromSchemaAuthority(schemaAuthorityJson: string, semanticFingerprintJson: string): NativePlanAuthority;
-    planQueryOnlyAuthority(database: NativeRustDatabase, declaredSchema: Uint8Array, scope: string, profile: string): NativePlanAuthority;
-    queryV2ExecuteLocal(database: NativeRustDatabase, authority: NativePlanAuthority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
-    queryV2RemoteCapabilities(advertisement: Uint8Array): string[];
-    queryV2PrepareRemote(authority: NativePlanAuthority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, deadlineMs?: bigint | null): NativePendingQueryV2Remote;
 }
 export interface NativeRuntime {
     NodeMigrationCancellation: new () => NativeMigrationCancellation;
@@ -290,7 +278,7 @@ export interface NativeRuntime {
     connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null, queryLimits?: NativeQueryLimits | null): NativeRustDatabase;
 }
 /** Package-private native contract used by retained runtime entry points. */
-export interface NativeModule extends NativeRuntime, NativeQueryV2Runtime, NativeQueryV2BuilderRuntime {
+export interface NativeModule extends NativeRuntime, NativePlanAuthorityRuntime {
 }
 export interface DatabaseConnectOptions {
     username?: string | null;
@@ -382,17 +370,7 @@ export declare class PlanAuthority {
      * decoded, and validated under `queryLimits`.
      */
     withQueryLimits(queryLimits: QueryLimits): PlanAuthority;
-    static queryOnly(database: Database, declaredSchema: Uint8Array, scope: string, profile: string): PlanAuthority;
 }
-export interface QueryV2RemoteLimits {
-    readonly maxItems: bigint;
-    readonly maxBytes: bigint;
-    readonly maxCollectionMembers: bigint;
-    readonly deadlineMs?: bigint | null;
-}
-export declare function queryV2ExecuteLocal(database: Database, authority: PlanAuthority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
-export declare function queryV2RemoteCapabilities(advertisement: Uint8Array): readonly string[];
-export declare function queryV2PrepareRemote(authority: PlanAuthority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, limits: QueryV2RemoteLimits): PendingQueryV2Remote;
 export declare class Database {
     #private;
     private constructor();

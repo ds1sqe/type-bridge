@@ -200,6 +200,115 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Removed the V1/V2 plan executor: `QueryPlan`, `QueryInvocation`,
+  `QueryOperation`, `decode_query_plan`, `decode_query_plan_with_limits`,
+  `decode_query_invocation`, `QueryPlanFingerprint::compute`, the V1/V2
+  format/canonicalization constants, and the V1/V2 capability-vocabulary
+  functions. Use `query_plan::v3::{QueryPlanV3, PlanSpec, Operation,
+  decode_query_plan_v3, query_plan_v3_capability_vocabulary}` and native builders.
+  The `query_remote_v2` envelope family is replaced by `query_remote_v3`.
+  `ModelQueryV2`, `ModelOutputV2`, `QueryBindingPairV2`, `QueryWindowV2`,
+  `QueryRowCardinalityV2`, and `QueryPlanV2Compatibility` are removed;
+  generated model queries lower directly to native V3 plans.
+- Removed query-crate `ValidatedQuery`, `validate_query_plan`, and
+  `validate_query_local_function`, and ORM's `query_v2`, `query_v2_builder`,
+  `query_v2_prepared`, `query_v2_remote` APIs and `integration_test_support`.
+  Use native plan construction, `plan_explain::explain`, and staged execution;
+  native validation replaces the separate legacy validation/execution path.
+- Removed `ProxyHttpClient::capabilities` / `exchange` and
+  `ProxyHttpTransport::capabilities` / `exchange`. Use `staged_capabilities`
+  and `exchange_staged`, carrying the V3 protocol.
+- Removed Python `type_bridge.query_v2` and Node `@type-bridge/node/query-v2`,
+  including `QueryPlanBuilder`, `AuthoredQueryPlan`, `AuthoredQueryInvocation`,
+  `PendingQueryV2Remote`, and Node `QueryV2RemoteLimits`. Use `PlanBuilder` /
+  `Plan` from `type_bridge.plan` or `@type-bridge/node` and staged transactions.
+- Removed Python `query_v2_execute_local`, `query_v2_remote_capabilities`,
+  `query_v2_prepare_remote` and Node `queryV2ExecuteLocal`,
+  `queryV2RemoteCapabilities`, `queryV2PrepareRemote`. Use native staged plans
+  with the direct or proxy connection's transaction.
+- Removed `QueryAuthority::from_declared_bytes_query_only`; use
+  `QueryAuthority::from_declared_bytes` and native staged execution.
+- Removed Python `PlanAuthority.query_only` and `plan_query_only_authority`;
+  use normal `PlanAuthority(...)` construction and native staged execution.
+- Removed Node `PlanAuthority.queryOnly` and `planQueryOnlyAuthority`;
+  use normal `new PlanAuthority(...)` construction and native staged execution.
+
+- Removed `contract::query_plan_v2` symbols: `QueryBindingPairV2`, `QueryWindowV2`,
+  `QueryRowCardinalityV2`, `ModelQueryV2`, `ModelOutputV2`, `QueryPlanV2Compatibility`.
+  Use native `query_plan::v3` / `query_remote_v3` plans and staged envelopes.
+- Removed `contract::query_remote_v2` symbols: `QUERY_REMOTE_REQUEST_FORMAT_V2`,
+  `QUERY_REMOTE_RESPONSE_FORMAT_V2`, `QUERY_REMOTE_FAILURE_FORMAT_V2`,
+  `QUERY_REMOTE_REQUEST_CANONICALIZATION_V2`, `CAP_QUERY_PLAN_V2`,
+  `CAP_QUERY_REMOTE_ENVELOPE_V2`, `CAP_QUERY_REMOTE_STRUCTURED_DIAGNOSTIC`,
+  `CAP_QUERY_OUTPUT_HYDRATED`, `CAP_QUERY_SAME_SNAPSHOT_HYDRATION`,
+  `CAP_QUERY_REMOTE_STATEMENT_LIMIT`, `query_remote_v2_required_capabilities`,
+  `RemoteResultKindV2`, `RemoteQueryRequestV2`, `RemoteRequestFingerprintV2`,
+  `RemoteQueryResponseV2`, `RemoteQueryFailureV2`, `RemoteReplyV2`,
+  `decode_remote_reply_v2`, `decode_signed_remote_failure_v2`,
+  `validate_remote_outcome_v2`. Use native `query_plan::v3` / `query_remote_v3` plans
+  and staged envelopes.
+- Removed `node::query_v2_builder_runtime` symbols: `NodePlanAuthorityIdentity`,
+  `NodeQueryV2BindingHandle`, `NodeQueryV2InputHandle`, `NodeQueryV2OperandHandle`,
+  `NodeQueryV2PatternHandle`, `NodeQueryV2OrderHandle`,
+  `NodeQueryV2ReduceAssignmentHandle`, `NodeQueryV2LocalReturnHandle`,
+  `NodeQueryV2LocalFunctionHandle`, `NodeQueryV2DocumentFieldHandle`,
+  `NodeAuthoredQueryInvocation`, `NodeAuthoredQueryPlan`, `NodeQueryPlanBuilder`. Use
+  the native package-root `PlanBuilder` and staged transaction API.
+- Removed `node::query_v2_runtime` symbols: `NodePendingQueryV2Remote`,
+  `DecodeRemoteReplyTask`, `query_v2_execute_local`, `query_v2_remote_capabilities`,
+  `query_v2_prepare_remote`. Use the native package-root `PlanBuilder` and staged
+  transaction API.
+- Removed `orm::query_v2` symbols: `LoweredQuery`, `lower_validated_query`,
+  `output_columns`, `QueryRowValue`, `QueryResultRow`, `DocumentFieldValue`,
+  `QueryResultDocument`, `QueryV2Outcome`, `execute_validated_query`. Use native
+  builders, `plan_explain::explain`, and staged transactions.
+- Removed `orm::query_v2_builder` symbols: `QUERY_PLAN_BUILDER_OPERATIONS`,
+  `QueryableTypeKind`, `QUERY_BUILDER_TYPE_KINDS`, `query_builder_type_kind_name`,
+  `QUERY_BUILDER_LOCAL_RETURNS`, `query_builder_type_kind`, `query_builder_comparator`,
+  `query_builder_order_direction`, `query_builder_reducer`,
+  `query_builder_boolean_host_type_error`, `query_builder_host_collection_type_error`,
+  `query_builder_invocation_row_arity_error`, `query_builder_role_player_limit_error`,
+  `query_builder_negation_term_limit_error`,
+  `query_builder_disjunction_term_limit_error`, `query_builder_try_term_limit_error`,
+  `query_builder_function_argument_limit_error`, `query_builder_binding_limit_error`,
+  `query_builder_root_pattern_limit_error`, `query_builder_local_body_limit_error`,
+  `query_builder_local_binding_limit_error`, `query_builder_reduce_term_limit_error`,
+  `query_builder_sort_term_limit_error`, `query_builder_row_output_limit_error`,
+  `query_builder_document_output_limit_error`,
+  `query_builder_invocation_row_limit_error`,
+  `query_builder_invocation_input_byte_limit_error`, `query_builder_bounded_len`,
+  `QueryInvocationRowBudget`, `query_builder_depth`, `query_builder_depth_error`,
+  `query_builder_unsigned`, `query_builder_unsigned_error`, `QueryBindingHandle`,
+  `QueryInputHandle`, `QueryOperandHandle`, `QueryPatternHandle`, `QueryOrderHandle`,
+  `QueryReduceAssignmentHandle`, `QueryLocalReturnHandle`, `QueryLocalFunctionHandle`,
+  `QueryFunctionTarget`, `query_builder_function_target`, `query_builder_role_players`,
+  `query_builder_local_parameters`, `QueryDocumentFieldHandle`, `AuthoredQueryPlan`,
+  `AuthoredQueryInvocation`, `QueryPlanBuilder`. Use native builders,
+  `plan_explain::explain`, and staged transactions.
+- Removed `orm::query_v2_prepared` symbols: `execute_prepared_local`,
+  `PendingRemoteQueryV2`, `ClaimedRemoteReplyV2`, `prepare_remote_query_v2`,
+  `prepare_remote_query_v2_with_budget`, `decode_remote_capabilities`. Use native
+  builders, `plan_explain::explain`, and staged transactions.
+- Removed `orm::query_v2_remote` symbols: `encode_remote_request_v2`,
+  `encode_remote_request_v2_at`, `check_advertised_capabilities_v2`,
+  `decode_remote_outcome_v2`, `AdmittedRemoteRequestV2`, `RemoteRejectionV2`,
+  `encode_unbound_remote_failure_v2`, `preflight_remote_request_v2`,
+  `preflight_remote_request_v2_at`, `RemoteReplyExpectation`, `AuditedRemoteReply`,
+  `execute_admitted_remote_request_v2`, `remote_outcome_v2`. Use native builders,
+  `plan_explain::explain`, and staged transactions.
+- Removed `python::query_v2_builder_runtime` symbols: `PyPlanAuthorityIdentity`,
+  `PyQueryV2BindingHandle`, `PyQueryV2InputHandle`, `PyQueryV2OperandHandle`,
+  `PyQueryV2PatternHandle`, `PyQueryV2OrderHandle`, `PyQueryV2ReduceAssignmentHandle`,
+  `PyQueryV2LocalReturnHandle`, `PyQueryV2LocalFunctionHandle`,
+  `PyQueryV2DocumentFieldHandle`, `PyAuthoredQueryInvocation`, `PyAuthoredQueryPlan`,
+  `PyQueryPlanBuilder`, `register`. Use the native `type_bridge.plan` builder and staged
+  transaction API.
+- Removed `python::query_v2_runtime` symbols: `PyPendingQueryV2Remote`,
+  `query_v2_execute_local`, `query_v2_remote_capabilities`, `query_v2_prepare_remote`,
+  `register`. Use the native `type_bridge.plan` builder and staged transaction API.
+- Removed `query::query_validation` symbols: `ValidatedQuery`, `validate_query_plan`,
+  `validate_query_local_function`. Use native plan validation.
+
 - Python native remote-model entry points `query_v2_prepare_remote_model_*`
   become `plan_prepare_remote_model_*` (rows, page, count, exists, reduce,
   reduce_by_field, and reduce_by_fields), and

@@ -98,32 +98,11 @@ impl ProxyHttpTransport {
         })
     }
 
-    /// Fetch the executor's exact capability advertisement.
-    ///
-    /// # Errors
-    ///
-    /// Returns the cancellation or deadline diagnostic, or a provider failure
-    /// when the route cannot be reached or does not answer 200.
-    pub async fn capabilities(
-        &self,
-        deadline: QueryExecutionDeadline,
-        cancellation: &AnswerCancellation,
-    ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
-        let client = Arc::clone(&self.client);
-        run(
-            deadline,
-            cancellation,
-            SdkProviderOperation::Connect,
-            move |timeout| client.capabilities(timeout, MAX_REMOTE_ENVELOPE_BYTES),
-        )
-        .await
-    }
-
     /// Fetch the executor's staged (`query-remote/v3`) advertisement.
     ///
     /// # Errors
     ///
-    /// As [`Self::capabilities`].
+    /// Returns cancellation, deadline, transport, or non-200 status errors.
     pub async fn staged_capabilities(
         &self,
         deadline: QueryExecutionDeadline,
@@ -143,7 +122,7 @@ impl ProxyHttpTransport {
     ///
     /// # Errors
     ///
-    /// As [`Self::exchange`]; the provider operation is `write`.
+    /// Returns cancellation, deadline, size, or provider errors for `write`.
     pub async fn exchange_staged(
         &self,
         request: Vec<u8>,
@@ -157,31 +136,6 @@ impl ProxyHttpTransport {
             cancellation,
             SdkProviderOperation::Write,
             move |timeout| client.exchange_staged(&request, timeout, max_bytes),
-        )
-        .await
-    }
-
-    /// Send one canonical request and return the exact reply bytes, at most
-    /// `max_bytes` of them.
-    ///
-    /// # Errors
-    ///
-    /// Returns the cancellation or deadline diagnostic, a resource-limit
-    /// diagnostic for a reply over `max_bytes`, or a provider failure when the
-    /// route cannot be reached or does not answer 200.
-    pub async fn exchange(
-        &self,
-        request: Vec<u8>,
-        max_bytes: usize,
-        deadline: QueryExecutionDeadline,
-        cancellation: &AnswerCancellation,
-    ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
-        let client = Arc::clone(&self.client);
-        run(
-            deadline,
-            cancellation,
-            SdkProviderOperation::Read,
-            move |timeout| client.exchange(&request, timeout, max_bytes),
         )
         .await
     }
@@ -300,7 +254,7 @@ mod tests {
         let transport = ProxyHttpTransport::open(&endpoint).unwrap();
 
         let error = transport
-            .exchange(
+            .exchange_staged(
                 b"{}".to_vec(),
                 64,
                 deadline(50),
@@ -317,7 +271,7 @@ mod tests {
             cancel.cancel();
         });
         let error = transport
-            .capabilities(deadline(30_000), &cancellation)
+            .staged_capabilities(deadline(30_000), &cancellation)
             .await
             .unwrap_err();
         assert_eq!(error.code().as_str(), "provider_cancelled");
@@ -332,7 +286,7 @@ mod tests {
         let transport =
             ProxyHttpTransport::open(&ProxyEndpoint::new(format!("http://{address}"))).unwrap();
         let error = transport
-            .capabilities(deadline(30_000), &AnswerCancellation::default())
+            .staged_capabilities(deadline(30_000), &AnswerCancellation::default())
             .await
             .unwrap_err();
         assert_eq!(error.code().as_str(), "provider_operation_failed");

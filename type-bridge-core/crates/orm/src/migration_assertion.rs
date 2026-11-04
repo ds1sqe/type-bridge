@@ -214,29 +214,6 @@ pub(crate) trait AssertionProviderCall: Send {
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>>;
 
-    /// Whether this provider transports `given`-stage input rows.
-    fn supports_given_rows(&self) -> bool {
-        false
-    }
-
-    /// Execute one `given`-lowered query with driver-transported rows.
-    ///
-    /// Callers gate on [`Self::supports_given_rows`]; the default fails
-    /// closed for providers without the transport.
-    fn query_with_rows_bounded<'a>(
-        &'a mut self,
-        _typeql: &'a str,
-        _rows: crate::session::backend::GivenRowsSpec,
-        _limits: BoundedAnswerLimits,
-        _consumer: &'a mut dyn AnswerConsumer,
-    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        Box::pin(async {
-            Err(OrmError::QueryExecution(
-                "given-stage parameterized queries are not supported by this provider".into(),
-            ))
-        })
-    }
-
     fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
@@ -244,16 +221,6 @@ pub(crate) trait AssertionProviderCall: Send {
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.query_bounded(typeql, limits.answer, consumer)
-    }
-
-    fn query_plan_with_rows_bounded<'a>(
-        &'a mut self,
-        typeql: &'a str,
-        rows: crate::session::backend::GivenRowsSpec,
-        limits: AnswerLimits,
-        consumer: &'a mut dyn AnswerConsumer,
-    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        self.query_with_rows_bounded(typeql, rows, limits.answer, consumer)
     }
 }
 
@@ -271,21 +238,6 @@ impl<T: TransactionOps + ?Sized> AssertionProviderCall for TransactionAssertionP
         self.transaction.query_bounded(typeql, limits, consumer)
     }
 
-    fn supports_given_rows(&self) -> bool {
-        self.transaction.supports_given_rows()
-    }
-
-    fn query_with_rows_bounded<'a>(
-        &'a mut self,
-        typeql: &'a str,
-        rows: crate::session::backend::GivenRowsSpec,
-        limits: BoundedAnswerLimits,
-        consumer: &'a mut dyn AnswerConsumer,
-    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        self.transaction
-            .query_with_rows_bounded(typeql, rows, limits, consumer)
-    }
-
     fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
@@ -294,17 +246,6 @@ impl<T: TransactionOps + ?Sized> AssertionProviderCall for TransactionAssertionP
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.transaction
             .query_plan_bounded(typeql, limits, consumer)
-    }
-
-    fn query_plan_with_rows_bounded<'a>(
-        &'a mut self,
-        typeql: &'a str,
-        rows: crate::session::backend::GivenRowsSpec,
-        limits: AnswerLimits,
-        consumer: &'a mut dyn AnswerConsumer,
-    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        self.transaction
-            .query_plan_with_rows_bounded(typeql, rows, limits, consumer)
     }
 }
 

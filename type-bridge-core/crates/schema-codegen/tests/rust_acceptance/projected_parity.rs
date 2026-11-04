@@ -21,7 +21,7 @@ use type_bridge_contract::query_plan::ModelValue;
 use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
 use type_bridge_contract::query_remote_v3::{StagedRequestV3,StagedReplyV3,StagedOutcomeV3,StagedAnswerV3};
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding, RemoteFieldValue};
-use type_bridge_contract::query_remote_v2::{query_remote_v2_required_capabilities};
+
 use type_bridge_contract::query_model_evidence::{HydrationAttributeEvidence, HydrationGraph, HydrationNodeId, HydrationNodeKind, HydrationNode, HydrationReference, HydrationRoleEvidence};
 use type_bridge_contract::query_model_limits::{RemoteModelLimits};
 use type_bridge_contract::schema::{DocumentId, OwnsFactId, encode_declared_schema};
@@ -130,9 +130,6 @@ fn hydration_transport(replies: Vec<GraphReply>) -> (HydrationTransport, Arc<Mut
     let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
     let mut capabilities = query_plan_v3_capability_vocabulary();
     for capability in [type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {capabilities.insert(type_bridge_contract::capability::CapabilityId::new(capability).unwrap());}
-    for capability in query_remote_v2_required_capabilities(true) {
-        capabilities.insert(capability);
-    }
     let advertisement_contract = RemoteCapabilities::new(
         capabilities,
         RemoteExecutorBinding::new("rust-projected-parity", "epoch-00000000001")

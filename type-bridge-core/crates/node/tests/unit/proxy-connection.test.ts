@@ -21,7 +21,7 @@ interface Corpus {
 }
 
 const corpus = JSON.parse(fs.readFileSync(
-  path.resolve(process.cwd(), "../../../tests/fixtures/query-v2-remote-failures.json"),
+  path.resolve(process.cwd(), "../../../tests/fixtures/plan-authority.json"),
   "utf8",
 )) as Corpus;
 
@@ -34,7 +34,7 @@ function authority(): PlanAuthority {
 }
 
 /** A valid advertisement, keys sorted the way the contract codec writes them. */
-function advertisement(): Uint8Array {
+function advertisement(capabilities: readonly string[] = corpus.capabilities): Uint8Array {
   const privateKey = crypto.createPrivateKey({
     key: Buffer.concat([
       Buffer.from("302e020100300506032b657004220420", "hex"),
@@ -53,7 +53,7 @@ function advertisement(): Uint8Array {
     .update(publicKey)
     .digest("hex");
   return Buffer.from(JSON.stringify({
-    capabilities: corpus.capabilities,
+    capabilities,
     executor: { epoch: "node-proxy-epoch-0001", identity: "node-proxy-executor" },
     format: "typebridge.query-remote-capabilities/v1",
     reply_key: publicKey.toString("hex"),
@@ -172,10 +172,10 @@ test("proxy connect rejects JavaScript type confusion before native work", async
 test("a staged proxy transaction fetches the staged advertisement at open", async () => {
   const endpoint = await closedEndpoint();
   const connection = await ProxyConnection.connect(authority(), endpoint, {
-    advertisement: advertisement(),
+    advertisement: advertisement([]),
     answerLimits: new QueryExecutionResourceLimits({ timeoutMilliseconds: 5_000n }),
   });
-  // The pinned V2 advertisement does not cover `/v3/capabilities`, so an
+  // The empty bootstrap advertisement does not cover `/v3/capabilities`, so an
   // unreachable server fails the open as a redacted provider operation.
   const failure = await connection.transaction("write").then(
     () => assert.fail("staged transaction unexpectedly opened"),

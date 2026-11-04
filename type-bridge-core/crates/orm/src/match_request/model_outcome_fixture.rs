@@ -1,4 +1,4 @@
-//! Test-only encoding of released result values as the V2 outcomes a live
+//! Test-only encoding of released result values as the model outcomes a live
 //! executor returns.
 //!
 //! Tests describe results with released [`HydratedThing`] values; these
@@ -18,8 +18,8 @@ use type_bridge_contract::query_model_evidence::{
     ModelOutcome, ModelReductionGroup, ModelReductionRow,
 };
 
+use super::descriptor_plan::adapt_value;
 use crate::_registry::DescriptorRegistry;
-use crate::query_v2_adapter::adapt_value;
 
 use super::ids::{BindingId, DescriptorId};
 use super::model::{ThingKind, Window};

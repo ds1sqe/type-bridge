@@ -1963,7 +1963,7 @@ mod tests {
     use crate::_entity::Annotation;
     use crate::match_request::ids::FieldId;
     use crate::match_request::model::{BindingPair, MatchBinding, MatchPlan, MatchRequest};
-    use crate::match_request::v2_outcome_fixture::{
+    use crate::match_request::model_outcome_fixture::{
         distinct_count, distinct_exists, hydrated_page, hydrated_rows, model_reduction,
     };
     use crate::match_request::validation::validate_match_request;

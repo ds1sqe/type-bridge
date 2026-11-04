@@ -860,15 +860,6 @@ run_live_lane() {
             --test transaction_options_live --test staged_transaction_live \
             --test exact_integer_live
 
-    if [[ "$lane_given_rows" == 1 ]]; then
-        run_step "given window partition deduplication (TypeDB $typedb_server_version)" \
-            run_with_timeout 10m \
-            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-            bash scripts/ci/run_exact_ignored_rust_test.sh \
-                query_v2_wide_query_tests::second_distinct_given_window_provider_quirk \
-                --manifest-path type-bridge-core/Cargo.toml --locked \
-                -p type-bridge-orm --lib
-    fi
 
     if [[ "$lane_given_rows" == 1 ]]; then
         run_step "negated given role IID regression (TypeDB $typedb_server_version)" \
@@ -1295,18 +1286,6 @@ run_tls_transport_steps() {
             --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-cli --test e2e_workspace_live
 
-    run_step "TLS Python local query + HTTPS remote envelope" \
-        run_with_timeout 10m \
-        env TYPEDB_TLS_ADDRESS="$tls_address" \
-            TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
-            TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
-            SMOKE_TLS_CERT="$fixture_server_cert" \
-            SMOKE_TLS_KEY="$fixture_server_key" \
-            SMOKE_TLS_ROOT_CA="$fixture_root_ca" \
-        uv run pytest \
-            tests/integration/queries/test_query_v2_binding_smoke.py::test_prepared_plan_executes_locally_and_remotely \
-            -m integration --tb=short -q
-
     run_step "TLS generated Python application parity" \
         run_with_timeout 10m \
         env USE_DOCKER=false \
@@ -1319,18 +1298,6 @@ run_tls_transport_steps() {
         uv run pytest \
             tests/integration/schema/test_generated_projection_live.py::test_generated_package_preserves_application_operation_outcomes_live \
             -m integration --tb=short -q
-
-    run_step "TLS Node local query + HTTPS remote envelope" \
-        run_with_timeout 10m \
-        env TYPE_BRIDGE_NODE_NATIVE_PATH="$node_native" \
-            TYPEDB_TLS_ADDRESS="$tls_address" \
-            TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
-            TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
-            SMOKE_TLS_CERT="$fixture_server_cert" \
-            SMOKE_TLS_KEY="$fixture_server_key" \
-            NODE_EXTRA_CA_CERTS="$fixture_root_ca" \
-        node "$NODE_DIR/scripts/run-integration.js" \
-            tests/integration/queries/query-v2-smoke.test.js
 
     run_step "TLS generated Node application parity" \
         run_with_timeout 10m \

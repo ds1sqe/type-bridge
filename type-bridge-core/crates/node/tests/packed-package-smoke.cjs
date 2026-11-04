@@ -60,8 +60,10 @@ function verifyInstalledPackage(installedRoot) {
     () => requirePackage("@type-bridge/node/typed"),
     (error) => error?.code === "ERR_PACKAGE_PATH_NOT_EXPORTED",
   );
-  const queryV2 = requirePackage("@type-bridge/node/query-v2");
-  assert.equal(queryV2.PlanAuthority, typeBridge.PlanAuthority);
+  assert.throws(
+    () => requirePackage("@type-bridge/node/query-v2"),
+    (error) => error?.code === "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  );
   const runtimeProjection = requirePackage("@type-bridge/node/runtime-projection");
   assert.deepEqual(Object.keys(runtimeProjection).sort(), [
     "InstalledRuntimeProjection",

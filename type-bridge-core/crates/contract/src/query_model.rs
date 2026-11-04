@@ -4,7 +4,7 @@ use super::failure;
 use crate::decimal::parse_decimal;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::id::{AttributeId, RoleId, TypeId};
-use crate::limits::{MAX_CANONICAL_STRING_BYTES, QueryLimits};
+use crate::limits::MAX_CANONICAL_STRING_BYTES;
 use crate::migration_assertion::BindingId;
 use crate::temporal::{CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration};
 use crate::value::{CanonicalValue, Cardinality, ValueTypeTag};
@@ -89,15 +89,6 @@ pub enum ModelComparator {
     EndsWith,
     /// TypeDB regular-expression matching.
     Regex,
-}
-
-impl ModelComparator {
-    pub(super) const fn is_string_operator(self) -> bool {
-        matches!(
-            self,
-            Self::Contains | Self::StartsWith | Self::EndsWith | Self::Regex
-        )
-    }
 }
 
 /// A released-only lexical scalar domain carried by a V2 compatibility value.
@@ -273,25 +264,6 @@ impl ModelValue {
             | ValueTypeTag::Boolean
             | ValueTypeTag::Date => None,
         }
-    }
-
-    /// Refuse a released value larger than one whole plan artifact.
-    ///
-    /// The ceiling belongs to the plan's limits, so it is enforced where a
-    /// plan is validated rather than where a value is constructed.
-    pub(super) fn check_artifact_bytes(&self, limits: QueryLimits) -> Result<(), Diagnostic> {
-        let ModelValueInner::Released { chunks, .. } = &self.inner else {
-            return Ok(());
-        };
-        let byte_len = chunks.iter().map(String::len).sum::<usize>();
-        if byte_len > limits.codec.max_bytes {
-            return Err(failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_plan_v2_compatibility_value_limit",
-                "compatibility value exceeds the canonical artifact byte ceiling",
-            ));
-        }
-        Ok(())
     }
 
     pub(super) fn validate(&self) -> Result<(), Diagnostic> {
@@ -1056,28 +1028,6 @@ pub enum ModelOutput {
 }
 
 impl ModelOutput {
-    pub(super) fn slot_count(&self) -> usize {
-        match self {
-            Self::Positional { slots } => slots.len(),
-            Self::Named { slots } => slots.len(),
-        }
-    }
-
-    pub(super) fn visit_slots(&self, mut visit: impl FnMut(Option<&str>, &ModelOutputSlot)) {
-        match self {
-            Self::Positional { slots } => {
-                for slot in slots {
-                    visit(None, slot);
-                }
-            }
-            Self::Named { slots } => {
-                for slot in slots {
-                    visit(Some(slot.name()), slot.slot());
-                }
-            }
-        }
-    }
-
     /// Return model output slots in public order.
     ///
     /// Named output metadata remains available on the enum; this allocation is

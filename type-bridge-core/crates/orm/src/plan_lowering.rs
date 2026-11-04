@@ -2,13 +2,11 @@
 
 use crate::migration_assertion::render_comparator;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::id::TypeId;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
     InputColumn, InputRow, LocalFunction, QueryOperand, QueryPattern,
 };
 use type_bridge_core_lib::__internal as tql;
-use type_bridge_query::ValidatedQuery;
 
 pub(crate) fn lower_functions(
     inputs: &[InputColumn],
@@ -30,7 +28,7 @@ pub(crate) fn lower_functions(
                 ))
             })
             .collect::<Result<Vec<_>, Diagnostic>>()?;
-        let body = lower_scoped_patterns(inputs, function.bindings(), function.body(), None, None)?;
+        let body = lower_scoped_patterns(inputs, function.bindings(), function.body(), None)?;
         let reducer = ast(tql::reducer(
             reducer_keyword(function.returns().reducer()),
             Some(local_variable(
@@ -176,39 +174,13 @@ pub(crate) fn reducer_keyword(reducer: type_bridge_contract::query_plan::Reducer
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum PatternTypeDomains<'a> {
-    Query(&'a ValidatedQuery),
-    Plan(&'a type_bridge_contract::query_plan::v3::QueryPlanV3),
-}
-
-impl<'a> PatternTypeDomains<'a> {
-    fn types(self, binding: &BindingId) -> Option<&'a std::collections::BTreeSet<TypeId>> {
-        match self {
-            Self::Query(query) => query
-                .binding_domain(binding)
-                .map(|domain| domain.type_ids()),
-            Self::Plan(plan) => plan.binding_types(*binding),
-        }
-    }
-}
-
 pub(crate) fn lower_scoped_patterns(
     inputs: &[InputColumn],
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     patterns: &[QueryPattern],
     row: Option<&InputRow>,
-    validated: Option<&ValidatedQuery>,
 ) -> Result<Vec<tql::Pattern>, Diagnostic> {
-    lower_scoped_patterns_with_values(
-        inputs,
-        bindings,
-        patterns,
-        row,
-        validated.map(PatternTypeDomains::Query),
-        None,
-        None,
-    )
+    lower_scoped_patterns_with_values(inputs, bindings, patterns, row, None, None, None)
 }
 
 pub(crate) fn lower_scoped_patterns_with_values(
@@ -216,7 +188,7 @@ pub(crate) fn lower_scoped_patterns_with_values(
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     patterns: &[QueryPattern],
     row: Option<&InputRow>,
-    validated: Option<PatternTypeDomains<'_>>,
+    validated: Option<&type_bridge_contract::query_plan::v3::QueryPlanV3>,
     values: Option<&[InputRow]>,
     literal_policy: Option<&crate::query_plan_exec::LiteralComparisonPolicy<'_>>,
 ) -> Result<Vec<tql::Pattern>, Diagnostic> {
@@ -244,7 +216,7 @@ fn lower_scoped_patterns_inner(
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     patterns: &[QueryPattern],
     row: Option<&InputRow>,
-    validated: Option<PatternTypeDomains<'_>>,
+    validated: Option<&type_bridge_contract::query_plan::v3::QueryPlanV3>,
     values: Option<&[InputRow]>,
     literal_policy: Option<&crate::query_plan_exec::LiteralComparisonPolicy<'_>>,
     scope: &mut PatternScope,
@@ -429,7 +401,7 @@ fn lower_scoped_patterns_inner(
                         // TypeDB requires an exact typed witness in each identity branch.
                         let validated = validated.ok_or_else(|| failure(DiagnosticCategory::Integrity, "query_v2_reachable_scope", "a validated reachable pattern appears outside the root query scope"))?;
                         let domain = validated
-                            .types(&source_id)
+                            .binding_types(source_id)
                             .filter(|domain| !domain.is_empty())
                             .ok_or_else(|| {
                                 failure(

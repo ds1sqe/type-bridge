@@ -1,29 +1,11 @@
-use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::{TypeId, TypeKind};
-use type_bridge_contract::migration_assertion::{
-    AssertionBinding, BindingId, QueryVariable, ValueComparator,
-};
-use type_bridge_contract::query_plan::{
-    QueryOperand, QueryOutput, QueryPattern, QueryPlan, ReadStage, decode_query_plan,
-};
-use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
+#[allow(dead_code)]
+#[path = "support/plan_v3.rs"]
+mod support;
+use type_bridge_contract::migration_assertion::ValueComparator;
+use type_bridge_contract::query_plan::v3::{QueryPlanV3, Stage, decode_query_plan_v3};
+use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
 use type_bridge_contract::temporal::CanonicalDuration;
 use type_bridge_contract::value::CanonicalValue;
-
-fn binding(id: u16, variable: &str) -> AssertionBinding {
-    AssertionBinding::new(
-        BindingId::new(id).expect("binding id"),
-        QueryVariable::new(variable).expect("query variable"),
-    )
-}
-
-fn managed_semantics() -> ManagedSemanticSchemaFingerprint {
-    ManagedSemanticSchemaFingerprint::compute(
-        SemanticProfileId::new("typedb-3.12.1/v1").expect("semantic profile"),
-        b"duration-query-plan-wire-fixture",
-    )
-    .expect("managed semantic fingerprint")
-}
 
 #[test]
 fn duration_u64_components_round_trip_through_serde() {
@@ -44,7 +26,6 @@ fn duration_u64_components_round_trip_through_serde() {
 
 #[test]
 fn u64_duration_boundaries_round_trip_through_query_plan_wire() {
-    let entity = BindingId::new(0).expect("binding id");
     let above_u32 = CanonicalDuration::new(false, u64::from(u32::MAX) + 1, 0, 0, 0)
         .expect("duration above u32");
     let maximum = CanonicalDuration::new(false, u64::MAX, u64::MAX, u64::MAX, 999_999_999)
@@ -58,27 +39,24 @@ fn u64_duration_boundaries_round_trip_through_query_plan_wire() {
             value: CanonicalValue::Duration(duration),
         },
     };
-    let plan = QueryPlan::new(
-        vec![binding(0, "person")],
-        Vec::new(),
-        vec![ReadStage::Match {
-            patterns: vec![
-                QueryPattern::Isa {
-                    binding: entity,
-                    include_subtypes: true,
-                    type_id: TypeId::new(TypeKind::Entity, "person").expect("type id"),
-                },
-                comparison(above_u32),
-                comparison(maximum),
-            ],
-        }],
-        QueryOutput::Rows {
-            columns: vec![entity],
-        },
-        managed_semantics(),
+    let plan = QueryPlanV3::new(
+        support::spec(
+            vec![Stage::Match {
+                patterns: vec![
+                    support::isa(0, support::entity("account")).into(),
+                    comparison(above_u32).into(),
+                    comparison(maximum).into(),
+                ],
+            }],
+            vec![0],
+        ),
+        &support::schema(),
     )
     .expect("query plan");
 
     let bytes = plan.canonical_bytes().expect("canonical query-plan bytes");
-    assert_eq!(decode_query_plan(&bytes).expect("decode query plan"), plan);
+    assert_eq!(
+        decode_query_plan_v3(&bytes, &support::schema()).expect("decode query plan"),
+        plan
+    );
 }

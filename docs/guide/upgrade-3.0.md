@@ -62,3 +62,25 @@ the dynamic managers' single writes return `WriteResult`, including exact
 put/update forms and returning deletes. Generic results contain hydrated models;
 dynamic results contain hydrated rows. The many-result methods retain their
 list contracts.
+
+## Native plan execution replaces V1/V2
+
+| Removed surface | Replacement |
+| --- | --- |
+| Rust `QueryPlan`, `QueryInvocation`, `QueryOperation`, legacy decoders and fingerprints | `query_plan::v3::QueryPlanV3`, `PlanSpec`, `Operation`, `decode_query_plan_v3`, and the native plan fingerprint |
+| Rust `ModelQueryV2`, `QueryPlanV2Compatibility`, and the V2 model wrapper types | Generated model queries lowered directly to native plans |
+| Rust `query_remote_v2` requests, responses, failures, limits and decoders | `query_remote_v3` staged requests/replies; shared limits live in `query_model_limits` |
+| `ValidatedQuery`, `validate_query_plan`, `validate_query_local_function` | Native plan construction performs validation |
+| ORM `query_v2`, `query_v2_builder`, `query_v2_prepared`, `query_v2_remote` and the old integration adapter | Native builders, `plan_explain::explain`, and staged execution |
+| `ProxyHttpClient` / `ProxyHttpTransport` `capabilities` and `exchange` | `staged_capabilities` and `exchange_staged` |
+| Python `type_bridge.query_v2`, Node `@type-bridge/node/query-v2` | `PlanBuilder` and `Plan` from `type_bridge.plan` / `@type-bridge/node` |
+| `AuthoredQueryPlan`, `AuthoredQueryInvocation`, `PendingQueryV2Remote`, `QueryV2RemoteLimits` | Built native `Plan`, staged pending answers, and transaction resource limits |
+| Python `query_v2_execute_local`, `query_v2_remote_capabilities`, `query_v2_prepare_remote` | Native direct/proxy staged transactions |
+| Node `queryV2ExecuteLocal`, `queryV2RemoteCapabilities`, `queryV2PrepareRemote` | Native direct/proxy staged transactions |
+| Rust `QueryAuthority::from_declared_bytes_query_only` | `QueryAuthority::from_declared_bytes` plus native staged execution |
+| Python `PlanAuthority.query_only`, `plan_query_only_authority` | `PlanAuthority(...)` plus native staged execution |
+| Node `PlanAuthority.queryOnly`, `planQueryOnlyAuthority` | `new PlanAuthority(...)` plus native staged execution |
+
+V1/V2 plan bytes and envelopes are no longer accepted. Rebuild plans through
+the native builder and regenerate schema packages. Native plan inputs are part
+of the built program; there is no separate legacy invocation object.
