@@ -18,10 +18,10 @@ use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
-    CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
-    HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, QueryComparatorV2, QueryFieldV2,
-    QueryMissingOrderV2, QueryModelOutputSlotV2, QueryModelOutputV2, QueryNamedOutputSlotV2,
-    QueryOrderDirectionV2, QueryOrderTermV2, QueryPatternV2, QueryStableOrderV2,
+    HydrationBinding, HydrationDescriptor, HydrationField, HydrationPlayer, HydrationProjection,
+    HydrationRole, ModelComparator, ModelField, ModelMissingOrder, ModelNamedOutputSlot,
+    ModelOrderDirection, ModelOrderTerm, ModelOutput, ModelOutputSlot, ModelPredicate,
+    ModelStableOrder, ModelValue,
 };
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_contract::temporal::{
@@ -156,7 +156,7 @@ pub(crate) fn build_hydration(
     request: &MatchRequest,
     registry: &DescriptorRegistry,
     schema: &ResolvedSchema,
-) -> Result<HydrationProjectionV2, Diagnostic> {
+) -> Result<HydrationProjection, Diagnostic> {
     let mut bindings = Vec::with_capacity(request.plan.bindings.len());
     let mut admitted = BTreeSet::new();
     for binding in &request.plan.bindings {
@@ -164,7 +164,7 @@ pub(crate) fn build_hydration(
         let concrete =
             constructible_closure(schema, &declared, binding.match_mode == MatchMode::Subtypes)?;
         admitted.extend(concrete.iter().cloned());
-        bindings.push(HydrationBindingV2::new(
+        bindings.push(HydrationBinding::new(
             BindingId::new(binding.id.get())?,
             declared,
             concrete,
@@ -212,7 +212,7 @@ pub(crate) fn build_hydration(
             )
         })
         .collect::<Result<Vec<_>, Diagnostic>>()?;
-    Ok(HydrationProjectionV2::new(bindings, descriptors))
+    Ok(HydrationProjection::new(bindings, descriptors))
 }
 
 pub(crate) fn hydration_descriptor(
@@ -220,7 +220,7 @@ pub(crate) fn hydration_descriptor(
     hydrate_roles: bool,
     registry: &DescriptorRegistry,
     schema: &ResolvedSchema,
-) -> Result<HydrationDescriptorV2, Diagnostic> {
+) -> Result<HydrationDescriptor, Diagnostic> {
     let resolved = schema.types().get(id).ok_or_else(|| {
         integrity(
             "query_v2_adapter_schema_mismatch",
@@ -270,7 +270,7 @@ pub(crate) fn hydration_descriptor(
                 "registered field type, cardinality, or uniqueness contradicts resolved schema",
             ));
         }
-        fields.push(HydrationFieldV2::new(
+        fields.push(HydrationField::new(
             registered.field_name.clone(),
             field_reference_owners(schema, resolved, attribute),
             attribute.clone(),
@@ -297,7 +297,7 @@ pub(crate) fn hydration_descriptor(
     } else {
         Vec::new()
     };
-    Ok(HydrationDescriptorV2::new(id.clone(), fields, roles))
+    Ok(HydrationDescriptor::new(id.clone(), fields, roles))
 }
 
 pub(crate) fn hydration_roles(
@@ -306,7 +306,7 @@ pub(crate) fn hydration_roles(
     registered: &RelationDescriptor,
     registry: &DescriptorRegistry,
     schema: &ResolvedSchema,
-) -> Result<Vec<HydrationRoleV2>, Diagnostic> {
+) -> Result<Vec<HydrationRole>, Diagnostic> {
     let mut roles = Vec::with_capacity(resolved.relates().len());
     for (effective_id, effective) in resolved.relates() {
         let registered_role = registered
@@ -345,7 +345,7 @@ pub(crate) fn hydration_roles(
                     .into_iter()
                     .filter(|candidate| accepted.contains(candidate))
                     .collect();
-                Ok(HydrationPlayerV2::new(declared, concrete))
+                Ok(HydrationPlayer::new(declared, concrete))
             })
             .collect::<Result<Vec<_>, Diagnostic>>()?;
         players.sort_by(|left, right| left.declared_descriptor().cmp(right.declared_descriptor()));
@@ -360,7 +360,7 @@ pub(crate) fn hydration_roles(
                 "registered role-player declarations do not cover resolved accepted players",
             ));
         }
-        roles.push(HydrationRoleV2::new(
+        roles.push(HydrationRole::new(
             RoleId::new(
                 concrete.label().as_str().to_owned(),
                 effective_id.label().as_str().to_owned(),
@@ -380,7 +380,7 @@ pub(crate) fn adapt_field(
     field: &BoundFieldId,
     request: &MatchRequest,
     registry: &DescriptorRegistry,
-) -> Result<QueryFieldV2, Diagnostic> {
+) -> Result<ModelField, Diagnostic> {
     request
         .plan
         .bindings
@@ -392,7 +392,7 @@ pub(crate) fn adapt_field(
             )
         })?;
     let attribute = registered_attribute(registry, &field.field)?;
-    Ok(QueryFieldV2::new(
+    Ok(ModelField::new(
         BindingId::new(field.binding.get())?,
         descriptor_id_type(field.field.owner.as_str())?,
         AttributeId::new(attribute.attr_name.clone())?,
@@ -713,12 +713,12 @@ pub(crate) fn adapt_output(
     validated: &ValidatedMatchRequest,
     registry: &DescriptorRegistry,
     request: &MatchRequest,
-) -> Result<QueryModelOutputV2, Diagnostic> {
-    let adapt_slot = |slot: &FetchSlot| -> Result<QueryModelOutputSlotV2, Diagnostic> {
+) -> Result<ModelOutput, Diagnostic> {
+    let adapt_slot = |slot: &FetchSlot| -> Result<ModelOutputSlot, Diagnostic> {
         let binding = BindingId::new(slot.binding().get())?;
         let declared = request_binding_type(request, slot.binding().get())?;
         Ok(match slot {
-            FetchSlot::One { .. } => QueryModelOutputSlotV2::One { binding, declared },
+            FetchSlot::One { .. } => ModelOutputSlot::One { binding, declared },
             FetchSlot::Collect { distinct, .. } => {
                 let proof = validated.collection_order(slot.binding()).ok_or_else(|| {
                     integrity(
@@ -726,7 +726,7 @@ pub(crate) fn adapt_output(
                         "validated collection output lacks its stable-order proof",
                     )
                 })?;
-                QueryModelOutputSlotV2::Collect {
+                ModelOutputSlot::Collect {
                     binding,
                     declared,
                     distinct: *distinct,
@@ -736,17 +736,17 @@ pub(crate) fn adapt_output(
         })
     };
     Ok(match output {
-        FetchShape::Positional { slots } => QueryModelOutputV2::Positional {
+        FetchShape::Positional { slots } => ModelOutput::Positional {
             slots: slots
                 .iter()
                 .map(adapt_slot)
                 .collect::<Result<Vec<_>, _>>()?,
         },
-        FetchShape::Named { slots } => QueryModelOutputV2::Named {
+        FetchShape::Named { slots } => ModelOutput::Named {
             slots: slots
                 .iter()
                 .map(|named| {
-                    Ok(QueryNamedOutputSlotV2::new(
+                    Ok(ModelNamedOutputSlot::new(
                         named.name.clone(),
                         adapt_slot(&named.slot)?,
                     ))
@@ -761,40 +761,40 @@ pub(crate) fn adapt_stable_order(
     identity_tiebreakers: Vec<BindingId>,
     registry: &DescriptorRegistry,
     request: &MatchRequest,
-) -> Result<QueryStableOrderV2, Diagnostic> {
+) -> Result<ModelStableOrder, Diagnostic> {
     let terms = order
         .terms()
         .iter()
         .map(|term| {
             let order = term.order();
-            Ok(QueryOrderTermV2::new(
+            Ok(ModelOrderTerm::new(
                 adapt_field(&order.field, request, registry)?,
                 match order.direction {
-                    SortDirection::Ascending => QueryOrderDirectionV2::Ascending,
-                    SortDirection::Descending => QueryOrderDirectionV2::Descending,
+                    SortDirection::Ascending => ModelOrderDirection::Ascending,
+                    SortDirection::Descending => ModelOrderDirection::Descending,
                 },
                 match order.missing {
-                    MissingOrder::Reject => QueryMissingOrderV2::Reject,
-                    MissingOrder::First => QueryMissingOrderV2::First,
-                    MissingOrder::Last => QueryMissingOrderV2::Last,
+                    MissingOrder::Reject => ModelMissingOrder::Reject,
+                    MissingOrder::First => ModelMissingOrder::First,
+                    MissingOrder::Last => ModelMissingOrder::Last,
                 },
             ))
         })
         .collect::<Result<Vec<_>, Diagnostic>>()?;
-    Ok(QueryStableOrderV2::new(terms, identity_tiebreakers))
+    Ok(ModelStableOrder::new(terms, identity_tiebreakers))
 }
 
 pub(crate) fn adapt_expression(
     expression: &MatchExpr,
     request: &MatchRequest,
     registry: &DescriptorRegistry,
-) -> Result<QueryPatternV2, Diagnostic> {
+) -> Result<ModelPredicate, Diagnostic> {
     Ok(match expression {
         MatchExpr::FieldValue {
             field,
             operator,
             value,
-        } => QueryPatternV2::FieldValue {
+        } => ModelPredicate::FieldValue {
             field: adapt_field(field, request, registry)?,
             comparator: adapt_comparator(*operator),
             value: adapt_value(value)?,
@@ -803,7 +803,7 @@ pub(crate) fn adapt_expression(
             left,
             operator,
             right,
-        } => QueryPatternV2::FieldComparison {
+        } => ModelPredicate::FieldComparison {
             left: adapt_field(left, request, registry)?,
             comparator: adapt_comparator(*operator),
             right: adapt_field(right, request, registry)?,
@@ -814,11 +814,11 @@ pub(crate) fn adapt_expression(
                 "schema-function predicates require native Query V2 adaptation",
             ));
         }
-        MatchExpr::FieldPresence { field, present } => QueryPatternV2::FieldPresence {
+        MatchExpr::FieldPresence { field, present } => ModelPredicate::FieldPresence {
             field: adapt_field(field, request, registry)?,
             present: *present,
         },
-        MatchExpr::BindingIid { binding, iid } => QueryPatternV2::BindingIid {
+        MatchExpr::BindingIid { binding, iid } => ModelPredicate::BindingIid {
             binding: BindingId::new(binding.get())?,
             iid: iid.clone(),
         },
@@ -839,7 +839,7 @@ pub(crate) fn adapt_expression(
                         "validated role edge references no relation binding",
                     )
                 })?;
-            QueryPatternV2::RoleEdge {
+            ModelPredicate::RoleEdge {
                 include_relation_subtypes: relation_binding.match_mode == MatchMode::Subtypes,
                 player: BindingId::new(player.get())?,
                 relation: BindingId::new(relation.get())?,
@@ -860,7 +860,7 @@ pub(crate) fn adapt_expression(
             max_depth,
         } => {
             let relation_type = descriptor_type(relation.as_str(), ThingKind::Relation)?;
-            QueryPatternV2::Reachable {
+            ModelPredicate::Reachable {
                 min_depth: *min_depth,
                 max_depth: *max_depth,
                 role_from: RoleId::new(
@@ -876,19 +876,19 @@ pub(crate) fn adapt_expression(
                 target: BindingId::new(target.get())?,
             }
         }
-        MatchExpr::And { expressions } => QueryPatternV2::And {
+        MatchExpr::And { expressions } => ModelPredicate::And {
             patterns: expressions
                 .iter()
                 .map(|child| adapt_expression(child, request, registry))
                 .collect::<Result<Vec<_>, _>>()?,
         },
-        MatchExpr::Or { expressions } => QueryPatternV2::Or {
+        MatchExpr::Or { expressions } => ModelPredicate::Or {
             patterns: expressions
                 .iter()
                 .map(|child| adapt_expression(child, request, registry))
                 .collect::<Result<Vec<_>, _>>()?,
         },
-        MatchExpr::Not { expression } => QueryPatternV2::Not {
+        MatchExpr::Not { expression } => ModelPredicate::Not {
             pattern: Box::new(adapt_expression(expression, request, registry)?),
         },
     })
@@ -898,7 +898,7 @@ pub(crate) fn adapt_compatibility_expression(
     expression: &MatchExpr,
     request: &MatchRequest,
     registry: &DescriptorRegistry,
-) -> Result<Option<QueryPatternV2>, Diagnostic> {
+) -> Result<Option<ModelPredicate>, Diagnostic> {
     match expression {
         MatchExpr::ScalarComparison { .. } => Ok(None),
         MatchExpr::And { expressions } => {
@@ -912,7 +912,7 @@ pub(crate) fn adapt_compatibility_expression(
             Ok(match patterns.len() {
                 0 => None,
                 1 => patterns.into_iter().next(),
-                _ => Some(QueryPatternV2::And { patterns }),
+                _ => Some(ModelPredicate::And { patterns }),
             })
         }
         MatchExpr::Or { .. } | MatchExpr::Not { .. }
@@ -943,22 +943,22 @@ pub(crate) fn predicate_has_schema_function(expression: &MatchExpr) -> bool {
     }
 }
 
-pub(crate) fn adapt_comparator(operator: ComparisonOp) -> QueryComparatorV2 {
+pub(crate) fn adapt_comparator(operator: ComparisonOp) -> ModelComparator {
     match operator {
-        ComparisonOp::Equal => QueryComparatorV2::Equal,
-        ComparisonOp::NotEqual => QueryComparatorV2::NotEqual,
-        ComparisonOp::LessThan => QueryComparatorV2::Less,
-        ComparisonOp::LessThanOrEqual => QueryComparatorV2::LessOrEqual,
-        ComparisonOp::GreaterThan => QueryComparatorV2::Greater,
-        ComparisonOp::GreaterThanOrEqual => QueryComparatorV2::GreaterOrEqual,
-        ComparisonOp::Contains => QueryComparatorV2::Contains,
-        ComparisonOp::StartsWith => QueryComparatorV2::StartsWith,
-        ComparisonOp::EndsWith => QueryComparatorV2::EndsWith,
-        ComparisonOp::Regex => QueryComparatorV2::Regex,
+        ComparisonOp::Equal => ModelComparator::Equal,
+        ComparisonOp::NotEqual => ModelComparator::NotEqual,
+        ComparisonOp::LessThan => ModelComparator::Less,
+        ComparisonOp::LessThanOrEqual => ModelComparator::LessOrEqual,
+        ComparisonOp::GreaterThan => ModelComparator::Greater,
+        ComparisonOp::GreaterThanOrEqual => ModelComparator::GreaterOrEqual,
+        ComparisonOp::Contains => ModelComparator::Contains,
+        ComparisonOp::StartsWith => ModelComparator::StartsWith,
+        ComparisonOp::EndsWith => ModelComparator::EndsWith,
+        ComparisonOp::Regex => ModelComparator::Regex,
     }
 }
 
-pub(crate) fn adapt_value(value: &AttributeValue) -> Result<CompatibilityValueV2, Diagnostic> {
+pub(crate) fn adapt_value(value: &AttributeValue) -> Result<ModelValue, Diagnostic> {
     let malformed = || {
         integrity(
             "query_v2_adapter_validated_literal_malformed",
@@ -968,7 +968,7 @@ pub(crate) fn adapt_value(value: &AttributeValue) -> Result<CompatibilityValueV2
     let canonical = match value {
         AttributeValue::String(value) => match CanonicalString::new(value.as_str()) {
             Ok(value) => Some(CanonicalValue::String(value)),
-            Err(_) => return CompatibilityValueV2::released_string(value.clone()),
+            Err(_) => return ModelValue::released_string(value.clone()),
         },
         AttributeValue::Long(value) => Some(CanonicalValue::Long(*value)),
         AttributeValue::Double(value) => Some(CanonicalValue::Double(
@@ -980,66 +980,64 @@ pub(crate) fn adapt_value(value: &AttributeValue) -> Result<CompatibilityValueV2
         )),
         AttributeValue::DateTime(value) => match value.parse::<CanonicalDateTime>() {
             Ok(value) => Some(CanonicalValue::DateTime(value)),
-            Err(_) => return CompatibilityValueV2::released_datetime(value.clone()),
+            Err(_) => return ModelValue::released_datetime(value.clone()),
         },
         AttributeValue::DateTimeTZ(value) => match value.parse::<CanonicalDateTimeTz>() {
             Ok(value) => Some(CanonicalValue::DateTimeTz(value)),
-            Err(_) => return CompatibilityValueV2::released_datetime_tz(value.clone()),
+            Err(_) => return ModelValue::released_datetime_tz(value.clone()),
         },
         AttributeValue::Decimal(value) => {
             let canonical = DecimalValue::new(value.as_str()).map_err(|_| malformed())?;
             if canonical.as_str() != value {
-                return CompatibilityValueV2::released_decimal(value.clone());
+                return ModelValue::released_decimal(value.clone());
             }
             Some(CanonicalValue::Decimal(canonical))
         }
         AttributeValue::Duration(value) => match value.parse::<CanonicalDuration>() {
             Ok(value) => Some(CanonicalValue::Duration(value)),
-            Err(_) => return CompatibilityValueV2::released_duration(value.clone()),
+            Err(_) => return ModelValue::released_duration(value.clone()),
         },
     };
-    Ok(CompatibilityValueV2::canonical(canonical.ok_or_else(
-        || {
-            integrity(
-                "query_v2_adapter_literal_state",
-                "validated literal adaptation produced no canonical or released value",
-            )
-        },
-    )?))
+    Ok(ModelValue::canonical(canonical.ok_or_else(|| {
+        integrity(
+            "query_v2_adapter_literal_state",
+            "validated literal adaptation produced no canonical or released value",
+        )
+    })?))
 }
 
 pub(crate) fn adapt_reducers(
     reducers: &[crate::match_request::ReduceTerm],
     request: &MatchRequest,
     registry: &DescriptorRegistry,
-) -> Result<Vec<type_bridge_contract::query_plan::QueryReductionTermV2>, Diagnostic> {
+) -> Result<Vec<type_bridge_contract::query_plan::ModelReductionTerm>, Diagnostic> {
     reducers
         .iter()
         .map(|term| {
             let reduction = match term.reduction {
                 crate::match_request::Reduction::Count => {
-                    type_bridge_contract::query_plan::QueryReductionKindV2::Count
+                    type_bridge_contract::query_plan::ModelReductionKind::Count
                 }
                 crate::match_request::Reduction::Sum => {
-                    type_bridge_contract::query_plan::QueryReductionKindV2::Sum
+                    type_bridge_contract::query_plan::ModelReductionKind::Sum
                 }
                 crate::match_request::Reduction::Min => {
-                    type_bridge_contract::query_plan::QueryReductionKindV2::Min
+                    type_bridge_contract::query_plan::ModelReductionKind::Min
                 }
                 crate::match_request::Reduction::Max => {
-                    type_bridge_contract::query_plan::QueryReductionKindV2::Max
+                    type_bridge_contract::query_plan::ModelReductionKind::Max
                 }
                 crate::match_request::Reduction::Mean => {
-                    type_bridge_contract::query_plan::QueryReductionKindV2::Mean
+                    type_bridge_contract::query_plan::ModelReductionKind::Mean
                 }
                 crate::match_request::Reduction::Median => {
-                    type_bridge_contract::query_plan::QueryReductionKindV2::Median
+                    type_bridge_contract::query_plan::ModelReductionKind::Median
                 }
                 crate::match_request::Reduction::Std => {
-                    type_bridge_contract::query_plan::QueryReductionKindV2::Std
+                    type_bridge_contract::query_plan::ModelReductionKind::Std
                 }
             };
-            Ok(type_bridge_contract::query_plan::QueryReductionTermV2::new(
+            Ok(type_bridge_contract::query_plan::ModelReductionTerm::new(
                 reduction,
                 term.input
                     .as_ref()
@@ -1051,7 +1049,7 @@ pub(crate) fn adapt_reducers(
 }
 
 pub(crate) fn document_roles(
-    descriptor: &type_bridge_contract::query_plan::HydrationDescriptorV2,
+    descriptor: &type_bridge_contract::query_plan::HydrationDescriptor,
     authority: &MatchRequestAdapterAuthority,
 ) -> Result<Vec<type_bridge_contract::query_plan::v3::DocumentRole>, Diagnostic> {
     use type_bridge_contract::schema::{RelatesFactId, SchemaFactId};

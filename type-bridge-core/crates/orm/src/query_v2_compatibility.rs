@@ -10,10 +10,9 @@ use std::collections::BTreeMap;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
 use type_bridge_contract::query_plan::{
-    CompatibilityValueV2, ModelQueryV2, QueryComparatorV2, QueryFieldV2, QueryInvocation,
-    QueryMissingOrderV2, QueryModelOutputSlotV2, QueryOperand, QueryOperation,
-    QueryOrderDirectionV2, QueryPattern, QueryPatternV2, QueryPlan, QueryRowCardinalityV2,
-    QueryStableOrderV2, ReadStage,
+    ModelComparator, ModelField, ModelMissingOrder, ModelOrderDirection, ModelOutputSlot,
+    ModelPredicate, ModelQueryV2, ModelStableOrder, ModelValue, QueryInvocation, QueryOperand,
+    QueryOperation, QueryPattern, QueryPlan, QueryRowCardinalityV2, ReadStage,
 };
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_core_lib::ast::{
@@ -132,8 +131,8 @@ pub(crate) fn lower_validated_compatibility_query(
                 .slots()
                 .into_iter()
                 .filter_map(|slot| match slot {
-                    QueryModelOutputSlotV2::One { binding, .. } => Some(binding.get()),
-                    QueryModelOutputSlotV2::Collect { .. } => None,
+                    ModelOutputSlot::One { binding, .. } => Some(binding.get()),
+                    ModelOutputSlot::Collect { .. } => None,
                 })
                 .collect();
             let (order, offset, limit) = match cardinality {
@@ -202,10 +201,8 @@ pub(crate) fn lower_validated_compatibility_query(
                 .slots()
                 .into_iter()
                 .filter_map(|slot| match slot {
-                    QueryModelOutputSlotV2::One { .. } => None,
-                    QueryModelOutputSlotV2::Collect { binding, order, .. } => {
-                        Some((*binding, order))
-                    }
+                    ModelOutputSlot::One { .. } => None,
+                    ModelOutputSlot::Collect { binding, order, .. } => Some((*binding, order)),
                 })
                 .map(|(binding, order)| {
                     Ok(TypedCollectionOrder {
@@ -671,33 +668,33 @@ const fn lower_native_comparator(comparator: ValueComparator) -> TypedComparison
 }
 
 fn collect_pattern_fields<'plan>(
-    pattern: &'plan QueryPatternV2,
-    fields: &mut Vec<&'plan QueryFieldV2>,
+    pattern: &'plan ModelPredicate,
+    fields: &mut Vec<&'plan ModelField>,
 ) {
     match pattern {
-        QueryPatternV2::FieldValue { field, .. } => insert_field(fields, field),
-        QueryPatternV2::FieldComparison { left, right, .. } => {
+        ModelPredicate::FieldValue { field, .. } => insert_field(fields, field),
+        ModelPredicate::FieldComparison { left, right, .. } => {
             insert_field(fields, left);
             insert_field(fields, right);
         }
-        QueryPatternV2::FieldPresence { field, .. } => insert_field(fields, field),
-        QueryPatternV2::And { patterns } | QueryPatternV2::Or { patterns } => {
+        ModelPredicate::FieldPresence { field, .. } => insert_field(fields, field),
+        ModelPredicate::And { patterns } | ModelPredicate::Or { patterns } => {
             for child in patterns {
                 collect_pattern_fields(child, fields);
             }
         }
-        QueryPatternV2::Not { pattern } => collect_pattern_fields(pattern, fields),
-        QueryPatternV2::BindingIid { .. }
-        | QueryPatternV2::RoleEdge { .. }
-        | QueryPatternV2::Reachable { .. } => {}
+        ModelPredicate::Not { pattern } => collect_pattern_fields(pattern, fields),
+        ModelPredicate::BindingIid { .. }
+        | ModelPredicate::RoleEdge { .. }
+        | ModelPredicate::Reachable { .. } => {}
     }
 }
 
 fn collect_model_order_fields<'plan>(
     model: &'plan ModelQueryV2,
-    fields: &mut Vec<&'plan QueryFieldV2>,
+    fields: &mut Vec<&'plan ModelField>,
 ) {
-    let mut collect_order = |order: &'plan QueryStableOrderV2| {
+    let mut collect_order = |order: &'plan ModelStableOrder| {
         for term in order.terms() {
             insert_field(fields, term.field());
         }
@@ -708,7 +705,7 @@ fn collect_model_order_fields<'plan>(
                 collect_order(order);
             }
             for slot in output.slots() {
-                if let QueryModelOutputSlotV2::Collect { order, .. } = slot {
+                if let ModelOutputSlot::Collect { order, .. } = slot {
                     collect_order(order);
                 }
             }
@@ -716,7 +713,7 @@ fn collect_model_order_fields<'plan>(
         ModelQueryV2::Page { order, output, .. } => {
             collect_order(order);
             for slot in output.slots() {
-                if let QueryModelOutputSlotV2::Collect { order, .. } = slot {
+                if let ModelOutputSlot::Collect { order, .. } = slot {
                     collect_order(order);
                 }
             }
@@ -726,10 +723,10 @@ fn collect_model_order_fields<'plan>(
             group, reducers, ..
         } => {
             match group {
-                Some(type_bridge_contract::query_plan::QueryReductionGroupV2::Field { field }) => {
+                Some(type_bridge_contract::query_plan::ModelReductionKey::Field { field }) => {
                     insert_field(fields, field);
                 }
-                Some(type_bridge_contract::query_plan::QueryReductionGroupV2::Fields {
+                Some(type_bridge_contract::query_plan::ModelReductionKey::Fields {
                     fields: group_fields,
                 }) => {
                     for field in group_fields {
@@ -737,9 +734,7 @@ fn collect_model_order_fields<'plan>(
                     }
                 }
                 None
-                | Some(type_bridge_contract::query_plan::QueryReductionGroupV2::Binding {
-                    ..
-                }) => {}
+                | Some(type_bridge_contract::query_plan::ModelReductionKey::Binding { .. }) => {}
             }
             for term in reducers {
                 if let Some(field) = term.input() {
@@ -750,13 +745,13 @@ fn collect_model_order_fields<'plan>(
     }
 }
 
-fn insert_field<'plan>(fields: &mut Vec<&'plan QueryFieldV2>, field: &'plan QueryFieldV2) {
+fn insert_field<'plan>(fields: &mut Vec<&'plan ModelField>, field: &'plan ModelField) {
     if !fields.contains(&field) {
         fields.push(field);
     }
 }
 
-fn field_id(fields: &[&QueryFieldV2], field: &QueryFieldV2) -> Result<u16, Diagnostic> {
+fn field_id(fields: &[&ModelField], field: &ModelField) -> Result<u16, Diagnostic> {
     let index = fields
         .iter()
         .position(|candidate| *candidate == field)
@@ -775,12 +770,12 @@ fn field_id(fields: &[&QueryFieldV2], field: &QueryFieldV2) -> Result<u16, Diagn
 }
 
 fn lower_pattern(
-    pattern: &QueryPatternV2,
-    fields: &[&QueryFieldV2],
+    pattern: &ModelPredicate,
+    fields: &[&ModelField],
     next_edge: &mut u16,
 ) -> Result<TypedMatchPredicate, Diagnostic> {
     Ok(match pattern {
-        QueryPatternV2::FieldValue {
+        ModelPredicate::FieldValue {
             field,
             comparator,
             value,
@@ -789,7 +784,7 @@ fn lower_pattern(
             operator: lower_comparator(*comparator),
             value: lower_literal(value)?,
         },
-        QueryPatternV2::FieldComparison {
+        ModelPredicate::FieldComparison {
             left,
             comparator,
             right,
@@ -798,15 +793,15 @@ fn lower_pattern(
             operator: lower_comparator(*comparator),
             right: field_id(fields, right)?,
         },
-        QueryPatternV2::FieldPresence { field, present } => TypedMatchPredicate::FieldPresence {
+        ModelPredicate::FieldPresence { field, present } => TypedMatchPredicate::FieldPresence {
             field: field_id(fields, field)?,
             present: *present,
         },
-        QueryPatternV2::BindingIid { binding, iid } => TypedMatchPredicate::BindingIid {
+        ModelPredicate::BindingIid { binding, iid } => TypedMatchPredicate::BindingIid {
             binding: binding.get(),
             iid: iid.clone(),
         },
-        QueryPatternV2::RoleEdge {
+        ModelPredicate::RoleEdge {
             relation,
             role,
             player,
@@ -826,7 +821,7 @@ fn lower_pattern(
                 player: player.get(),
             }
         }
-        QueryPatternV2::Reachable {
+        ModelPredicate::Reachable {
             min_depth,
             max_depth,
             relation,
@@ -843,27 +838,27 @@ fn lower_pattern(
             min_depth: *min_depth,
             max_depth: *max_depth,
         },
-        QueryPatternV2::And { patterns } => TypedMatchPredicate::And {
+        ModelPredicate::And { patterns } => TypedMatchPredicate::And {
             expressions: patterns
                 .iter()
                 .map(|child| lower_pattern(child, fields, next_edge))
                 .collect::<Result<Vec<_>, _>>()?,
         },
-        QueryPatternV2::Or { patterns } => TypedMatchPredicate::Or {
+        ModelPredicate::Or { patterns } => TypedMatchPredicate::Or {
             expressions: patterns
                 .iter()
                 .map(|child| lower_pattern(child, fields, next_edge))
                 .collect::<Result<Vec<_>, _>>()?,
         },
-        QueryPatternV2::Not { pattern } => TypedMatchPredicate::Not {
+        ModelPredicate::Not { pattern } => TypedMatchPredicate::Not {
             expression: Box::new(lower_pattern(pattern, fields, next_edge)?),
         },
     })
 }
 
 fn lower_order(
-    order: &QueryStableOrderV2,
-    fields: &[&QueryFieldV2],
+    order: &ModelStableOrder,
+    fields: &[&ModelField],
 ) -> Result<Vec<TypedMatchOrder>, Diagnostic> {
     order
         .terms()
@@ -872,35 +867,35 @@ fn lower_order(
             Ok(TypedMatchOrder {
                 field: field_id(fields, term.field())?,
                 direction: match term.direction() {
-                    QueryOrderDirectionV2::Ascending => TypedSortDirection::Ascending,
-                    QueryOrderDirectionV2::Descending => TypedSortDirection::Descending,
+                    ModelOrderDirection::Ascending => TypedSortDirection::Ascending,
+                    ModelOrderDirection::Descending => TypedSortDirection::Descending,
                 },
                 missing: match term.missing() {
-                    QueryMissingOrderV2::Reject => TypedMissingOrder::Reject,
-                    QueryMissingOrderV2::First => TypedMissingOrder::First,
-                    QueryMissingOrderV2::Last => TypedMissingOrder::Last,
+                    ModelMissingOrder::Reject => TypedMissingOrder::Reject,
+                    ModelMissingOrder::First => TypedMissingOrder::First,
+                    ModelMissingOrder::Last => TypedMissingOrder::Last,
                 },
             })
         })
         .collect()
 }
 
-const fn lower_comparator(comparator: QueryComparatorV2) -> TypedComparisonOperator {
+const fn lower_comparator(comparator: ModelComparator) -> TypedComparisonOperator {
     match comparator {
-        QueryComparatorV2::Equal => TypedComparisonOperator::Equal,
-        QueryComparatorV2::NotEqual => TypedComparisonOperator::NotEqual,
-        QueryComparatorV2::Less => TypedComparisonOperator::LessThan,
-        QueryComparatorV2::LessOrEqual => TypedComparisonOperator::LessThanOrEqual,
-        QueryComparatorV2::Greater => TypedComparisonOperator::GreaterThan,
-        QueryComparatorV2::GreaterOrEqual => TypedComparisonOperator::GreaterThanOrEqual,
-        QueryComparatorV2::Contains => TypedComparisonOperator::Contains,
-        QueryComparatorV2::StartsWith => TypedComparisonOperator::StartsWith,
-        QueryComparatorV2::EndsWith => TypedComparisonOperator::EndsWith,
-        QueryComparatorV2::Regex => TypedComparisonOperator::Regex,
+        ModelComparator::Equal => TypedComparisonOperator::Equal,
+        ModelComparator::NotEqual => TypedComparisonOperator::NotEqual,
+        ModelComparator::Less => TypedComparisonOperator::LessThan,
+        ModelComparator::LessOrEqual => TypedComparisonOperator::LessThanOrEqual,
+        ModelComparator::Greater => TypedComparisonOperator::GreaterThan,
+        ModelComparator::GreaterOrEqual => TypedComparisonOperator::GreaterThanOrEqual,
+        ModelComparator::Contains => TypedComparisonOperator::Contains,
+        ModelComparator::StartsWith => TypedComparisonOperator::StartsWith,
+        ModelComparator::EndsWith => TypedComparisonOperator::EndsWith,
+        ModelComparator::Regex => TypedComparisonOperator::Regex,
     }
 }
 
-fn lower_literal(value: &CompatibilityValueV2) -> Result<TypedLiteral, Diagnostic> {
+fn lower_literal(value: &ModelValue) -> Result<TypedLiteral, Diagnostic> {
     if let Some(value) = value.canonical_value() {
         return Ok(match value {
             CanonicalValue::String(value) => TypedLiteral::String(value.as_str().to_owned()),
@@ -954,8 +949,8 @@ mod tests {
 
     #[test]
     fn released_decimal_literal_reaches_the_typed_compiler_without_canonical_v2_relaxation() {
-        let value = CompatibilityValueV2::released_decimal("00123.4500dec")
-            .expect("released V1 decimal spelling");
+        let value =
+            ModelValue::released_decimal("00123.4500dec").expect("released V1 decimal spelling");
         assert_eq!(
             lower_literal(&value).expect("compatibility literal lowers"),
             TypedLiteral::Decimal("00123.4500dec".into()),

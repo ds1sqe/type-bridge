@@ -10,7 +10,7 @@ use crate::id::TypeKind;
 use crate::migration_assertion_wire::{FingerprintWire, RoleIdWire, TypeIdWire};
 use crate::query_plan_wire::{
     InputColumnWire, LocalFunctionWire as CommonLocalFunctionWire, QueryBindingWire,
-    QueryOperandWire as CommonOperandWire, rebuild_output, rebuild_read_stage_v2,
+    QueryOperandWire as CommonOperandWire, rebuild_output, rebuild_read_stage,
 };
 use crate::query_plan_wire::{PlanScalarWire, WireScalar, rebuild_pattern_v3};
 type QueryOperandWire = CommonOperandWire<PlanScalarWire>;
@@ -768,7 +768,7 @@ impl QueryPlanV3 {
                             expr.capabilities(&mut required_capabilities)?;
                         }
                         Pattern::Iid { .. } => {
-                            insert_capability(&mut required_capabilities, v2::CAP_IID)?;
+                            insert_capability(&mut required_capabilities, "query.pattern.iid")?;
                         }
                         Pattern::Read(_) => {}
                     }
@@ -2731,7 +2731,7 @@ fn decode_stage(
             .map_err(|_| invalid("invalid_canonical_value", "invalid write stage"))?
             .rebuild(limits)
     } else {
-        Ok(rebuild_read_stage_v2(value)?.into())
+        Ok(rebuild_read_stage(value)?.into())
     }
 }
 

@@ -21,9 +21,9 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
-    HydrationProjectionV2, InputColumn, InputColumnId, InputRow, ModelQueryV2, QueryBindingPairV2,
-    QueryOperand, QueryOperation, QueryOutput, QueryPattern, QueryPlanV2Compatibility,
-    QueryReductionGroupV2, QueryRowCardinalityV2, QueryWindowV2, ReadStage,
+    HydrationProjection, InputColumn, InputColumnId, InputRow, ModelQueryV2, ModelReductionKey,
+    QueryBindingPairV2, QueryOperand, QueryOperation, QueryOutput, QueryPattern,
+    QueryPlanV2Compatibility, QueryRowCardinalityV2, QueryWindowV2, ReadStage,
 };
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery};
@@ -238,7 +238,7 @@ const fn assert_released_capability_mapped(capability: Capability) {
 fn adapt_operation(
     validated: &ValidatedMatchRequest,
     registry: &DescriptorRegistry,
-    hydration: HydrationProjectionV2,
+    hydration: HydrationProjection,
 ) -> Result<(QueryOperation, ModelQueryV2, Vec<BindingId>), Diagnostic> {
     let request = validated.request();
     Ok(match &request.operation {
@@ -318,7 +318,7 @@ fn adapt_operation(
         } => {
             let root_v2 = BindingId::new(root.get())?;
             let group = group
-                .map(|binding| BindingId::new(binding.get()).map(QueryReductionGroupV2::binding))
+                .map(|binding| BindingId::new(binding.get()).map(ModelReductionKey::binding))
                 .transpose()?;
             (
                 QueryOperation::Rows,
@@ -342,7 +342,7 @@ fn adapt_operation(
                 ModelQueryV2::Reduction {
                     hydration,
                     root,
-                    group: Some(QueryReductionGroupV2::field(adapt_field(
+                    group: Some(ModelReductionKey::field(adapt_field(
                         group, request, registry,
                     )?)),
                     reducers: adapt_reducers(reducers, request, registry)?,
@@ -361,7 +361,7 @@ fn adapt_operation(
                 ModelQueryV2::Reduction {
                     hydration,
                     root,
-                    group: Some(QueryReductionGroupV2::fields(
+                    group: Some(ModelReductionKey::fields(
                         groups
                             .iter()
                             .map(|group| adapt_field(group, request, registry))

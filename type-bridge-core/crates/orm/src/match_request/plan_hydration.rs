@@ -17,9 +17,8 @@ use type_bridge_contract::query_model_evidence::{
 };
 use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
 use type_bridge_contract::query_plan::{
-    CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
-    HydrationProjectionV2, HydrationRoleV2, QueryComparatorV2, QueryFieldV2, QueryPatternV2,
-    QueryStableOrderV2,
+    HydrationBinding, HydrationDescriptor, HydrationField, HydrationProjection, HydrationRole,
+    ModelComparator, ModelField, ModelPredicate, ModelStableOrder, ModelValue,
 };
 use type_bridge_contract::value::ValueTypeTag;
 use unicase::UniCase;
@@ -32,13 +31,13 @@ pub(crate) struct Solution {
 }
 
 pub(crate) struct HydrationAuthority<'plan> {
-    pub(crate) projection: &'plan HydrationProjectionV2,
-    pub(crate) bindings: BTreeMap<u16, &'plan HydrationBindingV2>,
-    pub(crate) descriptors: BTreeMap<TypeId, &'plan HydrationDescriptorV2>,
+    pub(crate) projection: &'plan HydrationProjection,
+    pub(crate) bindings: BTreeMap<u16, &'plan HydrationBinding>,
+    pub(crate) descriptors: BTreeMap<TypeId, &'plan HydrationDescriptor>,
 }
 
 impl<'plan> HydrationAuthority<'plan> {
-    pub(crate) fn new(projection: &'plan HydrationProjectionV2) -> ExecResult<Self> {
+    pub(crate) fn new(projection: &'plan HydrationProjection) -> ExecResult<Self> {
         let bindings = projection
             .bindings()
             .iter()
@@ -64,7 +63,7 @@ impl<'plan> HydrationAuthority<'plan> {
         })
     }
 
-    pub(crate) fn binding(&self, binding: u16) -> ExecResult<&'plan HydrationBindingV2> {
+    pub(crate) fn binding(&self, binding: u16) -> ExecResult<&'plan HydrationBinding> {
         self.bindings.get(&binding).copied().ok_or_else(|| {
             validation_error(
                 "query_v2_model_hydration_binding",
@@ -73,10 +72,7 @@ impl<'plan> HydrationAuthority<'plan> {
         })
     }
 
-    pub(crate) fn descriptor(
-        &self,
-        descriptor: &TypeId,
-    ) -> ExecResult<&'plan HydrationDescriptorV2> {
+    pub(crate) fn descriptor(&self, descriptor: &TypeId) -> ExecResult<&'plan HydrationDescriptor> {
         self.descriptors.get(descriptor).copied().ok_or_else(|| {
             validation_error(
                 "query_v2_model_hydration_descriptor",
@@ -88,7 +84,7 @@ impl<'plan> HydrationAuthority<'plan> {
     pub(crate) fn descriptor_by_label(
         &self,
         label: &str,
-    ) -> ExecResult<&'plan HydrationDescriptorV2> {
+    ) -> ExecResult<&'plan HydrationDescriptor> {
         let mut matches = self
             .projection
             .descriptors()
@@ -128,7 +124,7 @@ pub(crate) struct NodeDraft {
     pub(crate) iid: String,
     pub(crate) concrete: TypeId,
     pub(crate) kind: HydrationNodeKind,
-    pub(crate) attributes: Vec<(AttributeId, Vec<CompatibilityValueV2>)>,
+    pub(crate) attributes: Vec<(AttributeId, Vec<ModelValue>)>,
     pub(crate) roles: Vec<RoleDraft>,
     pub(crate) full: bool,
 }
@@ -563,9 +559,9 @@ pub(crate) fn validate_binding_concrete(
 }
 
 pub(crate) fn decode_wildcard_attributes(
-    descriptor: &HydrationDescriptorV2,
+    descriptor: &HydrationDescriptor,
     value: Option<&JsonValue>,
-) -> ExecResult<Vec<(AttributeId, Vec<CompatibilityValueV2>)>> {
+) -> ExecResult<Vec<(AttributeId, Vec<ModelValue>)>> {
     let object = match value {
         None => None,
         Some(value) => Some(value.as_object().ok_or_else(|| {
@@ -612,9 +608,9 @@ pub(crate) fn decode_wildcard_attributes(
 }
 
 pub(crate) fn decode_attribute_values(
-    field: &HydrationFieldV2,
+    field: &HydrationField,
     raw: Option<&JsonValue>,
-) -> ExecResult<Vec<CompatibilityValueV2>> {
+) -> ExecResult<Vec<ModelValue>> {
     let mut values = match raw {
         None => Vec::new(),
         Some(raw) if raw.is_null() => Vec::new(),
@@ -634,9 +630,9 @@ pub(crate) fn decode_attribute_values(
 }
 
 pub(crate) fn decode_exact_attributes(
-    descriptor: &HydrationDescriptorV2,
+    descriptor: &HydrationDescriptor,
     attributes: Vec<HydratedAttributeWire>,
-) -> ExecResult<Vec<(AttributeId, Vec<CompatibilityValueV2>)>> {
+) -> ExecResult<Vec<(AttributeId, Vec<ModelValue>)>> {
     let mut by_attribute = BTreeMap::new();
     for attribute in attributes {
         let field = descriptor
@@ -687,8 +683,8 @@ pub(crate) fn decode_exact_attributes(
 }
 
 pub(crate) fn canonicalize_field_values(
-    field: &HydrationFieldV2,
-    values: &mut Vec<CompatibilityValueV2>,
+    field: &HydrationField,
+    values: &mut Vec<ModelValue>,
 ) -> ExecResult<()> {
     if field.ordered() {
         return Ok(());
@@ -722,7 +718,7 @@ pub(crate) fn canonicalize_field_values(
 }
 
 pub(crate) fn decode_wildcard_roles(
-    descriptor: &HydrationDescriptorV2,
+    descriptor: &HydrationDescriptor,
     value: Option<&JsonValue>,
     authority: &HydrationAuthority<'_>,
 ) -> ExecResult<(Vec<RoleDraft>, Vec<NodeDraft>)> {
@@ -790,7 +786,7 @@ pub(crate) fn decode_wildcard_roles(
 }
 
 pub(crate) fn decode_exact_roles(
-    descriptor: &HydrationDescriptorV2,
+    descriptor: &HydrationDescriptor,
     roles: Vec<HydratedRoleWire>,
     authority: &HydrationAuthority<'_>,
 ) -> ExecResult<(Vec<RoleDraft>, Vec<NodeDraft>)> {
@@ -842,7 +838,7 @@ pub(crate) fn decode_exact_roles(
 }
 
 pub(crate) fn complete_roles(
-    descriptor: &HydrationDescriptorV2,
+    descriptor: &HydrationDescriptor,
     mut grouped: BTreeMap<RoleId, Vec<PlayerDraft>>,
     nested: Vec<NodeDraft>,
 ) -> ExecResult<(Vec<RoleDraft>, Vec<NodeDraft>)> {
@@ -870,9 +866,9 @@ pub(crate) fn complete_roles(
 }
 
 pub(crate) fn projected_role<'a>(
-    descriptor: &'a HydrationDescriptorV2,
+    descriptor: &'a HydrationDescriptor,
     label: &str,
-) -> ExecResult<&'a HydrationRoleV2> {
+) -> ExecResult<&'a HydrationRole> {
     let (owner, role_label) = label
         .rsplit_once(':')
         .map_or((None, label), |(owner, role)| (Some(owner), role));
@@ -901,10 +897,7 @@ pub(crate) fn projected_role<'a>(
     Ok(role)
 }
 
-pub(crate) fn declared_player_type(
-    role: &HydrationRoleV2,
-    concrete: &TypeId,
-) -> ExecResult<TypeId> {
+pub(crate) fn declared_player_type(role: &HydrationRole, concrete: &TypeId) -> ExecResult<TypeId> {
     role.players()
         .iter()
         .find(|player| player.concrete_descriptors().contains(concrete))
@@ -920,7 +913,7 @@ pub(crate) fn declared_player_type(
 pub(crate) fn compatibility_value_from_json(
     value: &JsonValue,
     expected: ValueTypeTag,
-) -> ExecResult<CompatibilityValueV2> {
+) -> ExecResult<ModelValue> {
     let value = AttributeValue::from_json(value, value_type_label(expected)).ok_or_else(|| {
         evidence_error(
             "query_v2_model_hydration_value_type",
@@ -1045,7 +1038,7 @@ pub(crate) fn finish_hydrated_rows(
 
 pub(crate) fn try_sort_iids(
     values: &mut [String],
-    order: &QueryStableOrderV2,
+    order: &ModelStableOrder,
     graph: &GraphBuilder,
 ) -> ExecResult<()> {
     for index in 1..values.len() {
@@ -1064,7 +1057,7 @@ pub(crate) fn try_sort_iids(
 pub(crate) fn compare_iids_by_order(
     left: &str,
     right: &str,
-    order: &QueryStableOrderV2,
+    order: &ModelStableOrder,
     graph: &GraphBuilder,
 ) -> ExecResult<Ordering> {
     for term in order.terms() {
@@ -1072,7 +1065,7 @@ pub(crate) fn compare_iids_by_order(
         let right = order_field_value(graph.node(right)?, term.field())?;
         let ordering = compare_optional_field_values(left, right, term.missing(), term.field())?;
         let ordering = if term.direction()
-            == type_bridge_contract::query_plan::QueryOrderDirectionV2::Descending
+            == type_bridge_contract::query_plan::ModelOrderDirection::Descending
         {
             ordering.reverse()
         } else {
@@ -1087,8 +1080,8 @@ pub(crate) fn compare_iids_by_order(
 
 pub(crate) fn order_field_value<'a>(
     node: &'a NodeDraft,
-    field: &QueryFieldV2,
-) -> ExecResult<Option<&'a CompatibilityValueV2>> {
+    field: &ModelField,
+) -> ExecResult<Option<&'a ModelValue>> {
     let values = node
         .attributes
         .iter()
@@ -1106,24 +1099,24 @@ pub(crate) fn order_field_value<'a>(
 }
 
 pub(crate) fn compare_optional_values(
-    left: Option<&CompatibilityValueV2>,
-    right: Option<&CompatibilityValueV2>,
-    missing: type_bridge_contract::query_plan::QueryMissingOrderV2,
+    left: Option<&ModelValue>,
+    right: Option<&ModelValue>,
+    missing: type_bridge_contract::query_plan::ModelMissingOrder,
 ) -> ExecResult<Ordering> {
     match (left, right) {
         (None, None) => Ok(Ordering::Equal),
         (None, Some(_)) => match missing {
-            type_bridge_contract::query_plan::QueryMissingOrderV2::First => Ok(Ordering::Less),
-            type_bridge_contract::query_plan::QueryMissingOrderV2::Last => Ok(Ordering::Greater),
-            type_bridge_contract::query_plan::QueryMissingOrderV2::Reject => Err(evidence_error(
+            type_bridge_contract::query_plan::ModelMissingOrder::First => Ok(Ordering::Less),
+            type_bridge_contract::query_plan::ModelMissingOrder::Last => Ok(Ordering::Greater),
+            type_bridge_contract::query_plan::ModelMissingOrder::Reject => Err(evidence_error(
                 "query_v2_model_order_missing",
                 "stable order rejects missing hydrated values",
             )),
         },
         (Some(_), None) => match missing {
-            type_bridge_contract::query_plan::QueryMissingOrderV2::First => Ok(Ordering::Greater),
-            type_bridge_contract::query_plan::QueryMissingOrderV2::Last => Ok(Ordering::Less),
-            type_bridge_contract::query_plan::QueryMissingOrderV2::Reject => Err(evidence_error(
+            type_bridge_contract::query_plan::ModelMissingOrder::First => Ok(Ordering::Greater),
+            type_bridge_contract::query_plan::ModelMissingOrder::Last => Ok(Ordering::Less),
+            type_bridge_contract::query_plan::ModelMissingOrder::Reject => Err(evidence_error(
                 "query_v2_model_order_missing",
                 "stable order rejects missing hydrated values",
             )),
@@ -1139,7 +1132,7 @@ pub(crate) fn compare_optional_values(
 
 pub(crate) fn validate_solution_order(
     solutions: &[Solution],
-    order: &QueryStableOrderV2,
+    order: &ModelStableOrder,
     graph: &GraphBuilder,
 ) -> ExecResult<()> {
     for adjacent in solutions.windows(2) {
@@ -1157,7 +1150,7 @@ pub(crate) fn validate_solution_order(
 
 pub(crate) fn try_sort_solutions(
     values: &mut [Solution],
-    order: &QueryStableOrderV2,
+    order: &ModelStableOrder,
     graph: &GraphBuilder,
 ) -> ExecResult<()> {
     for value in values.iter() {
@@ -1182,7 +1175,7 @@ pub(crate) fn try_sort_solutions(
 pub(crate) fn compare_solutions_by_order(
     left: &Solution,
     right: &Solution,
-    order: &QueryStableOrderV2,
+    order: &ModelStableOrder,
     graph: &GraphBuilder,
 ) -> ExecResult<Ordering> {
     for term in order.terms() {
@@ -1202,7 +1195,7 @@ pub(crate) fn compare_solutions_by_order(
             term.field(),
         )?;
         let ordering = if term.direction()
-            == type_bridge_contract::query_plan::QueryOrderDirectionV2::Descending
+            == type_bridge_contract::query_plan::ModelOrderDirection::Descending
         {
             ordering.reverse()
         } else {
@@ -1319,11 +1312,10 @@ pub(crate) fn node_attribute_value_count(node: &NodeDraft) -> ExecResult<u64> {
         })
 }
 
-pub(crate) type PredicateWitnesses =
-    BTreeMap<(u16, String, AttributeId), Vec<CompatibilityValueV2>>;
+pub(crate) type PredicateWitnesses = BTreeMap<(u16, String, AttributeId), Vec<ModelValue>>;
 
 pub(crate) fn evaluate_pattern(
-    pattern: &QueryPatternV2,
+    pattern: &ModelPredicate,
     solution: &Solution,
     graph: &GraphBuilder,
 ) -> ExecResult<bool> {
@@ -1333,9 +1325,9 @@ pub(crate) fn evaluate_pattern(
 fn predicate_field_values<'a>(
     solution: &Solution,
     graph: &'a GraphBuilder,
-    field: &QueryFieldV2,
+    field: &ModelField,
     native: Option<(&'a PredicateWitnesses, &BTreeSet<u16>)>,
-) -> ExecResult<&'a [CompatibilityValueV2]> {
+) -> ExecResult<&'a [ModelValue]> {
     if let Some((witnesses, selected)) = native
         && !selected.contains(&field.binding().get())
     {
@@ -1366,7 +1358,7 @@ fn predicate_field_values<'a>(
 }
 
 pub(crate) fn evaluate_pattern_with_witnesses(
-    pattern: &QueryPatternV2,
+    pattern: &ModelPredicate,
     solution: &Solution,
     graph: &GraphBuilder,
     native: Option<(&PredicateWitnesses, &BTreeSet<u16>)>,
@@ -1376,13 +1368,13 @@ pub(crate) fn evaluate_pattern_with_witnesses(
 
 // None is native-only evidence: negation must not turn an unchecked edge into a refusal.
 fn recheck_pattern(
-    pattern: &QueryPatternV2,
+    pattern: &ModelPredicate,
     solution: &Solution,
     graph: &GraphBuilder,
     native: Option<(&PredicateWitnesses, &BTreeSet<u16>)>,
 ) -> ExecResult<Option<bool>> {
     match pattern {
-        QueryPatternV2::FieldValue {
+        ModelPredicate::FieldValue {
             field,
             comparator,
             value,
@@ -1394,7 +1386,7 @@ fn recheck_pattern(
             }
             Ok(Some(false))
         }
-        QueryPatternV2::FieldComparison {
+        ModelPredicate::FieldComparison {
             left,
             comparator,
             right,
@@ -1410,15 +1402,15 @@ fn recheck_pattern(
             }
             Ok(Some(false))
         }
-        QueryPatternV2::FieldPresence { field, present } => Ok(Some(
+        ModelPredicate::FieldPresence { field, present } => Ok(Some(
             predicate_field_values(solution, graph, field, native)?.is_empty() != *present,
         )),
-        QueryPatternV2::BindingIid { binding, iid } => {
+        ModelPredicate::BindingIid { binding, iid } => {
             Ok(Some(solution.bindings.get(&binding.get()).is_some_and(
                 |candidate| candidate.eq_ignore_ascii_case(iid),
             )))
         }
-        QueryPatternV2::RoleEdge {
+        ModelPredicate::RoleEdge {
             relation,
             role,
             player,
@@ -1448,7 +1440,7 @@ fn recheck_pattern(
                         .any(|candidate| candidate.iid == *player_iid)
             })))
         }
-        QueryPatternV2::Reachable {
+        ModelPredicate::Reachable {
             source,
             target,
             max_depth,
@@ -1466,7 +1458,7 @@ fn recheck_pattern(
                 Ok(None)
             }
         }
-        QueryPatternV2::And { patterns } => {
+        ModelPredicate::And { patterns } => {
             let mut unchecked = false;
             for child in patterns {
                 match recheck_pattern(child, solution, graph, native)? {
@@ -1477,7 +1469,7 @@ fn recheck_pattern(
             }
             Ok((!unchecked).then_some(true))
         }
-        QueryPatternV2::Or { patterns } => {
+        ModelPredicate::Or { patterns } => {
             let mut unchecked = false;
             for child in patterns {
                 match recheck_pattern(child, solution, graph, native)? {
@@ -1488,7 +1480,7 @@ fn recheck_pattern(
             }
             Ok((!unchecked).then_some(false))
         }
-        QueryPatternV2::Not { pattern } => {
+        ModelPredicate::Not { pattern } => {
             Ok(recheck_pattern(pattern, solution, graph, native)?.map(|value| !value))
         }
     }
@@ -1497,8 +1489,8 @@ fn recheck_pattern(
 pub(crate) fn solution_field_values<'a>(
     solution: &Solution,
     graph: &'a GraphBuilder,
-    field: &QueryFieldV2,
-) -> ExecResult<&'a [CompatibilityValueV2]> {
+    field: &ModelField,
+) -> ExecResult<&'a [ModelValue]> {
     let iid = solution
         .bindings
         .get(&field.binding().get())
@@ -1518,12 +1510,12 @@ pub(crate) fn solution_field_values<'a>(
 }
 
 pub(crate) fn compare_predicate_values(
-    comparator: QueryComparatorV2,
-    left: &CompatibilityValueV2,
-    right: &CompatibilityValueV2,
+    comparator: ModelComparator,
+    left: &ModelValue,
+    right: &ModelValue,
 ) -> ExecResult<bool> {
     match comparator {
-        QueryComparatorV2::Equal | QueryComparatorV2::NotEqual => {
+        ModelComparator::Equal | ModelComparator::NotEqual => {
             let equal = left
                 .semantic_cmp_same_domain(right)
                 .map(|ordering| ordering == Ordering::Equal)
@@ -1533,16 +1525,16 @@ pub(crate) fn compare_predicate_values(
                         "predicate values do not share their validated scalar domain",
                     )
                 })?;
-            Ok(if comparator == QueryComparatorV2::Equal {
+            Ok(if comparator == ModelComparator::Equal {
                 equal
             } else {
                 !equal
             })
         }
-        QueryComparatorV2::Less
-        | QueryComparatorV2::LessOrEqual
-        | QueryComparatorV2::Greater
-        | QueryComparatorV2::GreaterOrEqual => {
+        ModelComparator::Less
+        | ModelComparator::LessOrEqual
+        | ModelComparator::Greater
+        | ModelComparator::GreaterOrEqual => {
             let ordering = left.semantic_cmp_same_domain(right).ok_or_else(|| {
                 evidence_error(
                     "query_v2_model_predicate_order_type",
@@ -1550,26 +1542,26 @@ pub(crate) fn compare_predicate_values(
                 )
             })?;
             Ok(match comparator {
-                QueryComparatorV2::Less => ordering == Ordering::Less,
-                QueryComparatorV2::LessOrEqual => ordering != Ordering::Greater,
-                QueryComparatorV2::Greater => ordering == Ordering::Greater,
-                QueryComparatorV2::GreaterOrEqual => ordering != Ordering::Less,
+                ModelComparator::Less => ordering == Ordering::Less,
+                ModelComparator::LessOrEqual => ordering != Ordering::Greater,
+                ModelComparator::Greater => ordering == Ordering::Greater,
+                ModelComparator::GreaterOrEqual => ordering != Ordering::Less,
                 _ => false,
             })
         }
-        QueryComparatorV2::Contains
-        | QueryComparatorV2::StartsWith
-        | QueryComparatorV2::EndsWith
-        | QueryComparatorV2::Regex => {
+        ModelComparator::Contains
+        | ModelComparator::StartsWith
+        | ModelComparator::EndsWith
+        | ModelComparator::Regex => {
             let left = compatibility_string(left)?;
             let right = compatibility_string(right)?;
             match comparator {
-                QueryComparatorV2::Contains => Ok(UniCase::new(left.as_str())
+                ModelComparator::Contains => Ok(UniCase::new(left.as_str())
                     .to_folded_case()
                     .contains(&UniCase::new(right.as_str()).to_folded_case())),
-                QueryComparatorV2::StartsWith => Ok(left.starts_with(&right)),
-                QueryComparatorV2::EndsWith => Ok(left.ends_with(&right)),
-                QueryComparatorV2::Regex => Regex::new(&right)
+                ModelComparator::StartsWith => Ok(left.starts_with(&right)),
+                ModelComparator::EndsWith => Ok(left.ends_with(&right)),
+                ModelComparator::Regex => Regex::new(&right)
                     .map(|regex| regex.is_match(&left))
                     .map_err(|_| {
                         validation_error(
@@ -1583,7 +1575,7 @@ pub(crate) fn compare_predicate_values(
     }
 }
 
-pub(crate) fn compatibility_string(value: &CompatibilityValueV2) -> ExecResult<String> {
+pub(crate) fn compatibility_string(value: &ModelValue) -> ExecResult<String> {
     if value.value_type() != ValueTypeTag::String {
         return Err(evidence_error(
             "query_v2_model_predicate_string_type",
@@ -1614,7 +1606,7 @@ pub(crate) fn evidence_error(code: &'static str, message: &'static str) -> PlanE
 pub(crate) fn field_evidence_error(
     code: &'static str,
     message: &'static str,
-    field: &QueryFieldV2,
+    field: &ModelField,
 ) -> PlanExecutionError {
     let owner_kind = match field.descriptor().kind() {
         type_bridge_contract::id::TypeKind::Entity => "entity",
@@ -1633,10 +1625,10 @@ pub(crate) fn field_evidence_error(
 }
 
 pub(crate) fn compare_optional_field_values(
-    left: Option<&CompatibilityValueV2>,
-    right: Option<&CompatibilityValueV2>,
-    missing: type_bridge_contract::query_plan::QueryMissingOrderV2,
-    field: &QueryFieldV2,
+    left: Option<&ModelValue>,
+    right: Option<&ModelValue>,
+    missing: type_bridge_contract::query_plan::ModelMissingOrder,
+    field: &ModelField,
 ) -> ExecResult<Ordering> {
     compare_optional_values(left, right, missing).map_err(|error| match error {
         PlanExecutionError::Validation(diagnostic)
@@ -1909,9 +1901,7 @@ mod predicate_recheck_tests {
         let employment = TypeId::new(TypeKind::Relation, "employment").unwrap();
         let field = AttributeId::new("name").unwrap();
         let value = |text| {
-            CompatibilityValueV2::canonical(CanonicalValue::String(
-                CanonicalString::new(text).unwrap(),
-            ))
+            ModelValue::canonical(CanonicalValue::String(CanonicalString::new(text).unwrap()))
         };
         let mut graph = GraphBuilder::new(ModelReplyDecodeLimits::DEFAULT_CEILING);
         graph
@@ -1930,21 +1920,21 @@ mod predicate_recheck_tests {
         let witnesses = PredicateWitnesses::new();
         let selected = BTreeSet::from([0]);
         let native = Some((&witnesses, &selected));
-        let role = |label| QueryPatternV2::RoleEdge {
+        let role = |label| ModelPredicate::RoleEdge {
             relation: BindingId::new(1).unwrap(),
             player: BindingId::new(0).unwrap(),
             relation_type: employment.clone(),
             role: RoleId::new("employment", label).unwrap(),
             include_relation_subtypes: false,
         };
-        let not = |pattern| QueryPatternV2::Not {
+        let not = |pattern| ModelPredicate::Not {
             pattern: Box::new(pattern),
         };
-        let predicate = QueryPatternV2::And {
+        let predicate = ModelPredicate::And {
             patterns: vec![role("employee"), not(role("manager"))],
         };
         assert!(evaluate_pattern_with_witnesses(&predicate, &solution, &graph, native).unwrap());
-        let reachable = QueryPatternV2::Reachable {
+        let reachable = ModelPredicate::Reachable {
             min_depth: 1,
             max_depth: 2,
             relation: employment.clone(),
@@ -1956,14 +1946,14 @@ mod predicate_recheck_tests {
         assert!(
             evaluate_pattern_with_witnesses(&not(reachable), &solution, &graph, native).unwrap()
         );
-        let hydrated = |text| QueryPatternV2::FieldValue {
-            field: QueryFieldV2::new(
+        let hydrated = |text| ModelPredicate::FieldValue {
+            field: ModelField::new(
                 BindingId::new(0).unwrap(),
                 person.clone(),
                 field.clone(),
                 ValueTypeTag::String,
             ),
-            comparator: QueryComparatorV2::Equal,
+            comparator: ModelComparator::Equal,
             value: value(text),
         };
         let cases = [
@@ -1993,13 +1983,13 @@ mod predicate_recheck_tests {
                 };
                 for (pattern, expected) in [
                     (
-                        QueryPatternV2::And {
+                        ModelPredicate::And {
                             patterns: vec![left.clone(), right.clone()],
                         },
                         and,
                     ),
                     (
-                        QueryPatternV2::Or {
+                        ModelPredicate::Or {
                             patterns: vec![left.clone(), right.clone()],
                         },
                         or,

@@ -17,7 +17,7 @@ use type_bridge::{
 };
 use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
-use type_bridge_contract::query_plan::CompatibilityValueV2;
+use type_bridge_contract::query_plan::ModelValue;
 use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
 use type_bridge_contract::query_remote_v3::{StagedRequestV3,StagedReplyV3,StagedOutcomeV3,StagedAnswerV3};
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding, RemoteFieldValue};
@@ -171,7 +171,7 @@ fn relation(label: &str) -> TypeId {
     type_id(TypeKind::Relation, label)
 }
 
-fn attribute(label: &str, values: Vec<CompatibilityValueV2>) -> HydrationAttributeEvidence {
+fn attribute(label: &str, values: Vec<ModelValue>) -> HydrationAttributeEvidence {
     HydrationAttributeEvidence::new(
         AttributeId::new(label).expect("static Projected attribute is canonical"),
         values,
@@ -193,21 +193,21 @@ fn role(
     )
 }
 
-fn scalar(value: CanonicalValue) -> CompatibilityValueV2 {
-    CompatibilityValueV2::canonical(value)
+fn scalar(value: CanonicalValue) -> ModelValue {
+    ModelValue::canonical(value)
 }
 
-fn string(value: &str) -> CompatibilityValueV2 {
+fn string(value: &str) -> ModelValue {
     scalar(CanonicalValue::String(
         CanonicalString::new(value).expect("fixture string is canonical"),
     ))
 }
 
-fn long(value: i64) -> CompatibilityValueV2 {
+fn long(value: i64) -> ModelValue {
     scalar(CanonicalValue::Long(value))
 }
 
-fn boolean(value: bool) -> CompatibilityValueV2 {
+fn boolean(value: bool) -> ModelValue {
     scalar(CanonicalValue::Boolean(value))
 }
 

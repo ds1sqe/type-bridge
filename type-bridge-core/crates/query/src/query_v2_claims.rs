@@ -14,9 +14,8 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
-    HydrationDescriptorV2, HydrationProjectionV2, ModelQueryV2, QueryModelOutputSlotV2,
-    QueryOperand, QueryOutput, QueryPattern, QueryPatternV2, QueryPlan, QueryPlanV2Compatibility,
-    ReadStage,
+    HydrationDescriptor, HydrationProjection, ModelOutputSlot, ModelPredicate, ModelQueryV2,
+    QueryOperand, QueryOutput, QueryPattern, QueryPlan, QueryPlanV2Compatibility, ReadStage,
 };
 use type_bridge_schema::{ResolvedSchema, ResolvedType};
 
@@ -148,7 +147,7 @@ fn validate_adapter_normal_form(
     plan: &QueryPlan,
     compatibility: &QueryPlanV2Compatibility,
     model_query: &ModelQueryV2,
-    hydration: &HydrationProjectionV2,
+    hydration: &HydrationProjection,
 ) -> Result<(), Diagnostic> {
     if !plan.functions().is_empty() {
         return Err(correspondence_failure(
@@ -374,8 +373,8 @@ fn model_native_output_columns(query: &ModelQueryV2) -> Vec<BindingId> {
             .slots()
             .into_iter()
             .filter_map(|slot| match slot {
-                QueryModelOutputSlotV2::One { binding, .. } => Some(*binding),
-                QueryModelOutputSlotV2::Collect { .. } => None,
+                ModelOutputSlot::One { binding, .. } => Some(*binding),
+                ModelOutputSlot::Collect { .. } => None,
             })
             .collect(),
         ModelQueryV2::Page { root, .. }
@@ -389,7 +388,7 @@ fn correspondence_failure(message: &'static str) -> Diagnostic {
     claim_failure("query_plan_v2_compatibility_correspondence", message)
 }
 
-fn model_hydration(query: &ModelQueryV2) -> &HydrationProjectionV2 {
+fn model_hydration(query: &ModelQueryV2) -> &HydrationProjection {
     match query {
         ModelQueryV2::Rows { hydration, .. }
         | ModelQueryV2::Page { hydration, .. }
@@ -464,7 +463,7 @@ fn constructible_closure(
 }
 
 fn validate_descriptor_claim(
-    claimed: &HydrationDescriptorV2,
+    claimed: &HydrationDescriptor,
     hydrate_roles: bool,
     schema: &ResolvedSchema,
 ) -> Result<(), Diagnostic> {
@@ -576,7 +575,7 @@ fn expected_field_reference_owners<'schema>(
 }
 
 fn validate_relation_roles(
-    claimed: &HydrationDescriptorV2,
+    claimed: &HydrationDescriptor,
     resolved: &ResolvedType,
     schema: &ResolvedSchema,
 ) -> Result<(), Diagnostic> {
@@ -684,8 +683,8 @@ fn expected_role_references(
 }
 
 fn validate_compatibility_references(
-    predicate: Option<&QueryPatternV2>,
-    hydration: &HydrationProjectionV2,
+    predicate: Option<&ModelPredicate>,
+    hydration: &HydrationProjection,
     targets: &BTreeMap<BindingId, (TypeId, bool)>,
     schema: &ResolvedSchema,
 ) -> Result<(), Diagnostic> {
@@ -696,23 +695,23 @@ fn validate_compatibility_references(
 }
 
 fn validate_compatibility_pattern(
-    pattern: &QueryPatternV2,
-    hydration: &HydrationProjectionV2,
+    pattern: &ModelPredicate,
+    hydration: &HydrationProjection,
     targets: &BTreeMap<BindingId, (TypeId, bool)>,
     schema: &ResolvedSchema,
 ) -> Result<(), Diagnostic> {
     match pattern {
-        QueryPatternV2::FieldValue { field, .. } => {
+        ModelPredicate::FieldValue { field, .. } => {
             validate_field_reference(field, hydration, targets, schema)
         }
-        QueryPatternV2::FieldComparison { left, right, .. } => {
+        ModelPredicate::FieldComparison { left, right, .. } => {
             validate_field_reference(left, hydration, targets, schema)?;
             validate_field_reference(right, hydration, targets, schema)
         }
-        QueryPatternV2::FieldPresence { field, .. } => {
+        ModelPredicate::FieldPresence { field, .. } => {
             validate_field_reference(field, hydration, targets, schema)
         }
-        QueryPatternV2::BindingIid { binding, .. } => {
+        ModelPredicate::BindingIid { binding, .. } => {
             if targets.contains_key(binding) {
                 Ok(())
             } else {
@@ -722,7 +721,7 @@ fn validate_compatibility_pattern(
                 ))
             }
         }
-        QueryPatternV2::RoleEdge {
+        ModelPredicate::RoleEdge {
             include_relation_subtypes,
             player,
             relation,
@@ -751,7 +750,7 @@ fn validate_compatibility_pattern(
                 "query_plan_v2_role_edge_claim",
             )
         }
-        QueryPatternV2::Reachable {
+        ModelPredicate::Reachable {
             relation,
             role_from,
             role_to,
@@ -798,21 +797,21 @@ fn validate_compatibility_pattern(
                 "query_plan_v2_reachable_claim",
             )
         }
-        QueryPatternV2::And { patterns } | QueryPatternV2::Or { patterns } => {
+        ModelPredicate::And { patterns } | ModelPredicate::Or { patterns } => {
             for child in patterns {
                 validate_compatibility_pattern(child, hydration, targets, schema)?;
             }
             Ok(())
         }
-        QueryPatternV2::Not { pattern } => {
+        ModelPredicate::Not { pattern } => {
             validate_compatibility_pattern(pattern, hydration, targets, schema)
         }
     }
 }
 
 fn validate_field_reference(
-    field: &type_bridge_contract::query_plan::QueryFieldV2,
-    hydration: &HydrationProjectionV2,
+    field: &type_bridge_contract::query_plan::ModelField,
+    hydration: &HydrationProjection,
     targets: &BTreeMap<BindingId, (TypeId, bool)>,
     schema: &ResolvedSchema,
 ) -> Result<(), Diagnostic> {
@@ -909,7 +908,7 @@ fn validate_role_reference(
     relation_type: &TypeId,
     role: &RoleId,
     player: BindingId,
-    hydration: &HydrationProjectionV2,
+    hydration: &HydrationProjection,
     targets: &BTreeMap<BindingId, (TypeId, bool)>,
     schema: &ResolvedSchema,
     code: &'static str,

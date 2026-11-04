@@ -5,20 +5,21 @@
 //! model-oriented match request without accepting raw TypeQL or host-authored
 //! JSON fragments.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::de::Error as _;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
-use crate::decimal::parse_decimal;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
-use crate::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
-use crate::limits::{MAX_CANONICAL_STRING_BYTES, QueryLimits};
+use crate::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
+use crate::limits::QueryLimits;
 use crate::migration_assertion::BindingId;
-use crate::temporal::{CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration};
-use crate::value::{CanonicalValue, Cardinality, ValueTypeTag};
+use crate::value::ValueTypeTag;
 
+use super::model::{
+    HydrationDescriptor, HydrationProjection, ModelComparator, ModelField, ModelOutput,
+    ModelOutputSlot, ModelPredicate, ModelReductionKey, ModelReductionTerm, ModelStableOrder,
+    deserialize_binding,
+};
 use super::{failure, insert_capability};
 use crate::capability::CapabilitySet;
 
@@ -42,865 +43,6 @@ pub(crate) const CAP_STABLE_ROOT: &str = "query.order.stable-root";
 pub(crate) const CAP_STABLE_COLLECTION: &str = "query.order.stable-collection";
 pub(crate) const CAP_SAME_SNAPSHOT_HYDRATION: &str = "query.execution.same-snapshot-hydration";
 pub(crate) const CAP_BATCH_IDENTITY_REBIND: &str = "query.execution.batch-identity-rebind";
-
-/// One descriptor-qualified field reference in the compatibility algebra.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QueryFieldV2 {
-    attribute: AttributeId,
-    #[serde(deserialize_with = "deserialize_binding")]
-    binding: BindingId,
-    descriptor: TypeId,
-    value_type: ValueTypeTag,
-}
-
-impl QueryFieldV2 {
-    /// Construct one binding- and descriptor-qualified field reference.
-    #[must_use]
-    pub const fn new(
-        binding: BindingId,
-        descriptor: TypeId,
-        attribute: AttributeId,
-        value_type: ValueTypeTag,
-    ) -> Self {
-        Self {
-            attribute,
-            binding,
-            descriptor,
-            value_type,
-        }
-    }
-
-    /// Return the owning plan binding.
-    #[must_use]
-    pub const fn binding(&self) -> BindingId {
-        self.binding
-    }
-
-    /// Return the descriptor under which the field was resolved.
-    #[must_use]
-    pub const fn descriptor(&self) -> &TypeId {
-        &self.descriptor
-    }
-
-    /// Return the canonical provider attribute identity.
-    #[must_use]
-    pub const fn attribute(&self) -> &AttributeId {
-        &self.attribute
-    }
-
-    /// Return the registry-resolved scalar domain.
-    #[must_use]
-    pub const fn value_type(&self) -> ValueTypeTag {
-        self.value_type
-    }
-}
-
-/// The closed comparison vocabulary accepted by the released match facade.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryComparatorV2 {
-    /// Equality.
-    Equal,
-    /// Inequality.
-    NotEqual,
-    /// Strictly less than.
-    Less,
-    /// Less than or equal.
-    LessOrEqual,
-    /// Strictly greater than.
-    Greater,
-    /// Greater than or equal.
-    GreaterOrEqual,
-    /// String containment.
-    Contains,
-    /// String prefix.
-    StartsWith,
-    /// String suffix.
-    EndsWith,
-    /// TypeDB regular-expression matching.
-    Regex,
-}
-
-impl QueryComparatorV2 {
-    const fn is_string_operator(self) -> bool {
-        matches!(
-            self,
-            Self::Contains | Self::StartsWith | Self::EndsWith | Self::Regex
-        )
-    }
-}
-
-/// A released-only lexical scalar domain carried by a V2 compatibility value.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum ReleasedValueKindV2 {
-    /// A string above the canonical single-string byte ceiling.
-    String,
-    /// A timezone-free datetime spelling accepted by the released V1 validator.
-    DateTime,
-    /// A timezone-aware datetime spelling accepted by the released V1 validator.
-    DateTimeTz,
-    /// A duration spelling accepted by the released V1 validator.
-    Duration,
-    /// A decimal spelling exposed by the released V1 driver-backed hydrator.
-    Decimal,
-}
-
-impl ReleasedValueKindV2 {
-    /// Return the exact scalar domain represented by this spelling.
-    #[must_use]
-    pub const fn value_type(self) -> ValueTypeTag {
-        match self {
-            Self::String => ValueTypeTag::String,
-            Self::DateTime => ValueTypeTag::DateTime,
-            Self::DateTimeTz => ValueTypeTag::DateTimeTz,
-            Self::Duration => ValueTypeTag::Duration,
-            Self::Decimal => ValueTypeTag::Decimal,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-enum CompatibilityValueV2Inner {
-    Canonical(CanonicalValue),
-    Released {
-        kind: ReleasedValueKindV2,
-        chunks: Vec<String>,
-    },
-}
-
-/// One exact V2 compatibility scalar.
-///
-/// Ordinary values retain the released [`CanonicalValue`] wire. V1-only
-/// strings and non-canonical temporal, duration, or decimal spellings use
-/// deterministic bounded UTF-8 chunks so no individual JSON string exceeds
-/// the canonical codec ceiling.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct CompatibilityValueV2 {
-    inner: CompatibilityValueV2Inner,
-}
-
-impl CompatibilityValueV2 {
-    /// Wrap one ordinary canonical scalar without changing its wire shape.
-    #[must_use]
-    pub const fn canonical(value: CanonicalValue) -> Self {
-        Self {
-            inner: CompatibilityValueV2Inner::Canonical(value),
-        }
-    }
-
-    /// Preserve one released string above the canonical per-string ceiling.
-    pub fn released_string(value: impl Into<String>) -> Result<Self, Diagnostic> {
-        Self::released(ReleasedValueKindV2::String, value.into())
-    }
-
-    /// Preserve one released timezone-free datetime spelling exactly.
-    pub fn released_datetime(value: impl Into<String>) -> Result<Self, Diagnostic> {
-        Self::released(ReleasedValueKindV2::DateTime, value.into())
-    }
-
-    /// Preserve one released timezone-aware datetime spelling exactly.
-    pub fn released_datetime_tz(value: impl Into<String>) -> Result<Self, Diagnostic> {
-        Self::released(ReleasedValueKindV2::DateTimeTz, value.into())
-    }
-
-    /// Preserve one released duration spelling exactly.
-    pub fn released_duration(value: impl Into<String>) -> Result<Self, Diagnostic> {
-        Self::released(ReleasedValueKindV2::Duration, value.into())
-    }
-
-    /// Preserve one released non-canonical decimal spelling exactly.
-    pub fn released_decimal(value: impl Into<String>) -> Result<Self, Diagnostic> {
-        Self::released(ReleasedValueKindV2::Decimal, value.into())
-    }
-
-    fn released(kind: ReleasedValueKindV2, value: String) -> Result<Self, Diagnostic> {
-        let value = Self {
-            inner: CompatibilityValueV2Inner::Released {
-                kind,
-                chunks: released_value_chunks(&value),
-            },
-        };
-        value.validate()?;
-        Ok(value)
-    }
-
-    /// Return the scalar domain claimed by this literal.
-    #[must_use]
-    pub const fn value_type(&self) -> ValueTypeTag {
-        match &self.inner {
-            CompatibilityValueV2Inner::Canonical(value) => value.value_type(),
-            CompatibilityValueV2Inner::Released { kind, .. } => kind.value_type(),
-        }
-    }
-
-    /// Return the ordinary canonical value, when this is not a V1-only spelling.
-    #[must_use]
-    pub const fn canonical_value(&self) -> Option<&CanonicalValue> {
-        match &self.inner {
-            CompatibilityValueV2Inner::Canonical(value) => Some(value),
-            CompatibilityValueV2Inner::Released { .. } => None,
-        }
-    }
-
-    /// Return the released-only lexical domain, when present.
-    #[must_use]
-    pub const fn released_kind(&self) -> Option<ReleasedValueKindV2> {
-        match &self.inner {
-            CompatibilityValueV2Inner::Canonical(_) => None,
-            CompatibilityValueV2Inner::Released { kind, .. } => Some(*kind),
-        }
-    }
-
-    /// Return canonical bounded chunks for a released-only spelling.
-    #[must_use]
-    pub fn released_chunks(&self) -> Option<&[String]> {
-        match &self.inner {
-            CompatibilityValueV2Inner::Canonical(_) => None,
-            CompatibilityValueV2Inner::Released { chunks, .. } => Some(chunks),
-        }
-    }
-
-    /// Reconstruct the exact released spelling.
-    #[must_use]
-    pub fn released_text(&self) -> Option<String> {
-        self.released_chunks().map(<[String]>::concat)
-    }
-
-    /// Compare two same-domain values with the released V1 result semantics.
-    ///
-    /// Representation [`Ord`] remains the deterministic wire identity order.
-    /// This method is for compatibility ordering and duplicate detection.
-    #[must_use]
-    pub fn semantic_cmp_same_domain(&self, other: &Self) -> Option<Ordering> {
-        if self.value_type() != other.value_type() {
-            return None;
-        }
-        if let (Some(left), Some(right)) = (self.canonical_value(), other.canonical_value())
-            && self.value_type() != ValueTypeTag::Duration
-        {
-            return left.semantic_cmp_same_domain(right);
-        }
-        if self.value_type() == ValueTypeTag::String {
-            return Some(compatibility_string_bytes(self)?.cmp(compatibility_string_bytes(other)?));
-        }
-        let left = compatibility_value_text(self)?;
-        let right = compatibility_value_text(other)?;
-        match self.value_type() {
-            ValueTypeTag::DateTime => Some(
-                parse_released_datetime(&left, false)?
-                    .cmp(&parse_released_datetime(&right, false)?),
-            ),
-            ValueTypeTag::DateTimeTz => Some(
-                parse_released_datetime(&left, true)?.cmp(&parse_released_datetime(&right, true)?),
-            ),
-            ValueTypeTag::Duration => {
-                Some(parse_released_duration(&left)?.cmp(&parse_released_duration(&right)?))
-            }
-            ValueTypeTag::Decimal => Some(parse_decimal(&left)?.compare(&parse_decimal(&right)?)),
-            ValueTypeTag::String
-            | ValueTypeTag::Long
-            | ValueTypeTag::Double
-            | ValueTypeTag::Boolean
-            | ValueTypeTag::Date => None,
-        }
-    }
-
-    /// Refuse a released value larger than one whole plan artifact.
-    ///
-    /// The ceiling belongs to the plan's limits, so it is enforced where a
-    /// plan is validated rather than where a value is constructed.
-    fn check_artifact_bytes(&self, limits: QueryLimits) -> Result<(), Diagnostic> {
-        let CompatibilityValueV2Inner::Released { chunks, .. } = &self.inner else {
-            return Ok(());
-        };
-        let byte_len = chunks.iter().map(String::len).sum::<usize>();
-        if byte_len > limits.codec.max_bytes {
-            return Err(failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_plan_v2_compatibility_value_limit",
-                "compatibility value exceeds the canonical artifact byte ceiling",
-            ));
-        }
-        Ok(())
-    }
-
-    fn validate(&self) -> Result<(), Diagnostic> {
-        let CompatibilityValueV2Inner::Released { kind, chunks } = &self.inner else {
-            return Ok(());
-        };
-        if chunks
-            .iter()
-            .try_fold(0usize, |total, chunk| total.checked_add(chunk.len()))
-            .is_none()
-        {
-            return Err(failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_plan_v2_compatibility_value_limit",
-                "compatibility value bytes overflow the bounded artifact domain",
-            ));
-        }
-        let value = chunks.concat();
-        if chunks != &released_value_chunks(&value) {
-            return Err(failure(
-                DiagnosticCategory::InvalidContract,
-                "query_plan_v2_compatibility_value_chunks",
-                "compatibility value chunks are not in canonical UTF-8 boundaries",
-            ));
-        }
-        let valid = match kind {
-            ReleasedValueKindV2::String => value.len() > MAX_CANONICAL_STRING_BYTES,
-            ReleasedValueKindV2::DateTime => {
-                released_valid_datetime(&value, false)
-                    && value.parse::<CanonicalDateTime>().is_err()
-            }
-            ReleasedValueKindV2::DateTimeTz => {
-                released_valid_datetime(&value, true)
-                    && value.parse::<CanonicalDateTimeTz>().is_err()
-            }
-            ReleasedValueKindV2::Duration => {
-                released_valid_duration(&value) && value.parse::<CanonicalDuration>().is_err()
-            }
-            ReleasedValueKindV2::Decimal => {
-                parse_decimal(&value).is_some_and(|parsed| parsed.canonical_string() != value)
-            }
-        };
-        if valid {
-            Ok(())
-        } else {
-            Err(failure(
-                DiagnosticCategory::InvalidContract,
-                "query_plan_v2_compatibility_value_lexical",
-                "compatibility value is invalid or has an ordinary canonical representation",
-            ))
-        }
-    }
-}
-
-fn compatibility_value_text(value: &CompatibilityValueV2) -> Option<String> {
-    match &value.inner {
-        CompatibilityValueV2Inner::Released { chunks, .. } => Some(chunks.concat()),
-        CompatibilityValueV2Inner::Canonical(value) => match value {
-            CanonicalValue::String(_) => None,
-            CanonicalValue::DateTime(value) => Some(value.to_string()),
-            CanonicalValue::DateTimeTz(value) => Some(value.to_string()),
-            CanonicalValue::Duration(value) => Some(value.to_string()),
-            CanonicalValue::Decimal(value) => Some(value.to_string()),
-            CanonicalValue::Long(_)
-            | CanonicalValue::Double(_)
-            | CanonicalValue::Boolean(_)
-            | CanonicalValue::Date(_) => None,
-        },
-    }
-}
-
-fn compatibility_string_bytes(
-    value: &CompatibilityValueV2,
-) -> Option<Box<dyn Iterator<Item = u8> + '_>> {
-    match &value.inner {
-        CompatibilityValueV2Inner::Canonical(CanonicalValue::String(value)) => {
-            Some(Box::new(value.as_str().bytes()))
-        }
-        CompatibilityValueV2Inner::Released {
-            kind: ReleasedValueKindV2::String,
-            chunks,
-        } => Some(Box::new(chunks.iter().flat_map(|chunk| chunk.bytes()))),
-        CompatibilityValueV2Inner::Canonical(_) | CompatibilityValueV2Inner::Released { .. } => {
-            None
-        }
-    }
-}
-
-impl From<CanonicalValue> for CompatibilityValueV2 {
-    fn from(value: CanonicalValue) -> Self {
-        Self::canonical(value)
-    }
-}
-
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "variant names are the frozen externally tagged wire discriminators"
-)]
-enum ReleasedValueWireRefV2<'value> {
-    ReleasedString { chunks: &'value [String] },
-    ReleasedDatetime { chunks: &'value [String] },
-    ReleasedDatetimeTz { chunks: &'value [String] },
-    ReleasedDuration { chunks: &'value [String] },
-    ReleasedDecimal { chunks: &'value [String] },
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "variant names are the frozen externally tagged wire discriminators"
-)]
-enum ReleasedValueWireV2 {
-    ReleasedString { chunks: Vec<String> },
-    ReleasedDatetime { chunks: Vec<String> },
-    ReleasedDatetimeTz { chunks: Vec<String> },
-    ReleasedDuration { chunks: Vec<String> },
-    ReleasedDecimal { chunks: Vec<String> },
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum CompatibilityValueWireV2 {
-    Canonical(CanonicalValue),
-    Released(ReleasedValueWireV2),
-}
-
-impl Serialize for CompatibilityValueV2 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match &self.inner {
-            CompatibilityValueV2Inner::Canonical(value) => value.serialize(serializer),
-            CompatibilityValueV2Inner::Released { kind, chunks } => match kind {
-                ReleasedValueKindV2::String => {
-                    ReleasedValueWireRefV2::ReleasedString { chunks }.serialize(serializer)
-                }
-                ReleasedValueKindV2::DateTime => {
-                    ReleasedValueWireRefV2::ReleasedDatetime { chunks }.serialize(serializer)
-                }
-                ReleasedValueKindV2::DateTimeTz => {
-                    ReleasedValueWireRefV2::ReleasedDatetimeTz { chunks }.serialize(serializer)
-                }
-                ReleasedValueKindV2::Duration => {
-                    ReleasedValueWireRefV2::ReleasedDuration { chunks }.serialize(serializer)
-                }
-                ReleasedValueKindV2::Decimal => {
-                    ReleasedValueWireRefV2::ReleasedDecimal { chunks }.serialize(serializer)
-                }
-            },
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for CompatibilityValueV2 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let inner = match CompatibilityValueWireV2::deserialize(deserializer)? {
-            CompatibilityValueWireV2::Canonical(value) => {
-                CompatibilityValueV2Inner::Canonical(value)
-            }
-            CompatibilityValueWireV2::Released(wire) => match wire {
-                ReleasedValueWireV2::ReleasedString { chunks } => {
-                    CompatibilityValueV2Inner::Released {
-                        kind: ReleasedValueKindV2::String,
-                        chunks,
-                    }
-                }
-                ReleasedValueWireV2::ReleasedDatetime { chunks } => {
-                    CompatibilityValueV2Inner::Released {
-                        kind: ReleasedValueKindV2::DateTime,
-                        chunks,
-                    }
-                }
-                ReleasedValueWireV2::ReleasedDatetimeTz { chunks } => {
-                    CompatibilityValueV2Inner::Released {
-                        kind: ReleasedValueKindV2::DateTimeTz,
-                        chunks,
-                    }
-                }
-                ReleasedValueWireV2::ReleasedDuration { chunks } => {
-                    CompatibilityValueV2Inner::Released {
-                        kind: ReleasedValueKindV2::Duration,
-                        chunks,
-                    }
-                }
-                ReleasedValueWireV2::ReleasedDecimal { chunks } => {
-                    CompatibilityValueV2Inner::Released {
-                        kind: ReleasedValueKindV2::Decimal,
-                        chunks,
-                    }
-                }
-            },
-        };
-        let value = Self { inner };
-        value.validate().map_err(D::Error::custom)?;
-        Ok(value)
-    }
-}
-
-fn released_value_chunks(value: &str) -> Vec<String> {
-    if value.is_empty() {
-        return vec![String::new()];
-    }
-    let mut chunks = Vec::new();
-    let mut start = 0usize;
-    while start < value.len() {
-        let mut end = start.saturating_add(MAX_CANONICAL_STRING_BYTES);
-        if end >= value.len() {
-            end = value.len();
-        } else {
-            while !value.is_char_boundary(end) {
-                end -= 1;
-            }
-        }
-        chunks.push(value[start..end].to_owned());
-        start = end;
-    }
-    chunks
-}
-
-fn released_valid_date(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
-        return false;
-    }
-    let Ok(year) = value[0..4].parse::<u32>() else {
-        return false;
-    };
-    let Ok(month) = value[5..7].parse::<u32>() else {
-        return false;
-    };
-    let Ok(day) = value[8..10].parse::<u32>() else {
-        return false;
-    };
-    if year == 0 || !(1..=12).contains(&month) {
-        return false;
-    }
-    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
-    let days = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    day >= 1 && day <= days[(month - 1) as usize]
-}
-
-fn released_valid_clock(value: &str) -> bool {
-    parse_released_clock(value).is_some()
-}
-
-fn released_valid_datetime(value: &str, timezone_required: bool) -> bool {
-    let Some((date, time)) = value.split_once('T') else {
-        return false;
-    };
-    if !released_valid_date(date) {
-        return false;
-    }
-    let (clock, has_timezone) = if let Some(clock) = time.strip_suffix('Z') {
-        (clock, true)
-    } else if let Some(index) = time
-        .char_indices()
-        .skip(1)
-        .find_map(|(index, character)| matches!(character, '+' | '-').then_some(index))
-    {
-        let (clock, offset) = time.split_at(index);
-        (clock, released_valid_clock(&offset[1..]))
-    } else {
-        (time, false)
-    };
-    released_valid_clock(clock) && has_timezone == timezone_required
-}
-
-fn released_valid_duration(value: &str) -> bool {
-    value.starts_with('P')
-        && value.len() > 1
-        && value.bytes().skip(1).all(|byte| {
-            byte.is_ascii_digit() || matches!(byte, b'Y' | b'M' | b'D' | b'T' | b'H' | b'S' | b'.')
-        })
-        && value.bytes().skip(1).any(|byte| byte.is_ascii_digit())
-}
-
-fn parse_released_date(value: &str) -> Option<i64> {
-    if !released_valid_date(value) {
-        return None;
-    }
-    let year = value[0..4].parse::<i32>().ok()?;
-    let month = value[5..7].parse::<u32>().ok()?;
-    let day = value[8..10].parse::<u32>().ok()?;
-    let adjusted_year = year - i32::from(month <= 2);
-    let era = if adjusted_year >= 0 {
-        adjusted_year
-    } else {
-        adjusted_year - 399
-    } / 400;
-    let year_of_era = adjusted_year - era * 400;
-    let shifted_month = month as i32 + if month > 2 { -3 } else { 9 };
-    let day_of_year = (153 * shifted_month + 2) / 5 + day as i32 - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    Some(i64::from(era * 146_097 + day_of_era))
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ReleasedDateTimeKey {
-    seconds: i64,
-    fraction: String,
-}
-
-impl Ord for ReleasedDateTimeKey {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.seconds
-            .cmp(&other.seconds)
-            .then_with(|| compare_released_fraction(&self.fraction, &other.fraction))
-    }
-}
-
-impl PartialOrd for ReleasedDateTimeKey {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-fn parse_released_datetime(value: &str, timezone_required: bool) -> Option<ReleasedDateTimeKey> {
-    let (date, raw_time) = value.split_once('T')?;
-    let days = parse_released_date(date)?;
-    let (time, offset_seconds, has_timezone) = if let Some(time) = raw_time.strip_suffix('Z') {
-        (time, 0_i64, true)
-    } else if let Some(index) = raw_time
-        .char_indices()
-        .skip(1)
-        .find_map(|(index, character)| matches!(character, '+' | '-').then_some(index))
-    {
-        let (time, offset) = raw_time.split_at(index);
-        let sign = if offset.starts_with('-') {
-            -1_i64
-        } else {
-            1_i64
-        };
-        let (hour, minute, second, fraction) = parse_released_clock(&offset[1..])?;
-        if !fraction.is_empty() || hour > 23 {
-            return None;
-        }
-        (
-            time,
-            sign * (i64::from(hour) * 3_600 + i64::from(minute) * 60 + i64::from(second)),
-            true,
-        )
-    } else {
-        (raw_time, 0_i64, false)
-    };
-    if has_timezone != timezone_required {
-        return None;
-    }
-    let (hour, minute, second, fraction) = parse_released_clock(time)?;
-    let seconds = days
-        .checked_mul(86_400)?
-        .checked_add(i64::from(hour) * 3_600 + i64::from(minute) * 60 + i64::from(second))?
-        .checked_sub(offset_seconds)?;
-    Some(ReleasedDateTimeKey { seconds, fraction })
-}
-
-fn parse_released_clock(value: &str) -> Option<(u32, u32, u32, String)> {
-    let (main, fraction) = value
-        .split_once('.')
-        .map_or((value, ""), |(main, fraction)| (main, fraction));
-    if (!fraction.is_empty() && !fraction.bytes().all(|byte| byte.is_ascii_digit()))
-        || value.ends_with('.')
-    {
-        return None;
-    }
-    let mut parts = main.split(':');
-    let hour = parts.next()?.parse::<u32>().ok()?;
-    let minute = parts.next()?.parse::<u32>().ok()?;
-    let second = parts.next().map_or(Some(0), |part| part.parse().ok())?;
-    if parts.next().is_some() || hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-    Some((
-        hour,
-        minute,
-        second,
-        fraction.trim_end_matches('0').to_owned(),
-    ))
-}
-
-fn compare_released_fraction(left: &str, right: &str) -> Ordering {
-    let width = left.len().max(right.len());
-    left.bytes()
-        .chain(std::iter::repeat_n(b'0', width - left.len()))
-        .cmp(
-            right
-                .bytes()
-                .chain(std::iter::repeat_n(b'0', width - right.len())),
-        )
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct ReleasedDurationKey {
-    months: u64,
-    days: u64,
-    nanoseconds: u128,
-}
-
-fn parse_released_duration(value: &str) -> Option<ReleasedDurationKey> {
-    let value = value.strip_prefix('P')?;
-    if value.is_empty() {
-        return None;
-    }
-    let mut months = 0_u64;
-    let mut days = 0_u64;
-    let mut nanoseconds = 0_u128;
-    let mut number = String::new();
-    let mut time = false;
-    let mut saw_value = false;
-    for character in value.chars() {
-        if character == 'T' {
-            if time || !number.is_empty() {
-                return None;
-            }
-            time = true;
-            continue;
-        }
-        if character.is_ascii_digit() || character == '.' {
-            number.push(character);
-            continue;
-        }
-        if number.is_empty() {
-            return None;
-        }
-        saw_value = true;
-        match (time, character) {
-            (false, 'Y') => {
-                months = months.checked_add(number.parse::<u64>().ok()?.checked_mul(12)?)?
-            }
-            (false, 'M') => months = months.checked_add(number.parse::<u64>().ok()?)?,
-            (false, 'D') => days = days.checked_add(number.parse::<u64>().ok()?)?,
-            (true, 'H') => {
-                nanoseconds = nanoseconds.checked_add(
-                    u128::from(number.parse::<u64>().ok()?).checked_mul(3_600_000_000_000)?,
-                )?
-            }
-            (true, 'M') => {
-                nanoseconds = nanoseconds.checked_add(
-                    u128::from(number.parse::<u64>().ok()?).checked_mul(60_000_000_000)?,
-                )?
-            }
-            (true, 'S') => {
-                let (whole, fraction) = number.split_once('.').unwrap_or((number.as_str(), ""));
-                if whole.is_empty()
-                    || fraction.len() > 9
-                    || !fraction.bytes().all(|byte| byte.is_ascii_digit())
-                {
-                    return None;
-                }
-                let seconds = whole.parse::<u64>().ok()?;
-                let mut nanos = fraction.parse::<u64>().unwrap_or(0);
-                for _ in fraction.len()..9 {
-                    nanos *= 10;
-                }
-                nanoseconds = nanoseconds
-                    .checked_add(u128::from(seconds).checked_mul(1_000_000_000)?)?
-                    .checked_add(u128::from(nanos))?;
-            }
-            _ => return None,
-        }
-        number.clear();
-    }
-    if !number.is_empty() || !saw_value {
-        return None;
-    }
-    Some(ReleasedDurationKey {
-        months,
-        days,
-        nanoseconds,
-    })
-}
-
-/// The closed boolean compatibility algebra used by the production adapter.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QueryPatternV2 {
-    /// Compare one bound field with one exact scalar literal.
-    FieldValue {
-        /// Descriptor-qualified field.
-        field: QueryFieldV2,
-        /// Closed comparison operator.
-        comparator: QueryComparatorV2,
-        /// Canonical or released-only typed literal.
-        value: CompatibilityValueV2,
-    },
-    /// Compare two descriptor-qualified bound fields.
-    FieldComparison {
-        /// Left field.
-        left: QueryFieldV2,
-        /// Closed non-string comparison operator.
-        comparator: QueryComparatorV2,
-        /// Right field.
-        right: QueryFieldV2,
-    },
-    /// Require one descriptor-qualified field to be present or absent.
-    FieldPresence {
-        /// Descriptor-qualified field.
-        field: QueryFieldV2,
-        /// `true` requires at least one value; `false` requires none.
-        present: bool,
-    },
-    /// Match one thing binding by its canonical provider IID.
-    BindingIid {
-        /// Thing binding.
-        #[serde(deserialize_with = "deserialize_binding")]
-        binding: BindingId,
-        /// Canonical TypeDB thing IID.
-        iid: String,
-    },
-    /// Require one descriptor-qualified role edge.
-    RoleEdge {
-        /// Whether relation subtypes remain admitted while matching the edge.
-        include_relation_subtypes: bool,
-        /// Player binding.
-        #[serde(deserialize_with = "deserialize_binding")]
-        player: BindingId,
-        /// Relation binding.
-        #[serde(deserialize_with = "deserialize_binding")]
-        relation: BindingId,
-        /// Declared relation type.
-        relation_type: TypeId,
-        /// Descriptor-qualified role.
-        role: RoleId,
-    },
-    /// Require one finite directed walk.
-    Reachable {
-        /// Inclusive minimum hop count.
-        min_depth: u8,
-        /// Inclusive maximum hop count.
-        max_depth: u8,
-        /// Exact relation type used for every hop.
-        relation: TypeId,
-        /// Source role.
-        role_from: RoleId,
-        /// Target role.
-        role_to: RoleId,
-        /// Source binding.
-        #[serde(deserialize_with = "deserialize_binding")]
-        source: BindingId,
-        /// Target binding.
-        #[serde(deserialize_with = "deserialize_binding")]
-        target: BindingId,
-    },
-    /// Require every child in source order.
-    And {
-        /// Non-empty children.
-        patterns: Vec<QueryPatternV2>,
-    },
-    /// Require at least one branch in source order.
-    Or {
-        /// Non-empty branches.
-        patterns: Vec<QueryPatternV2>,
-    },
-    /// Negate one closed child.
-    Not {
-        /// Negated child.
-        pattern: Box<QueryPatternV2>,
-    },
-}
 
 /// One canonical explicit cross-join permission.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -942,103 +84,6 @@ impl QueryBindingPairV2 {
     }
 }
 
-/// Direction of one model-query order term.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryOrderDirectionV2 {
-    /// Smallest first.
-    Ascending,
-    /// Largest first.
-    Descending,
-}
-
-/// Placement of missing order values.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryMissingOrderV2 {
-    /// Missing evidence is invalid.
-    Reject,
-    /// Missing values precede present values.
-    First,
-    /// Missing values follow present values.
-    Last,
-}
-
-/// One descriptor-qualified model-query order term.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QueryOrderTermV2 {
-    direction: QueryOrderDirectionV2,
-    field: QueryFieldV2,
-    missing: QueryMissingOrderV2,
-}
-
-impl QueryOrderTermV2 {
-    /// Construct one order term.
-    #[must_use]
-    pub const fn new(
-        field: QueryFieldV2,
-        direction: QueryOrderDirectionV2,
-        missing: QueryMissingOrderV2,
-    ) -> Self {
-        Self {
-            direction,
-            field,
-            missing,
-        }
-    }
-
-    /// Return the ordered field.
-    #[must_use]
-    pub const fn field(&self) -> &QueryFieldV2 {
-        &self.field
-    }
-
-    /// Return the direction.
-    #[must_use]
-    pub const fn direction(&self) -> QueryOrderDirectionV2 {
-        self.direction
-    }
-
-    /// Return missing-value placement.
-    #[must_use]
-    pub const fn missing(&self) -> QueryMissingOrderV2 {
-        self.missing
-    }
-}
-
-/// A validator-proven stable total order.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QueryStableOrderV2 {
-    #[serde(deserialize_with = "deserialize_bindings")]
-    identity_tiebreakers: Vec<BindingId>,
-    terms: Vec<QueryOrderTermV2>,
-}
-
-impl QueryStableOrderV2 {
-    /// Construct one stable order with its explicit identity tie breaker.
-    #[must_use]
-    pub const fn new(terms: Vec<QueryOrderTermV2>, identity_tiebreakers: Vec<BindingId>) -> Self {
-        Self {
-            identity_tiebreakers,
-            terms,
-        }
-    }
-
-    /// Return public field terms.
-    #[must_use]
-    pub fn terms(&self) -> &[QueryOrderTermV2] {
-        &self.terms
-    }
-
-    /// Return the canonical identity tuple that makes the order total.
-    #[must_use]
-    pub fn identity_tiebreakers(&self) -> &[BindingId] {
-        &self.identity_tiebreakers
-    }
-}
-
 /// One bounded model-query result window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1067,462 +112,6 @@ impl QueryWindowV2 {
     }
 }
 
-/// One public model-query output slot.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QueryModelOutputSlotV2 {
-    /// Select one concept.
-    One {
-        /// Selected binding.
-        #[serde(deserialize_with = "deserialize_binding")]
-        binding: BindingId,
-        /// Descriptor under which this occurrence was selected.
-        declared: TypeId,
-    },
-    /// Collect concepts per selected row/root.
-    Collect {
-        /// Collected binding.
-        #[serde(deserialize_with = "deserialize_binding")]
-        binding: BindingId,
-        /// Descriptor under which these occurrences were collected.
-        declared: TypeId,
-        /// Remove multiplicity by concept identity.
-        distinct: bool,
-        /// Stable collection-member order.
-        order: QueryStableOrderV2,
-    },
-}
-
-impl QueryModelOutputSlotV2 {
-    /// Return the selected binding.
-    #[must_use]
-    pub const fn binding(&self) -> BindingId {
-        match self {
-            Self::One { binding, .. } | Self::Collect { binding, .. } => *binding,
-        }
-    }
-
-    /// Return the descriptor under which this output occurrence was selected.
-    #[must_use]
-    pub const fn declared(&self) -> &TypeId {
-        match self {
-            Self::One { declared, .. } | Self::Collect { declared, .. } => declared,
-        }
-    }
-
-    /// Return whether this slot is a collection.
-    #[must_use]
-    pub const fn collection(&self) -> bool {
-        matches!(self, Self::Collect { .. })
-    }
-
-    /// Return whether collection multiplicity is removed by concept identity.
-    #[must_use]
-    pub const fn distinct(&self) -> bool {
-        matches!(self, Self::Collect { distinct: true, .. })
-    }
-}
-
-/// One named public output member.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QueryNamedOutputSlotV2 {
-    name: String,
-    slot: QueryModelOutputSlotV2,
-}
-
-impl QueryNamedOutputSlotV2 {
-    /// Construct one named output member.
-    #[must_use]
-    pub fn new(name: impl Into<String>, slot: QueryModelOutputSlotV2) -> Self {
-        Self {
-            name: name.into(),
-            slot,
-        }
-    }
-
-    /// Return the public member name.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Return the selected slot.
-    #[must_use]
-    pub const fn slot(&self) -> &QueryModelOutputSlotV2 {
-        &self.slot
-    }
-}
-
-/// Positional or named model-query output shape.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QueryModelOutputV2 {
-    /// Tuple-like members in public order.
-    Positional {
-        /// Public slots.
-        slots: Vec<QueryModelOutputSlotV2>,
-    },
-    /// Record-like members in public order.
-    Named {
-        /// Public named slots.
-        slots: Vec<QueryNamedOutputSlotV2>,
-    },
-}
-
-impl QueryModelOutputV2 {
-    fn slot_count(&self) -> usize {
-        match self {
-            Self::Positional { slots } => slots.len(),
-            Self::Named { slots } => slots.len(),
-        }
-    }
-
-    fn visit_slots(&self, mut visit: impl FnMut(Option<&str>, &QueryModelOutputSlotV2)) {
-        match self {
-            Self::Positional { slots } => {
-                for slot in slots {
-                    visit(None, slot);
-                }
-            }
-            Self::Named { slots } => {
-                for slot in slots {
-                    visit(Some(slot.name()), slot.slot());
-                }
-            }
-        }
-    }
-
-    /// Return model output slots in public order.
-    ///
-    /// Named output metadata remains available on the enum; this allocation is
-    /// a small bounded view used by response-shape validators.
-    #[must_use]
-    pub fn slots(&self) -> Vec<&QueryModelOutputSlotV2> {
-        match self {
-            Self::Positional { slots } => slots.iter().collect(),
-            Self::Named { slots } => slots.iter().map(QueryNamedOutputSlotV2::slot).collect(),
-        }
-    }
-}
-
-/// Concise alias used by remote response-shape contracts.
-pub type ModelOutputV2 = QueryModelOutputV2;
-
-/// One descriptor-qualified hydrated model field.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydrationFieldV2 {
-    alias: String,
-    attribute: AttributeId,
-    cardinality: Cardinality,
-    distinct: bool,
-    ordered: bool,
-    reference_owners: Vec<TypeId>,
-    unique: bool,
-    value_type: ValueTypeTag,
-}
-
-impl HydrationFieldV2 {
-    /// Construct one field projection.
-    #[must_use]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the constructor mirrors the closed hydration-field wire contract"
-    )]
-    pub fn new(
-        alias: impl Into<String>,
-        reference_owners: Vec<TypeId>,
-        attribute: AttributeId,
-        value_type: ValueTypeTag,
-        cardinality: Cardinality,
-        ordered: bool,
-        distinct: bool,
-        unique: bool,
-    ) -> Self {
-        Self {
-            alias: alias.into(),
-            attribute,
-            cardinality,
-            distinct,
-            ordered,
-            reference_owners,
-            unique,
-            value_type,
-        }
-    }
-
-    /// Return the generated-model field alias.
-    #[must_use]
-    pub fn alias(&self) -> &str {
-        &self.alias
-    }
-
-    /// Return the provider attribute identity.
-    #[must_use]
-    pub const fn attribute(&self) -> &AttributeId {
-        &self.attribute
-    }
-
-    /// Return every owner descriptor under which this field can be referenced.
-    #[must_use]
-    pub fn reference_owners(&self) -> &[TypeId] {
-        &self.reference_owners
-    }
-
-    /// Return the scalar domain.
-    #[must_use]
-    pub const fn value_type(&self) -> ValueTypeTag {
-        self.value_type
-    }
-
-    /// Return the effective ownership cardinality.
-    #[must_use]
-    pub const fn cardinality(&self) -> Cardinality {
-        self.cardinality
-    }
-
-    /// Return whether the registry proves this scalar field unique.
-    #[must_use]
-    pub const fn unique(&self) -> bool {
-        self.unique
-    }
-
-    /// Return whether this field preserves list order.
-    #[must_use]
-    pub const fn ordered(&self) -> bool {
-        self.ordered
-    }
-
-    /// Return whether an ordered list forbids repeated attribute values.
-    #[must_use]
-    pub const fn distinct(&self) -> bool {
-        self.distinct
-    }
-}
-
-/// Declared-to-concrete authority for one hydrated role-player occurrence.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydrationPlayerV2 {
-    concrete_descriptors: Vec<TypeId>,
-    declared_descriptor: TypeId,
-}
-
-impl HydrationPlayerV2 {
-    /// Construct one closed player compatibility projection.
-    #[must_use]
-    pub const fn new(declared_descriptor: TypeId, concrete_descriptors: Vec<TypeId>) -> Self {
-        Self {
-            concrete_descriptors,
-            declared_descriptor,
-        }
-    }
-
-    /// Return the descriptor carried by the graph reference.
-    #[must_use]
-    pub const fn declared_descriptor(&self) -> &TypeId {
-        &self.declared_descriptor
-    }
-
-    /// Return every concrete descriptor admitted under the declaration.
-    #[must_use]
-    pub fn concrete_descriptors(&self) -> &[TypeId] {
-        &self.concrete_descriptors
-    }
-}
-
-/// One descriptor-qualified hydrated relation role.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydrationRoleV2 {
-    cardinality: Cardinality,
-    distinct: bool,
-    ordered: bool,
-    players: Vec<HydrationPlayerV2>,
-    reference_roles: Vec<RoleId>,
-    role: RoleId,
-}
-
-impl HydrationRoleV2 {
-    /// Construct one complete role projection.
-    #[must_use]
-    pub const fn new(
-        role: RoleId,
-        reference_roles: Vec<RoleId>,
-        players: Vec<HydrationPlayerV2>,
-        cardinality: Cardinality,
-        ordered: bool,
-        distinct: bool,
-    ) -> Self {
-        Self {
-            cardinality,
-            distinct,
-            ordered,
-            players,
-            reference_roles,
-            role,
-        }
-    }
-
-    /// Return the descriptor-qualified role.
-    #[must_use]
-    pub const fn role(&self) -> &RoleId {
-        &self.role
-    }
-
-    /// Return every inherited/effective role reference admitted for this role.
-    #[must_use]
-    pub fn reference_roles(&self) -> &[RoleId] {
-        &self.reference_roles
-    }
-
-    /// Return closed declared-to-concrete player authorities.
-    #[must_use]
-    pub fn players(&self) -> &[HydrationPlayerV2] {
-        &self.players
-    }
-
-    /// Return the effective role cardinality.
-    #[must_use]
-    pub const fn cardinality(&self) -> Cardinality {
-        self.cardinality
-    }
-
-    /// Return whether provider role-player order is semantic.
-    #[must_use]
-    pub const fn ordered(&self) -> bool {
-        self.ordered
-    }
-
-    /// Return whether an ordered role forbids repeated players.
-    #[must_use]
-    pub const fn distinct(&self) -> bool {
-        self.distinct
-    }
-}
-
-/// Complete field/role authority for one concrete model descriptor.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydrationDescriptorV2 {
-    descriptor: TypeId,
-    fields: Vec<HydrationFieldV2>,
-    roles: Vec<HydrationRoleV2>,
-}
-
-impl HydrationDescriptorV2 {
-    /// Construct one concrete descriptor projection.
-    #[must_use]
-    pub const fn new(
-        descriptor: TypeId,
-        fields: Vec<HydrationFieldV2>,
-        roles: Vec<HydrationRoleV2>,
-    ) -> Self {
-        Self {
-            descriptor,
-            fields,
-            roles,
-        }
-    }
-
-    /// Return the exact concrete descriptor.
-    #[must_use]
-    pub const fn descriptor(&self) -> &TypeId {
-        &self.descriptor
-    }
-
-    /// Return complete concrete-descriptor fields.
-    #[must_use]
-    pub fn fields(&self) -> &[HydrationFieldV2] {
-        &self.fields
-    }
-
-    /// Return complete selected-relation roles.
-    #[must_use]
-    pub fn roles(&self) -> &[HydrationRoleV2] {
-        &self.roles
-    }
-}
-
-/// Declared-to-concrete subtype authority for one plan binding.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydrationBindingV2 {
-    #[serde(deserialize_with = "deserialize_binding")]
-    binding: BindingId,
-    concrete_descriptors: Vec<TypeId>,
-    declared_descriptor: TypeId,
-}
-
-impl HydrationBindingV2 {
-    /// Construct one binding hydration projection.
-    #[must_use]
-    pub const fn new(
-        binding: BindingId,
-        declared_descriptor: TypeId,
-        concrete_descriptors: Vec<TypeId>,
-    ) -> Self {
-        Self {
-            binding,
-            concrete_descriptors,
-            declared_descriptor,
-        }
-    }
-
-    /// Return the plan binding.
-    #[must_use]
-    pub const fn binding(&self) -> BindingId {
-        self.binding
-    }
-
-    /// Return the declared descriptor selected by the model surface.
-    #[must_use]
-    pub const fn declared_descriptor(&self) -> &TypeId {
-        &self.declared_descriptor
-    }
-
-    /// Return every admitted registered concrete descriptor.
-    #[must_use]
-    pub fn concrete_descriptors(&self) -> &[TypeId] {
-        &self.concrete_descriptors
-    }
-}
-
-/// Complete same-snapshot hydration authority for one model query.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HydrationProjectionV2 {
-    bindings: Vec<HydrationBindingV2>,
-    descriptors: Vec<HydrationDescriptorV2>,
-}
-
-impl HydrationProjectionV2 {
-    /// Construct one complete hydration projection.
-    #[must_use]
-    pub const fn new(
-        bindings: Vec<HydrationBindingV2>,
-        descriptors: Vec<HydrationDescriptorV2>,
-    ) -> Self {
-        Self {
-            bindings,
-            descriptors,
-        }
-    }
-
-    /// Return declared-to-concrete binding projections.
-    #[must_use]
-    pub fn bindings(&self) -> &[HydrationBindingV2] {
-        &self.bindings
-    }
-
-    /// Return exact concrete descriptor projections.
-    #[must_use]
-    pub fn descriptors(&self) -> &[HydrationDescriptorV2] {
-        &self.descriptors
-    }
-}
-
 /// Cardinality required from a hydrated row query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1537,118 +126,6 @@ pub enum QueryRowCardinalityV2 {
     Complete,
 }
 
-/// The closed reducer vocabulary used by model-compatible V2 terminals.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryReductionKindV2 {
-    /// Count distinct reduced roots.
-    Count,
-    /// Sum a numeric scalar field.
-    Sum,
-    /// Select the smallest numeric scalar field value.
-    Min,
-    /// Select the largest numeric scalar field value.
-    Max,
-    /// Compute the arithmetic mean.
-    Mean,
-    /// Compute the statistical median.
-    Median,
-    /// Compute the sample standard deviation.
-    Std,
-}
-
-impl QueryReductionKindV2 {
-    /// Return whether this reducer consumes a numeric scalar field.
-    #[must_use]
-    pub const fn requires_input(self) -> bool {
-        !matches!(self, Self::Count)
-    }
-
-    /// Return whether this reducer always returns the double domain.
-    #[must_use]
-    pub const fn widens_to_double(self) -> bool {
-        matches!(self, Self::Mean | Self::Median | Self::Std)
-    }
-}
-
-/// One ordered typed reducer term.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QueryReductionTermV2 {
-    input: Option<QueryFieldV2>,
-    reduction: QueryReductionKindV2,
-}
-
-impl QueryReductionTermV2 {
-    /// Construct one typed reducer term.
-    #[must_use]
-    pub const fn new(reduction: QueryReductionKindV2, input: Option<QueryFieldV2>) -> Self {
-        Self { input, reduction }
-    }
-
-    /// Return the reducer operation.
-    #[must_use]
-    pub const fn reduction(&self) -> QueryReductionKindV2 {
-        self.reduction
-    }
-
-    /// Return the optional numeric input field.
-    #[must_use]
-    pub const fn input(&self) -> Option<&QueryFieldV2> {
-        self.input.as_ref()
-    }
-}
-
-/// Optional grouping contract for one model-compatible reduction terminal.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QueryReductionGroupV2 {
-    /// Group by one attached thing identity.
-    Binding {
-        /// Attached grouping binding.
-        #[serde(deserialize_with = "deserialize_binding")]
-        binding: BindingId,
-    },
-    /// Group by each witnessed value of one owned field.
-    Field {
-        /// Descriptor-qualified grouping field.
-        field: QueryFieldV2,
-    },
-    /// Group by the Cartesian product of multiple owned field values.
-    Fields {
-        /// Ordered descriptor-qualified grouping fields.
-        fields: Vec<QueryFieldV2>,
-    },
-}
-
-impl QueryReductionGroupV2 {
-    /// Construct a thing-identity grouping contract.
-    #[must_use]
-    pub const fn binding(binding: BindingId) -> Self {
-        Self::Binding { binding }
-    }
-
-    /// Construct a single-field grouping contract.
-    #[must_use]
-    pub const fn field(field: QueryFieldV2) -> Self {
-        Self::Field { field }
-    }
-
-    /// Construct a tuple-field grouping contract.
-    #[must_use]
-    pub const fn fields(fields: Vec<QueryFieldV2>) -> Self {
-        Self::Fields { fields }
-    }
-}
-
-impl QueryRowCardinalityV2 {
-    /// Return whether exactly one distinct selected tuple is required.
-    #[must_use]
-    pub const fn is_exactly_one(self) -> bool {
-        matches!(self, Self::ExactlyOne)
-    }
-}
-
 /// The released model-query terminal contract carried by a V2 plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -1658,24 +135,24 @@ pub enum ModelQueryV2 {
         /// Required selected-row cardinality.
         cardinality: QueryRowCardinalityV2,
         /// Complete hydration authority.
-        hydration: HydrationProjectionV2,
+        hydration: HydrationProjection,
         /// Stable order; absent only for exactly-one.
-        order: Option<QueryStableOrderV2>,
+        order: Option<ModelStableOrder>,
         /// Public output shape.
-        output: QueryModelOutputV2,
+        output: ModelOutput,
         /// Exact row window.
         window: QueryWindowV2,
     },
     /// Page by distinct root identity and hydrate in the same snapshot.
     Page {
         /// Complete hydration authority.
-        hydration: HydrationProjectionV2,
+        hydration: HydrationProjection,
         /// Whether the same snapshot also returns a distinct-root total.
         include_total: bool,
         /// Stable distinct-root order.
-        order: QueryStableOrderV2,
+        order: ModelStableOrder,
         /// Public output shape.
-        output: QueryModelOutputV2,
+        output: ModelOutput,
         /// Root identity binding.
         #[serde(deserialize_with = "deserialize_binding")]
         root: BindingId,
@@ -1685,7 +162,7 @@ pub enum ModelQueryV2 {
     /// Count distinct root identities losslessly.
     DistinctCount {
         /// Complete plan-side descriptor and predicate authority.
-        hydration: HydrationProjectionV2,
+        hydration: HydrationProjection,
         /// Root identity binding.
         #[serde(deserialize_with = "deserialize_binding")]
         root: BindingId,
@@ -1693,7 +170,7 @@ pub enum ModelQueryV2 {
     /// Test distinct-root existence.
     DistinctExists {
         /// Complete plan-side descriptor and predicate authority.
-        hydration: HydrationProjectionV2,
+        hydration: HydrationProjection,
         /// Root identity binding.
         #[serde(deserialize_with = "deserialize_binding")]
         root: BindingId,
@@ -1701,33 +178,19 @@ pub enum ModelQueryV2 {
     /// Reduce the distinct-root stream with optional typed grouping.
     Reduction {
         /// Complete plan-side descriptor and hydration authority.
-        hydration: HydrationProjectionV2,
+        hydration: HydrationProjection,
         /// Root identity whose distinct stream feeds every reducer.
         #[serde(deserialize_with = "deserialize_binding")]
         root: BindingId,
         /// Optional exact grouping contract.
-        group: Option<QueryReductionGroupV2>,
+        group: Option<ModelReductionKey>,
         /// Ordered typed reducer terms.
-        reducers: Vec<QueryReductionTermV2>,
+        reducers: Vec<ModelReductionTerm>,
     },
 }
 
-fn deserialize_binding<'de, D>(deserializer: D) -> Result<BindingId, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    BindingId::new(u16::deserialize(deserializer)?).map_err(D::Error::custom)
-}
-
-fn deserialize_bindings<'de, D>(deserializer: D) -> Result<Vec<BindingId>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Vec::<u16>::deserialize(deserializer)?
-        .into_iter()
-        .map(|value| BindingId::new(value).map_err(D::Error::custom))
-        .collect()
-}
+/// Concise alias used by remote response-shape contracts.
+pub type ModelOutputV2 = ModelOutput;
 
 /// The additive V2-only compatibility portion of one query plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1735,7 +198,7 @@ where
 pub struct QueryPlanV2Compatibility {
     allowed_cross_joins: Vec<QueryBindingPairV2>,
     model_query: Option<ModelQueryV2>,
-    predicate: Option<QueryPatternV2>,
+    predicate: Option<ModelPredicate>,
 }
 
 impl QueryPlanV2Compatibility {
@@ -1752,7 +215,7 @@ impl QueryPlanV2Compatibility {
     /// Construct an adapter-authored compatibility contract.
     #[must_use]
     pub const fn new(
-        predicate: Option<QueryPatternV2>,
+        predicate: Option<ModelPredicate>,
         allowed_cross_joins: Vec<QueryBindingPairV2>,
         model_query: Option<ModelQueryV2>,
     ) -> Self {
@@ -1765,7 +228,7 @@ impl QueryPlanV2Compatibility {
 
     /// Return the closed released boolean predicate, if present.
     #[must_use]
-    pub const fn predicate(&self) -> Option<&QueryPatternV2> {
+    pub const fn predicate(&self) -> Option<&ModelPredicate> {
         self.predicate.as_ref()
     }
 
@@ -1847,7 +310,7 @@ impl QueryPlanV2Compatibility {
     }
 }
 
-const fn model_hydration(query: &ModelQueryV2) -> Option<&HydrationProjectionV2> {
+const fn model_hydration(query: &ModelQueryV2) -> Option<&HydrationProjection> {
     match query {
         ModelQueryV2::Rows { hydration, .. }
         | ModelQueryV2::Page { hydration, .. }
@@ -1858,11 +321,11 @@ const fn model_hydration(query: &ModelQueryV2) -> Option<&HydrationProjectionV2>
 }
 
 fn validate_pattern_authority(
-    pattern: &QueryPatternV2,
-    hydration: Option<&HydrationProjectionV2>,
+    pattern: &ModelPredicate,
+    hydration: Option<&HydrationProjection>,
 ) -> Result<(), Diagnostic> {
     match pattern {
-        QueryPatternV2::RoleEdge {
+        ModelPredicate::RoleEdge {
             include_relation_subtypes,
             player,
             relation,
@@ -1876,31 +339,31 @@ fn validate_pattern_authority(
             role,
             hydration,
         ),
-        QueryPatternV2::And { patterns } | QueryPatternV2::Or { patterns } => {
+        ModelPredicate::And { patterns } | ModelPredicate::Or { patterns } => {
             for child in patterns {
                 validate_pattern_authority(child, hydration)?;
             }
             Ok(())
         }
-        QueryPatternV2::Not { pattern } => validate_pattern_authority(pattern, hydration),
-        QueryPatternV2::FieldValue { field, .. } => {
+        ModelPredicate::Not { pattern } => validate_pattern_authority(pattern, hydration),
+        ModelPredicate::FieldValue { field, .. } => {
             validate_predicate_field_authority(field, hydration)
         }
-        QueryPatternV2::FieldComparison { left, right, .. } => {
+        ModelPredicate::FieldComparison { left, right, .. } => {
             validate_predicate_field_authority(left, hydration)?;
             validate_predicate_field_authority(right, hydration)
         }
-        QueryPatternV2::FieldPresence { field, .. } => {
+        ModelPredicate::FieldPresence { field, .. } => {
             validate_predicate_field_authority(field, hydration)
         }
-        QueryPatternV2::BindingIid { .. } => Ok(()),
-        QueryPatternV2::Reachable { .. } => Ok(()),
+        ModelPredicate::BindingIid { .. } => Ok(()),
+        ModelPredicate::Reachable { .. } => Ok(()),
     }
 }
 
 fn validate_predicate_field_authority(
-    field: &QueryFieldV2,
-    hydration: Option<&HydrationProjectionV2>,
+    field: &ModelField,
+    hydration: Option<&HydrationProjection>,
 ) -> Result<(), Diagnostic> {
     let hydration = hydration.ok_or_else(|| {
         failure(
@@ -1953,7 +416,7 @@ fn validate_role_edge_authority(
     relation: BindingId,
     relation_type: &TypeId,
     role: &RoleId,
-    hydration: Option<&HydrationProjectionV2>,
+    hydration: Option<&HydrationProjection>,
 ) -> Result<(), Diagnostic> {
     let exact_reference = role.declaring_relation() == relation_type.label();
     let Some(hydration) = hydration else {
@@ -2064,7 +527,7 @@ fn check_binding(binding: BindingId, binding_count: usize) -> Result<(), Diagnos
     }
 }
 
-fn check_field(field: &QueryFieldV2, binding_count: usize) -> Result<(), Diagnostic> {
+fn check_field(field: &ModelField, binding_count: usize) -> Result<(), Diagnostic> {
     check_binding(field.binding(), binding_count)?;
     if matches!(
         field.descriptor().kind(),
@@ -2081,7 +544,7 @@ fn check_field(field: &QueryFieldV2, binding_count: usize) -> Result<(), Diagnos
 }
 
 fn validate_pattern(
-    pattern: &QueryPatternV2,
+    pattern: &ModelPredicate,
     depth: usize,
     positive_root: bool,
     binding_count: usize,
@@ -2104,7 +567,7 @@ fn validate_pattern(
         ));
     }
     match pattern {
-        QueryPatternV2::FieldValue {
+        ModelPredicate::FieldValue {
             field,
             comparator,
             value,
@@ -2130,7 +593,7 @@ fn validate_pattern(
             if field.value_type() == ValueTypeTag::Boolean
                 && !matches!(
                     comparator,
-                    QueryComparatorV2::Equal | QueryComparatorV2::NotEqual
+                    ModelComparator::Equal | ModelComparator::NotEqual
                 )
             {
                 return Err(failure(
@@ -2141,7 +604,7 @@ fn validate_pattern(
             }
             Ok(())
         }
-        QueryPatternV2::FieldComparison {
+        ModelPredicate::FieldComparison {
             left,
             comparator,
             right,
@@ -2166,7 +629,7 @@ fn validate_pattern(
             if left.value_type() == ValueTypeTag::Boolean
                 && !matches!(
                     comparator,
-                    QueryComparatorV2::Equal | QueryComparatorV2::NotEqual
+                    ModelComparator::Equal | ModelComparator::NotEqual
                 )
             {
                 return Err(failure(
@@ -2177,8 +640,8 @@ fn validate_pattern(
             }
             Ok(())
         }
-        QueryPatternV2::FieldPresence { field, .. } => check_field(field, binding_count),
-        QueryPatternV2::BindingIid { binding, iid } => {
+        ModelPredicate::FieldPresence { field, .. } => check_field(field, binding_count),
+        ModelPredicate::BindingIid { binding, iid } => {
             check_binding(*binding, binding_count)?;
             if !is_canonical_thing_iid(iid) {
                 return Err(failure(
@@ -2189,7 +652,7 @@ fn validate_pattern(
             }
             Ok(())
         }
-        QueryPatternV2::RoleEdge {
+        ModelPredicate::RoleEdge {
             player,
             relation,
             relation_type,
@@ -2206,7 +669,7 @@ fn validate_pattern(
             }
             Ok(())
         }
-        QueryPatternV2::Reachable {
+        ModelPredicate::Reachable {
             min_depth,
             max_depth,
             relation,
@@ -2262,20 +725,20 @@ fn validate_pattern(
             check_binding(*source, binding_count)?;
             check_binding(*target, binding_count)
         }
-        QueryPatternV2::And { patterns } => {
+        ModelPredicate::And { patterns } => {
             validate_boolean_children(patterns, depth, positive_root, binding_count, limits, nodes)
         }
-        QueryPatternV2::Or { patterns } => {
+        ModelPredicate::Or { patterns } => {
             validate_boolean_children(patterns, depth, false, binding_count, limits, nodes)
         }
-        QueryPatternV2::Not { pattern } => {
+        ModelPredicate::Not { pattern } => {
             validate_pattern(pattern, depth + 1, false, binding_count, limits, nodes)
         }
     }
 }
 
 fn validate_boolean_children(
-    patterns: &[QueryPatternV2],
+    patterns: &[ModelPredicate],
     depth: usize,
     positive_root: bool,
     binding_count: usize,
@@ -2378,7 +841,7 @@ fn validate_model_query(
             validate_model_output(output, hydration, binding_count, limits)?;
             let mut root_is_singular = false;
             output.visit_slots(|_, slot| {
-                if matches!(slot, QueryModelOutputSlotV2::One { binding, .. } if binding == root) {
+                if matches!(slot, ModelOutputSlot::One { binding, .. } if binding == root) {
                     root_is_singular = true;
                 }
             });
@@ -2455,7 +918,7 @@ fn validate_model_query(
             }
             match group {
                 None => {}
-                Some(QueryReductionGroupV2::Binding { binding }) => {
+                Some(ModelReductionKey::Binding { binding }) => {
                     check_binding(*binding, binding_count)?;
                     if binding == root {
                         return Err(failure(
@@ -2476,10 +939,10 @@ fn validate_model_query(
                         ));
                     }
                 }
-                Some(QueryReductionGroupV2::Field { field }) => {
+                Some(ModelReductionKey::Field { field }) => {
                     validate_reduction_field(field, hydration, binding_count, false)?;
                 }
-                Some(QueryReductionGroupV2::Fields { fields }) => {
+                Some(ModelReductionKey::Fields { fields }) => {
                     if fields.len() < 2 {
                         return Err(failure(
                             DiagnosticCategory::InvalidContract,
@@ -2514,8 +977,8 @@ fn validate_model_query(
 }
 
 fn validate_reduction_field(
-    field: &QueryFieldV2,
-    hydration: &HydrationProjectionV2,
+    field: &ModelField,
+    hydration: &HydrationProjection,
     binding_count: usize,
     numeric_scalar: bool,
 ) -> Result<(), Diagnostic> {
@@ -2581,16 +1044,16 @@ fn validate_window(window: QueryWindowV2) -> Result<(), Diagnostic> {
 /// TypeDB 3.14 refuses range comparisons of durations; refuse them on every
 /// profile at build time.
 fn refuse_duration_range(
-    comparator: QueryComparatorV2,
+    comparator: ModelComparator,
     value_type: ValueTypeTag,
 ) -> Result<(), Diagnostic> {
     if value_type == ValueTypeTag::Duration
         && matches!(
             comparator,
-            QueryComparatorV2::Less
-                | QueryComparatorV2::LessOrEqual
-                | QueryComparatorV2::Greater
-                | QueryComparatorV2::GreaterOrEqual
+            ModelComparator::Less
+                | ModelComparator::LessOrEqual
+                | ModelComparator::Greater
+                | ModelComparator::GreaterOrEqual
         )
     {
         return Err(failure(
@@ -2603,7 +1066,7 @@ fn refuse_duration_range(
 }
 
 fn validate_stable_order(
-    order: &QueryStableOrderV2,
+    order: &ModelStableOrder,
     binding_count: usize,
     term_limit: usize,
 ) -> Result<(), Diagnostic> {
@@ -2653,8 +1116,8 @@ fn validate_stable_order(
 }
 
 fn validate_model_output(
-    output: &QueryModelOutputV2,
-    hydration: &HydrationProjectionV2,
+    output: &ModelOutput,
+    hydration: &HydrationProjection,
     binding_count: usize,
     limits: QueryLimits,
 ) -> Result<(), Diagnostic> {
@@ -2703,7 +1166,7 @@ fn validate_model_output(
             ));
             return;
         }
-        if let QueryModelOutputSlotV2::Collect { binding, order, .. } = slot {
+        if let ModelOutputSlot::Collect { binding, order, .. } = slot {
             if let Err(order_error) = validate_stable_order(
                 order,
                 binding_count,
@@ -2731,13 +1194,13 @@ fn validate_model_output(
     Ok(())
 }
 
-fn output_identity_tuple(output: &QueryModelOutputV2) -> Vec<BindingId> {
+fn output_identity_tuple(output: &ModelOutput) -> Vec<BindingId> {
     let mut bindings = output
         .slots()
         .into_iter()
         .filter_map(|slot| match slot {
-            QueryModelOutputSlotV2::One { binding, .. } => Some(*binding),
-            QueryModelOutputSlotV2::Collect { .. } => None,
+            ModelOutputSlot::One { binding, .. } => Some(*binding),
+            ModelOutputSlot::Collect { .. } => None,
         })
         .collect::<Vec<_>>();
     bindings.sort_unstable();
@@ -2745,8 +1208,8 @@ fn output_identity_tuple(output: &QueryModelOutputV2) -> Vec<BindingId> {
 }
 
 fn validate_order_against_hydration(
-    order: &QueryStableOrderV2,
-    hydration: &HydrationProjectionV2,
+    order: &ModelStableOrder,
+    hydration: &HydrationProjection,
     exposed_bindings: &BTreeSet<BindingId>,
 ) -> Result<(), Diagnostic> {
     let mut stable_unique_bindings = BTreeSet::new();
@@ -2823,7 +1286,7 @@ fn validate_order_against_hydration(
 }
 
 fn validate_hydration(
-    hydration: &HydrationProjectionV2,
+    hydration: &HydrationProjection,
     binding_count: usize,
     limits: QueryLimits,
 ) -> Result<(), Diagnostic> {
@@ -2928,7 +1391,7 @@ fn validate_hydration(
 }
 
 fn validate_hydration_descriptor(
-    descriptor: &HydrationDescriptorV2,
+    descriptor: &HydrationDescriptor,
     limits: QueryLimits,
 ) -> Result<(), Diagnostic> {
     if !matches!(
@@ -3070,30 +1533,30 @@ fn validate_hydration_descriptor(
 }
 
 fn add_pattern_capabilities(
-    pattern: &QueryPatternV2,
+    pattern: &ModelPredicate,
     capabilities: &mut CapabilitySet,
 ) -> Result<(), Diagnostic> {
     match pattern {
-        QueryPatternV2::FieldValue { comparator, .. } => {
+        ModelPredicate::FieldValue { comparator, .. } => {
             insert_capability(capabilities, super::CAP_VALUE)?;
             if comparator.is_string_operator() {
                 insert_capability(capabilities, CAP_STRING_OPERATORS)?;
             }
         }
-        QueryPatternV2::FieldComparison { .. } => {
+        ModelPredicate::FieldComparison { .. } => {
             insert_capability(capabilities, super::CAP_VALUE)?;
         }
-        QueryPatternV2::FieldPresence { .. } => {
+        ModelPredicate::FieldPresence { .. } => {
             insert_capability(capabilities, super::CAP_HAS)?;
             // Both absence and existential presence lower through closed
             // negation patterns so cardinality-many values cannot multiply an
             // owner row.
             insert_capability(capabilities, super::CAP_NEGATION)?;
         }
-        QueryPatternV2::BindingIid { .. } => {
+        ModelPredicate::BindingIid { .. } => {
             insert_capability(capabilities, CAP_IID)?;
         }
-        QueryPatternV2::RoleEdge {
+        ModelPredicate::RoleEdge {
             include_relation_subtypes,
             ..
         } => {
@@ -3102,21 +1565,21 @@ fn add_pattern_capabilities(
                 insert_capability(capabilities, CAP_LINKS_SUBTYPES)?;
             }
         }
-        QueryPatternV2::Reachable { .. } => {
+        ModelPredicate::Reachable { .. } => {
             insert_capability(capabilities, super::CAP_REACHABLE)?;
         }
-        QueryPatternV2::And { patterns } => {
+        ModelPredicate::And { patterns } => {
             for child in patterns {
                 add_pattern_capabilities(child, capabilities)?;
             }
         }
-        QueryPatternV2::Or { patterns } => {
+        ModelPredicate::Or { patterns } => {
             insert_capability(capabilities, CAP_DISJUNCTION)?;
             for child in patterns {
                 add_pattern_capabilities(child, capabilities)?;
             }
         }
-        QueryPatternV2::Not { pattern } => {
+        ModelPredicate::Not { pattern } => {
             insert_capability(capabilities, super::CAP_NEGATION)?;
             add_pattern_capabilities(pattern, capabilities)?;
         }
@@ -3173,17 +1636,17 @@ fn add_model_query_capabilities(
 }
 
 fn add_hydrated_output_capabilities(
-    output: &QueryModelOutputV2,
+    output: &ModelOutput,
     capabilities: &mut CapabilitySet,
 ) -> Result<(), Diagnostic> {
     insert_capability(capabilities, CAP_OUTPUT_HYDRATED)?;
     insert_capability(capabilities, CAP_SAME_SNAPSHOT_HYDRATION)?;
     insert_capability(capabilities, CAP_BATCH_IDENTITY_REBIND)?;
-    if matches!(output, QueryModelOutputV2::Named { .. }) {
+    if matches!(output, ModelOutput::Named { .. }) {
         insert_capability(capabilities, CAP_OUTPUT_NAMED)?;
     }
     output.visit_slots(|_, slot| {
-        if let QueryModelOutputSlotV2::Collect { distinct, .. } = slot {
+        if let ModelOutputSlot::Collect { distinct, .. } = slot {
             let capability = if *distinct {
                 CAP_OUTPUT_COLLECT_DISTINCT
             } else {
@@ -3201,4 +1664,12 @@ fn add_hydrated_output_capabilities(
         }
     });
     Ok(())
+}
+
+impl QueryRowCardinalityV2 {
+    /// Return whether exactly one distinct selected tuple is required.
+    #[must_use]
+    pub const fn is_exactly_one(self) -> bool {
+        matches!(self, Self::ExactlyOne)
+    }
 }

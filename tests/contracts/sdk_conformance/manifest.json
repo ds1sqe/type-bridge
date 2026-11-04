@@ -187,20 +187,20 @@
       "symbol": "pub enum DynamicExpr"
     },
     "query_pattern_v2": {
-      "path": "type-bridge-core/crates/contract/src/query_plan_v2.rs",
-      "symbol": "pub enum QueryPatternV2"
+      "path": "type-bridge-core/crates/contract/src/query_model.rs",
+      "symbol": "pub enum ModelPredicate"
     },
     "hydration_projection_v2": {
-      "path": "type-bridge-core/crates/contract/src/query_plan_v2.rs",
-      "symbol": "pub struct HydrationProjectionV2"
+      "path": "type-bridge-core/crates/contract/src/query_model.rs",
+      "symbol": "pub struct HydrationProjection"
     },
     "query_plan_v2_compatibility": {
       "path": "type-bridge-core/crates/contract/src/query_plan_v2.rs",
       "symbol": "pub struct QueryPlanV2Compatibility"
     },
     "query_model_output_v2": {
-      "path": "type-bridge-core/crates/contract/src/query_plan_v2.rs",
-      "symbol": "pub enum QueryModelOutputV2"
+      "path": "type-bridge-core/crates/contract/src/query_model.rs",
+      "symbol": "pub enum ModelOutput"
     },
     "model_query_v2": {
       "path": "type-bridge-core/crates/contract/src/query_plan_v2.rs",
@@ -239,7 +239,7 @@
       "symbol": "pub enum SchemaFact"
     },
     "query_pattern": {
-      "path": "type-bridge-core/crates/contract/src/query_plan.rs",
+      "path": "type-bridge-core/crates/contract/src/query_plan_types.rs",
       "symbol": "pub enum QueryPattern"
     },
     "secure_connect_options": {

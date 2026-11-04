@@ -11,7 +11,7 @@ use type_bridge_contract::decimal::parse_decimal;
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
 use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::projection::ProjectionHandler;
-use type_bridge_contract::query_plan::CompatibilityValueV2;
+use type_bridge_contract::query_plan::ModelValue;
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
 };
@@ -1285,7 +1285,7 @@ fn canonicalize_selected_value(value: AttributeValue) -> Result<AttributeValue> 
             let value = normalize_provider_fraction(value);
             match value.parse::<CanonicalDuration>() {
                 Ok(value) => Ok(AttributeValue::Duration(value.to_string())),
-                Err(_) => CompatibilityValueV2::released_duration(value.clone())
+                Err(_) => ModelValue::released_duration(value.clone())
                     .map(|_| AttributeValue::Duration(value))
                     .map_err(|_| malformed()),
             }

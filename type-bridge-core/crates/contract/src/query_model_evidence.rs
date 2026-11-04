@@ -3,8 +3,8 @@
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use crate::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use crate::migration_assertion::BindingId;
-use crate::query_plan::CompatibilityValueV2;
-use crate::query_plan::{QueryReductionGroupV2, QueryReductionTermV2};
+use crate::query_plan::ModelValue;
+use crate::query_plan::{ModelReductionKey, ModelReductionTerm};
 use crate::query_remote::{RemoteFieldValue, RemoteValue};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeSet;
@@ -61,13 +61,13 @@ impl HydrationReference {
 #[serde(deny_unknown_fields)]
 pub struct HydrationAttributeEvidence {
     pub(crate) attribute: AttributeId,
-    pub(crate) values: Vec<CompatibilityValueV2>,
+    pub(crate) values: Vec<ModelValue>,
 }
 
 impl HydrationAttributeEvidence {
     /// Construct one descriptor-qualified attribute evidence entry.
     #[must_use]
-    pub const fn new(attribute: AttributeId, values: Vec<CompatibilityValueV2>) -> Self {
+    pub const fn new(attribute: AttributeId, values: Vec<ModelValue>) -> Self {
         Self { attribute, values }
     }
 
@@ -79,7 +79,7 @@ impl HydrationAttributeEvidence {
 
     /// Return canonical or released-only compatibility values in field order.
     #[must_use]
-    pub fn values(&self) -> &[CompatibilityValueV2] {
+    pub fn values(&self) -> &[ModelValue] {
         &self.values
     }
 }
@@ -360,12 +360,12 @@ pub enum ModelReductionGroup {
     /// One scalar field value.
     Field {
         /// Exact compatibility scalar.
-        value: CompatibilityValueV2,
+        value: ModelValue,
     },
     /// One ordered Cartesian field-value tuple.
     Fields {
         /// Exact compatibility scalars in request field order.
-        values: Vec<CompatibilityValueV2>,
+        values: Vec<ModelValue>,
     },
 }
 
@@ -378,13 +378,13 @@ impl ModelReductionGroup {
 
     /// Construct a field group key.
     #[must_use]
-    pub const fn field(value: CompatibilityValueV2) -> Self {
+    pub const fn field(value: ModelValue) -> Self {
         Self::Field { value }
     }
 
     /// Construct a tuple-field group key.
     #[must_use]
-    pub const fn fields(values: Vec<CompatibilityValueV2>) -> Self {
+    pub const fn fields(values: Vec<ModelValue>) -> Self {
         Self::Fields { values }
     }
 }
@@ -509,9 +509,9 @@ pub enum ModelOutcome {
         #[serde(deserialize_with = "deserialize_binding_id")]
         root: BindingId,
         /// Exact grouping contract echoed from the model terminal.
-        group: Option<QueryReductionGroupV2>,
+        group: Option<ModelReductionKey>,
         /// Exact reducer contract echoed from the model terminal.
-        reducers: Vec<QueryReductionTermV2>,
+        reducers: Vec<ModelReductionTerm>,
         /// Deterministically ordered typed reduction rows.
         rows: Vec<ModelReductionRow>,
     },

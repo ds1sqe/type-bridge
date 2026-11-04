@@ -35,9 +35,8 @@ use crate::limits::{
 };
 use crate::migration_assertion::BindingId;
 use crate::query_plan::{
-    CompatibilityValueV2, InputRow, QueryInvocation, QueryOperation, QueryOutput, QueryPlan,
-    QueryPlanFingerprint, QueryReductionGroupV2, QueryReductionTermV2,
-    decode_query_plan_with_limits,
+    InputRow, ModelReductionKey, ModelReductionTerm, ModelValue, QueryInvocation, QueryOperation,
+    QueryOutput, QueryPlan, QueryPlanFingerprint, decode_query_plan_with_limits,
 };
 use crate::query_remote::{
     DEFAULT_REMOTE_DEADLINE_MS, MAX_REMOTE_CLOCK_SKEW_MS, MAX_REMOTE_DEADLINE_MS,
@@ -1524,8 +1523,8 @@ fn validate_outcome_evidence_v2(
 fn validate_model_reduction(
     graph: &HydrationGraph,
     root: BindingId,
-    group: &Option<QueryReductionGroupV2>,
-    reducers: &[QueryReductionTermV2],
+    group: &Option<ModelReductionKey>,
+    reducers: &[ModelReductionTerm],
     rows: &[ModelReductionRow],
     limits: ModelReplyDecodeLimits,
     plan: Option<&QueryPlan>,
@@ -1564,16 +1563,10 @@ fn validate_model_reduction(
     for row in rows {
         let group_cells = match (group.as_ref(), row.group()) {
             (None, None) => 0,
+            (Some(ModelReductionKey::Binding { .. }), Some(ModelReductionGroup::Thing { .. }))
+            | (Some(ModelReductionKey::Field { .. }), Some(ModelReductionGroup::Field { .. })) => 1,
             (
-                Some(QueryReductionGroupV2::Binding { .. }),
-                Some(ModelReductionGroup::Thing { .. }),
-            )
-            | (
-                Some(QueryReductionGroupV2::Field { .. }),
-                Some(ModelReductionGroup::Field { .. }),
-            ) => 1,
-            (
-                Some(QueryReductionGroupV2::Fields { fields }),
+                Some(ModelReductionKey::Fields { fields }),
                 Some(ModelReductionGroup::Fields { values }),
             ) if fields.len() == values.len() => u64::try_from(values.len()).unwrap_or(u64::MAX),
             _ => {
@@ -1607,20 +1600,21 @@ fn validate_model_reduction(
 }
 
 fn validate_reduction_group_value(
-    contract: Option<&QueryReductionGroupV2>,
+    contract: Option<&ModelReductionKey>,
     value: Option<&ModelReductionGroup>,
 ) -> Result<(), Diagnostic> {
     match (contract, value) {
         (None, None)
-        | (Some(QueryReductionGroupV2::Binding { .. }), Some(ModelReductionGroup::Thing { .. })) => {
+        | (Some(ModelReductionKey::Binding { .. }), Some(ModelReductionGroup::Thing { .. })) => {
             Ok(())
         }
+        (Some(ModelReductionKey::Field { field }), Some(ModelReductionGroup::Field { value }))
+            if value.value_type() == field.value_type() =>
+        {
+            validate_reduction_group_scalar(value)
+        }
         (
-            Some(QueryReductionGroupV2::Field { field }),
-            Some(ModelReductionGroup::Field { value }),
-        ) if value.value_type() == field.value_type() => validate_reduction_group_scalar(value),
-        (
-            Some(QueryReductionGroupV2::Fields { fields }),
+            Some(ModelReductionKey::Fields { fields }),
             Some(ModelReductionGroup::Fields { values }),
         ) if fields.len() == values.len()
             && fields
@@ -1639,7 +1633,7 @@ fn validate_reduction_group_value(
     }
 }
 
-fn validate_reduction_group_scalar(value: &CompatibilityValueV2) -> Result<(), Diagnostic> {
+fn validate_reduction_group_scalar(value: &ModelValue) -> Result<(), Diagnostic> {
     if matches!(
         value.canonical_value(),
         Some(crate::value::CanonicalValue::Double(value))
@@ -1653,12 +1647,12 @@ fn validate_reduction_group_scalar(value: &CompatibilityValueV2) -> Result<(), D
 }
 
 fn validate_reduced_value(
-    term: &QueryReductionTermV2,
+    term: &ModelReductionTerm,
     value: &ModelReducedValue,
     max_items: u64,
 ) -> Result<(), Diagnostic> {
     let valid = match (term.reduction(), term.input(), value) {
-        (crate::query_plan::QueryReductionKindV2::Count, _, ModelReducedValue::Count { value }) => {
+        (crate::query_plan::ModelReductionKind::Count, _, ModelReducedValue::Count { value }) => {
             if *value > max_items {
                 return Err(remote_item_limit_v2());
             }
@@ -1713,10 +1707,7 @@ fn validate_reduction_group_order(rows: &[ModelReductionRow]) -> Result<(), Diag
     Ok(())
 }
 
-fn semantic_tuple_cmp(
-    left: &[CompatibilityValueV2],
-    right: &[CompatibilityValueV2],
-) -> Result<Ordering, Diagnostic> {
+fn semantic_tuple_cmp(left: &[ModelValue], right: &[ModelValue]) -> Result<Ordering, Diagnostic> {
     for (left, right) in left.iter().zip(right) {
         let ordering = left
             .semantic_cmp_same_domain(right)
@@ -2635,7 +2626,7 @@ fn validate_graph_against_model_plan(
         };
         validate_node_projection(graph, node, projection, full_nodes.contains(&node.id))?;
     }
-    let mut unique_values = BTreeMap::<(TypeId, AttributeId), Vec<&CompatibilityValueV2>>::new();
+    let mut unique_values = BTreeMap::<(TypeId, AttributeId), Vec<&ModelValue>>::new();
     for node in &graph.nodes {
         let Some(projection) = descriptors.get(&node.concrete) else {
             return Err(remote_evidence_mismatch(
@@ -2702,10 +2693,10 @@ fn validate_graph_against_model_plan(
 fn validate_reduction_graph(
     graph: &HydrationGraph,
     rows: &[ModelReductionRow],
-    group: Option<&QueryReductionGroupV2>,
-    hydration: &crate::query_plan::HydrationProjectionV2,
+    group: Option<&ModelReductionKey>,
+    hydration: &crate::query_plan::HydrationProjection,
 ) -> Result<(), Diagnostic> {
-    let Some(QueryReductionGroupV2::Binding { binding }) = group else {
+    let Some(ModelReductionKey::Binding { binding }) = group else {
         return if graph.nodes().is_empty() {
             Ok(())
         } else {
@@ -2829,7 +2820,7 @@ fn validate_selected_row_identities(
         .slots()
         .into_iter()
         .filter(|slot| !slot.collection())
-        .map(crate::query_plan::QueryModelOutputSlotV2::binding)
+        .map(crate::query_plan::ModelOutputSlot::binding)
         .collect::<Vec<_>>();
     let mut identities = BTreeSet::new();
     for row in rows {
@@ -2847,7 +2838,7 @@ fn validate_row_order(
     graph: &HydrationGraph,
     rows: &[HydratedRow],
     output: &crate::query_plan::ModelOutputV2,
-    order: &crate::query_plan::QueryStableOrderV2,
+    order: &crate::query_plan::ModelStableOrder,
 ) -> Result<(), Diagnostic> {
     for pair in rows.windows(2) {
         let ordering = compare_rows_by_order(graph, &pair[0], &pair[1], output, order)?;
@@ -2873,7 +2864,7 @@ fn compare_rows_by_order(
     left: &HydratedRow,
     right: &HydratedRow,
     output: &crate::query_plan::ModelOutputV2,
-    order: &crate::query_plan::QueryStableOrderV2,
+    order: &crate::query_plan::ModelStableOrder,
 ) -> Result<Ordering, Diagnostic> {
     for term in order.terms() {
         let left = row_binding_reference(left, output, term.field().binding())?;
@@ -2900,7 +2891,7 @@ fn validate_collection_orders(
         for (slot, contract) in row.slots().iter().zip(&output_slots) {
             let (
                 HydrationSlot::Collection { values },
-                crate::query_plan::QueryModelOutputSlotV2::Collect { order, .. },
+                crate::query_plan::ModelOutputSlot::Collect { order, .. },
             ) = (slot, *contract)
             else {
                 continue;
@@ -2927,7 +2918,7 @@ fn compare_references_by_order(
     graph: &HydrationGraph,
     left: &HydrationReference,
     right: &HydrationReference,
-    order: &crate::query_plan::QueryStableOrderV2,
+    order: &crate::query_plan::ModelStableOrder,
 ) -> Result<Ordering, Diagnostic> {
     for term in order.terms() {
         let ordering = compare_order_values(
@@ -2983,8 +2974,8 @@ fn row_binding_reference<'row>(
 fn order_value<'graph>(
     graph: &'graph HydrationGraph,
     reference: &HydrationReference,
-    term: &crate::query_plan::QueryOrderTermV2,
-) -> Result<Option<&'graph CompatibilityValueV2>, Diagnostic> {
+    term: &crate::query_plan::ModelOrderTerm,
+) -> Result<Option<&'graph ModelValue>, Diagnostic> {
     let index = usize::try_from(reference.node().get()).map_err(|_| {
         remote_evidence_mismatch("stable order references an unknown hydration node")
     })?;
@@ -3007,25 +2998,25 @@ fn order_value<'graph>(
 }
 
 fn compare_order_values(
-    left: Option<&CompatibilityValueV2>,
-    right: Option<&CompatibilityValueV2>,
-    term: &crate::query_plan::QueryOrderTermV2,
+    left: Option<&ModelValue>,
+    right: Option<&ModelValue>,
+    term: &crate::query_plan::ModelOrderTerm,
 ) -> Result<Ordering, Diagnostic> {
     let ordering = match (left, right) {
         (None, None) => Ordering::Equal,
         (None, Some(_)) => match term.missing() {
-            crate::query_plan::QueryMissingOrderV2::First => Ordering::Less,
-            crate::query_plan::QueryMissingOrderV2::Last => Ordering::Greater,
-            crate::query_plan::QueryMissingOrderV2::Reject => {
+            crate::query_plan::ModelMissingOrder::First => Ordering::Less,
+            crate::query_plan::ModelMissingOrder::Last => Ordering::Greater,
+            crate::query_plan::ModelMissingOrder::Reject => {
                 return Err(remote_evidence_mismatch(
                     "stable order rejects a missing hydration value",
                 ));
             }
         },
         (Some(_), None) => match term.missing() {
-            crate::query_plan::QueryMissingOrderV2::First => Ordering::Greater,
-            crate::query_plan::QueryMissingOrderV2::Last => Ordering::Less,
-            crate::query_plan::QueryMissingOrderV2::Reject => {
+            crate::query_plan::ModelMissingOrder::First => Ordering::Greater,
+            crate::query_plan::ModelMissingOrder::Last => Ordering::Less,
+            crate::query_plan::ModelMissingOrder::Reject => {
                 return Err(remote_evidence_mismatch(
                     "stable order rejects a missing hydration value",
                 ));
@@ -3035,7 +3026,7 @@ fn compare_order_values(
             let ordering = left.semantic_cmp_same_domain(right).ok_or_else(|| {
                 remote_evidence_mismatch("stable order values are not semantically comparable")
             })?;
-            if term.direction() == crate::query_plan::QueryOrderDirectionV2::Descending {
+            if term.direction() == crate::query_plan::ModelOrderDirection::Descending {
                 ordering.reverse()
             } else {
                 ordering
@@ -3048,7 +3039,7 @@ fn compare_order_values(
 fn validate_node_projection(
     graph: &HydrationGraph,
     node: &HydrationNode,
-    projection: &crate::query_plan::HydrationDescriptorV2,
+    projection: &crate::query_plan::HydrationDescriptor,
     full_output: bool,
 ) -> Result<(), Diagnostic> {
     if node.attributes.len() != projection.fields().len()
@@ -3175,7 +3166,7 @@ fn validate_node_projection(
 }
 
 fn contains_semantic_duplicate<'value>(
-    values: impl IntoIterator<Item = &'value CompatibilityValueV2>,
+    values: impl IntoIterator<Item = &'value ModelValue>,
 ) -> Result<bool, Diagnostic> {
     let mut values = values.into_iter().collect::<Vec<_>>();
     if let Some(first) = values.first().copied() {

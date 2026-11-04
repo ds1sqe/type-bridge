@@ -18,8 +18,8 @@ use type_bridge_contract::query_model_evidence::{
     ModelOutcome, ModelReducedValue, ModelReductionGroup, ModelReductionRow,
 };
 use type_bridge_contract::query_plan::{
-    CompatibilityValueV2, QueryFieldV2, QueryReductionGroupV2, QueryReductionKindV2,
-    QueryReductionTermV2, ReleasedValueKindV2,
+    ModelField, ModelReductionKey, ModelReductionKind, ModelReductionTerm, ModelValue,
+    ModelValueKind,
 };
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
@@ -704,8 +704,8 @@ fn released_reduction_result(
     operation: &MatchOperation,
     graph: &HydrationGraph,
     root: type_bridge_contract::migration_assertion::BindingId,
-    group: Option<QueryReductionGroupV2>,
-    reducers: Vec<QueryReductionTermV2>,
+    group: Option<ModelReductionKey>,
+    reducers: Vec<ModelReductionTerm>,
     rows: Vec<ModelReductionRow>,
 ) -> Result<MatchResult, MatchError> {
     let actual_root = BindingId::new(root.get());
@@ -722,12 +722,8 @@ fn released_reduction_result(
             require_root(*root, actual_root, "reduction_root_mismatch")?;
             let actual_group = match group {
                 None => None,
-                Some(QueryReductionGroupV2::Binding { binding }) => {
-                    Some(BindingId::new(binding.get()))
-                }
-                Some(
-                    QueryReductionGroupV2::Field { .. } | QueryReductionGroupV2::Fields { .. },
-                ) => {
+                Some(ModelReductionKey::Binding { binding }) => Some(BindingId::new(binding.get())),
+                Some(ModelReductionKey::Field { .. } | ModelReductionKey::Fields { .. }) => {
                     return Err(result_error(
                         "reduction_group_mismatch",
                         "remote reduction echoed the wrong group contract kind",
@@ -747,7 +743,7 @@ fn released_reduction_result(
             reducers,
         } => {
             require_root(*root, actual_root, "field_reduction_root_mismatch")?;
-            let Some(QueryReductionGroupV2::Field { field }) = group else {
+            let Some(ModelReductionKey::Field { field }) = group else {
                 return Err(result_error(
                     "field_reduction_group_mismatch",
                     "remote reduction echoed the wrong field group contract kind",
@@ -767,7 +763,7 @@ fn released_reduction_result(
             reducers,
         } => {
             require_root(*root, actual_root, "field_tuple_reduction_root_mismatch")?;
-            let Some(QueryReductionGroupV2::Fields { fields }) = group else {
+            let Some(ModelReductionKey::Fields { fields }) = group else {
                 return Err(result_error(
                     "field_tuple_reduction_groups_mismatch",
                     "remote reduction echoed the wrong tuple-field group contract kind",
@@ -800,16 +796,16 @@ fn released_reduction_result(
 
 fn released_reducer(
     registry: &DescriptorRegistry,
-    term: &QueryReductionTermV2,
+    term: &ModelReductionTerm,
 ) -> Result<ReduceTerm, MatchError> {
     let reduction = match term.reduction() {
-        QueryReductionKindV2::Count => Reduction::Count,
-        QueryReductionKindV2::Sum => Reduction::Sum,
-        QueryReductionKindV2::Min => Reduction::Min,
-        QueryReductionKindV2::Max => Reduction::Max,
-        QueryReductionKindV2::Mean => Reduction::Mean,
-        QueryReductionKindV2::Median => Reduction::Median,
-        QueryReductionKindV2::Std => Reduction::Std,
+        ModelReductionKind::Count => Reduction::Count,
+        ModelReductionKind::Sum => Reduction::Sum,
+        ModelReductionKind::Min => Reduction::Min,
+        ModelReductionKind::Max => Reduction::Max,
+        ModelReductionKind::Mean => Reduction::Mean,
+        ModelReductionKind::Median => Reduction::Median,
+        ModelReductionKind::Std => Reduction::Std,
     };
     Ok(ReduceTerm {
         reduction,
@@ -822,7 +818,7 @@ fn released_reducer(
 
 fn released_query_field(
     registry: &DescriptorRegistry,
-    field: &QueryFieldV2,
+    field: &ModelField,
 ) -> Result<BoundFieldId, MatchError> {
     let owner = released_descriptor(registry, field.descriptor())?;
     let field_id = registry
@@ -1088,9 +1084,7 @@ fn released_attributes(
         .collect()
 }
 
-pub(crate) fn released_attribute_value(
-    value: &CompatibilityValueV2,
-) -> Result<AttributeValue, MatchError> {
+pub(crate) fn released_attribute_value(value: &ModelValue) -> Result<AttributeValue, MatchError> {
     let value = if let Some(value) = value.canonical_value() {
         match value {
             CanonicalValue::String(value) => AttributeValue::String(value.as_str().to_owned()),
@@ -1111,11 +1105,11 @@ pub(crate) fn released_attribute_value(
             )
         })?;
         match value.released_kind() {
-            Some(ReleasedValueKindV2::String) => AttributeValue::String(text),
-            Some(ReleasedValueKindV2::DateTime) => AttributeValue::DateTime(text),
-            Some(ReleasedValueKindV2::DateTimeTz) => AttributeValue::DateTimeTZ(text),
-            Some(ReleasedValueKindV2::Duration) => AttributeValue::Duration(text),
-            Some(ReleasedValueKindV2::Decimal) => AttributeValue::Decimal(text),
+            Some(ModelValueKind::String) => AttributeValue::String(text),
+            Some(ModelValueKind::DateTime) => AttributeValue::DateTime(text),
+            Some(ModelValueKind::DateTimeTz) => AttributeValue::DateTimeTZ(text),
+            Some(ModelValueKind::Duration) => AttributeValue::Duration(text),
+            Some(ModelValueKind::Decimal) => AttributeValue::Decimal(text),
             None => {
                 return Err(result_error(
                     "hydrated_attribute_value_type",
@@ -1156,7 +1150,7 @@ pub(crate) fn canonicalize_provider_attribute_value(
             let value = normalize_provider_fraction(value);
             match value.parse::<CanonicalDuration>() {
                 Ok(value) => Ok(AttributeValue::Duration(value.to_string())),
-                Err(_) => CompatibilityValueV2::released_duration(value.clone())
+                Err(_) => ModelValue::released_duration(value.clone())
                     .map(|_| AttributeValue::Duration(value))
                     .map_err(|_| malformed()),
             }
@@ -1961,7 +1955,7 @@ fn validated_witness_reduction(
 
 #[cfg(test)]
 mod tests {
-    use type_bridge_contract::query_plan::QueryReductionGroupV2;
+    use type_bridge_contract::query_plan::ModelReductionKey;
 
     use super::*;
     use crate::_attribute::ValueType;
@@ -3180,7 +3174,7 @@ mod tests {
 
         let mut wrong_order = model_reduction(&registry, &validated, valid);
         let ModelOutcome::ModelReduction {
-            group: Some(QueryReductionGroupV2::Fields { fields }),
+            group: Some(ModelReductionKey::Fields { fields }),
             ..
         } = &mut wrong_order
         else {

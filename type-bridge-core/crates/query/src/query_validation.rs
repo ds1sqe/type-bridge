@@ -12,7 +12,7 @@ use type_bridge_contract::id::{TypeId, TypeKind, is_typeql_3_12_builtin_function
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
-    DocumentSource, LocalFunction, QueryOperand, QueryOutput, QueryPattern, QueryPatternV2,
+    DocumentSource, LocalFunction, ModelPredicate, QueryOperand, QueryOutput, QueryPattern,
     QueryPlan, ReadStage, Reducer,
 };
 use type_bridge_contract::schema::{AnnotationKindId, CollectionMode, SchemaAnnotationValue};
@@ -218,25 +218,25 @@ fn v2_root_topology(plan: &QueryPlan) -> BTreeSet<(BindingId, BindingId)> {
     edges
 }
 
-fn definite_v2_edges(pattern: &QueryPatternV2) -> BTreeSet<(BindingId, BindingId)> {
+fn definite_v2_edges(pattern: &ModelPredicate) -> BTreeSet<(BindingId, BindingId)> {
     match pattern {
-        QueryPatternV2::FieldValue { .. }
-        | QueryPatternV2::FieldPresence { .. }
-        | QueryPatternV2::BindingIid { .. } => BTreeSet::new(),
-        QueryPatternV2::FieldComparison { left, right, .. } => {
+        ModelPredicate::FieldValue { .. }
+        | ModelPredicate::FieldPresence { .. }
+        | ModelPredicate::BindingIid { .. } => BTreeSet::new(),
+        ModelPredicate::FieldComparison { left, right, .. } => {
             BTreeSet::from([canonical_topology_edge(left.binding(), right.binding())])
         }
-        QueryPatternV2::RoleEdge {
+        ModelPredicate::RoleEdge {
             relation, player, ..
         } => BTreeSet::from([canonical_topology_edge(*relation, *player)]),
-        QueryPatternV2::Reachable { source, target, .. } => {
+        ModelPredicate::Reachable { source, target, .. } => {
             BTreeSet::from([canonical_topology_edge(*source, *target)])
         }
-        QueryPatternV2::And { patterns } => patterns
+        ModelPredicate::And { patterns } => patterns
             .iter()
             .flat_map(definite_v2_edges)
             .collect::<BTreeSet<_>>(),
-        QueryPatternV2::Or { patterns } => {
+        ModelPredicate::Or { patterns } => {
             let mut patterns = patterns.iter();
             let Some(first) = patterns.next() else {
                 return BTreeSet::new();
@@ -248,7 +248,7 @@ fn definite_v2_edges(pattern: &QueryPatternV2) -> BTreeSet<(BindingId, BindingId
                     .collect()
             })
         }
-        QueryPatternV2::Not { .. } => BTreeSet::new(),
+        ModelPredicate::Not { .. } => BTreeSet::new(),
     }
 }
 
@@ -1065,7 +1065,7 @@ mod tests {
     fn compatibility_topology_exports_only_definite_positive_edges() {
         let binding = |value| BindingId::new(value).expect("binding");
         let role_edge =
-            |relation, player, relation_label: &str, role: &str| QueryPatternV2::RoleEdge {
+            |relation, player, relation_label: &str, role: &str| ModelPredicate::RoleEdge {
                 include_relation_subtypes: false,
                 player: binding(player),
                 relation: binding(relation),
@@ -1075,7 +1075,7 @@ mod tests {
         let edge_01 = role_edge(0, 1, "first-link", "member");
         let edge_12 = role_edge(1, 2, "second-link", "member");
 
-        let conjunction = QueryPatternV2::And {
+        let conjunction = ModelPredicate::And {
             patterns: vec![edge_01.clone(), edge_12.clone()],
         };
         assert_eq!(
@@ -1083,10 +1083,10 @@ mod tests {
             BTreeSet::from([(binding(0), binding(1)), (binding(1), binding(2))]),
         );
 
-        let disjunction = QueryPatternV2::Or {
+        let disjunction = ModelPredicate::Or {
             patterns: vec![
                 conjunction,
-                QueryPatternV2::And {
+                ModelPredicate::And {
                     patterns: vec![edge_01.clone()],
                 },
             ],
@@ -1097,7 +1097,7 @@ mod tests {
             "an edge absent from one branch is not a root topology proof",
         );
         assert!(
-            definite_v2_edges(&QueryPatternV2::Not {
+            definite_v2_edges(&ModelPredicate::Not {
                 pattern: Box::new(edge_12),
             })
             .is_empty(),

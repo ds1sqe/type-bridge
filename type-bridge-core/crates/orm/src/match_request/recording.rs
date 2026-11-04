@@ -14,7 +14,7 @@ use type_bridge_contract::query_model_evidence::HydrationGraph;
 use type_bridge_contract::query_model_evidence::{
     ModelOutcome, ModelReducedValue, ModelReductionRow,
 };
-use type_bridge_contract::query_plan::QueryReductionGroupV2;
+use type_bridge_contract::query_plan::ModelReductionKey;
 
 use super::descriptor_plan::{adapt_field, adapt_reducers};
 use crate::_registry::DescriptorRegistry;
@@ -202,7 +202,7 @@ pub(crate) fn model_reduction_outcome(
         } => (
             *root,
             group
-                .map(|binding| contract_binding(binding).map(QueryReductionGroupV2::binding))
+                .map(|binding| contract_binding(binding).map(ModelReductionKey::binding))
                 .transpose()?,
             reducers,
         ),
@@ -212,7 +212,7 @@ pub(crate) fn model_reduction_outcome(
             reducers,
         } => (
             *root,
-            Some(QueryReductionGroupV2::field(
+            Some(ModelReductionKey::field(
                 adapt_field(group, validated.request(), registry).map_err(adapter_match_error)?,
             )),
             reducers,
@@ -223,7 +223,7 @@ pub(crate) fn model_reduction_outcome(
             reducers,
         } => (
             *root,
-            Some(QueryReductionGroupV2::fields(
+            Some(ModelReductionKey::fields(
                 groups
                     .iter()
                     .map(|field| adapt_field(field, validated.request(), registry))

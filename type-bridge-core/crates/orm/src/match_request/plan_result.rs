@@ -15,7 +15,7 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::TypeId;
 use type_bridge_contract::query_model_evidence::ModelOutcome;
 use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
-use type_bridge_contract::query_plan::{QueryModelOutputSlotV2, QueryOutput};
+use type_bridge_contract::query_plan::{ModelOutputSlot, QueryOutput};
 use type_bridge_contract::query_remote::RemoteValue;
 use type_bridge_contract::query_remote_v3::StagedAnswerV3;
 use type_bridge_contract::value::CanonicalValue;
@@ -589,7 +589,7 @@ pub(crate) fn resolve(
         let mut slots = Vec::new();
         for slot in output.slots() {
             match slot {
-                QueryModelOutputSlotV2::One { binding, declared } => {
+                ModelOutputSlot::One { binding, declared } => {
                     let iid = group[0].bindings[&binding.get()].clone();
                     if group
                         .iter()
@@ -605,7 +605,7 @@ pub(crate) fn resolve(
                         iid,
                     });
                 }
-                QueryModelOutputSlotV2::Collect {
+                ModelOutputSlot::Collect {
                     binding,
                     declared,
                     distinct,
@@ -715,10 +715,10 @@ fn reduction_key(values: &[RemoteValue]) -> Result<String, Diagnostic> {
 fn reduced_cell(
     value: Option<&RemoteValue>,
     size: u64,
-    term: &type_bridge_contract::query_plan::QueryReductionTermV2,
+    term: &type_bridge_contract::query_plan::ModelReductionTerm,
 ) -> Result<type_bridge_contract::query_model_evidence::ModelReducedValue, Diagnostic> {
     use type_bridge_contract::query_model_evidence::ModelReducedValue as Cell;
-    use type_bridge_contract::query_plan::QueryReductionKindV2 as Kind;
+    use type_bridge_contract::query_plan::ModelReductionKind as Kind;
     use type_bridge_contract::value::ValueTypeTag;
     if term.reduction() == Kind::Count {
         return Ok(Cell::Count { value: size });
@@ -806,7 +806,7 @@ fn resolve_reduction(
     limits: QueryExecutionResourceLimits,
 ) -> Result<ModelOutcome, Diagnostic> {
     use type_bridge_contract::query_model_evidence::{ModelReductionGroup, ModelReductionRow};
-    use type_bridge_contract::query_plan::{CompatibilityValueV2, QueryReductionGroupV2};
+    use type_bridge_contract::query_plan::{ModelReductionKey, ModelValue};
     let Layout::Reduction {
         root,
         group,
@@ -820,7 +820,7 @@ fn resolve_reduction(
     };
     let width = match group {
         None => 0,
-        Some(QueryReductionGroupV2::Fields { fields }) => fields.len(),
+        Some(ModelReductionKey::Fields { fields }) => fields.len(),
         Some(_) => 1,
     };
     let mut groups = BTreeMap::new();
@@ -917,8 +917,7 @@ fn resolve_reduction(
             *values.last_mut().ok_or_else(|| {
                 failure("query_plan_result_reduction", "reduction cell is missing")
             })? = if let Some(high) = source.sum_high {
-                if term.reduction() == type_bridge_contract::query_plan::QueryReductionKindV2::Mean
-                {
+                if term.reduction() == type_bridge_contract::query_plan::ModelReductionKind::Mean {
                     let total = exact_long_total(row.get(source.value), row.get(high), size)?;
                     type_bridge_contract::query_model_evidence::ModelReducedValue::DoubleBits {
                         value: (size > 0).then(|| (total as f64 / size as f64).to_bits()),
@@ -953,7 +952,7 @@ fn resolve_reduction(
     };
     let mut graph = GraphBuilder::new(reply_limits);
     let mut expected = BTreeSet::new();
-    if matches!(group, Some(QueryReductionGroupV2::Binding { .. })) {
+    if matches!(group, Some(ModelReductionKey::Binding { .. })) {
         for (keys, _, _) in groups.values() {
             let [RemoteValue::Thing { iid, .. }] = keys.as_slice() else {
                 return Err(failure(
@@ -985,7 +984,7 @@ fn resolve_reduction(
     for (keys, _, values) in groups.into_values() {
         let key = match group {
             None => None,
-            Some(QueryReductionGroupV2::Binding { binding }) => {
+            Some(ModelReductionKey::Binding { binding }) => {
                 let [RemoteValue::Thing { iid, .. }] = keys.as_slice() else {
                     return Err(failure(
                         "query_plan_result_reduction",
@@ -1008,20 +1007,18 @@ fn resolve_reduction(
                 let keys = keys
                     .into_iter()
                     .map(|value| match value {
-                        RemoteValue::Value { value } => Ok(CompatibilityValueV2::from(value)),
+                        RemoteValue::Value { value } => Ok(ModelValue::from(value)),
                         _ => Err(failure(
                             "query_plan_result_reduction",
                             "group key is not a scalar",
                         )),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Some(
-                    if matches!(group, Some(QueryReductionGroupV2::Field { .. })) {
-                        ModelReductionGroup::field(keys.into_iter().next().unwrap())
-                    } else {
-                        ModelReductionGroup::fields(keys)
-                    },
-                )
+                Some(if matches!(group, Some(ModelReductionKey::Field { .. })) {
+                    ModelReductionGroup::field(keys.into_iter().next().unwrap())
+                } else {
+                    ModelReductionGroup::fields(keys)
+                })
             }
         };
         rows.push(ModelReductionRow::new(key, values));

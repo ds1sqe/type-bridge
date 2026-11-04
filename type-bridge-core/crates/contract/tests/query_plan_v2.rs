@@ -7,14 +7,13 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
-    CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
-    HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, InputColumn, InputColumnId,
-    ModelQueryV2, QUERY_PLAN_CANONICALIZATION_V1, QUERY_PLAN_CANONICALIZATION_V2,
-    QUERY_PLAN_FORMAT_V1, QUERY_PLAN_FORMAT_V2, QueryBindingPairV2, QueryComparatorV2,
-    QueryFieldV2, QueryMissingOrderV2, QueryModelOutputSlotV2, QueryModelOutputV2,
-    QueryNamedOutputSlotV2, QueryOrderDirectionV2, QueryOrderTermV2, QueryOutput, QueryPattern,
-    QueryPatternV2, QueryPlan, QueryPlanV2Compatibility, QueryReductionKindV2,
-    QueryReductionTermV2, QueryRowCardinalityV2, QueryStableOrderV2, QueryWindowV2, ReadStage,
+    HydrationBinding, HydrationDescriptor, HydrationField, HydrationPlayer, HydrationProjection,
+    HydrationRole, InputColumn, InputColumnId, ModelComparator, ModelField, ModelMissingOrder,
+    ModelNamedOutputSlot, ModelOrderDirection, ModelOrderTerm, ModelOutput, ModelOutputSlot,
+    ModelPredicate, ModelQueryV2, ModelReductionKind, ModelReductionTerm, ModelStableOrder,
+    ModelValue, QUERY_PLAN_CANONICALIZATION_V1, QUERY_PLAN_CANONICALIZATION_V2,
+    QUERY_PLAN_FORMAT_V1, QUERY_PLAN_FORMAT_V2, QueryBindingPairV2, QueryOutput, QueryPattern,
+    QueryPlan, QueryPlanV2Compatibility, QueryRowCardinalityV2, QueryWindowV2, ReadStage,
     decode_query_plan, query_given_rows_capability, query_plan_v2_capability_vocabulary,
 };
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
@@ -80,19 +79,19 @@ fn base_parts() -> (
     (bindings, pipeline, output, semantics())
 }
 
-fn hydration() -> HydrationProjectionV2 {
+fn hydration() -> HydrationProjection {
     let person = type_id(TypeKind::Entity, "person");
     let employment = type_id(TypeKind::Relation, "employment");
-    HydrationProjectionV2::new(
+    HydrationProjection::new(
         vec![
-            HydrationBindingV2::new(binding_id(0), person.clone(), vec![person.clone()]),
-            HydrationBindingV2::new(binding_id(1), employment.clone(), vec![employment.clone()]),
+            HydrationBinding::new(binding_id(0), person.clone(), vec![person.clone()]),
+            HydrationBinding::new(binding_id(1), employment.clone(), vec![employment.clone()]),
         ],
         vec![
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(
                 person.clone(),
                 vec![
-                    HydrationFieldV2::new(
+                    HydrationField::new(
                         "name",
                         vec![person.clone()],
                         AttributeId::new("name").expect("attribute"),
@@ -102,7 +101,7 @@ fn hydration() -> HydrationProjectionV2 {
                         false,
                         true,
                     ),
-                    HydrationFieldV2::new(
+                    HydrationField::new(
                         "tags",
                         vec![person.clone()],
                         AttributeId::new("tag").expect("attribute"),
@@ -115,10 +114,10 @@ fn hydration() -> HydrationProjectionV2 {
                 ],
                 Vec::new(),
             ),
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(
                 employment.clone(),
                 vec![
-                    HydrationFieldV2::new(
+                    HydrationField::new(
                         "code",
                         vec![employment.clone()],
                         AttributeId::new("code").expect("attribute"),
@@ -128,7 +127,7 @@ fn hydration() -> HydrationProjectionV2 {
                         false,
                         true,
                     ),
-                    HydrationFieldV2::new(
+                    HydrationField::new(
                         "start_date",
                         vec![employment],
                         AttributeId::new("start-date").expect("attribute"),
@@ -139,10 +138,10 @@ fn hydration() -> HydrationProjectionV2 {
                         false,
                     ),
                 ],
-                vec![HydrationRoleV2::new(
+                vec![HydrationRole::new(
                     RoleId::new("employment", "employee").expect("role"),
                     vec![RoleId::new("employment", "employee").expect("role")],
-                    vec![HydrationPlayerV2::new(person.clone(), vec![person])],
+                    vec![HydrationPlayer::new(person.clone(), vec![person])],
                     Cardinality::new(1, None).expect("cardinality"),
                     true,
                     true,
@@ -152,8 +151,8 @@ fn hydration() -> HydrationProjectionV2 {
     )
 }
 
-fn person_name(binding: u16) -> QueryFieldV2 {
-    QueryFieldV2::new(
+fn person_name(binding: u16) -> ModelField {
+    ModelField::new(
         binding_id(binding),
         type_id(TypeKind::Entity, "person"),
         AttributeId::new("name").expect("attribute"),
@@ -161,8 +160,8 @@ fn person_name(binding: u16) -> QueryFieldV2 {
     )
 }
 
-fn person_shift(binding: u16) -> QueryFieldV2 {
-    QueryFieldV2::new(
+fn person_shift(binding: u16) -> ModelField {
+    ModelField::new(
         binding_id(binding),
         type_id(TypeKind::Entity, "person"),
         AttributeId::new("shift").expect("attribute"),
@@ -170,8 +169,8 @@ fn person_shift(binding: u16) -> QueryFieldV2 {
     )
 }
 
-fn employment_code(binding: u16) -> QueryFieldV2 {
-    QueryFieldV2::new(
+fn employment_code(binding: u16) -> ModelField {
+    ModelField::new(
         binding_id(binding),
         type_id(TypeKind::Relation, "employment"),
         AttributeId::new("code").expect("attribute"),
@@ -179,30 +178,30 @@ fn employment_code(binding: u16) -> QueryFieldV2 {
     )
 }
 
-fn stable_order(field: QueryFieldV2, tiebreaker: u16) -> QueryStableOrderV2 {
-    QueryStableOrderV2::new(
-        vec![QueryOrderTermV2::new(
+fn stable_order(field: ModelField, tiebreaker: u16) -> ModelStableOrder {
+    ModelStableOrder::new(
+        vec![ModelOrderTerm::new(
             field,
-            QueryOrderDirectionV2::Ascending,
-            QueryMissingOrderV2::Reject,
+            ModelOrderDirection::Ascending,
+            ModelMissingOrder::Reject,
         )],
         vec![binding_id(tiebreaker)],
     )
 }
 
-fn rich_output() -> QueryModelOutputV2 {
-    QueryModelOutputV2::Named {
+fn rich_output() -> ModelOutput {
+    ModelOutput::Named {
         slots: vec![
-            QueryNamedOutputSlotV2::new(
+            ModelNamedOutputSlot::new(
                 "person",
-                QueryModelOutputSlotV2::One {
+                ModelOutputSlot::One {
                     binding: binding_id(0),
                     declared: type_id(TypeKind::Entity, "person"),
                 },
             ),
-            QueryNamedOutputSlotV2::new(
+            ModelNamedOutputSlot::new(
                 "employments",
-                QueryModelOutputSlotV2::Collect {
+                ModelOutputSlot::Collect {
                     binding: binding_id(1),
                     declared: type_id(TypeKind::Relation, "employment"),
                     distinct: true,
@@ -214,19 +213,19 @@ fn rich_output() -> QueryModelOutputV2 {
 }
 
 fn rich_compatibility() -> QueryPlanV2Compatibility {
-    let predicate = QueryPatternV2::And {
+    let predicate = ModelPredicate::And {
         patterns: vec![
-            QueryPatternV2::Or {
+            ModelPredicate::Or {
                 patterns: vec![
-                    QueryPatternV2::FieldValue {
+                    ModelPredicate::FieldValue {
                         field: person_name(0),
-                        comparator: QueryComparatorV2::Contains,
+                        comparator: ModelComparator::Contains,
                         value: CanonicalValue::String(
                             CanonicalString::new("Ali").expect("canonical string"),
                         )
                         .into(),
                     },
-                    QueryPatternV2::RoleEdge {
+                    ModelPredicate::RoleEdge {
                         include_relation_subtypes: true,
                         player: binding_id(0),
                         relation: binding_id(1),
@@ -235,7 +234,7 @@ fn rich_compatibility() -> QueryPlanV2Compatibility {
                     },
                 ],
             },
-            QueryPatternV2::Reachable {
+            ModelPredicate::Reachable {
                 min_depth: 0,
                 max_depth: 2,
                 relation: type_id(TypeKind::Relation, "employment"),
@@ -385,7 +384,7 @@ fn model_only_schema_function_calls_still_require_request_level_given_support() 
 }
 
 fn compatibility_value_plan(
-    value: CompatibilityValueV2,
+    value: ModelValue,
     value_type: ValueTypeTag,
     attribute: &str,
 ) -> QueryPlan {
@@ -394,7 +393,7 @@ fn compatibility_value_plan(
 }
 
 fn compatibility_value_plan_under(
-    value: CompatibilityValueV2,
+    value: ModelValue,
     value_type: ValueTypeTag,
     attribute: &str,
     limits: QueryLimits,
@@ -402,15 +401,15 @@ fn compatibility_value_plan_under(
     let person = type_id(TypeKind::Entity, "person");
     let (bindings, pipeline, output, managed) = base_parts();
     let attribute = AttributeId::new(attribute).expect("attribute");
-    let hydration = HydrationProjectionV2::new(
-        vec![HydrationBindingV2::new(
+    let hydration = HydrationProjection::new(
+        vec![HydrationBinding::new(
             binding_id(0),
             person.clone(),
             vec![person.clone()],
         )],
-        vec![HydrationDescriptorV2::new(
+        vec![HydrationDescriptor::new(
             person.clone(),
-            vec![HydrationFieldV2::new(
+            vec![HydrationField::new(
                 "value",
                 vec![person.clone()],
                 attribute.clone(),
@@ -430,9 +429,9 @@ fn compatibility_value_plan_under(
         pipeline,
         output,
         QueryPlanV2Compatibility::new(
-            Some(QueryPatternV2::FieldValue {
-                field: QueryFieldV2::new(binding_id(0), person.clone(), attribute, value_type),
-                comparator: QueryComparatorV2::Equal,
+            Some(ModelPredicate::FieldValue {
+                field: ModelField::new(binding_id(0), person.clone(), attribute, value_type),
+                comparator: ModelComparator::Equal,
                 value,
             }),
             Vec::new(),
@@ -440,8 +439,8 @@ fn compatibility_value_plan_under(
                 cardinality: QueryRowCardinalityV2::ExactlyOne,
                 hydration,
                 order: None,
-                output: QueryModelOutputV2::Positional {
-                    slots: vec![QueryModelOutputSlotV2::One {
+                output: ModelOutput::Positional {
+                    slots: vec![ModelOutputSlot::One {
                         binding: binding_id(0),
                         declared: person,
                     }],
@@ -916,14 +915,14 @@ fn v2_compatibility_invalid_edge_shapes_fail_before_encoding() {
     );
     assert_eq!(
         build(QueryPlanV2Compatibility::new(
-            Some(QueryPatternV2::FieldValue {
-                field: QueryFieldV2::new(
+            Some(ModelPredicate::FieldValue {
+                field: ModelField::new(
                     binding_id(0),
                     type_id(TypeKind::Entity, "person"),
                     AttributeId::new("age").expect("attribute"),
                     ValueTypeTag::Long,
                 ),
-                comparator: QueryComparatorV2::Regex,
+                comparator: ModelComparator::Regex,
                 value: CanonicalValue::Long(1).into(),
             }),
             Vec::new(),
@@ -938,9 +937,9 @@ fn v2_compatibility_invalid_edge_shapes_fail_before_encoding() {
     // on every profile.
     assert_eq!(
         build(QueryPlanV2Compatibility::new(
-            Some(QueryPatternV2::FieldComparison {
+            Some(ModelPredicate::FieldComparison {
                 left: person_shift(0),
-                comparator: QueryComparatorV2::Greater,
+                comparator: ModelComparator::Greater,
                 right: person_shift(1),
             }),
             Vec::new(),
@@ -953,9 +952,9 @@ fn v2_compatibility_invalid_edge_shapes_fail_before_encoding() {
     );
     assert_ne!(
         build(QueryPlanV2Compatibility::new(
-            Some(QueryPatternV2::FieldComparison {
+            Some(ModelPredicate::FieldComparison {
                 left: person_shift(0),
-                comparator: QueryComparatorV2::Equal,
+                comparator: ModelComparator::Equal,
                 right: person_shift(1),
             }),
             Vec::new(),
@@ -968,7 +967,7 @@ fn v2_compatibility_invalid_edge_shapes_fail_before_encoding() {
     );
     assert_eq!(
         build(QueryPlanV2Compatibility::new(
-            Some(QueryPatternV2::Or {
+            Some(ModelPredicate::Or {
                 patterns: Vec::new(),
             }),
             Vec::new(),
@@ -981,8 +980,8 @@ fn v2_compatibility_invalid_edge_shapes_fail_before_encoding() {
     );
     assert_eq!(
         build(QueryPlanV2Compatibility::new(
-            Some(QueryPatternV2::Or {
-                patterns: vec![QueryPatternV2::Reachable {
+            Some(ModelPredicate::Or {
+                patterns: vec![ModelPredicate::Reachable {
                     min_depth: 0,
                     max_depth: 1,
                     relation: type_id(TypeKind::Relation, "employment"),
@@ -1002,7 +1001,7 @@ fn v2_compatibility_invalid_edge_shapes_fail_before_encoding() {
     );
     assert_eq!(
         build(QueryPlanV2Compatibility::new(
-            Some(QueryPatternV2::RoleEdge {
+            Some(ModelPredicate::RoleEdge {
                 include_relation_subtypes: false,
                 player: binding_id(0),
                 relation: binding_id(1),
@@ -1019,7 +1018,7 @@ fn v2_compatibility_invalid_edge_shapes_fail_before_encoding() {
     );
     assert_eq!(
         build(QueryPlanV2Compatibility::new(
-            Some(QueryPatternV2::Reachable {
+            Some(ModelPredicate::Reachable {
                 min_depth: 1,
                 max_depth: 2,
                 relation: type_id(TypeKind::Relation, "employment"),
@@ -1044,8 +1043,8 @@ fn v2_compatibility_invalid_edge_shapes_fail_before_encoding() {
             cardinality: QueryRowCardinalityV2::ExactlyOne,
             hydration: hydration(),
             order: Some(stable_order(person_name(0), 0)),
-            output: QueryModelOutputV2::Positional {
-                slots: vec![QueryModelOutputSlotV2::One {
+            output: ModelOutput::Positional {
+                slots: vec![ModelOutputSlot::One {
                     binding: binding_id(0),
                     declared: type_id(TypeKind::Entity, "person"),
                 }],
@@ -1317,17 +1316,17 @@ fn stable_order_terms_are_provable_from_their_public_response_slots() {
     })
     .expect("collection slots are not part of the selected row identity");
 
-    let duplicate_order_field = QueryStableOrderV2::new(
+    let duplicate_order_field = ModelStableOrder::new(
         vec![
-            QueryOrderTermV2::new(
+            ModelOrderTerm::new(
                 person_name(0),
-                QueryOrderDirectionV2::Ascending,
-                QueryMissingOrderV2::Reject,
+                ModelOrderDirection::Ascending,
+                ModelMissingOrder::Reject,
             ),
-            QueryOrderTermV2::new(
+            ModelOrderTerm::new(
                 person_name(0),
-                QueryOrderDirectionV2::Descending,
-                QueryMissingOrderV2::Reject,
+                ModelOrderDirection::Descending,
+                ModelMissingOrder::Reject,
             ),
         ],
         vec![binding_id(0)],
@@ -1361,11 +1360,11 @@ fn stable_order_terms_are_provable_from_their_public_response_slots() {
         "query_plan_v2_sort_unordered_value",
     );
 
-    let hidden_collection_term = QueryStableOrderV2::new(
-        vec![QueryOrderTermV2::new(
+    let hidden_collection_term = ModelStableOrder::new(
+        vec![ModelOrderTerm::new(
             employment_code(1),
-            QueryOrderDirectionV2::Ascending,
-            QueryMissingOrderV2::Reject,
+            ModelOrderDirection::Ascending,
+            ModelMissingOrder::Reject,
         )],
         vec![binding_id(0)],
     );
@@ -1383,8 +1382,8 @@ fn stable_order_terms_are_provable_from_their_public_response_slots() {
         "query_plan_v2_order_term_not_exposed",
     );
 
-    let collect_only = QueryModelOutputV2::Positional {
-        slots: vec![QueryModelOutputSlotV2::Collect {
+    let collect_only = ModelOutput::Positional {
+        slots: vec![ModelOutputSlot::Collect {
             binding: binding_id(1),
             declared: type_id(TypeKind::Relation, "employment"),
             distinct: false,
@@ -1422,8 +1421,8 @@ fn model_reduction_count_rejects_a_field_input_during_plan_validation() {
                 hydration: hydration(),
                 root: binding_id(0),
                 group: None,
-                reducers: vec![QueryReductionTermV2::new(
-                    QueryReductionKindV2::Count,
+                reducers: vec![ModelReductionTerm::new(
+                    ModelReductionKind::Count,
                     Some(person_name(0)),
                 )],
             }),
@@ -1445,15 +1444,15 @@ fn inherited_order_fields_use_closed_multi_owner_authority() {
     let concrete = type_id(TypeKind::Entity, "vip-person");
     let owner_a = type_id(TypeKind::Entity, "base-a");
     let owner_b = type_id(TypeKind::Entity, "base-b");
-    let hydration = HydrationProjectionV2::new(
-        vec![HydrationBindingV2::new(
+    let hydration = HydrationProjection::new(
+        vec![HydrationBinding::new(
             binding_id(0),
             declared.clone(),
             vec![concrete.clone()],
         )],
-        vec![HydrationDescriptorV2::new(
+        vec![HydrationDescriptor::new(
             concrete,
-            vec![HydrationFieldV2::new(
+            vec![HydrationField::new(
                 "name",
                 vec![owner_a.clone(), owner_b.clone()],
                 AttributeId::new("name").expect("attribute"),
@@ -1481,7 +1480,7 @@ fn inherited_order_fields_use_closed_multi_owner_authority() {
                     cardinality: QueryRowCardinalityV2::BoundedMany,
                     hydration: hydration.clone(),
                     order: Some(stable_order(
-                        QueryFieldV2::new(
+                        ModelField::new(
                             binding_id(0),
                             owner,
                             AttributeId::new("name").expect("attribute"),
@@ -1489,8 +1488,8 @@ fn inherited_order_fields_use_closed_multi_owner_authority() {
                         ),
                         0,
                     )),
-                    output: QueryModelOutputV2::Positional {
-                        slots: vec![QueryModelOutputSlotV2::One {
+                    output: ModelOutput::Positional {
+                        slots: vec![ModelOutputSlot::One {
                             binding: binding_id(0),
                             declared: declared.clone(),
                         }],
@@ -1519,9 +1518,9 @@ fn subtype_predicates_filter_inapplicable_concretes_but_exact_domains_reject() {
     let applicable = type_id(TypeKind::Entity, "person-a");
     let shadowed = type_id(TypeKind::Entity, "person-b");
     let attribute = AttributeId::new("name").expect("attribute");
-    let projection = |concretes: Vec<TypeId>, descriptors: Vec<HydrationDescriptorV2>| {
-        HydrationProjectionV2::new(
-            vec![HydrationBindingV2::new(
+    let projection = |concretes: Vec<TypeId>, descriptors: Vec<HydrationDescriptor>| {
+        HydrationProjection::new(
+            vec![HydrationBinding::new(
                 binding_id(0),
                 declared.clone(),
                 concretes,
@@ -1529,9 +1528,9 @@ fn subtype_predicates_filter_inapplicable_concretes_but_exact_domains_reject() {
             descriptors,
         )
     };
-    let applicable_descriptor = HydrationDescriptorV2::new(
+    let applicable_descriptor = HydrationDescriptor::new(
         applicable.clone(),
-        vec![HydrationFieldV2::new(
+        vec![HydrationField::new(
             "name",
             vec![declared.clone()],
             attribute.clone(),
@@ -1543,9 +1542,9 @@ fn subtype_predicates_filter_inapplicable_concretes_but_exact_domains_reject() {
         )],
         Vec::new(),
     );
-    let shadowed_descriptor = HydrationDescriptorV2::new(
+    let shadowed_descriptor = HydrationDescriptor::new(
         shadowed.clone(),
-        vec![HydrationFieldV2::new(
+        vec![HydrationField::new(
             "name",
             vec![shadowed.clone()],
             attribute.clone(),
@@ -1566,14 +1565,14 @@ fn subtype_predicates_filter_inapplicable_concretes_but_exact_domains_reject() {
             pipeline.clone(),
             output.clone(),
             QueryPlanV2Compatibility::new(
-                Some(QueryPatternV2::FieldValue {
-                    field: QueryFieldV2::new(
+                Some(ModelPredicate::FieldValue {
+                    field: ModelField::new(
                         binding_id(0),
                         declared.clone(),
                         attribute.clone(),
                         ValueTypeTag::String,
                     ),
-                    comparator: QueryComparatorV2::Equal,
+                    comparator: ModelComparator::Equal,
                     value: CanonicalValue::String(CanonicalString::new("Alice").expect("string"))
                         .into(),
                 }),
@@ -1582,8 +1581,8 @@ fn subtype_predicates_filter_inapplicable_concretes_but_exact_domains_reject() {
                     cardinality: QueryRowCardinalityV2::ExactlyOne,
                     hydration,
                     order: None,
-                    output: QueryModelOutputV2::Positional {
-                        slots: vec![QueryModelOutputSlotV2::One {
+                    output: ModelOutput::Positional {
+                        slots: vec![ModelOutputSlot::One {
                             binding: binding_id(0),
                             declared: declared.clone(),
                         }],
@@ -1618,34 +1617,34 @@ fn inherited_role_edges_use_closed_effective_reference_authority() {
     let role_a = RoleId::new("ancestor-a", "employee").expect("role");
     let role_b = RoleId::new("ancestor-b", "employee").expect("role");
     let concrete_role = RoleId::new("employment-leaf", "employee").expect("role");
-    let hydration = HydrationProjectionV2::new(
+    let hydration = HydrationProjection::new(
         vec![
-            HydrationBindingV2::new(binding_id(0), person.clone(), vec![person.clone()]),
-            HydrationBindingV2::new(
+            HydrationBinding::new(binding_id(0), person.clone(), vec![person.clone()]),
+            HydrationBinding::new(
                 binding_id(1),
                 declared_relation.clone(),
                 vec![concrete_relation.clone(), filtered_relation.clone()],
             ),
         ],
         vec![
-            HydrationDescriptorV2::new(person.clone(), Vec::new(), Vec::new()),
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(person.clone(), Vec::new(), Vec::new()),
+            HydrationDescriptor::new(
                 concrete_relation,
                 Vec::new(),
-                vec![HydrationRoleV2::new(
+                vec![HydrationRole::new(
                     concrete_role.clone(),
                     vec![role_a.clone(), role_b.clone(), concrete_role.clone()],
-                    vec![HydrationPlayerV2::new(person.clone(), vec![person.clone()])],
+                    vec![HydrationPlayer::new(person.clone(), vec![person.clone()])],
                     Cardinality::new(1, None).expect("cardinality"),
                     false,
                     false,
                 )],
             ),
-            HydrationDescriptorV2::new(filtered_relation.clone(), Vec::new(), Vec::new()),
+            HydrationDescriptor::new(filtered_relation.clone(), Vec::new(), Vec::new()),
         ],
     );
     let (bindings, pipeline, output, managed) = base_parts();
-    let build = |role: RoleId, hydration: HydrationProjectionV2| {
+    let build = |role: RoleId, hydration: HydrationProjection| {
         QueryPlan::new_v2_with_functions(
             bindings.clone(),
             Vec::new(),
@@ -1653,7 +1652,7 @@ fn inherited_role_edges_use_closed_effective_reference_authority() {
             pipeline.clone(),
             output.clone(),
             QueryPlanV2Compatibility::new(
-                Some(QueryPatternV2::RoleEdge {
+                Some(ModelPredicate::RoleEdge {
                     include_relation_subtypes: true,
                     player: binding_id(0),
                     relation: binding_id(1),
@@ -1665,8 +1664,8 @@ fn inherited_role_edges_use_closed_effective_reference_authority() {
                     cardinality: QueryRowCardinalityV2::ExactlyOne,
                     hydration,
                     order: None,
-                    output: QueryModelOutputV2::Positional {
-                        slots: vec![QueryModelOutputSlotV2::One {
+                    output: ModelOutput::Positional {
+                        slots: vec![ModelOutputSlot::One {
                             binding: binding_id(0),
                             declared: person.clone(),
                         }],
@@ -1694,18 +1693,18 @@ fn inherited_role_edges_use_closed_effective_reference_authority() {
         );
     }
 
-    let exact_filtered = HydrationProjectionV2::new(
+    let exact_filtered = HydrationProjection::new(
         vec![
-            HydrationBindingV2::new(binding_id(0), person.clone(), vec![person.clone()]),
-            HydrationBindingV2::new(
+            HydrationBinding::new(binding_id(0), person.clone(), vec![person.clone()]),
+            HydrationBinding::new(
                 binding_id(1),
                 declared_relation.clone(),
                 vec![filtered_relation.clone()],
             ),
         ],
         vec![
-            HydrationDescriptorV2::new(person.clone(), Vec::new(), Vec::new()),
-            HydrationDescriptorV2::new(filtered_relation, Vec::new(), Vec::new()),
+            HydrationDescriptor::new(person.clone(), Vec::new(), Vec::new()),
+            HydrationDescriptor::new(filtered_relation, Vec::new(), Vec::new()),
         ],
     );
     assert_eq!(
@@ -1726,15 +1725,15 @@ fn role_player_authority_uses_concrete_subtype_overlap_and_rejects_disjoint_bind
     let role = RoleId::new("employment", "employee").expect("role");
     let build = |declared_player: TypeId, concrete_player: TypeId| {
         let mut descriptors = vec![
-            HydrationDescriptorV2::new(employee.clone(), Vec::new(), Vec::new()),
-            HydrationDescriptorV2::new(person.clone(), Vec::new(), Vec::new()),
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(employee.clone(), Vec::new(), Vec::new()),
+            HydrationDescriptor::new(person.clone(), Vec::new(), Vec::new()),
+            HydrationDescriptor::new(
                 employment.clone(),
                 Vec::new(),
-                vec![HydrationRoleV2::new(
+                vec![HydrationRole::new(
                     role.clone(),
                     vec![role.clone()],
-                    vec![HydrationPlayerV2::new(
+                    vec![HydrationPlayer::new(
                         person.clone(),
                         vec![employee.clone(), person.clone()],
                     )],
@@ -1745,25 +1744,21 @@ fn role_player_authority_uses_concrete_subtype_overlap_and_rejects_disjoint_bind
             ),
         ];
         if concrete_player == contractor {
-            descriptors.push(HydrationDescriptorV2::new(
+            descriptors.push(HydrationDescriptor::new(
                 contractor.clone(),
                 Vec::new(),
                 Vec::new(),
             ));
         }
         descriptors.sort_by(|left, right| left.descriptor().cmp(right.descriptor()));
-        let hydration = HydrationProjectionV2::new(
+        let hydration = HydrationProjection::new(
             vec![
-                HydrationBindingV2::new(
+                HydrationBinding::new(
                     binding_id(0),
                     declared_player.clone(),
                     vec![concrete_player],
                 ),
-                HydrationBindingV2::new(
-                    binding_id(1),
-                    employment.clone(),
-                    vec![employment.clone()],
-                ),
+                HydrationBinding::new(binding_id(1), employment.clone(), vec![employment.clone()]),
             ],
             descriptors,
         );
@@ -1789,7 +1784,7 @@ fn role_player_authority_uses_concrete_subtype_overlap_and_rejects_disjoint_bind
                 columns: vec![binding_id(0), binding_id(1)],
             },
             QueryPlanV2Compatibility::new(
-                Some(QueryPatternV2::RoleEdge {
+                Some(ModelPredicate::RoleEdge {
                     include_relation_subtypes: false,
                     player: binding_id(0),
                     relation: binding_id(1),
@@ -1801,8 +1796,8 @@ fn role_player_authority_uses_concrete_subtype_overlap_and_rejects_disjoint_bind
                     cardinality: QueryRowCardinalityV2::ExactlyOne,
                     hydration,
                     order: None,
-                    output: QueryModelOutputV2::Positional {
-                        slots: vec![QueryModelOutputSlotV2::One {
+                    output: ModelOutput::Positional {
+                        slots: vec![ModelOutputSlot::One {
                             binding: binding_id(0),
                             declared: declared_player,
                         }],
@@ -1830,21 +1825,21 @@ fn role_player_only_descriptors_are_reachable_hydration_authority() {
     let person = type_id(TypeKind::Entity, "person");
     let employment = type_id(TypeKind::Relation, "employment");
     let role = RoleId::new("employment", "employee").expect("role");
-    let hydration = HydrationProjectionV2::new(
-        vec![HydrationBindingV2::new(
+    let hydration = HydrationProjection::new(
+        vec![HydrationBinding::new(
             binding_id(1),
             employment.clone(),
             vec![employment.clone()],
         )],
         vec![
-            HydrationDescriptorV2::new(person.clone(), Vec::new(), Vec::new()),
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(person.clone(), Vec::new(), Vec::new()),
+            HydrationDescriptor::new(
                 employment.clone(),
                 Vec::new(),
-                vec![HydrationRoleV2::new(
+                vec![HydrationRole::new(
                     role.clone(),
                     vec![role],
-                    vec![HydrationPlayerV2::new(person.clone(), vec![person])],
+                    vec![HydrationPlayer::new(person.clone(), vec![person])],
                     Cardinality::new(0, None).expect("cardinality"),
                     false,
                     false,
@@ -1866,8 +1861,8 @@ fn role_player_only_descriptors_are_reachable_hydration_authority() {
                 cardinality: QueryRowCardinalityV2::ExactlyOne,
                 hydration,
                 order: None,
-                output: QueryModelOutputV2::Positional {
-                    slots: vec![QueryModelOutputSlotV2::One {
+                output: ModelOutput::Positional {
+                    slots: vec![ModelOutputSlot::One {
                         binding: binding_id(1),
                         declared: employment,
                     }],
@@ -1887,13 +1882,13 @@ fn relation_player_hydration_is_shallow_unless_independently_bound() {
     let relation_c = type_id(TypeKind::Relation, "relation-c");
     let role_a = RoleId::new("relation-a", "next").expect("role");
     let role_b = RoleId::new("relation-b", "next").expect("role");
-    let descriptor_a = HydrationDescriptorV2::new(
+    let descriptor_a = HydrationDescriptor::new(
         relation_a.clone(),
         Vec::new(),
-        vec![HydrationRoleV2::new(
+        vec![HydrationRole::new(
             role_a.clone(),
             vec![role_a],
-            vec![HydrationPlayerV2::new(
+            vec![HydrationPlayer::new(
                 relation_b.clone(),
                 vec![relation_b.clone()],
             )],
@@ -1902,13 +1897,13 @@ fn relation_player_hydration_is_shallow_unless_independently_bound() {
             false,
         )],
     );
-    let descriptor_b = HydrationDescriptorV2::new(
+    let descriptor_b = HydrationDescriptor::new(
         relation_b.clone(),
         Vec::new(),
-        vec![HydrationRoleV2::new(
+        vec![HydrationRole::new(
             role_b.clone(),
             vec![role_b],
-            vec![HydrationPlayerV2::new(
+            vec![HydrationPlayer::new(
                 relation_c.clone(),
                 vec![relation_c.clone()],
             )],
@@ -1917,8 +1912,8 @@ fn relation_player_hydration_is_shallow_unless_independently_bound() {
             false,
         )],
     );
-    let descriptor_c = HydrationDescriptorV2::new(relation_c.clone(), Vec::new(), Vec::new());
-    let build = |bindings: Vec<HydrationBindingV2>, descriptors: Vec<HydrationDescriptorV2>| {
+    let descriptor_c = HydrationDescriptor::new(relation_c.clone(), Vec::new(), Vec::new());
+    let build = |bindings: Vec<HydrationBinding>, descriptors: Vec<HydrationDescriptor>| {
         QueryPlan::new_v2_with_functions(
             vec![binding(0, "a"), binding(1, "b")],
             Vec::new(),
@@ -1944,7 +1939,7 @@ fn relation_player_hydration_is_shallow_unless_independently_bound() {
                 None,
                 Vec::new(),
                 Some(ModelQueryV2::DistinctCount {
-                    hydration: HydrationProjectionV2::new(bindings, descriptors),
+                    hydration: HydrationProjection::new(bindings, descriptors),
                     root: binding_id(0),
                 }),
             ),
@@ -1953,7 +1948,7 @@ fn relation_player_hydration_is_shallow_unless_independently_bound() {
     };
 
     build(
-        vec![HydrationBindingV2::new(
+        vec![HydrationBinding::new(
             binding_id(0),
             relation_a.clone(),
             vec![relation_a.clone()],
@@ -1963,8 +1958,8 @@ fn relation_player_hydration_is_shallow_unless_independently_bound() {
     .expect("A binding hydrates B shallowly without requiring C");
     build(
         vec![
-            HydrationBindingV2::new(binding_id(0), relation_a.clone(), vec![relation_a.clone()]),
-            HydrationBindingV2::new(binding_id(1), relation_b.clone(), vec![relation_b.clone()]),
+            HydrationBinding::new(binding_id(0), relation_a.clone(), vec![relation_a.clone()]),
+            HydrationBinding::new(binding_id(1), relation_b.clone(), vec![relation_b.clone()]),
         ],
         vec![descriptor_a, descriptor_b, descriptor_c],
     )
@@ -1985,8 +1980,8 @@ fn provably_empty_binding_and_player_domains_remain_representable() {
     let output = QueryOutput::Rows {
         columns: vec![binding_id(0)],
     };
-    let empty = HydrationProjectionV2::new(
-        vec![HydrationBindingV2::new(
+    let empty = HydrationProjection::new(
+        vec![HydrationBinding::new(
             binding_id(0),
             abstract_person.clone(),
             Vec::new(),
@@ -1998,8 +1993,8 @@ fn provably_empty_binding_and_player_domains_remain_representable() {
             cardinality: QueryRowCardinalityV2::ExactlyOne,
             hydration: empty.clone(),
             order: None,
-            output: QueryModelOutputV2::Positional {
-                slots: vec![QueryModelOutputSlotV2::One {
+            output: ModelOutput::Positional {
+                slots: vec![ModelOutputSlot::One {
                     binding: binding_id(0),
                     declared: abstract_person.clone(),
                 }],
@@ -2031,24 +2026,24 @@ fn provably_empty_binding_and_player_domains_remain_representable() {
 
     let relation = type_id(TypeKind::Relation, "employment");
     let role = RoleId::new("employment", "employee").expect("role");
-    let player_hydration = HydrationProjectionV2::new(
+    let player_hydration = HydrationProjection::new(
         vec![
-            HydrationBindingV2::new(binding_id(0), abstract_person.clone(), Vec::new()),
-            HydrationBindingV2::new(binding_id(1), relation.clone(), vec![relation.clone()]),
+            HydrationBinding::new(binding_id(0), abstract_person.clone(), Vec::new()),
+            HydrationBinding::new(binding_id(1), relation.clone(), vec![relation.clone()]),
         ],
-        vec![HydrationDescriptorV2::new(
+        vec![HydrationDescriptor::new(
             relation.clone(),
             Vec::new(),
             vec![
-                HydrationRoleV2::new(
+                HydrationRole::new(
                     role.clone(),
                     vec![role.clone()],
-                    vec![HydrationPlayerV2::new(abstract_person.clone(), Vec::new())],
+                    vec![HydrationPlayer::new(abstract_person.clone(), Vec::new())],
                     Cardinality::new(0, None).expect("cardinality"),
                     false,
                     false,
                 ),
-                HydrationRoleV2::new(
+                HydrationRole::new(
                     RoleId::new("employment", "vacant").expect("role"),
                     vec![RoleId::new("employment", "vacant").expect("role")],
                     Vec::new(),
@@ -2081,7 +2076,7 @@ fn provably_empty_binding_and_player_domains_remain_representable() {
             columns: vec![binding_id(1)],
         },
         QueryPlanV2Compatibility::new(
-            Some(QueryPatternV2::RoleEdge {
+            Some(ModelPredicate::RoleEdge {
                 include_relation_subtypes: false,
                 player: binding_id(0),
                 relation: binding_id(1),
@@ -2093,8 +2088,8 @@ fn provably_empty_binding_and_player_domains_remain_representable() {
                 cardinality: QueryRowCardinalityV2::ExactlyOne,
                 hydration: player_hydration,
                 order: None,
-                output: QueryModelOutputV2::Positional {
-                    slots: vec![QueryModelOutputSlotV2::One {
+                output: ModelOutput::Positional {
+                    slots: vec![ModelOutputSlot::One {
                         binding: binding_id(1),
                         declared: relation,
                     }],
@@ -2116,21 +2111,21 @@ fn relation_role_players_keep_scalar_and_edge_authority() {
     let outer = type_id(TypeKind::Relation, "employment");
     let player = type_id(TypeKind::Relation, "assignment");
     let role = RoleId::new("employment", "assignment").expect("role");
-    let player_code = QueryFieldV2::new(
+    let player_code = ModelField::new(
         binding_id(1),
         player.clone(),
         AttributeId::new("code").expect("attribute"),
         ValueTypeTag::String,
     );
-    let hydration = HydrationProjectionV2::new(
+    let hydration = HydrationProjection::new(
         vec![
-            HydrationBindingV2::new(binding_id(0), outer.clone(), vec![outer.clone()]),
-            HydrationBindingV2::new(binding_id(1), player.clone(), vec![player.clone()]),
+            HydrationBinding::new(binding_id(0), outer.clone(), vec![outer.clone()]),
+            HydrationBinding::new(binding_id(1), player.clone(), vec![player.clone()]),
         ],
         vec![
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(
                 player.clone(),
-                vec![HydrationFieldV2::new(
+                vec![HydrationField::new(
                     "code",
                     vec![player.clone()],
                     AttributeId::new("code").expect("attribute"),
@@ -2142,13 +2137,13 @@ fn relation_role_players_keep_scalar_and_edge_authority() {
                 )],
                 Vec::new(),
             ),
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(
                 outer.clone(),
                 Vec::new(),
-                vec![HydrationRoleV2::new(
+                vec![HydrationRole::new(
                     role.clone(),
                     vec![role.clone()],
-                    vec![HydrationPlayerV2::new(player.clone(), vec![player.clone()])],
+                    vec![HydrationPlayer::new(player.clone(), vec![player.clone()])],
                     Cardinality::new(0, None).expect("cardinality"),
                     false,
                     false,
@@ -2180,17 +2175,17 @@ fn relation_role_players_keep_scalar_and_edge_authority() {
             columns: vec![binding_id(0), binding_id(1)],
         },
         QueryPlanV2Compatibility::new(
-            Some(QueryPatternV2::And {
+            Some(ModelPredicate::And {
                 patterns: vec![
-                    QueryPatternV2::FieldValue {
+                    ModelPredicate::FieldValue {
                         field: player_code,
-                        comparator: QueryComparatorV2::Equal,
+                        comparator: ModelComparator::Equal,
                         value: CanonicalValue::String(
                             CanonicalString::new("A-1").expect("canonical string"),
                         )
                         .into(),
                     },
-                    QueryPatternV2::RoleEdge {
+                    ModelPredicate::RoleEdge {
                         include_relation_subtypes: false,
                         player: binding_id(1),
                         relation: binding_id(0),
@@ -2204,8 +2199,8 @@ fn relation_role_players_keep_scalar_and_edge_authority() {
                 cardinality: QueryRowCardinalityV2::ExactlyOne,
                 hydration,
                 order: None,
-                output: QueryModelOutputV2::Positional {
-                    slots: vec![QueryModelOutputSlotV2::One {
+                output: ModelOutput::Positional {
+                    slots: vec![ModelOutputSlot::One {
                         binding: binding_id(1),
                         declared: player,
                     }],
@@ -2235,8 +2230,7 @@ fn relation_role_players_keep_scalar_and_edge_authority() {
 fn compatibility_values_preserve_released_lexicals_and_fail_closed() {
     let marker = "\"; delete $x; # \\\n";
     let large = format!("{}{}", "x".repeat(MAX_CANONICAL_STRING_BYTES + 1), marker);
-    let released =
-        CompatibilityValueV2::released_string(large.clone()).expect("released long string");
+    let released = ModelValue::released_string(large.clone()).expect("released long string");
     assert_eq!(released.released_text().as_deref(), Some(large.as_str()));
     assert_eq!(released.released_chunks().expect("chunks").len(), 2);
     let plan = compatibility_value_plan(released.clone(), ValueTypeTag::String, "name");
@@ -2261,36 +2255,34 @@ fn compatibility_values_preserve_released_lexicals_and_fail_closed() {
 
     for (value, value_type, attribute) in [
         (
-            CompatibilityValueV2::released_datetime("2024-01-01T12:30")
-                .expect("short released clock"),
+            ModelValue::released_datetime("2024-01-01T12:30").expect("short released clock"),
             ValueTypeTag::DateTime,
             "local-time",
         ),
         (
-            CompatibilityValueV2::released_datetime("2024-01-01T12:30:00.1234567891")
+            ModelValue::released_datetime("2024-01-01T12:30:00.1234567891")
                 .expect("released high precision"),
             ValueTypeTag::DateTime,
             "precise-time",
         ),
         (
-            CompatibilityValueV2::released_datetime_tz("2024-01-01T12:30Z")
+            ModelValue::released_datetime_tz("2024-01-01T12:30Z")
                 .expect("short released zoned clock"),
             ValueTypeTag::DateTimeTz,
             "zoned-time",
         ),
         (
-            CompatibilityValueV2::released_duration("P1Y").expect("released year duration"),
+            ModelValue::released_duration("P1Y").expect("released year duration"),
             ValueTypeTag::Duration,
             "year-duration",
         ),
         (
-            CompatibilityValueV2::released_duration("PT1H").expect("released hour duration"),
+            ModelValue::released_duration("PT1H").expect("released hour duration"),
             ValueTypeTag::Duration,
             "hour-duration",
         ),
         (
-            CompatibilityValueV2::released_decimal("00123.4500dec")
-                .expect("released driver decimal"),
+            ModelValue::released_decimal("00123.4500dec").expect("released driver decimal"),
             ValueTypeTag::Decimal,
             "decimal-value",
         ),
@@ -2300,9 +2292,8 @@ fn compatibility_values_preserve_released_lexicals_and_fail_closed() {
         assert_eq!(decode_query_plan(&bytes).expect("round trip"), plan);
     }
 
-    let short =
-        CompatibilityValueV2::released_datetime("2024-01-01T12:30").expect("released datetime");
-    let canonical = CompatibilityValueV2::canonical(CanonicalValue::DateTime(
+    let short = ModelValue::released_datetime("2024-01-01T12:30").expect("released datetime");
+    let canonical = ModelValue::canonical(CanonicalValue::DateTime(
         "2024-01-01T12:30:00"
             .parse::<CanonicalDateTime>()
             .expect("canonical datetime"),
@@ -2311,17 +2302,16 @@ fn compatibility_values_preserve_released_lexicals_and_fail_closed() {
         short.semantic_cmp_same_domain(&canonical),
         Some(std::cmp::Ordering::Equal)
     );
-    let year = CompatibilityValueV2::released_duration("P1Y").expect("year");
-    let month = CompatibilityValueV2::canonical(CanonicalValue::Duration(
+    let year = ModelValue::released_duration("P1Y").expect("year");
+    let month = ModelValue::canonical(CanonicalValue::Duration(
         "P1M".parse::<CanonicalDuration>().expect("month"),
     ));
     assert_eq!(
         year.semantic_cmp_same_domain(&month),
         Some(std::cmp::Ordering::Greater)
     );
-    let released_decimal =
-        CompatibilityValueV2::released_decimal("00123.4500dec").expect("released decimal");
-    let canonical_decimal = CompatibilityValueV2::canonical(CanonicalValue::Decimal(
+    let released_decimal = ModelValue::released_decimal("00123.4500dec").expect("released decimal");
+    let canonical_decimal = ModelValue::canonical(CanonicalValue::Decimal(
         type_bridge_contract::value::DecimalValue::new("123.45").expect("canonical decimal"),
     ));
     assert_eq!(
@@ -2330,22 +2320,22 @@ fn compatibility_values_preserve_released_lexicals_and_fail_closed() {
     );
 
     for invalid in [
-        CompatibilityValueV2::released_datetime("2024-01-01T12:30; delete $x;"),
-        CompatibilityValueV2::released_duration("P1Y; delete $x;"),
+        ModelValue::released_datetime("2024-01-01T12:30; delete $x;"),
+        ModelValue::released_duration("P1Y; delete $x;"),
     ] {
         assert!(invalid.is_err(), "temporal markers must not enter the wire");
     }
     assert!(
-        CompatibilityValueV2::released_datetime("2024-01-01T12:30:00").is_err(),
+        ModelValue::released_datetime("2024-01-01T12:30:00").is_err(),
         "ordinary canonical values have exactly one representation"
     );
     assert!(
-        CompatibilityValueV2::released_decimal("123.45").is_err(),
+        ModelValue::released_decimal("123.45").is_err(),
         "canonical decimal values have exactly one representation",
     );
 
-    let ceiling = CompatibilityValueV2::released_string("x".repeat(MAX_CANONICAL_BYTES))
-        .expect("raw ceiling");
+    let ceiling =
+        ModelValue::released_string("x".repeat(MAX_CANONICAL_BYTES)).expect("raw ceiling");
     let ceiling_plan = compatibility_value_plan(ceiling, ValueTypeTag::String, "ceiling");
     assert!(
         ceiling_plan.canonical_bytes().is_err(),
@@ -2353,7 +2343,7 @@ fn compatibility_values_preserve_released_lexicals_and_fail_closed() {
     );
 
     // The artifact ceiling belongs to the plan's limits, not to the value.
-    let oversized = CompatibilityValueV2::released_string("x".repeat(MAX_CANONICAL_BYTES + 1))
+    let oversized = ModelValue::released_string("x".repeat(MAX_CANONICAL_BYTES + 1))
         .expect("a value alone has no artifact ceiling");
     let refused = compatibility_value_plan_under(
         oversized.clone(),
@@ -2387,8 +2377,7 @@ fn compatibility_values_preserve_released_lexicals_and_fail_closed() {
 #[test]
 fn forged_released_datetime_with_out_of_range_seconds_fails_decode() {
     let plan = compatibility_value_plan(
-        CompatibilityValueV2::released_datetime("2024-01-01T12:34")
-            .expect("released two-component clock"),
+        ModelValue::released_datetime("2024-01-01T12:34").expect("released two-component clock"),
         ValueTypeTag::DateTime,
         "local-time",
     );

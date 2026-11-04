@@ -3359,7 +3359,7 @@ fn scope_failure(
 mod completeness_guard {
     use super::*;
     use type_bridge_contract::query_plan::{
-        ModelQueryV2, QueryModelOutputSlotV2, QueryModelOutputV2, QueryRowCardinalityV2,
+        ModelOutput, ModelOutputSlot, ModelQueryV2, QueryRowCardinalityV2,
     };
 
     #[test]
@@ -3475,18 +3475,18 @@ mod completeness_guard {
                 | QueryRowCardinalityV2::Complete => {}
             }
         }
-        fn model_slot(value: &QueryModelOutputSlotV2) {
+        fn model_slot(value: &ModelOutputSlot) {
             match value {
-                QueryModelOutputSlotV2::One { .. }
-                | QueryModelOutputSlotV2::Collect { distinct: true, .. }
-                | QueryModelOutputSlotV2::Collect {
+                ModelOutputSlot::One { .. }
+                | ModelOutputSlot::Collect { distinct: true, .. }
+                | ModelOutputSlot::Collect {
                     distinct: false, ..
                 } => {}
             }
         }
-        fn model_output(value: &QueryModelOutputV2) {
+        fn model_output(value: &ModelOutput) {
             match value {
-                QueryModelOutputV2::Positional { .. } | QueryModelOutputV2::Named { .. } => {}
+                ModelOutput::Positional { .. } | ModelOutput::Named { .. } => {}
             }
         }
         fn model_query(value: &ModelQueryV2) {
@@ -3538,8 +3538,8 @@ mod completeness_guard {
             value_type as fn(ValueTypeTag),
             canonical_value as fn(&CanonicalValue),
             row_cardinality as fn(QueryRowCardinalityV2),
-            model_slot as fn(&QueryModelOutputSlotV2),
-            model_output as fn(&QueryModelOutputV2),
+            model_slot as fn(&ModelOutputSlot),
+            model_output as fn(&ModelOutput),
             model_query as fn(&ModelQueryV2),
             input_optionality as fn(&InputColumn),
             local_form as fn(&LocalFunction),

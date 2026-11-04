@@ -36,8 +36,8 @@ use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan::{
-    ModelQueryV2, QueryComparatorV2, QueryInvocation, QueryOperation, QueryOutput, QueryPattern,
-    QueryPatternV2, ReadStage,
+    ModelComparator, ModelPredicate, ModelQueryV2, QueryInvocation, QueryOperation, QueryOutput,
+    QueryPattern, ReadStage,
 };
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
@@ -587,12 +587,12 @@ fn a_representative_v1_request_adapts_validates_and_lowers() {
     let compatibility = plan
         .v2_compatibility()
         .expect("adapted plans carry compatibility semantics");
-    let Some(QueryPatternV2::And { patterns }) = compatibility.predicate() else {
+    let Some(ModelPredicate::And { patterns }) = compatibility.predicate() else {
         panic!("representative predicate remains a compatibility conjunction");
     };
-    assert!(matches!(patterns[0], QueryPatternV2::RoleEdge { .. }));
-    assert!(matches!(patterns[1], QueryPatternV2::FieldValue { .. }));
-    assert!(matches!(patterns[2], QueryPatternV2::Not { .. }));
+    assert!(matches!(patterns[0], ModelPredicate::RoleEdge { .. }));
+    assert!(matches!(patterns[1], ModelPredicate::FieldValue { .. }));
+    assert!(matches!(patterns[2], ModelPredicate::Not { .. }));
 
     // The adapted plan is a real V2 plan: it validates and lowers, and the
     // renamed member surfaces as its provider label, never its field name.
@@ -698,7 +698,7 @@ fn bounded_reachability_adapts_to_the_canonical_v2_pattern() {
         .expect("adapted plan");
     assert!(matches!(
         compatibility.predicate(),
-        Some(QueryPatternV2::Reachable {
+        Some(ModelPredicate::Reachable {
             min_depth: 0,
             max_depth: 3,
             source,
@@ -777,7 +777,7 @@ fn an_inherited_role_keeps_its_canonical_declaring_relation() {
     let fixture = schema_fixture();
     let adapted = adapt(inherited_role_plan(), fetch_rows_operation(), &fixture)
         .expect("an exact child relation can use an inherited canonical role");
-    let Some(QueryPatternV2::RoleEdge {
+    let Some(ModelPredicate::RoleEdge {
         relation_type,
         role,
         ..
@@ -1223,22 +1223,19 @@ fn every_released_scalar_domain_preserves_its_value_contract() {
 fn every_comparator_and_nested_boolean_shape_adapts_exactly() {
     let fixture = schema_fixture();
     let comparators = [
-        (ComparisonOp::Equal, QueryComparatorV2::Equal),
-        (ComparisonOp::NotEqual, QueryComparatorV2::NotEqual),
-        (ComparisonOp::LessThan, QueryComparatorV2::Less),
-        (
-            ComparisonOp::LessThanOrEqual,
-            QueryComparatorV2::LessOrEqual,
-        ),
-        (ComparisonOp::GreaterThan, QueryComparatorV2::Greater),
+        (ComparisonOp::Equal, ModelComparator::Equal),
+        (ComparisonOp::NotEqual, ModelComparator::NotEqual),
+        (ComparisonOp::LessThan, ModelComparator::Less),
+        (ComparisonOp::LessThanOrEqual, ModelComparator::LessOrEqual),
+        (ComparisonOp::GreaterThan, ModelComparator::Greater),
         (
             ComparisonOp::GreaterThanOrEqual,
-            QueryComparatorV2::GreaterOrEqual,
+            ModelComparator::GreaterOrEqual,
         ),
-        (ComparisonOp::Contains, QueryComparatorV2::Contains),
-        (ComparisonOp::StartsWith, QueryComparatorV2::StartsWith),
-        (ComparisonOp::EndsWith, QueryComparatorV2::EndsWith),
-        (ComparisonOp::Regex, QueryComparatorV2::Regex),
+        (ComparisonOp::Contains, ModelComparator::Contains),
+        (ComparisonOp::StartsWith, ModelComparator::StartsWith),
+        (ComparisonOp::EndsWith, ModelComparator::EndsWith),
+        (ComparisonOp::Regex, ModelComparator::Regex),
     ];
     for (released, expected) in comparators {
         let adapted = adapt(
@@ -1280,7 +1277,7 @@ fn every_comparator_and_nested_boolean_shape_adapts_exactly() {
             &fixture,
         )
         .expect("comparator shape adapts");
-        let Some(QueryPatternV2::Not { pattern }) = adapted
+        let Some(ModelPredicate::Not { pattern }) = adapted
             .validated()
             .plan()
             .v2_compatibility()
@@ -1288,14 +1285,14 @@ fn every_comparator_and_nested_boolean_shape_adapts_exactly() {
         else {
             panic!("outer negation preserved");
         };
-        let QueryPatternV2::Or { patterns } = pattern.as_ref() else {
+        let ModelPredicate::Or { patterns } = pattern.as_ref() else {
             panic!("nested disjunction preserved");
         };
         assert!(matches!(
             &patterns[0],
-            QueryPatternV2::FieldValue { comparator, .. } if *comparator == expected
+            ModelPredicate::FieldValue { comparator, .. } if *comparator == expected
         ));
-        assert!(matches!(&patterns[1], QueryPatternV2::And { patterns } if patterns.len() == 1));
+        assert!(matches!(&patterns[1], ModelPredicate::And { patterns } if patterns.len() == 1));
     }
 }
 
@@ -1303,17 +1300,14 @@ fn every_comparator_and_nested_boolean_shape_adapts_exactly() {
 fn field_comparison_order_and_output_variants_keep_their_exact_contracts() {
     let fixture = schema_fixture();
     for (operator, expected_comparator) in [
-        (ComparisonOp::Equal, QueryComparatorV2::Equal),
-        (ComparisonOp::NotEqual, QueryComparatorV2::NotEqual),
-        (ComparisonOp::LessThan, QueryComparatorV2::Less),
-        (
-            ComparisonOp::LessThanOrEqual,
-            QueryComparatorV2::LessOrEqual,
-        ),
-        (ComparisonOp::GreaterThan, QueryComparatorV2::Greater),
+        (ComparisonOp::Equal, ModelComparator::Equal),
+        (ComparisonOp::NotEqual, ModelComparator::NotEqual),
+        (ComparisonOp::LessThan, ModelComparator::Less),
+        (ComparisonOp::LessThanOrEqual, ModelComparator::LessOrEqual),
+        (ComparisonOp::GreaterThan, ModelComparator::Greater),
         (
             ComparisonOp::GreaterThanOrEqual,
-            QueryComparatorV2::GreaterOrEqual,
+            ModelComparator::GreaterOrEqual,
         ),
     ] {
         let plan = MatchPlan {
@@ -1382,7 +1376,7 @@ fn field_comparison_order_and_output_variants_keep_their_exact_contracts() {
                     .plan()
                     .v2_compatibility()
                     .and_then(|compatibility| compatibility.predicate()),
-                Some(QueryPatternV2::FieldComparison { comparator, .. })
+                Some(ModelPredicate::FieldComparison { comparator, .. })
                     if *comparator == expected_comparator
             ));
             assert!(matches!(
@@ -1392,7 +1386,7 @@ fn field_comparison_order_and_output_variants_keep_their_exact_contracts() {
                     .v2_compatibility()
                     .and_then(|compatibility| compatibility.model_query()),
                 Some(ModelQueryV2::Rows {
-                    output: type_bridge_contract::query_plan::QueryModelOutputV2::Named { slots },
+                    output: type_bridge_contract::query_plan::ModelOutput::Named { slots },
                     ..
                 }) if slots.len() == 2
             ));
@@ -1451,7 +1445,7 @@ fn the_complete_released_shape_inventory_adapts() {
             .plan()
             .v2_compatibility()
             .and_then(|compatibility| compatibility.predicate()),
-        Some(QueryPatternV2::Or { patterns }) if patterns.len() == 4
+        Some(ModelPredicate::Or { patterns }) if patterns.len() == 4
     ));
 
     let mut subtype_links = representative_plan();
@@ -1463,10 +1457,10 @@ fn the_complete_released_shape_inventory_adapts() {
             .plan()
             .v2_compatibility()
             .and_then(|compatibility| compatibility.predicate()),
-        Some(QueryPatternV2::And { patterns })
+        Some(ModelPredicate::And { patterns })
             if matches!(
                 patterns.first(),
-                Some(QueryPatternV2::RoleEdge {
+                Some(ModelPredicate::RoleEdge {
                     include_relation_subtypes: true,
                     ..
                 })
@@ -1541,7 +1535,7 @@ fn the_complete_released_shape_inventory_adapts() {
             .and_then(|compatibility| compatibility.model_query()),
         Some(ModelQueryV2::Page {
             include_total: true,
-            output: type_bridge_contract::query_plan::QueryModelOutputV2::Named { slots },
+            output: type_bridge_contract::query_plan::ModelOutput::Named { slots },
             ..
         }) if slots.len() == 2
     ));
@@ -1776,7 +1770,7 @@ fn typed_strings_honor_an_explicitly_raised_string_limit() {
     .unwrap();
     let adapted = adapt_large_string(limits).unwrap();
     assert!(
-        matches!(adapted.validated().plan().v2_compatibility().and_then(|compatibility| compatibility.predicate()), Some(QueryPatternV2::FieldValue { value, .. }) if value.released_text().is_some())
+        matches!(adapted.validated().plan().v2_compatibility().and_then(|compatibility| compatibility.predicate()), Some(ModelPredicate::FieldValue { value, .. }) if value.released_text().is_some())
     );
 }
 

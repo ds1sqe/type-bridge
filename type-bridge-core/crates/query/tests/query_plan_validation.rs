@@ -10,10 +10,10 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
-    HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2, HydrationProjectionV2,
-    InputColumn, InputColumnId, ModelQueryV2, OrderDirection, OrderTerm, QueryModelOutputSlotV2,
-    QueryModelOutputV2, QueryOperand, QueryOutput, QueryPattern, QueryPlan,
-    QueryPlanV2Compatibility, QueryRowCardinalityV2, QueryWindowV2, ReadStage,
+    HydrationBinding, HydrationDescriptor, HydrationField, HydrationProjection, InputColumn,
+    InputColumnId, ModelOutput, ModelOutputSlot, ModelQueryV2, OrderDirection, OrderTerm,
+    QueryOperand, QueryOutput, QueryPattern, QueryPlan, QueryPlanV2Compatibility,
+    QueryRowCardinalityV2, QueryWindowV2, ReadStage,
 };
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueSet,
@@ -58,15 +58,15 @@ fn binding_id(id: u16) -> BindingId {
 fn hydrated_exact_person_plan(managed: &ManagedSchemaState, cardinality: Cardinality) -> QueryPlan {
     let person = type_id(TypeKind::Entity, "person");
     let name = AttributeId::new("name").expect("attribute");
-    let hydration = HydrationProjectionV2::new(
-        vec![HydrationBindingV2::new(
+    let hydration = HydrationProjection::new(
+        vec![HydrationBinding::new(
             binding_id(0),
             person.clone(),
             vec![person.clone()],
         )],
-        vec![HydrationDescriptorV2::new(
+        vec![HydrationDescriptor::new(
             person.clone(),
-            vec![HydrationFieldV2::new(
+            vec![HydrationField::new(
                 // This is deliberately a model-facing alias rather than the
                 // provider label. Server schema validation must ignore it and
                 // lowering must never emit it as TypeQL.
@@ -105,8 +105,8 @@ fn hydrated_exact_person_plan(managed: &ManagedSchemaState, cardinality: Cardina
                 cardinality: QueryRowCardinalityV2::ExactlyOne,
                 hydration,
                 order: None,
-                output: QueryModelOutputV2::Positional {
-                    slots: vec![QueryModelOutputSlotV2::One {
+                output: ModelOutput::Positional {
+                    slots: vec![ModelOutputSlot::One {
                         binding: binding_id(0),
                         declared: person,
                     }],

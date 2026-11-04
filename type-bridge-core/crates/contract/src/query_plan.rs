@@ -44,16 +44,21 @@ pub use v3::{
     QUERY_PLAN_CANONICALIZATION_V3, QUERY_PLAN_FORMAT_V3, QueryPlanV3, decode_query_plan_v3,
 };
 
+#[path = "query_model.rs"]
+mod model;
+pub use model::{
+    HydrationBinding, HydrationDescriptor, HydrationField, HydrationPlayer, HydrationProjection,
+    HydrationRole, ModelComparator, ModelField, ModelMissingOrder, ModelNamedOutputSlot,
+    ModelOrderDirection, ModelOrderTerm, ModelOutput, ModelOutputSlot, ModelPredicate,
+    ModelReductionKey, ModelReductionKind, ModelReductionTerm, ModelStableOrder, ModelValue,
+    ModelValueKind,
+};
+
 #[path = "query_plan_v2.rs"]
 mod v2;
 pub use v2::{
-    CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
-    HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, ModelOutputV2, ModelQueryV2,
-    QueryBindingPairV2, QueryComparatorV2, QueryFieldV2, QueryMissingOrderV2,
-    QueryModelOutputSlotV2, QueryModelOutputV2, QueryNamedOutputSlotV2, QueryOrderDirectionV2,
-    QueryOrderTermV2, QueryPatternV2, QueryPlanV2Compatibility, QueryReductionGroupV2,
-    QueryReductionKindV2, QueryReductionTermV2, QueryRowCardinalityV2, QueryStableOrderV2,
-    QueryWindowV2, ReleasedValueKindV2,
+    ModelOutputV2, ModelQueryV2, QueryBindingPairV2, QueryPlanV2Compatibility,
+    QueryRowCardinalityV2, QueryWindowV2,
 };
 
 /// The exact wire discriminator for first-format query plans.

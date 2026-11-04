@@ -23,9 +23,9 @@ use type_bridge_contract::query_model_evidence::{
 };
 use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
 use type_bridge_contract::query_plan::{
-    HydrationDescriptorV2, HydrationProjectionV2, ModelQueryV2, QueryFieldV2, QueryInvocation,
-    QueryModelOutputSlotV2, QueryModelOutputV2, QueryReductionGroupV2, QueryReductionKindV2,
-    QueryReductionTermV2, QueryRowCardinalityV2, QueryStableOrderV2,
+    HydrationDescriptor, HydrationProjection, ModelField, ModelOutput, ModelOutputSlot,
+    ModelQueryV2, ModelReductionKey, ModelReductionKind, ModelReductionTerm, ModelStableOrder,
+    QueryInvocation, QueryRowCardinalityV2,
 };
 use type_bridge_contract::query_remote_v2::{RemoteResultKindV2, validate_remote_outcome_v2};
 use type_bridge_contract::value::ValueTypeTag;
@@ -1117,7 +1117,7 @@ fn typed_hydration_batches(
 }
 
 fn typed_hydration_descriptor(
-    descriptor: &HydrationDescriptorV2,
+    descriptor: &HydrationDescriptor,
 ) -> ExecResult<TypedHydrationDescriptor> {
     Ok(TypedHydrationDescriptor {
         type_name: descriptor.descriptor().label().as_str().to_owned(),
@@ -1202,9 +1202,9 @@ async fn execute_rows(
     transaction: &mut ModelExecutionTarget<'_>,
     validated: &ValidatedQuery,
     cardinality: QueryRowCardinalityV2,
-    hydration: &HydrationProjectionV2,
-    order: Option<&QueryStableOrderV2>,
-    output: &QueryModelOutputV2,
+    hydration: &HydrationProjection,
+    order: Option<&ModelStableOrder>,
+    output: &ModelOutput,
     offset: u64,
     limit: u64,
     mut statement: TypedFetchRows,
@@ -1495,8 +1495,8 @@ impl ModelConsumer for PageRematchConsumer<'_, '_> {
 async fn execute_page(
     transaction: &mut ModelExecutionTarget<'_>,
     validated: &ValidatedQuery,
-    hydration: &HydrationProjectionV2,
-    output: &QueryModelOutputV2,
+    hydration: &HydrationProjection,
+    output: &ModelOutput,
     root: BindingId,
     offset: u64,
     limit: u64,
@@ -1598,13 +1598,13 @@ async fn execute_page(
         let mut slots = Vec::with_capacity(output.slots().len());
         for slot in output.slots() {
             match slot {
-                QueryModelOutputSlotV2::One { binding, declared } => {
+                ModelOutputSlot::One { binding, declared } => {
                     slots.push(SlotDraft::Singular {
                         declared: declared.clone(),
                         iid: group[0].bindings[&binding.get()].clone(),
                     });
                 }
-                QueryModelOutputSlotV2::Collect {
+                ModelOutputSlot::Collect {
                     binding,
                     declared,
                     distinct,
@@ -1654,10 +1654,10 @@ async fn execute_page(
 async fn execute_reduction(
     transaction: &mut ModelExecutionTarget<'_>,
     validated: &ValidatedQuery,
-    hydration: &HydrationProjectionV2,
+    hydration: &HydrationProjection,
     root: BindingId,
-    group: Option<&QueryReductionGroupV2>,
-    reducers: &[QueryReductionTermV2],
+    group: Option<&ModelReductionKey>,
+    reducers: &[ModelReductionTerm],
     scan: TypedRootScan,
     mut rematch: Option<TypedPageRematch>,
     budget: &mut ExecutionBudget,
@@ -1768,20 +1768,20 @@ async fn execute_reduction(
 }
 
 fn reduction_fields<'field>(
-    group: Option<&'field QueryReductionGroupV2>,
-    reducers: &'field [QueryReductionTermV2],
-) -> Vec<&'field QueryFieldV2> {
+    group: Option<&'field ModelReductionKey>,
+    reducers: &'field [ModelReductionTerm],
+) -> Vec<&'field ModelField> {
     let mut fields = Vec::new();
     match group {
-        Some(QueryReductionGroupV2::Field { field }) => fields.push(field),
-        Some(QueryReductionGroupV2::Fields { fields: grouped }) => {
+        Some(ModelReductionKey::Field { field }) => fields.push(field),
+        Some(ModelReductionKey::Fields { fields: grouped }) => {
             for field in grouped {
                 if !fields.contains(&field) {
                     fields.push(field);
                 }
             }
         }
-        None | Some(QueryReductionGroupV2::Binding { .. }) => {}
+        None | Some(ModelReductionKey::Binding { .. }) => {}
     }
     for term in reducers {
         if let Some(field) = term.input()
@@ -1797,7 +1797,7 @@ fn provider_reduction_solution(
     solution: &Solution,
     graph: &GraphBuilder,
     authority: &HydrationAuthority<'_>,
-    fields: &[&QueryFieldV2],
+    fields: &[&ModelField],
 ) -> ExecResult<ProviderSolutionEvidence> {
     let bindings = solution
         .bindings
@@ -1857,7 +1857,7 @@ fn descriptor_id(value: &TypeId) -> ExecResult<DescriptorId> {
     Ok(DescriptorId::new(format!("{prefix}:{}", value.label())))
 }
 
-fn reduction_field_id(field: &QueryFieldV2) -> FieldId {
+fn reduction_field_id(field: &ModelField) -> FieldId {
     let prefix = match field.descriptor().kind() {
         TypeKind::Entity => "entity",
         TypeKind::Relation => "relation",
@@ -1870,22 +1870,20 @@ fn reduction_field_id(field: &QueryFieldV2) -> FieldId {
 }
 
 fn lower_reduction_contract(
-    group: Option<&QueryReductionGroupV2>,
-    reducers: &[QueryReductionTermV2],
+    group: Option<&ModelReductionKey>,
+    reducers: &[ModelReductionTerm],
 ) -> ExecResult<(Option<LoweredReduceGroup>, Vec<LoweredReduceTerm>)> {
     let group = group
         .map(|group| {
             Ok(match group {
-                QueryReductionGroupV2::Binding { binding } => {
+                ModelReductionKey::Binding { binding } => {
                     LoweredReduceGroup::Binding(MatchBindingId::new(binding.get()))
                 }
-                QueryReductionGroupV2::Field { field } => {
-                    LoweredReduceGroup::Field(BoundFieldId::new(
-                        MatchBindingId::new(field.binding().get()),
-                        reduction_field_id(field),
-                    ))
-                }
-                QueryReductionGroupV2::Fields { fields } => LoweredReduceGroup::Fields(
+                ModelReductionKey::Field { field } => LoweredReduceGroup::Field(BoundFieldId::new(
+                    MatchBindingId::new(field.binding().get()),
+                    reduction_field_id(field),
+                )),
+                ModelReductionKey::Fields { fields } => LoweredReduceGroup::Fields(
                     fields
                         .iter()
                         .map(|field| {
@@ -1903,13 +1901,13 @@ fn lower_reduction_contract(
         .iter()
         .map(|term| {
             let reduction = match term.reduction() {
-                QueryReductionKindV2::Count => Reduction::Count,
-                QueryReductionKindV2::Sum => Reduction::Sum,
-                QueryReductionKindV2::Min => Reduction::Min,
-                QueryReductionKindV2::Max => Reduction::Max,
-                QueryReductionKindV2::Mean => Reduction::Mean,
-                QueryReductionKindV2::Median => Reduction::Median,
-                QueryReductionKindV2::Std => Reduction::Std,
+                ModelReductionKind::Count => Reduction::Count,
+                ModelReductionKind::Sum => Reduction::Sum,
+                ModelReductionKind::Min => Reduction::Min,
+                ModelReductionKind::Max => Reduction::Max,
+                ModelReductionKind::Mean => Reduction::Mean,
+                ModelReductionKind::Median => Reduction::Median,
+                ModelReductionKind::Std => Reduction::Std,
             };
             let input = term.input().map(|field| LoweredReduceInput {
                 binding: MatchBindingId::new(field.binding().get()),
@@ -1928,13 +1926,13 @@ fn lower_reduction_contract(
 
 fn encode_reduction_row(
     row: &ReductionRow,
-    group: Option<&QueryReductionGroupV2>,
+    group: Option<&ModelReductionKey>,
     authority: &HydrationAuthority<'_>,
     graph: &FinishedGraph,
 ) -> ExecResult<ModelReductionRow> {
     let group_value = match group {
         None => None,
-        Some(QueryReductionGroupV2::Binding { binding }) => {
+        Some(ModelReductionKey::Binding { binding }) => {
             let thing = row.group().ok_or_else(|| {
                 evidence_error(
                     "query_v2_model_reduction_group",
@@ -1946,7 +1944,7 @@ fn encode_reduction_row(
                 graph.reference(declared, thing.concept_id().as_str())?,
             ))
         }
-        Some(QueryReductionGroupV2::Field { .. }) => Some(ModelReductionGroup::field(
+        Some(ModelReductionKey::Field { .. }) => Some(ModelReductionGroup::field(
             adapt_value(row.field_group().ok_or_else(|| {
                 evidence_error(
                     "query_v2_model_reduction_group",
@@ -1955,7 +1953,7 @@ fn encode_reduction_row(
             })?)
             .map_err(PlanExecutionError::Validation)?,
         )),
-        Some(QueryReductionGroupV2::Fields { .. }) => Some(ModelReductionGroup::fields(
+        Some(ModelReductionKey::Fields { .. }) => Some(ModelReductionGroup::fields(
             row.field_groups()
                 .ok_or_else(|| {
                     evidence_error(
@@ -2024,7 +2022,7 @@ fn cancelled_error(code: &'static str, message: &'static str) -> PlanExecutionEr
 mod tests {
     use super::*;
     use type_bridge_contract::id::AttributeId;
-    use type_bridge_contract::query_plan::{CompatibilityValueV2, HydrationFieldV2};
+    use type_bridge_contract::query_plan::{HydrationField, ModelValue};
     use type_bridge_contract::value::{CanonicalValue, Cardinality, DecimalValue};
 
     #[test]
@@ -2073,7 +2071,7 @@ mod tests {
     #[test]
     fn unordered_hydration_collapses_released_decimal_spellings_semantically() {
         let person = TypeId::new(TypeKind::Entity, "person").expect("type");
-        let field = HydrationFieldV2::new(
+        let field = HydrationField::new(
             "balance",
             vec![person],
             AttributeId::new("balance").expect("attribute"),
@@ -2083,14 +2081,13 @@ mod tests {
             false,
             false,
         );
-        let canonical_one = CompatibilityValueV2::canonical(CanonicalValue::Decimal(
+        let canonical_one = ModelValue::canonical(CanonicalValue::Decimal(
             DecimalValue::new("1").expect("decimal"),
         ));
-        let canonical_two = CompatibilityValueV2::canonical(CanonicalValue::Decimal(
+        let canonical_two = ModelValue::canonical(CanonicalValue::Decimal(
             DecimalValue::new("2").expect("decimal"),
         ));
-        let released_one =
-            CompatibilityValueV2::released_decimal("1.0dec").expect("released decimal");
+        let released_one = ModelValue::released_decimal("1.0dec").expect("released decimal");
         let mut values = vec![canonical_two.clone(), released_one, canonical_one.clone()];
 
         canonicalize_field_values(&field, &mut values).expect("canonical hydration values");

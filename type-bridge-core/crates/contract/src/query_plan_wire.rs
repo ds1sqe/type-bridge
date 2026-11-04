@@ -861,7 +861,7 @@ fn rebuild_bindings(values: Vec<u16>) -> Result<Vec<BindingId>, Diagnostic> {
 }
 
 // V3 shares the released closed read vocabulary without exposing its DTOs.
-pub(crate) fn rebuild_read_stage_v2(value: Value) -> Result<ReadStage, Diagnostic> {
+pub(crate) fn rebuild_read_stage(value: Value) -> Result<ReadStage, Diagnostic> {
     serde_json::from_value::<ReadStageWireV2>(value)
         .map_err(|_| {
             failure(

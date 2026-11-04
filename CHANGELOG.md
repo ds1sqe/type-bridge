@@ -200,6 +200,18 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust shared model vocabulary remains under `query_plan` with native names:
+  `CompatibilityValueV2` → `ModelValue`, `ReleasedValueKindV2` → `ModelValueKind`,
+  `QueryFieldV2` → `ModelField`, `QueryComparatorV2` → `ModelComparator`,
+  `QueryPatternV2` → `ModelPredicate`, `QueryOrderDirectionV2` → `ModelOrderDirection`,
+  `QueryMissingOrderV2` → `ModelMissingOrder`, `QueryOrderTermV2` → `ModelOrderTerm`,
+  `QueryStableOrderV2` → `ModelStableOrder`, `QueryModelOutputSlotV2` → `ModelOutputSlot`,
+  `QueryNamedOutputSlotV2` → `ModelNamedOutputSlot`, `QueryModelOutputV2` → `ModelOutput`,
+  `QueryReductionKindV2` → `ModelReductionKind`, `QueryReductionTermV2` → `ModelReductionTerm`,
+  `QueryReductionGroupV2` → `ModelReductionKey`. `HydrationFieldV2`, `HydrationPlayerV2`,
+  `HydrationRoleV2`, `HydrationDescriptorV2`, `HydrationBindingV2`, and
+  `HydrationProjectionV2` drop their `V2` suffix. Their serialized forms stay unchanged.
+
 - Rust hydration evidence moves from `query_remote_v2` to `query_model_evidence`:
   `HydrationNodeIdV2`, `HydrationReferenceV2`, `HydrationAttributeEvidenceV2`,
   `HydrationRoleEvidenceV2`, `HydrationNodeKindV2`, `HydrationNodeV2`,

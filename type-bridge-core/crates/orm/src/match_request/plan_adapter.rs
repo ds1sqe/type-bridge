@@ -408,8 +408,8 @@ fn comparator(operator: ComparisonOp) -> ValueComparator {
 pub(crate) struct AdaptedMatchRequest {
     pub(crate) plans: Vec<QueryPlanV3>,
     pub(crate) layout: Layout,
-    pub(crate) hydration: type_bridge_contract::query_plan::HydrationProjectionV2,
-    pub(crate) predicate: Option<type_bridge_contract::query_plan::QueryPatternV2>,
+    pub(crate) hydration: type_bridge_contract::query_plan::HydrationProjection,
+    pub(crate) predicate: Option<type_bridge_contract::query_plan::ModelPredicate>,
 }
 
 pub(crate) const LONG_SUM_BASE: i64 = 1_i64 << 32;
@@ -439,8 +439,8 @@ pub(crate) enum Layout {
     },
     Reduction {
         root: BindingId,
-        group: Option<type_bridge_contract::query_plan::QueryReductionGroupV2>,
-        reducers: Vec<type_bridge_contract::query_plan::QueryReductionTermV2>,
+        group: Option<type_bridge_contract::query_plan::ModelReductionKey>,
+        reducers: Vec<type_bridge_contract::query_plan::ModelReductionTerm>,
         anchor: usize,
         terms: Vec<Option<ReductionInput>>,
         hydration: Vec<(usize, BindingId, Vec<TypeId>)>,
@@ -450,9 +450,9 @@ pub(crate) enum Layout {
         mapping: Option<usize>,
         hydration: Vec<(usize, BindingId, Vec<TypeId>)>,
         total: Option<usize>,
-        witnesses: Vec<(type_bridge_contract::query_plan::QueryFieldV2, BindingId)>,
-        output: type_bridge_contract::query_plan::QueryModelOutputV2,
-        order: type_bridge_contract::query_plan::QueryStableOrderV2,
+        witnesses: Vec<(type_bridge_contract::query_plan::ModelField, BindingId)>,
+        output: type_bridge_contract::query_plan::ModelOutput,
+        order: type_bridge_contract::query_plan::ModelStableOrder,
     },
 }
 
@@ -734,24 +734,20 @@ pub(crate) fn adapt_match_request_under_authority(
         | MatchOperation::ReduceByField { root, reducers, .. }
         | MatchOperation::ReduceByFields { root, reducers, .. }) => {
             use super::descriptor_plan::{adapt_field, adapt_reducers};
-            use type_bridge_contract::query_plan::QueryReductionGroupV2;
+            use type_bridge_contract::query_plan::ModelReductionKey;
             let group = match operation {
                 MatchOperation::ReduceBy { group, .. } => group
-                    .map(|binding| {
-                        BindingId::new(binding.get()).map(QueryReductionGroupV2::binding)
-                    })
+                    .map(|binding| BindingId::new(binding.get()).map(ModelReductionKey::binding))
                     .transpose()?,
-                MatchOperation::ReduceByField { group, .. } => Some(QueryReductionGroupV2::field(
+                MatchOperation::ReduceByField { group, .. } => Some(ModelReductionKey::field(
                     adapt_field(group, request.request(), registry)?,
                 )),
-                MatchOperation::ReduceByFields { groups, .. } => {
-                    Some(QueryReductionGroupV2::fields(
-                        groups
-                            .iter()
-                            .map(|field| adapt_field(field, request.request(), registry))
-                            .collect::<Result<_, _>>()?,
-                    ))
-                }
+                MatchOperation::ReduceByFields { groups, .. } => Some(ModelReductionKey::fields(
+                    groups
+                        .iter()
+                        .map(|field| adapt_field(field, request.request(), registry))
+                        .collect::<Result<_, _>>()?,
+                )),
                 _ => unreachable!(),
             };
             let witness_dependent =
@@ -826,7 +822,7 @@ pub(crate) fn adapt_match_request_under_authority(
             }
             let width = match &group {
                 None => 0,
-                Some(QueryReductionGroupV2::Fields { fields }) => fields.len(),
+                Some(ModelReductionKey::Fields { fields }) => fields.len(),
                 Some(_) => 1,
             };
             for (input, input_terms) in inputs {
@@ -886,7 +882,7 @@ pub(crate) fn adapt_match_request_under_authority(
                 );
             }
             let mut document_plans = Vec::new();
-            if let Some(QueryReductionGroupV2::Binding { binding }) = &group {
+            if let Some(ModelReductionKey::Binding { binding }) = &group {
                 let metadata = hydration
                     .bindings()
                     .iter()
@@ -942,7 +938,7 @@ impl Draft<'_> {
     fn reduction_plan(
         &mut self,
         root: BindingId,
-        group: Option<&type_bridge_contract::query_plan::QueryReductionGroupV2>,
+        group: Option<&type_bridge_contract::query_plan::ModelReductionKey>,
         terms: &[&super::ReduceTerm],
         long_input: bool,
     ) -> Result<QueryPlanV3, Diagnostic> {
@@ -951,13 +947,13 @@ impl Draft<'_> {
         let mut groups = Vec::new();
         let mut group_fields = Vec::new();
         match group {
-            Some(type_bridge_contract::query_plan::QueryReductionGroupV2::Binding { binding }) => {
+            Some(type_bridge_contract::query_plan::ModelReductionKey::Binding { binding }) => {
                 groups.push(*binding)
             }
-            Some(type_bridge_contract::query_plan::QueryReductionGroupV2::Field { field }) => {
+            Some(type_bridge_contract::query_plan::ModelReductionKey::Field { field }) => {
                 group_fields.push(field)
             }
-            Some(type_bridge_contract::query_plan::QueryReductionGroupV2::Fields { fields }) => {
+            Some(type_bridge_contract::query_plan::ModelReductionKey::Fields { fields }) => {
                 group_fields.extend(fields)
             }
             None => {}
@@ -1148,30 +1144,30 @@ impl Draft<'_> {
 }
 
 fn hidden_predicate_fields(
-    pattern: &type_bridge_contract::query_plan::QueryPatternV2,
+    pattern: &type_bridge_contract::query_plan::ModelPredicate,
     selected: &BTreeSet<u16>,
-    fields: &mut Vec<type_bridge_contract::query_plan::QueryFieldV2>,
+    fields: &mut Vec<type_bridge_contract::query_plan::ModelField>,
 ) {
-    use type_bridge_contract::query_plan::QueryPatternV2;
-    let mut add = |field: &type_bridge_contract::query_plan::QueryFieldV2| {
+    use type_bridge_contract::query_plan::ModelPredicate;
+    let mut add = |field: &type_bridge_contract::query_plan::ModelField| {
         if !selected.contains(&field.binding().get()) {
             fields.push(field.clone());
         }
     };
     match pattern {
-        QueryPatternV2::FieldValue { field, .. } | QueryPatternV2::FieldPresence { field, .. } => {
+        ModelPredicate::FieldValue { field, .. } | ModelPredicate::FieldPresence { field, .. } => {
             add(field)
         }
-        QueryPatternV2::FieldComparison { left, right, .. } => {
+        ModelPredicate::FieldComparison { left, right, .. } => {
             add(left);
             add(right);
         }
-        QueryPatternV2::And { patterns } | QueryPatternV2::Or { patterns } => {
+        ModelPredicate::And { patterns } | ModelPredicate::Or { patterns } => {
             for pattern in patterns {
                 hidden_predicate_fields(pattern, selected, fields);
             }
         }
-        QueryPatternV2::Not { pattern } => hidden_predicate_fields(pattern, selected, fields),
+        ModelPredicate::Not { pattern } => hidden_predicate_fields(pattern, selected, fields),
         _ => {}
     }
 }

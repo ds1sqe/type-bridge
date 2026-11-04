@@ -17,12 +17,11 @@ use type_bridge_contract::query_model_limits::{
     DEFAULT_MODEL_MAX_STATEMENTS, ModelReplyDecodeLimits, RemoteModelLimits,
 };
 use type_bridge_contract::query_plan::{
-    CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
-    HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, ModelQueryV2, QueryBindingPairV2,
-    QueryFieldV2, QueryMissingOrderV2, QueryModelOutputSlotV2, QueryModelOutputV2, QueryOperation,
-    QueryOrderDirectionV2, QueryOrderTermV2, QueryOutput, QueryPattern, QueryPlan,
-    QueryPlanV2Compatibility, QueryReductionGroupV2, QueryReductionKindV2, QueryReductionTermV2,
-    QueryRowCardinalityV2, QueryStableOrderV2, QueryWindowV2, ReadStage,
+    HydrationBinding, HydrationDescriptor, HydrationField, HydrationPlayer, HydrationProjection,
+    HydrationRole, ModelField, ModelMissingOrder, ModelOrderDirection, ModelOrderTerm, ModelOutput,
+    ModelOutputSlot, ModelQueryV2, ModelReductionKey, ModelReductionKind, ModelReductionTerm,
+    ModelStableOrder, ModelValue, QueryBindingPairV2, QueryOperation, QueryOutput, QueryPattern,
+    QueryPlan, QueryPlanV2Compatibility, QueryRowCardinalityV2, QueryWindowV2, ReadStage,
 };
 use type_bridge_contract::query_remote::{
     RemoteCapabilities, RemoteExecutorBinding, RemoteReplySignature, RemoteReplySigner,
@@ -241,25 +240,22 @@ fn team() -> TypeId {
     type_id(TypeKind::Relation, "team")
 }
 
-fn model_hydration() -> HydrationProjectionV2 {
+fn model_hydration() -> HydrationProjection {
     model_hydration_with_role_flags(false, false)
 }
 
-fn model_hydration_with_role_flags(
-    role_ordered: bool,
-    role_distinct: bool,
-) -> HydrationProjectionV2 {
+fn model_hydration_with_role_flags(role_ordered: bool, role_distinct: bool) -> HydrationProjection {
     let person = person();
     let employment = employment();
-    HydrationProjectionV2::new(
+    HydrationProjection::new(
         vec![
-            HydrationBindingV2::new(binding_id(0), person.clone(), vec![person.clone()]),
-            HydrationBindingV2::new(binding_id(1), employment.clone(), vec![employment.clone()]),
+            HydrationBinding::new(binding_id(0), person.clone(), vec![person.clone()]),
+            HydrationBinding::new(binding_id(1), employment.clone(), vec![employment.clone()]),
         ],
         vec![
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(
                 person.clone(),
-                vec![HydrationFieldV2::new(
+                vec![HydrationField::new(
                     "name",
                     vec![person.clone()],
                     AttributeId::new("name").expect("attribute"),
@@ -271,10 +267,10 @@ fn model_hydration_with_role_flags(
                 )],
                 vec![],
             ),
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(
                 employment.clone(),
                 vec![
-                    HydrationFieldV2::new(
+                    HydrationField::new(
                         "assignment_id",
                         vec![employment.clone()],
                         AttributeId::new("assignment-id").expect("attribute"),
@@ -284,7 +280,7 @@ fn model_hydration_with_role_flags(
                         false,
                         true,
                     ),
-                    HydrationFieldV2::new(
+                    HydrationField::new(
                         "start_date",
                         vec![employment.clone()],
                         AttributeId::new("start-date").expect("attribute"),
@@ -295,10 +291,10 @@ fn model_hydration_with_role_flags(
                         false,
                     ),
                 ],
-                vec![HydrationRoleV2::new(
+                vec![HydrationRole::new(
                     RoleId::new("employment", "employee").expect("role"),
                     vec![RoleId::new("employment", "employee").expect("role")],
-                    vec![HydrationPlayerV2::new(person.clone(), vec![person])],
+                    vec![HydrationPlayer::new(person.clone(), vec![person])],
                     Cardinality::new(1, None).expect("cardinality"),
                     role_ordered,
                     role_distinct,
@@ -308,21 +304,21 @@ fn model_hydration_with_role_flags(
     )
 }
 
-fn model_hydration_with_mixed_declared_players() -> HydrationProjectionV2 {
+fn model_hydration_with_mixed_declared_players() -> HydrationProjection {
     let animal = type_id(TypeKind::Entity, "animal");
     let person = person();
     let employment = employment();
     let role = RoleId::new("employment", "employee").expect("role");
-    HydrationProjectionV2::new(
+    HydrationProjection::new(
         vec![
-            HydrationBindingV2::new(binding_id(0), person.clone(), vec![person.clone()]),
-            HydrationBindingV2::new(binding_id(1), employment.clone(), vec![employment.clone()]),
+            HydrationBinding::new(binding_id(0), person.clone(), vec![person.clone()]),
+            HydrationBinding::new(binding_id(1), employment.clone(), vec![employment.clone()]),
         ],
         vec![
-            HydrationDescriptorV2::new(animal.clone(), vec![], vec![]),
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(animal.clone(), vec![], vec![]),
+            HydrationDescriptor::new(
                 person.clone(),
-                vec![HydrationFieldV2::new(
+                vec![HydrationField::new(
                     "name",
                     vec![person.clone()],
                     AttributeId::new("name").expect("attribute"),
@@ -334,10 +330,10 @@ fn model_hydration_with_mixed_declared_players() -> HydrationProjectionV2 {
                 )],
                 vec![],
             ),
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(
                 employment.clone(),
                 vec![
-                    HydrationFieldV2::new(
+                    HydrationField::new(
                         "assignment_id",
                         vec![employment.clone()],
                         AttributeId::new("assignment-id").expect("attribute"),
@@ -347,7 +343,7 @@ fn model_hydration_with_mixed_declared_players() -> HydrationProjectionV2 {
                         false,
                         true,
                     ),
-                    HydrationFieldV2::new(
+                    HydrationField::new(
                         "start_date",
                         vec![employment.clone()],
                         AttributeId::new("start-date").expect("attribute"),
@@ -358,12 +354,12 @@ fn model_hydration_with_mixed_declared_players() -> HydrationProjectionV2 {
                         false,
                     ),
                 ],
-                vec![HydrationRoleV2::new(
+                vec![HydrationRole::new(
                     role.clone(),
                     vec![role],
                     vec![
-                        HydrationPlayerV2::new(animal.clone(), vec![animal]),
-                        HydrationPlayerV2::new(person.clone(), vec![person]),
+                        HydrationPlayer::new(animal.clone(), vec![animal]),
+                        HydrationPlayer::new(person.clone(), vec![person]),
                     ],
                     Cardinality::new(1, None).expect("cardinality"),
                     false,
@@ -374,27 +370,27 @@ fn model_hydration_with_mixed_declared_players() -> HydrationProjectionV2 {
     )
 }
 
-fn model_output() -> QueryModelOutputV2 {
-    QueryModelOutputV2::Positional {
+fn model_output() -> ModelOutput {
+    ModelOutput::Positional {
         slots: vec![
-            QueryModelOutputSlotV2::One {
+            ModelOutputSlot::One {
                 binding: binding_id(0),
                 declared: person(),
             },
-            QueryModelOutputSlotV2::Collect {
+            ModelOutputSlot::Collect {
                 binding: binding_id(1),
                 declared: employment(),
                 distinct: true,
-                order: QueryStableOrderV2::new(
-                    vec![QueryOrderTermV2::new(
-                        QueryFieldV2::new(
+                order: ModelStableOrder::new(
+                    vec![ModelOrderTerm::new(
+                        ModelField::new(
                             binding_id(1),
                             employment(),
                             AttributeId::new("assignment-id").expect("attribute"),
                             ValueTypeTag::String,
                         ),
-                        QueryOrderDirectionV2::Ascending,
-                        QueryMissingOrderV2::Reject,
+                        ModelOrderDirection::Ascending,
+                        ModelMissingOrder::Reject,
                     )],
                     vec![binding_id(1)],
                 ),
@@ -407,19 +403,19 @@ fn page_plan() -> QueryPlan {
     page_plan_with_hydration(model_hydration())
 }
 
-fn page_plan_with_hydration(hydration: HydrationProjectionV2) -> QueryPlan {
+fn page_plan_with_hydration(hydration: HydrationProjection) -> QueryPlan {
     let person = person();
     let employment = employment();
-    let order = QueryStableOrderV2::new(
-        vec![QueryOrderTermV2::new(
-            QueryFieldV2::new(
+    let order = ModelStableOrder::new(
+        vec![ModelOrderTerm::new(
+            ModelField::new(
                 binding_id(0),
                 person.clone(),
                 AttributeId::new("name").expect("attribute"),
                 ValueTypeTag::String,
             ),
-            QueryOrderDirectionV2::Ascending,
-            QueryMissingOrderV2::Reject,
+            ModelOrderDirection::Ascending,
+            ModelMissingOrder::Reject,
         )],
         vec![binding_id(0)],
     );
@@ -463,15 +459,15 @@ fn page_plan_with_hydration(hydration: HydrationProjectionV2) -> QueryPlan {
 
 fn exactly_one_plan() -> QueryPlan {
     let person = person();
-    let hydration = HydrationProjectionV2::new(
-        vec![HydrationBindingV2::new(
+    let hydration = HydrationProjection::new(
+        vec![HydrationBinding::new(
             binding_id(0),
             person.clone(),
             vec![person.clone()],
         )],
-        vec![HydrationDescriptorV2::new(
+        vec![HydrationDescriptor::new(
             person.clone(),
-            vec![HydrationFieldV2::new(
+            vec![HydrationField::new(
                 "name",
                 vec![person.clone()],
                 AttributeId::new("name").expect("attribute"),
@@ -505,8 +501,8 @@ fn exactly_one_plan() -> QueryPlan {
                 cardinality: QueryRowCardinalityV2::ExactlyOne,
                 hydration,
                 order: None,
-                output: QueryModelOutputV2::Positional {
-                    slots: vec![QueryModelOutputSlotV2::One {
+                output: ModelOutput::Positional {
+                    slots: vec![ModelOutputSlot::One {
                         binding: binding_id(0),
                         declared: person,
                     }],
@@ -560,8 +556,8 @@ fn distinct_scalar_plan(exists: bool) -> QueryPlan {
     .expect("distinct scalar plan")
 }
 
-fn reduction_field(binding: u16, attribute: &str, value_type: ValueTypeTag) -> QueryFieldV2 {
-    QueryFieldV2::new(
+fn reduction_field(binding: u16, attribute: &str, value_type: ValueTypeTag) -> ModelField {
+    ModelField::new(
         binding_id(binding),
         person(),
         AttributeId::new(attribute).expect("reduction attribute"),
@@ -569,17 +565,17 @@ fn reduction_field(binding: u16, attribute: &str, value_type: ValueTypeTag) -> Q
     )
 }
 
-fn reduction_hydration() -> HydrationProjectionV2 {
+fn reduction_hydration() -> HydrationProjection {
     let person = person();
-    HydrationProjectionV2::new(
+    HydrationProjection::new(
         vec![
-            HydrationBindingV2::new(binding_id(0), person.clone(), vec![person.clone()]),
-            HydrationBindingV2::new(binding_id(1), person.clone(), vec![person.clone()]),
+            HydrationBinding::new(binding_id(0), person.clone(), vec![person.clone()]),
+            HydrationBinding::new(binding_id(1), person.clone(), vec![person.clone()]),
         ],
-        vec![HydrationDescriptorV2::new(
+        vec![HydrationDescriptor::new(
             person.clone(),
             vec![
-                HydrationFieldV2::new(
+                HydrationField::new(
                     "balance",
                     vec![person.clone()],
                     AttributeId::new("balance").expect("balance attribute"),
@@ -589,7 +585,7 @@ fn reduction_hydration() -> HydrationProjectionV2 {
                     false,
                     false,
                 ),
-                HydrationFieldV2::new(
+                HydrationField::new(
                     "ratio",
                     vec![person.clone()],
                     AttributeId::new("ratio").expect("ratio attribute"),
@@ -599,7 +595,7 @@ fn reduction_hydration() -> HydrationProjectionV2 {
                     false,
                     false,
                 ),
-                HydrationFieldV2::new(
+                HydrationField::new(
                     "score",
                     vec![person],
                     AttributeId::new("score").expect("score attribute"),
@@ -616,8 +612,8 @@ fn reduction_hydration() -> HydrationProjectionV2 {
 }
 
 fn reduction_plan(
-    group: Option<QueryReductionGroupV2>,
-    reducers: Vec<QueryReductionTermV2>,
+    group: Option<ModelReductionKey>,
+    reducers: Vec<ModelReductionTerm>,
 ) -> QueryPlan {
     QueryPlan::new_v2_with_functions(
         vec![binding(0, "root"), binding(1, "group")],
@@ -655,8 +651,8 @@ fn reduction_plan(
     .expect("typed reduction plan")
 }
 
-fn count_reducer() -> QueryReductionTermV2 {
-    QueryReductionTermV2::new(QueryReductionKindV2::Count, None)
+fn count_reducer() -> ModelReductionTerm {
+    ModelReductionTerm::new(ModelReductionKind::Count, None)
 }
 
 fn empty_reduction_graph() -> HydrationGraph {
@@ -666,15 +662,15 @@ fn empty_reduction_graph() -> HydrationGraph {
 fn inherited_rows_plan(order_owner: TypeId) -> Result<QueryPlan, Diagnostic> {
     let person = person();
     let employee = employee();
-    let hydration = HydrationProjectionV2::new(
-        vec![HydrationBindingV2::new(
+    let hydration = HydrationProjection::new(
+        vec![HydrationBinding::new(
             binding_id(0),
             person.clone(),
             vec![employee.clone()],
         )],
-        vec![HydrationDescriptorV2::new(
+        vec![HydrationDescriptor::new(
             employee,
-            vec![HydrationFieldV2::new(
+            vec![HydrationField::new(
                 "name",
                 vec![person.clone()],
                 AttributeId::new("name").expect("attribute"),
@@ -687,16 +683,16 @@ fn inherited_rows_plan(order_owner: TypeId) -> Result<QueryPlan, Diagnostic> {
             vec![],
         )],
     );
-    let order = QueryStableOrderV2::new(
-        vec![QueryOrderTermV2::new(
-            QueryFieldV2::new(
+    let order = ModelStableOrder::new(
+        vec![ModelOrderTerm::new(
+            ModelField::new(
                 binding_id(0),
                 order_owner,
                 AttributeId::new("name").expect("attribute"),
                 ValueTypeTag::String,
             ),
-            QueryOrderDirectionV2::Ascending,
-            QueryMissingOrderV2::Reject,
+            ModelOrderDirection::Ascending,
+            ModelMissingOrder::Reject,
         )],
         vec![binding_id(0)],
     );
@@ -721,8 +717,8 @@ fn inherited_rows_plan(order_owner: TypeId) -> Result<QueryPlan, Diagnostic> {
                 cardinality: QueryRowCardinalityV2::BoundedMany,
                 hydration,
                 order: Some(order),
-                output: QueryModelOutputV2::Positional {
-                    slots: vec![QueryModelOutputSlotV2::One {
+                output: ModelOutput::Positional {
+                    slots: vec![ModelOutputSlot::One {
                         binding: binding_id(0),
                         declared: person,
                     }],
@@ -738,16 +734,16 @@ fn optional_order_rows_plan() -> QueryPlan {
     let person = person();
     let nickname = AttributeId::new("nickname").expect("attribute");
     let person_id = AttributeId::new("person-id").expect("attribute");
-    let hydration = HydrationProjectionV2::new(
-        vec![HydrationBindingV2::new(
+    let hydration = HydrationProjection::new(
+        vec![HydrationBinding::new(
             binding_id(0),
             person.clone(),
             vec![person.clone()],
         )],
-        vec![HydrationDescriptorV2::new(
+        vec![HydrationDescriptor::new(
             person.clone(),
             vec![
-                HydrationFieldV2::new(
+                HydrationField::new(
                     "nickname",
                     vec![person.clone()],
                     nickname.clone(),
@@ -757,7 +753,7 @@ fn optional_order_rows_plan() -> QueryPlan {
                     false,
                     false,
                 ),
-                HydrationFieldV2::new(
+                HydrationField::new(
                     "person_id",
                     vec![person.clone()],
                     person_id.clone(),
@@ -771,27 +767,27 @@ fn optional_order_rows_plan() -> QueryPlan {
             vec![],
         )],
     );
-    let order = QueryStableOrderV2::new(
+    let order = ModelStableOrder::new(
         vec![
-            QueryOrderTermV2::new(
-                QueryFieldV2::new(
+            ModelOrderTerm::new(
+                ModelField::new(
                     binding_id(0),
                     person.clone(),
                     nickname,
                     ValueTypeTag::String,
                 ),
-                QueryOrderDirectionV2::Ascending,
-                QueryMissingOrderV2::Reject,
+                ModelOrderDirection::Ascending,
+                ModelMissingOrder::Reject,
             ),
-            QueryOrderTermV2::new(
-                QueryFieldV2::new(
+            ModelOrderTerm::new(
+                ModelField::new(
                     binding_id(0),
                     person.clone(),
                     person_id,
                     ValueTypeTag::String,
                 ),
-                QueryOrderDirectionV2::Ascending,
-                QueryMissingOrderV2::Reject,
+                ModelOrderDirection::Ascending,
+                ModelMissingOrder::Reject,
             ),
         ],
         vec![binding_id(0)],
@@ -817,8 +813,8 @@ fn optional_order_rows_plan() -> QueryPlan {
                 cardinality: QueryRowCardinalityV2::BoundedMany,
                 hydration,
                 order: Some(order),
-                output: QueryModelOutputV2::Positional {
-                    slots: vec![QueryModelOutputSlotV2::One {
+                output: ModelOutput::Positional {
+                    slots: vec![ModelOutputSlot::One {
                         binding: binding_id(0),
                         declared: person,
                     }],
@@ -835,16 +831,16 @@ fn duration_order_rows_plan() -> Result<QueryPlan, Diagnostic> {
     let person = person();
     let elapsed = AttributeId::new("elapsed").expect("attribute");
     let person_id = AttributeId::new("person-id").expect("attribute");
-    let hydration = HydrationProjectionV2::new(
-        vec![HydrationBindingV2::new(
+    let hydration = HydrationProjection::new(
+        vec![HydrationBinding::new(
             binding_id(0),
             person.clone(),
             vec![person.clone()],
         )],
-        vec![HydrationDescriptorV2::new(
+        vec![HydrationDescriptor::new(
             person.clone(),
             vec![
-                HydrationFieldV2::new(
+                HydrationField::new(
                     "elapsed",
                     vec![person.clone()],
                     elapsed.clone(),
@@ -854,7 +850,7 @@ fn duration_order_rows_plan() -> Result<QueryPlan, Diagnostic> {
                     false,
                     false,
                 ),
-                HydrationFieldV2::new(
+                HydrationField::new(
                     "person_id",
                     vec![person.clone()],
                     person_id.clone(),
@@ -868,27 +864,27 @@ fn duration_order_rows_plan() -> Result<QueryPlan, Diagnostic> {
             vec![],
         )],
     );
-    let order = QueryStableOrderV2::new(
+    let order = ModelStableOrder::new(
         vec![
-            QueryOrderTermV2::new(
-                QueryFieldV2::new(
+            ModelOrderTerm::new(
+                ModelField::new(
                     binding_id(0),
                     person.clone(),
                     elapsed,
                     ValueTypeTag::Duration,
                 ),
-                QueryOrderDirectionV2::Ascending,
-                QueryMissingOrderV2::Reject,
+                ModelOrderDirection::Ascending,
+                ModelMissingOrder::Reject,
             ),
-            QueryOrderTermV2::new(
-                QueryFieldV2::new(
+            ModelOrderTerm::new(
+                ModelField::new(
                     binding_id(0),
                     person.clone(),
                     person_id,
                     ValueTypeTag::String,
                 ),
-                QueryOrderDirectionV2::Ascending,
-                QueryMissingOrderV2::Reject,
+                ModelOrderDirection::Ascending,
+                ModelMissingOrder::Reject,
             ),
         ],
         vec![binding_id(0)],
@@ -914,8 +910,8 @@ fn duration_order_rows_plan() -> Result<QueryPlan, Diagnostic> {
                 cardinality: QueryRowCardinalityV2::BoundedMany,
                 hydration,
                 order: Some(order),
-                output: QueryModelOutputV2::Positional {
-                    slots: vec![QueryModelOutputSlotV2::One {
+                output: ModelOutput::Positional {
+                    slots: vec![ModelOutputSlot::One {
                         binding: binding_id(0),
                         declared: person,
                     }],
@@ -936,16 +932,16 @@ fn decimal_hydration_rows_plan(
     let person = person();
     let balance = AttributeId::new("balance").expect("attribute");
     let person_id = AttributeId::new("person-id").expect("attribute");
-    let hydration = HydrationProjectionV2::new(
-        vec![HydrationBindingV2::new(
+    let hydration = HydrationProjection::new(
+        vec![HydrationBinding::new(
             binding_id(0),
             person.clone(),
             vec![person.clone()],
         )],
-        vec![HydrationDescriptorV2::new(
+        vec![HydrationDescriptor::new(
             person.clone(),
             vec![
-                HydrationFieldV2::new(
+                HydrationField::new(
                     "balance",
                     vec![person.clone()],
                     balance,
@@ -955,7 +951,7 @@ fn decimal_hydration_rows_plan(
                     distinct,
                     unique,
                 ),
-                HydrationFieldV2::new(
+                HydrationField::new(
                     "person_id",
                     vec![person.clone()],
                     person_id.clone(),
@@ -989,21 +985,21 @@ fn decimal_hydration_rows_plan(
             Some(ModelQueryV2::Rows {
                 cardinality: QueryRowCardinalityV2::BoundedMany,
                 hydration,
-                order: Some(QueryStableOrderV2::new(
-                    vec![QueryOrderTermV2::new(
-                        QueryFieldV2::new(
+                order: Some(ModelStableOrder::new(
+                    vec![ModelOrderTerm::new(
+                        ModelField::new(
                             binding_id(0),
                             person.clone(),
                             person_id,
                             ValueTypeTag::String,
                         ),
-                        QueryOrderDirectionV2::Ascending,
-                        QueryMissingOrderV2::Reject,
+                        ModelOrderDirection::Ascending,
+                        ModelMissingOrder::Reject,
                     )],
                     vec![binding_id(0)],
                 )),
-                output: QueryModelOutputV2::Positional {
-                    slots: vec![QueryModelOutputSlotV2::One {
+                output: ModelOutput::Positional {
+                    slots: vec![ModelOutputSlot::One {
                         binding: binding_id(0),
                         declared: person,
                     }],
@@ -1021,31 +1017,31 @@ fn shallow_relation_player_plan() -> QueryPlan {
     let team = team();
     let employment_assignment = RoleId::new("employment", "assignment").expect("employment role");
     let team_parent = RoleId::new("team", "parent").expect("team role");
-    let hydration = HydrationProjectionV2::new(
+    let hydration = HydrationProjection::new(
         vec![
-            HydrationBindingV2::new(binding_id(0), employment.clone(), vec![employment.clone()]),
-            HydrationBindingV2::new(binding_id(1), team.clone(), vec![team.clone()]),
+            HydrationBinding::new(binding_id(0), employment.clone(), vec![employment.clone()]),
+            HydrationBinding::new(binding_id(1), team.clone(), vec![team.clone()]),
         ],
         vec![
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(
                 employment.clone(),
                 vec![],
-                vec![HydrationRoleV2::new(
+                vec![HydrationRole::new(
                     employment_assignment.clone(),
                     vec![employment_assignment],
-                    vec![HydrationPlayerV2::new(team.clone(), vec![team.clone()])],
+                    vec![HydrationPlayer::new(team.clone(), vec![team.clone()])],
                     Cardinality::new(1, None).expect("cardinality"),
                     false,
                     false,
                 )],
             ),
-            HydrationDescriptorV2::new(
+            HydrationDescriptor::new(
                 team.clone(),
                 vec![],
-                vec![HydrationRoleV2::new(
+                vec![HydrationRole::new(
                     team_parent.clone(),
                     vec![team_parent],
-                    vec![HydrationPlayerV2::new(
+                    vec![HydrationPlayer::new(
                         employment.clone(),
                         vec![employment.clone()],
                     )],
@@ -1084,8 +1080,8 @@ fn shallow_relation_player_plan() -> QueryPlan {
                 cardinality: QueryRowCardinalityV2::ExactlyOne,
                 hydration,
                 order: None,
-                output: QueryModelOutputV2::Positional {
-                    slots: vec![QueryModelOutputSlotV2::One {
+                output: ModelOutput::Positional {
+                    slots: vec![ModelOutputSlot::One {
                         binding: binding_id(0),
                         declared: employment,
                     }],
@@ -1182,7 +1178,7 @@ fn optional_order_person_node(
 fn decimal_person_node(
     id: u32,
     iid: &str,
-    balances: Vec<CompatibilityValueV2>,
+    balances: Vec<ModelValue>,
     person_id: &str,
 ) -> HydrationNode {
     HydrationNode::new(
@@ -1243,20 +1239,20 @@ fn employment_node(
     )
 }
 
-fn string_value(value: &str) -> CompatibilityValueV2 {
-    CompatibilityValueV2::canonical(CanonicalValue::String(
+fn string_value(value: &str) -> ModelValue {
+    ModelValue::canonical(CanonicalValue::String(
         CanonicalString::new(value).expect("string"),
     ))
 }
 
-fn decimal_value(value: &str) -> CompatibilityValueV2 {
-    CompatibilityValueV2::canonical(CanonicalValue::Decimal(
+fn decimal_value(value: &str) -> ModelValue {
+    ModelValue::canonical(CanonicalValue::Decimal(
         DecimalValue::new(value).expect("decimal"),
     ))
 }
 
-fn double_value(value: f64) -> CompatibilityValueV2 {
-    CompatibilityValueV2::canonical(CanonicalValue::Double(
+fn double_value(value: f64) -> ModelValue {
+    ModelValue::canonical(CanonicalValue::Double(
         CanonicalDouble::new(value).expect("finite double"),
     ))
 }
@@ -1790,10 +1786,7 @@ fn hydrated_evidence_round_trips_released_strings_above_canonical_string_limit()
         HydrationNodeKind::Entity,
         vec![HydrationAttributeEvidence::new(
             AttributeId::new("name").expect("attribute"),
-            vec![
-                CompatibilityValueV2::released_string(released.clone())
-                    .expect("released long string"),
-            ],
+            vec![ModelValue::released_string(released.clone()).expect("released long string")],
         )],
         vec![],
     )])
@@ -1962,12 +1955,12 @@ fn local_compatibility_outcomes_use_the_same_plan_and_budget_gate_as_wire_decode
 fn model_reduction_requires_the_exact_echo_and_enforces_cells_and_finite_bits() {
     let reducers = vec![
         count_reducer(),
-        QueryReductionTermV2::new(
-            QueryReductionKindV2::Sum,
+        ModelReductionTerm::new(
+            ModelReductionKind::Sum,
             Some(reduction_field(0, "score", ValueTypeTag::Long)),
         ),
-        QueryReductionTermV2::new(
-            QueryReductionKindV2::Mean,
+        ModelReductionTerm::new(
+            ModelReductionKind::Mean,
             Some(reduction_field(0, "score", ValueTypeTag::Long)),
         ),
     ];
@@ -2074,8 +2067,7 @@ fn model_reduction_requires_the_exact_echo_and_enforces_cells_and_finite_bits() 
 #[test]
 fn model_reduction_groups_use_semantic_order_positive_zero_and_tuple_cell_limits() {
     let count = vec![count_reducer()];
-    let double_group =
-        QueryReductionGroupV2::field(reduction_field(1, "ratio", ValueTypeTag::Double));
+    let double_group = ModelReductionKey::field(reduction_field(1, "ratio", ValueTypeTag::Double));
     let double_plan = reduction_plan(Some(double_group.clone()), count.clone());
     let double_rows = |zero: f64| {
         vec![
@@ -2128,7 +2120,7 @@ fn model_reduction_groups_use_semantic_order_positive_zero_and_tuple_cell_limits
         "query_remote_v2_evidence_mismatch",
     );
 
-    let tuple_group = QueryReductionGroupV2::fields(vec![
+    let tuple_group = ModelReductionKey::fields(vec![
         reduction_field(1, "balance", ValueTypeTag::Decimal),
         reduction_field(1, "ratio", ValueTypeTag::Double),
     ]);
@@ -2179,7 +2171,7 @@ fn model_reduction_groups_use_semantic_order_positive_zero_and_tuple_cell_limits
 
 #[test]
 fn model_reduction_binding_groups_are_graph_bound_and_budgeted_per_edge_and_cell() {
-    let group = QueryReductionGroupV2::binding(binding_id(1));
+    let group = ModelReductionKey::binding(binding_id(1));
     let reducers = vec![count_reducer()];
     let plan = reduction_plan(Some(group.clone()), reducers.clone());
     let graph = HydrationGraph::new(vec![
@@ -2524,7 +2516,7 @@ fn duration_order_is_refused_at_build_as_typedb_3_14_does() {
 #[test]
 fn released_decimal_aliases_cannot_forge_distinct_or_unique_hydration_evidence() {
     let canonical = || decimal_value("1");
-    let released = || CompatibilityValueV2::released_decimal("1.0dec").expect("released decimal");
+    let released = || ModelValue::released_decimal("1.0dec").expect("released decimal");
     let row = |node| {
         HydratedRow::new(vec![HydrationSlot::Singular {
             value: HydrationReference::new(person(), HydrationNodeId::new(node)),
@@ -2618,7 +2610,7 @@ fn unrelated_unique_field_owners_may_share_one_attribute_value() {
     let person = person();
     let animal = type_id(TypeKind::Entity, "animal");
     let field = |owner: TypeId| {
-        HydrationFieldV2::new(
+        HydrationField::new(
             "name",
             vec![owner],
             AttributeId::new("name").expect("attribute"),
@@ -2629,14 +2621,14 @@ fn unrelated_unique_field_owners_may_share_one_attribute_value() {
             true,
         )
     };
-    let hydration = HydrationProjectionV2::new(
+    let hydration = HydrationProjection::new(
         vec![
-            HydrationBindingV2::new(binding_id(0), person.clone(), vec![person.clone()]),
-            HydrationBindingV2::new(binding_id(1), animal.clone(), vec![animal.clone()]),
+            HydrationBinding::new(binding_id(0), person.clone(), vec![person.clone()]),
+            HydrationBinding::new(binding_id(1), animal.clone(), vec![animal.clone()]),
         ],
         vec![
-            HydrationDescriptorV2::new(animal.clone(), vec![field(animal.clone())], vec![]),
-            HydrationDescriptorV2::new(person.clone(), vec![field(person.clone())], vec![]),
+            HydrationDescriptor::new(animal.clone(), vec![field(animal.clone())], vec![]),
+            HydrationDescriptor::new(person.clone(), vec![field(person.clone())], vec![]),
         ],
     );
     let plan = QueryPlan::new_v2_with_functions(
@@ -2667,13 +2659,13 @@ fn unrelated_unique_field_owners_may_share_one_attribute_value() {
                 cardinality: QueryRowCardinalityV2::ExactlyOne,
                 hydration,
                 order: None,
-                output: QueryModelOutputV2::Positional {
+                output: ModelOutput::Positional {
                     slots: vec![
-                        QueryModelOutputSlotV2::One {
+                        ModelOutputSlot::One {
                             binding: binding_id(0),
                             declared: person.clone(),
                         },
-                        QueryModelOutputSlotV2::One {
+                        ModelOutputSlot::One {
                             binding: binding_id(1),
                             declared: animal.clone(),
                         },

@@ -16,7 +16,7 @@ use type_bridge_contract::query_plan::v3::{
     Expr, Operation, Pattern, PlanSpec, QueryPlanV3, Stage, ThingDocument,
 };
 use type_bridge_contract::query_plan::{
-    HydrationProjectionV2, QueryOperand, QueryOutput, QueryPattern,
+    HydrationProjection, QueryOperand, QueryOutput, QueryPattern,
 };
 
 /// A validated selection and its static, complete model hydration plans.
@@ -29,7 +29,7 @@ pub struct PlanFetchStack {
     pub(crate) selection: Option<usize>,
     pub(crate) mapping: Option<usize>,
     pub(crate) partitions: Vec<(usize, BindingId, Vec<TypeId>)>,
-    pub(crate) hydration: HydrationProjectionV2,
+    pub(crate) hydration: HydrationProjection,
     pub(crate) model_slots: Vec<(BindingId, DescriptorId)>,
     schema_proof: Option<(
         Vec<crate::_registry::DescriptorFingerprintRoot>,
@@ -1354,8 +1354,8 @@ fn unique_partition_iids(
 }
 
 fn same_hydration_fields(
-    left: &type_bridge_contract::query_plan::HydrationDescriptorV2,
-    right: &type_bridge_contract::query_plan::HydrationDescriptorV2,
+    left: &type_bridge_contract::query_plan::HydrationDescriptor,
+    right: &type_bridge_contract::query_plan::HydrationDescriptor,
 ) -> bool {
     left.fields().len() == right.fields().len()
         && left
@@ -1375,8 +1375,8 @@ fn same_hydration_fields(
 
 pub(crate) fn append_hydration_partitions(
     prefix: FetchPrefix<'_>,
-    bindings: &[type_bridge_contract::query_plan::HydrationBindingV2],
-    hydration: &HydrationProjectionV2,
+    bindings: &[type_bridge_contract::query_plan::HydrationBinding],
+    hydration: &HydrationProjection,
     authority: &MatchRequestAdapterAuthority,
     plans: &mut Vec<QueryPlanV3>,
 ) -> Result<Vec<(usize, BindingId, Vec<TypeId>)>, Diagnostic> {
@@ -1384,7 +1384,7 @@ pub(crate) fn append_hydration_partitions(
     for binding in bindings {
         let mut groups: Vec<(
             Vec<TypeId>,
-            &type_bridge_contract::query_plan::HydrationDescriptorV2,
+            &type_bridge_contract::query_plan::HydrationDescriptor,
             Vec<type_bridge_contract::query_plan::v3::DocumentRole>,
         )> = Vec::new();
         for concrete in binding.concrete_descriptors() {
