@@ -1144,7 +1144,7 @@ impl Execution {
                         .iter()
                         .map(|(_, _, proof)| proof.as_deref())
                         .collect::<Vec<_>>(),
-                    group.limits,
+                    stack.execution_limits(group.limits),
                 )
                 .map_err(|error| (group.range.start, OrmError::from(error)))?;
             group.answer = Some(Arc::new(proof));
@@ -1569,7 +1569,7 @@ impl Transaction {
         }
         self.admit(stack.writes())?;
         self.admit_typed()?;
-        let limits = stack.execution_limits(limits);
+        let execution_limits = stack.execution_limits(limits);
         let need = plans
             .iter()
             .map(|plan| {
@@ -1577,7 +1577,7 @@ impl Transaction {
                 read + write
             })
             .sum::<usize>();
-        if need > limits.statement_limit() as usize {
+        if need > execution_limits.statement_limit() as usize {
             return Err(PendingError::InvalidPlan(Box::new(Diagnostic::new(
                 DiagnosticCategory::ResourceLimit,
                 DiagnosticCode::new("statement_count_limit").expect("static diagnostic code"),
@@ -4224,6 +4224,56 @@ mod tests {
                 .as_str(),
             "processed_item_limit"
         );
+    }
+
+    #[tokio::test]
+    async fn proxy_fetch_group_default_statements_do_not_cap_the_whole_transaction() {
+        for statements in [None, Some(3)] {
+            let (mut tx, registry, committed) =
+                proxy_match_fixture(Default::default(), false, None);
+            let registry = Arc::new(registry);
+            let source = model_fetch_stack(&registry);
+            let pending = (0..4)
+                .map(|_| {
+                    tx.stage_plan_fetch(
+                        Arc::clone(&source),
+                        Arc::clone(&registry),
+                        crate::QueryExecutionResourceLimits {
+                            statements,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>();
+            let outcome = tx.commit().await;
+            if statements.is_none() {
+                outcome.unwrap();
+                assert_eq!(*committed.lock().unwrap(), 1);
+                for answer in pending {
+                    assert_eq!(answer.get().unwrap().model_rows(), &[0]);
+                }
+            } else {
+                assert_eq!(
+                    outcome.unwrap_err().diagnostic().code().as_str(),
+                    "statement_count_limit"
+                );
+                assert_eq!(*committed.lock().unwrap(), 0);
+                for answer in pending {
+                    assert_eq!(
+                        answer
+                            .get()
+                            .err()
+                            .unwrap()
+                            .diagnostic()
+                            .unwrap()
+                            .code()
+                            .as_str(),
+                        "statement_count_limit"
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]
