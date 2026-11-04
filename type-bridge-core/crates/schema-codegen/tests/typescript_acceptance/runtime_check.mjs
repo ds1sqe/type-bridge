@@ -1113,7 +1113,7 @@ function emitSdkQueriesRemoteProofFragment() {
   };
   const producerPaths = [
     "type-bridge-core/crates/node/src/match_runtime.rs",
-    "type-bridge-core/crates/node/src/query_v2_model_remote_runtime.rs",
+    "type-bridge-core/crates/node/src/plan_model_remote_runtime.rs",
     "type-bridge-core/crates/node/typescript/native.ts",
     "type-bridge-core/crates/node/typescript/runtime-projection.ts",
     "type-bridge-core/crates/schema-codegen/src/typescript/runtime.ts",

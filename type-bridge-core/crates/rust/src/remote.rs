@@ -16,7 +16,7 @@ use type_bridge_orm::session::staged::TransactionOptions;
 use type_bridge_orm::{
     AnswerCancellation, AnswerTransport, InstalledRuntimeProjection, ProxyEndpoint,
     ProxyHttpTransport, ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits,
-    QueryTarget, QueryTargetError, RemoteModelQueryV2Error, ValidatedMatchRequest,
+    QueryTarget, QueryTargetError, RemoteModelQueryError, ValidatedMatchRequest,
     ValidatedMatchResult, lower_remote_query_diagnostic,
 };
 
@@ -616,31 +616,31 @@ fn remote_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> Err
     )
 }
 
-fn remote_model_input_error(error: RemoteModelQueryV2Error) -> Error {
+fn remote_model_input_error(error: RemoteModelQueryError) -> Error {
     match error {
-        RemoteModelQueryV2Error::Execution(error) => {
+        RemoteModelQueryError::Execution(error) => {
             Error::from_sdk_execution(error, crate::ModelValidationPhase::Input)
         }
-        RemoteModelQueryV2Error::Diagnostic(error) => Error::from_sdk_execution(
+        RemoteModelQueryError::Diagnostic(error) => Error::from_sdk_execution(
             lower_remote_query_diagnostic(error),
             crate::ModelValidationPhase::Input,
         ),
-        RemoteModelQueryV2Error::Match(error) => {
+        RemoteModelQueryError::Match(error) => {
             Error::from_match(error, crate::ModelValidationPhase::Input)
         }
     }
 }
 
-fn remote_model_hydration_error(error: RemoteModelQueryV2Error) -> Error {
+fn remote_model_hydration_error(error: RemoteModelQueryError) -> Error {
     match error {
-        RemoteModelQueryV2Error::Execution(error) => {
+        RemoteModelQueryError::Execution(error) => {
             Error::from_sdk_execution(error, crate::ModelValidationPhase::Hydration)
         }
-        RemoteModelQueryV2Error::Diagnostic(error) => Error::from_sdk_execution(
+        RemoteModelQueryError::Diagnostic(error) => Error::from_sdk_execution(
             lower_remote_query_diagnostic(error),
             crate::ModelValidationPhase::Hydration,
         ),
-        RemoteModelQueryV2Error::Match(error) => {
+        RemoteModelQueryError::Match(error) => {
             Error::from_match(error, crate::ModelValidationPhase::Hydration)
         }
     }
@@ -980,7 +980,7 @@ mod tests {
             Ok(_) => panic!("missing descriptor unexpectedly resolved"),
         };
         let local = Error::from_orm(OrmError::Match(match_error.clone()));
-        let remote = remote_model_input_error(RemoteModelQueryV2Error::Match(match_error));
+        let remote = remote_model_input_error(RemoteModelQueryError::Match(match_error));
 
         assert_eq!(local.category(), crate::ErrorCategory::QueryAuthoring);
         assert_eq!(remote.category(), local.category());
@@ -1017,7 +1017,7 @@ mod tests {
             DiagnosticCode::new("query_v2_model_role_player_limit").unwrap(),
             "internal model execution detail",
         );
-        let error = remote_model_hydration_error(RemoteModelQueryV2Error::Diagnostic(internal));
+        let error = remote_model_hydration_error(RemoteModelQueryError::Diagnostic(internal));
 
         assert_eq!(error.category(), crate::ErrorCategory::ResourceLimit);
         assert_eq!(error.code(), Some("hydrated_role_player_limit"));

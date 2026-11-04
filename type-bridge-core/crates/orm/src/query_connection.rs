@@ -17,10 +17,10 @@ use crate::_registry::DescriptorRegistry;
 use crate::error::OrmError;
 use crate::execution_diagnostic::lower_remote_query_diagnostic;
 use crate::match_request::{ValidatedMatchRequest, ValidatedMatchResult};
-use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
-use crate::query_v2_model_remote::{
-    PendingRemoteModelQueryV2, RemoteModelQueryV2Error, prepare_remote_model_query_with_policy,
+use crate::plan_model_remote::{
+    PendingRemoteModelQuery, RemoteModelQueryError, prepare_remote_model_query_with_policy,
 };
+use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
 use crate::query_v2_prepared::QueryAuthority;
 use crate::session::backend::AnswerCancellation;
 use crate::session::staged::{Transaction, TransactionOptions};
@@ -41,10 +41,10 @@ pub enum QueryTargetError {
     Commit(#[from] Box<crate::session::staged::CommitError>),
     /// Preparing the proxy request failed.
     #[error(transparent)]
-    Prepare(RemoteModelQueryV2Error),
+    Prepare(RemoteModelQueryError),
     /// Claiming, authenticating, or validating the proxy reply failed.
     #[error(transparent)]
-    Reply(RemoteModelQueryV2Error),
+    Reply(RemoteModelQueryError),
     /// The proxy route failed, or the invocation was cancelled or ran out of
     /// time.
     #[error("{0:?}")]
@@ -76,11 +76,11 @@ impl QueryTargetError {
             Self::Direct(error) => crate::execution_diagnostic::lower_orm_error(&error, operation),
             Self::Commit(error) => error.diagnostic(),
             Self::Prepare(error) | Self::Reply(error) => match error {
-                RemoteModelQueryV2Error::Diagnostic(error) => lower_remote_query_diagnostic(error),
-                RemoteModelQueryV2Error::Match(error) => {
+                RemoteModelQueryError::Diagnostic(error) => lower_remote_query_diagnostic(error),
+                RemoteModelQueryError::Match(error) => {
                     crate::execution_diagnostic::lower_match_error(&error)
                 }
-                RemoteModelQueryV2Error::Execution(error) => error,
+                RemoteModelQueryError::Execution(error) => error,
             },
             Self::Interrupted(error) => error,
             Self::Callback(_) => SdkExecutionDiagnostic::provider_failure(operation),
@@ -684,7 +684,7 @@ impl ProxyQueryConnection {
         deadline.check(cancellation)?;
         if let Some(diagnostic) = verified.diagnostic() {
             return Err(QueryTargetError::Reply(
-                crate::RemoteModelQueryV2Error::Execution(
+                crate::RemoteModelQueryError::Execution(
                     diagnostic
                         .to_query_diagnostic()
                         .map_err(|error| QueryTargetError::Reply(error.into()))?,
@@ -710,7 +710,7 @@ impl ProxyQueryConnection {
 
     /// Prepare one request for a caller-owned exchange, with `resources`
     /// constrained by this connection's ceiling. Send
-    /// [`PendingRemoteModelQueryV2::request_bytes`] and pass the reply to
+    /// [`PendingRemoteModelQuery::request_bytes`] and pass the reply to
     /// [`Self::finish`].
     ///
     /// # Errors
@@ -723,7 +723,7 @@ impl ProxyQueryConnection {
         resources: QueryExecutionResourceLimits,
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,
-    ) -> Result<PendingRemoteModelQueryV2, QueryTargetError> {
+    ) -> Result<PendingRemoteModelQuery, QueryTargetError> {
         deadline.check(cancellation)?;
         let resources = resources.constrained_by(self.answer_limits);
         let advertisement = self.staged_advertisement().ok_or_else(|| {
@@ -754,7 +754,7 @@ impl ProxyQueryConnection {
     ///
     /// Returns the interruption, or the claim or reply failure.
     pub fn finish(
-        pending: &PendingRemoteModelQueryV2,
+        pending: &PendingRemoteModelQuery,
         response: &[u8],
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,

@@ -18,13 +18,13 @@ mod perf_stages;
 #[cfg(feature = "perf-stages")]
 pub use perf_stages::perf_stages;
 mod plan_builder_runtime;
+mod plan_model_remote_runtime;
 mod proxy_connection_runtime;
 #[cfg(test)]
 #[path = "../../rust/tests/support/purchase_plan.rs"]
 mod purchase_plan;
 mod query_plan_v3_codec;
 mod query_v2_builder_runtime;
-mod query_v2_model_remote_runtime;
 pub mod query_v2_runtime;
 mod runtime_projection;
 #[cfg(test)]
@@ -54,15 +54,15 @@ pub use migration_catalog_runtime::{
     NodeMigrationVerificationFinding, NodeMigrationVerificationReport, open_migration_catalog,
 };
 pub use plan_builder_runtime::{NodePlan, NodePlanBuilder, NodePlanOperand};
-pub use proxy_connection_runtime::NodeProxyConnection;
-pub use query_plan_v3_codec::{_query_plan_v3_round_trip, QueryPlanV3Encoding};
-pub use query_v2_model_remote_runtime::{
+pub use plan_model_remote_runtime::{
     NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, query_v2_prepare_remote_model_count,
     query_v2_prepare_remote_model_exists, query_v2_prepare_remote_model_page,
     query_v2_prepare_remote_model_reduce, query_v2_prepare_remote_model_reduce_by_field,
     query_v2_prepare_remote_model_reduce_by_fields, query_v2_prepare_remote_model_rows,
     query_v2_remote_model_context_with_resources,
 };
+pub use proxy_connection_runtime::NodeProxyConnection;
+pub use query_plan_v3_codec::{_query_plan_v3_round_trip, QueryPlanV3Encoding};
 pub use runtime_projection::{
     NodeProjectedModelManager, NodeRuntimeProjection, install_plan_runtime_projection,
     projected_batch_deleted,

@@ -211,12 +211,12 @@
       "symbol": "pub async fn execute_validated_query"
     },
     "remote_query_prepare": {
-      "path": "type-bridge-core/crates/orm/src/query_v2_model_remote.rs",
-      "symbol": "pub fn prepare_remote_model_query_v2"
+      "path": "type-bridge-core/crates/orm/src/plan_model_remote.rs",
+      "symbol": "pub fn prepare_remote_model_query"
     },
     "remote_query_decode": {
-      "path": "type-bridge-core/crates/orm/src/query_v2_model_remote.rs",
-      "symbol": "impl ClaimedRemoteModelReplyV2"
+      "path": "type-bridge-core/crates/orm/src/plan_model_remote.rs",
+      "symbol": "impl ClaimedRemoteModelReply"
     },
     "remote_structured_failure": {
       "path": "type-bridge-core/crates/contract/src/query_remote_v2.rs",

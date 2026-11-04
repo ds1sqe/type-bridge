@@ -29,7 +29,7 @@ use crate::match_request::{
     BindingHandle, ComparisonOp, MissingOrder, PredicateHandle, RowCardinality, SessionHandle,
     SortDirection, ValidatedMatchRequest, Window,
 };
-use crate::query_v2_model_remote::prepare_remote_model_query_with_policy;
+use crate::plan_model_remote::prepare_remote_model_query_with_policy;
 use crate::query_v2_prepared::QueryAuthority;
 use crate::remote_signing::RemoteReplySigningKey;
 use crate::session::backend::AnswerCancellation;
@@ -534,7 +534,7 @@ fn prepares_and_is_admitted(evidence: bool) {
     );
     if evidence {
         assert!(
-            matches!(strict, Err(crate::RemoteModelQueryV2Error::Match(error)) if error.code().as_str() == "statement_count_limit")
+            matches!(strict, Err(crate::RemoteModelQueryError::Match(error)) if error.code().as_str() == "statement_count_limit")
         );
     } else {
         assert!(strict.is_ok());

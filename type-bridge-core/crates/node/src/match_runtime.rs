@@ -45,7 +45,7 @@ pub(crate) fn napi_target_error(error: QueryTargetError) -> napi::Error {
         QueryTargetError::Direct(error) => crate::napi_orm_error(error),
         QueryTargetError::Commit(error) => napi_sdk_diagnostic(error.diagnostic()),
         QueryTargetError::Prepare(error) | QueryTargetError::Reply(error) => {
-            crate::query_v2_model_remote_runtime::remote_model_error(error)
+            crate::plan_model_remote_runtime::remote_model_error(error)
         }
         QueryTargetError::Interrupted(diagnostic) => napi_sdk_diagnostic(diagnostic),
         error @ QueryTargetError::Callback(_) => napi_sdk_diagnostic(
@@ -3850,9 +3850,9 @@ plays:
         assert!(direct.contains("proxy_connection_runtime::settle("));
         assert!(!direct.contains("execute_match_with_limits"));
         assert!(!direct.contains("direct_with_deadline"));
-        let remote = production(include_str!("query_v2_model_remote_runtime.rs"));
+        let remote = production(include_str!("plan_model_remote_runtime.rs"));
         assert!(remote.contains("ProxyQueryConnection::finish("));
-        assert!(!remote.contains("prepare_remote_model_query_v2_with_budget"));
+        assert!(!remote.contains("prepare_remote_model_query_with_budget"));
         assert!(!remote.contains("claim_reply_with_cancellation"));
         let proxy = production(include_str!("proxy_connection_runtime.rs"));
         assert!(proxy.contains("QueryTarget::Proxy(&connection)"));

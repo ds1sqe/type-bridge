@@ -1677,7 +1677,7 @@ def _emit_sdk_queries_remote_proof_fragment() -> None:
     producer_paths = sorted(
         (
             "type-bridge-core/crates/python/src/match_runtime.rs",
-            "type-bridge-core/crates/python/src/query_v2_model_remote_runtime.rs",
+            "type-bridge-core/crates/python/src/plan_model_remote_runtime.rs",
             "type-bridge-core/crates/schema-codegen/src/python/query.py",
             "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
         )

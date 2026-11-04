@@ -200,6 +200,14 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust staged model-read APIs drop their obsolete V2 names:
+  `RemoteModelQueryV2Error` → `RemoteModelQueryError`,
+  `PendingRemoteModelQueryV2` → `PendingRemoteModelQuery`,
+  `ClaimedRemoteModelReplyV2` → `ClaimedRemoteModelReply`,
+  `prepare_remote_model_query_v2` → `prepare_remote_model_query`, and
+  `prepare_remote_model_query_v2_with_budget` →
+  `prepare_remote_model_query_with_budget`.
+
 - Rust `query_v2_remote::{RemoteReplySigningKey, Ed25519RemoteReplyVerifier}`
   move to `remote_signing::{RemoteReplySigningKey, Ed25519RemoteReplyVerifier}`;
   staged reply authentication no longer depends on the V2 executor.

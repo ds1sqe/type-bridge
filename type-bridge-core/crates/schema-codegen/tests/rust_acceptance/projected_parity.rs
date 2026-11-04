@@ -42,7 +42,7 @@ use type_bridge_orm::{
     AnswerCancellation, BindingId, FetchShape, FetchSlot, InstalledRuntimeProjection, MatchBinding,
     MatchMode, MatchOperation, MatchPlan, MatchRequest, ProjectedAttributeValue, ProjectedCreate,
     ProjectedQueryMaterializationLimits, ProjectedQueryOrigin, ProjectedQuerySlotValue,
-    ProjectedQueryValue, RowCardinality, ThingKind, Window, prepare_remote_model_query_v2,
+    ProjectedQueryValue, RowCardinality, ThingKind, Window, prepare_remote_model_query,
     validate_match_request,
 };
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
@@ -743,7 +743,7 @@ async fn foreign_hydration_diagnostic(
         max_statements: 3,
     };
     let pending =
-        prepare_remote_model_query_v2(&authority, &registry, validated, &advertisement, limits)?;
+        prepare_remote_model_query(&authority, &registry, validated, &advertisement, limits)?;
     let response = transport.exchange(pending.request_bytes()).await?;
     let claimed = pending.claim_reply()?;
     if response.len() > claimed.response_snapshot_limit() {

@@ -53,6 +53,7 @@ pub mod migration_assertion;
 mod plan_builders;
 pub mod plan_explain;
 mod plan_lowering;
+mod plan_model_remote;
 pub mod projected_batch;
 mod projected_batch_executor;
 pub mod projected_codec;
@@ -73,7 +74,6 @@ mod query_v2_adapter_tests;
 pub mod query_v2_builder;
 mod query_v2_compatibility;
 mod query_v2_model;
-mod query_v2_model_remote;
 pub mod query_v2_prepared;
 pub mod query_v2_remote;
 #[cfg(test)]
@@ -137,6 +137,10 @@ pub use hooks::{
     CrudOperation, HookContext, HookError, HookRunner, LifecycleHook, PreHookResult, TypeKind,
 };
 pub use match_request::*;
+pub use plan_model_remote::{
+    ClaimedRemoteModelReply, PendingRemoteModelQuery, RemoteModelQueryError,
+    prepare_remote_model_query, prepare_remote_model_query_with_budget,
+};
 #[doc(hidden)]
 pub use projected_batch::{PreparedProjectedBatchInvocation, ProjectedBatchInvocationControl};
 pub use projected_batch::{
@@ -192,10 +196,6 @@ pub use query_execution_limits::{
 pub use query_execution_limits::{
     MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
     MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS,
-};
-pub use query_v2_model_remote::{
-    ClaimedRemoteModelReplyV2, PendingRemoteModelQueryV2, RemoteModelQueryV2Error,
-    prepare_remote_model_query_v2, prepare_remote_model_query_v2_with_budget,
 };
 pub use runtime_projection::InstalledRuntimeProjection;
 #[allow(deprecated)]

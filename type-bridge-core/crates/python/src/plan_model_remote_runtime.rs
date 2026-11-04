@@ -14,7 +14,7 @@ use pyo3::types::{PyAny, PyBool, PyList};
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
-    AnswerCancellation, AnswerTransport, OrderHandle, PendingRemoteModelQueryV2,
+    AnswerCancellation, AnswerTransport, OrderHandle, PendingRemoteModelQuery,
     ProjectedQueryOrigin, ProxyQueryConnection, QueryExecutionDeadline,
     QueryExecutionResourceLimits, QueryHandle, QueryTarget, RowCardinality, ValidatedMatchRequest,
     validate_order_term_count,
@@ -41,7 +41,7 @@ pub(crate) struct PyRemoteModelQueryContext {
 /// One prepared model request with an atomic one-shot reply decoder.
 #[pyclass(name = "PendingRemoteModelQuery", frozen)]
 pub(crate) struct PyPendingRemoteModelQuery {
-    pending: PendingRemoteModelQueryV2,
+    pending: PendingRemoteModelQuery,
     installed: Option<Arc<type_bridge_orm::InstalledRuntimeProjection>>,
     registry: Arc<DescriptorRegistry>,
     resources: QueryExecutionResourceLimits,

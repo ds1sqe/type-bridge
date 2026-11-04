@@ -23,9 +23,9 @@ use type_bridge_orm::{
     MatchError, MissingOrder, OrderHandle, OrmError, PredicateHandle, ProjectedAttributeValue,
     ProjectedQueryOrigin, ProviderRuntimeOwner, QueryExecutionDeadline,
     QueryExecutionResourceLimits, QueryHandle, QueryTarget, QueryTargetError, Reduction,
-    RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
-    ShapeHandle, SortDirection, UnknownEnumValue, UnvalidatedMatchRequest, ValidatedMatchRequest,
-    Window, lower_match_error, lower_remote_query_diagnostic, query_resource_closed_diagnostic,
+    RemoteModelQueryError, RoleHandle, RowCardinality, SelectionHandle, SessionHandle, ShapeHandle,
+    SortDirection, UnknownEnumValue, UnvalidatedMatchRequest, ValidatedMatchRequest, Window,
+    lower_match_error, lower_remote_query_diagnostic, query_resource_closed_diagnostic,
 };
 
 use crate::orm_runtime::{
@@ -1925,13 +1925,13 @@ pub(crate) fn py_query_target_error(error: QueryTargetError) -> PyErr {
     }
 }
 
-pub(crate) fn py_remote_model_error(error: RemoteModelQueryV2Error) -> PyErr {
+pub(crate) fn py_remote_model_error(error: RemoteModelQueryError) -> PyErr {
     match error {
-        RemoteModelQueryV2Error::Diagnostic(diagnostic) => {
+        RemoteModelQueryError::Diagnostic(diagnostic) => {
             py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic))
         }
-        RemoteModelQueryV2Error::Match(error) => py_match_error(error),
-        RemoteModelQueryV2Error::Execution(error) => py_sdk_diagnostic(error),
+        RemoteModelQueryError::Match(error) => py_match_error(error),
+        RemoteModelQueryError::Execution(error) => py_sdk_diagnostic(error),
     }
 }
 

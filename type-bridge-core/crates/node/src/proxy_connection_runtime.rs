@@ -20,7 +20,7 @@ use crate::match_runtime::{
     NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchQueryHandle, NodeQueryCancellation,
     NodeQueryExecutionResources, NodeQueryLimits, napi_sdk_diagnostic, napi_target_error,
 };
-use crate::query_v2_model_remote_runtime::{
+use crate::plan_model_remote_runtime::{
     count_request, exists_request, owned_advertisement, page_request, reduce_by_field_request,
     reduce_by_fields_request, reduce_request, rows_request,
 };

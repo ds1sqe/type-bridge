@@ -29,7 +29,7 @@ use type_bridge_orm::{
     ProjectedQueryOrigin, ProjectedQueryResult, ProjectedQuerySlotValue, ProjectedQueryValue,
     ProjectedReducedValue, ProjectedReductionGroup, ProjectedReductionRow, ProjectedThing,
     QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle, Reduction,
-    RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
+    RemoteModelQueryError, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
     SortDirection, ValidatedMatchRequest, Window, lower_execution_error,
     materialize_projected_query_result_with_budget, validate_field_group_count,
     validate_order_term_count, validate_reducer_count, validate_selection_count,
@@ -604,7 +604,7 @@ pub struct TypeBridgeQueryRemoteContext {
 pub struct TypeBridgeQueryRemotePending {
     state: Arc<QueryRemoteContextState>,
     terminal: TypeBridgeQueryTerminal,
-    pending: type_bridge_orm::PendingRemoteModelQueryV2,
+    pending: type_bridge_orm::PendingRemoteModelQuery,
     deadline: QueryExecutionDeadline,
     claim_consumed: AtomicBool,
 }
@@ -613,7 +613,7 @@ pub struct TypeBridgeQueryRemotePending {
 pub struct TypeBridgeQueryRemoteClaim {
     state: Arc<QueryRemoteContextState>,
     terminal: TypeBridgeQueryTerminal,
-    claimed: Mutex<Option<type_bridge_orm::ClaimedRemoteModelReplyV2>>,
+    claimed: Mutex<Option<type_bridge_orm::ClaimedRemoteModelReply>>,
     response_snapshot_limit: usize,
     deadline: QueryExecutionDeadline,
 }
@@ -680,11 +680,11 @@ fn lower(error: type_bridge_orm::OrmError) -> SdkExecutionDiagnostic {
     lower_execution_error(error, SdkProviderOperation::Read)
 }
 
-fn lower_remote(error: RemoteModelQueryV2Error) -> SdkExecutionDiagnostic {
+fn lower_remote(error: RemoteModelQueryError) -> SdkExecutionDiagnostic {
     match error {
-        RemoteModelQueryV2Error::Match(error) => type_bridge_orm::lower_match_error(&error),
-        RemoteModelQueryV2Error::Execution(error) => error,
-        RemoteModelQueryV2Error::Diagnostic(error) => {
+        RemoteModelQueryError::Match(error) => type_bridge_orm::lower_match_error(&error),
+        RemoteModelQueryError::Execution(error) => error,
+        RemoteModelQueryError::Diagnostic(error) => {
             type_bridge_orm::lower_remote_query_diagnostic(error)
         }
     }
@@ -4629,7 +4629,7 @@ fn remote_authority(
 
 fn take_remote_claim(
     claim: &TypeBridgeQueryRemoteClaim,
-) -> Result<type_bridge_orm::ClaimedRemoteModelReplyV2, SdkExecutionDiagnostic> {
+) -> Result<type_bridge_orm::ClaimedRemoteModelReply, SdkExecutionDiagnostic> {
     claim
         .claimed
         .lock()

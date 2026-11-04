@@ -12,8 +12,8 @@ use napi_derive::napi;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
-    AnswerCancellation, AnswerTransport, PendingRemoteModelQueryV2, ProxyQueryConnection,
-    QueryExecutionDeadline, QueryExecutionResourceLimits, RemoteModelQueryV2Error, RowCardinality,
+    AnswerCancellation, AnswerTransport, PendingRemoteModelQuery, ProxyQueryConnection,
+    QueryExecutionDeadline, QueryExecutionResourceLimits, RemoteModelQueryError, RowCardinality,
     ValidatedMatchRequest, Window, lower_remote_query_diagnostic, validate_order_term_count,
 };
 
@@ -93,7 +93,7 @@ impl NodeRemoteModelQueryContext {
 /// One prepared model request with an atomic one-shot reply decoder.
 #[napi]
 pub struct NodePendingRemoteModelQuery {
-    pending: Arc<PendingRemoteModelQueryV2>,
+    pending: Arc<PendingRemoteModelQuery>,
     registry: Arc<DescriptorRegistry>,
     result_context: NodeMatchResultContext,
     deadline: QueryExecutionDeadline,
@@ -106,7 +106,7 @@ pub struct DecodeRemoteModelReplyTask {
 }
 
 struct DecodeRemoteModelReply {
-    pending: Arc<PendingRemoteModelQueryV2>,
+    pending: Arc<PendingRemoteModelQuery>,
     registry: Arc<DescriptorRegistry>,
     response: Vec<u8>,
     result_context: NodeMatchResultContext,
@@ -473,12 +473,12 @@ fn bounded_order_handles(
     Ok(order_handles(&references))
 }
 
-pub(crate) fn remote_model_error(error: RemoteModelQueryV2Error) -> napi::Error {
+pub(crate) fn remote_model_error(error: RemoteModelQueryError) -> napi::Error {
     match error {
-        RemoteModelQueryV2Error::Diagnostic(diagnostic) => {
+        RemoteModelQueryError::Diagnostic(diagnostic) => {
             napi_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic))
         }
-        RemoteModelQueryV2Error::Match(error) => napi_match_error(error),
-        RemoteModelQueryV2Error::Execution(error) => napi_sdk_diagnostic(error),
+        RemoteModelQueryError::Match(error) => napi_match_error(error),
+        RemoteModelQueryError::Execution(error) => napi_sdk_diagnostic(error),
     }
 }

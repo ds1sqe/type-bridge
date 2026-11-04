@@ -110,7 +110,7 @@ fn server_ceilings() -> AnswerLimits {
 
 async fn execute_staged(
     db: &Database,
-    pending: &PendingRemoteModelQueryV2,
+    pending: &PendingRemoteModelQuery,
     authority: &QueryAuthority,
     advertisement: &RemoteCapabilities,
 ) -> (Vec<u8>, Vec<StagedAnswerV3>) {
@@ -317,7 +317,7 @@ async fn default_answer_limits_follow_the_transport_live() {
     let (response, _) = execute_staged(&db, &pending, &authority, &advertisement).await;
     let error = ProxyQueryConnection::finish(&pending, &response, &cancellation, deadline)
         .expect_err("the proxy refuses an answer past the wire item limit");
-    let QueryTargetError::Reply(RemoteModelQueryV2Error::Execution(refusal)) = error else {
+    let QueryTargetError::Reply(RemoteModelQueryError::Execution(refusal)) = error else {
         panic!("expected an authenticated refusal, got {error:?}");
     };
     assert!(

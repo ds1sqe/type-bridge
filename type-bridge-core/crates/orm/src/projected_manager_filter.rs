@@ -1242,7 +1242,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
             )
             .await?;
         let canonical = result.for_request(&request).map_err(|error| {
-            crate::QueryTargetError::Reply(crate::RemoteModelQueryV2Error::Match(error))
+            crate::QueryTargetError::Reply(crate::RemoteModelQueryError::Match(error))
         })?;
         let crate::match_request::MatchResult::Count { value, .. } = canonical else {
             return Err(reply_error(SdkExecutionDiagnostic::internal_failure()));
@@ -1333,7 +1333,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
             )
             .await?;
         let canonical = result.for_request(&request).map_err(|error| {
-            crate::QueryTargetError::Reply(crate::RemoteModelQueryV2Error::Match(error))
+            crate::QueryTargetError::Reply(crate::RemoteModelQueryError::Match(error))
         })?;
         let crate::match_request::MatchResult::Exists { value, .. } = canonical else {
             return Err(reply_error(SdkExecutionDiagnostic::internal_failure()));
@@ -1561,14 +1561,14 @@ fn manager_roots<'result>(
 }
 
 fn reply_error(error: SdkExecutionDiagnostic) -> crate::QueryTargetError {
-    crate::QueryTargetError::Reply(crate::RemoteModelQueryV2Error::Execution(error))
+    crate::QueryTargetError::Reply(crate::RemoteModelQueryError::Execution(error))
 }
 
 fn lower_target_error(
     error: crate::QueryTargetError,
     first: Option<&TypeId>,
 ) -> SdkExecutionDiagnostic {
-    use crate::{QueryTargetError, RemoteModelQueryV2Error};
+    use crate::{QueryTargetError, RemoteModelQueryError};
     match error {
         QueryTargetError::Commit(error) => error.diagnostic(),
         QueryTargetError::Direct(error) => match first {
@@ -1576,14 +1576,14 @@ fn lower_target_error(
             None => lower_execution_error(error, SdkProviderOperation::Read),
         },
         QueryTargetError::Prepare(error) | QueryTargetError::Reply(error) => match error {
-            RemoteModelQueryV2Error::Diagnostic(error) => {
+            RemoteModelQueryError::Diagnostic(error) => {
                 crate::execution_diagnostic::lower_remote_query_diagnostic(error)
             }
-            RemoteModelQueryV2Error::Match(error) => match first {
+            RemoteModelQueryError::Match(error) => match first {
                 Some(model) => lower_manager_first(crate::OrmError::Match(error), model),
                 None => lower_match_error(&error),
             },
-            RemoteModelQueryV2Error::Execution(error) => error,
+            RemoteModelQueryError::Execution(error) => error,
         },
         QueryTargetError::Interrupted(error) => error,
         error @ QueryTargetError::Callback(_) => error.into_diagnostic(SdkProviderOperation::Read),

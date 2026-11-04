@@ -12,11 +12,11 @@ use crate::match_request::{
     MatchError, MatchErrorCategory, MatchErrorPathSegment, ValidatedMatchRequest,
     ValidatedMatchResult,
 };
+use crate::plan_lowering::failure;
 use crate::query_execution_limits::{
     AnswerTransport, QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
 use crate::query_plan_exec::PlanAnswer;
-use crate::query_v2::failure;
 use crate::query_v2_prepared::QueryAuthority;
 use crate::session::backend::AnswerCancellation;
 use rand_core::{OsRng, RngCore};
@@ -37,7 +37,7 @@ use type_bridge_contract::query_remote_v3::{
 
 /// A native model-query failure retains its structured error authority.
 #[derive(Debug, Error)]
-pub enum RemoteModelQueryV2Error {
+pub enum RemoteModelQueryError {
     /// Transport, authority or canonical-envelope refusal.
     #[error(transparent)]
     Diagnostic(Diagnostic),
@@ -49,7 +49,7 @@ pub enum RemoteModelQueryV2Error {
     Execution(type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic),
 }
 
-impl From<Diagnostic> for RemoteModelQueryV2Error {
+impl From<Diagnostic> for RemoteModelQueryError {
     fn from(error: Diagnostic) -> Self {
         Self::Diagnostic(typed_transport_diagnostic(error))
     }
@@ -94,17 +94,17 @@ struct RemoteModelState {
 }
 
 /// One read-kind staged request and its one-shot reply decoder.
-pub struct PendingRemoteModelQueryV2 {
+pub struct PendingRemoteModelQuery {
     state: Arc<RemoteModelState>,
 }
 /// The sole claimed reply capability, reserved before any host byte snapshot.
-pub struct ClaimedRemoteModelReplyV2 {
+pub struct ClaimedRemoteModelReply {
     state: Arc<RemoteModelState>,
     prepared: PreparedModel,
     closed: AtomicBool,
 }
 
-impl PendingRemoteModelQueryV2 {
+impl PendingRemoteModelQuery {
     /// Exact canonical bytes to send to `/v3/staged`.
     pub fn request_bytes(&self) -> &[u8] {
         &self.state.bytes
@@ -126,14 +126,14 @@ impl PendingRemoteModelQueryV2 {
         self.state.lifecycle.load(Ordering::Acquire) == 2
     }
     /// Reserve the only reply capability.
-    pub fn claim_reply(&self) -> Result<ClaimedRemoteModelReplyV2, RemoteModelQueryV2Error> {
+    pub fn claim_reply(&self) -> Result<ClaimedRemoteModelReply, RemoteModelQueryError> {
         self.claim_reply_with_cancellation(&AnswerCancellation::default())
     }
     /// Reserve before semantic cancellation/deadline checks, consuming all outcomes.
     pub fn claim_reply_with_cancellation(
         &self,
         cancellation: &AnswerCancellation,
-    ) -> Result<ClaimedRemoteModelReplyV2, RemoteModelQueryV2Error> {
+    ) -> Result<ClaimedRemoteModelReply, RemoteModelQueryError> {
         let mut guard = self.state.prepared.lock().map_err(|_| {
             failure(
                 DiagnosticCategory::Integrity,
@@ -168,14 +168,14 @@ impl PendingRemoteModelQueryV2 {
         })?;
         drop(guard);
         check_reply_budget(self.state.deadline, cancellation, true)?;
-        Ok(ClaimedRemoteModelReplyV2 {
+        Ok(ClaimedRemoteModelReply {
             state: Arc::clone(&self.state),
             prepared,
             closed: AtomicBool::new(false),
         })
     }
 }
-impl ClaimedRemoteModelReplyV2 {
+impl ClaimedRemoteModelReply {
     /// Close this claimed capability before decode.
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
@@ -198,7 +198,7 @@ impl ClaimedRemoteModelReplyV2 {
             ValidatedMatchResult,
             Arc<DescriptorRegistry>,
         ),
-        RemoteModelQueryV2Error,
+        RemoteModelQueryError,
     > {
         self.decode_with_cancellation(bytes, &AnswerCancellation::default())
     }
@@ -213,7 +213,7 @@ impl ClaimedRemoteModelReplyV2 {
             ValidatedMatchResult,
             Arc<DescriptorRegistry>,
         ),
-        RemoteModelQueryV2Error,
+        RemoteModelQueryError,
     > {
         if self.is_closed() {
             return Err(failure(
@@ -274,11 +274,11 @@ impl ClaimedRemoteModelReplyV2 {
                 ] {
                     let name = SdkDiagnosticName::new(name).expect("static detail");
                     if !diagnostic.details().contains_key(&name) {
-                        diagnostic=diagnostic.try_with_detail(name,value).map_err(|_| RemoteModelQueryV2Error::Execution(type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure()))?;
+                        diagnostic=diagnostic.try_with_detail(name,value).map_err(|_| RemoteModelQueryError::Execution(type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure()))?;
                     }
                 }
             }
-            return Err(RemoteModelQueryV2Error::Execution(diagnostic));
+            return Err(RemoteModelQueryError::Execution(diagnostic));
         }
         let PreparedModel {
             request,
@@ -366,13 +366,13 @@ fn annotate_refusal(
 }
 
 /// Prepare one model terminal for one read-kind staged exchange.
-pub fn prepare_remote_model_query_v2(
+pub fn prepare_remote_model_query(
     authority: &QueryAuthority,
     registry: &DescriptorRegistry,
     request: ValidatedMatchRequest,
     advertisement: &[u8],
     limits: RemoteLimitsV2,
-) -> Result<PendingRemoteModelQueryV2, RemoteModelQueryV2Error> {
+) -> Result<PendingRemoteModelQuery, RemoteModelQueryError> {
     let policy = QueryExecutionResourceLimits::from_remote(limits);
     prepare_remote_model_query_with_policy(
         authority,
@@ -386,7 +386,7 @@ pub fn prepare_remote_model_query_v2(
     )
 }
 /// Prepare with the caller's already captured deadline and cancellation owner.
-pub fn prepare_remote_model_query_v2_with_budget(
+pub fn prepare_remote_model_query_with_budget(
     authority: &QueryAuthority,
     registry: &DescriptorRegistry,
     request: ValidatedMatchRequest,
@@ -394,7 +394,7 @@ pub fn prepare_remote_model_query_v2_with_budget(
     limits: RemoteLimitsV2,
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
-) -> Result<PendingRemoteModelQueryV2, RemoteModelQueryV2Error> {
+) -> Result<PendingRemoteModelQuery, RemoteModelQueryError> {
     prepare_remote_model_query_with_policy(
         authority,
         registry,
@@ -417,7 +417,7 @@ pub(crate) fn prepare_remote_model_query_with_policy(
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
     admission_window_milliseconds: u64,
-) -> Result<PendingRemoteModelQueryV2, RemoteModelQueryV2Error> {
+) -> Result<PendingRemoteModelQuery, RemoteModelQueryError> {
     check_prepare_budget(deadline, cancellation)?;
     let registry = Arc::new(registry.owned_registry_snapshot().map_err(|_| {
         failure(
@@ -551,7 +551,7 @@ pub(crate) fn prepare_remote_model_query_with_policy(
     let bytes = staged.encode()?;
     stack.plans.clear();
     check_prepare_budget(deadline, cancellation)?;
-    Ok(PendingRemoteModelQueryV2 {
+    Ok(PendingRemoteModelQuery {
         state: Arc::new(RemoteModelState {
             lifecycle: AtomicU8::new(0),
             prepared: Mutex::new(Some(PreparedModel {
@@ -571,7 +571,7 @@ pub(crate) fn prepare_remote_model_query_with_policy(
 
 fn check_decode_cancellation(
     cancellation: &AnswerCancellation,
-) -> Result<(), RemoteModelQueryV2Error> {
+) -> Result<(), RemoteModelQueryError> {
     if cancellation.is_cancelled() {
         Err(MatchError::new(
             MatchErrorCategory::Cancelled,
@@ -587,7 +587,7 @@ fn check_decode_cancellation(
 fn check_prepare_budget(
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
-) -> Result<(), RemoteModelQueryV2Error> {
+) -> Result<(), RemoteModelQueryError> {
     check_decode_cancellation(cancellation)?;
     if deadline.is_expired() {
         return Err(MatchError::new(
@@ -604,7 +604,7 @@ fn check_reply_budget(
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
     claiming: bool,
-) -> Result<(), RemoteModelQueryV2Error> {
+) -> Result<(), RemoteModelQueryError> {
     if cancellation.is_cancelled() {
         return if claiming {
             Err(failure(
@@ -847,7 +847,7 @@ functions:
         );
         let validated = validate_match_request(&registry, request).expect("valid V1 request");
         let authority = matching_authority(&registry);
-        let result = prepare_remote_model_query_v2(
+        let result = prepare_remote_model_query(
             &authority,
             &registry,
             validated,
@@ -864,7 +864,7 @@ functions:
             },
         );
         let error = match result {
-            Err(RemoteModelQueryV2Error::Match(error)) => error,
+            Err(RemoteModelQueryError::Match(error)) => error,
             Err(error) => panic!("expected released MatchError, got {error:?}"),
             Ok(_) => panic!("nullable V1 ordering must fail before remote preparation"),
         };
@@ -889,7 +889,7 @@ functions:
             crate::match_request::PredicateHandle,
             usize,
         ) -> crate::match_request::QueryHandle,
-    ) -> Result<(PendingRemoteModelQueryV2, QueryAuthority), RemoteModelQueryV2Error> {
+    ) -> Result<(PendingRemoteModelQuery, QueryAuthority), RemoteModelQueryError> {
         let registry = Arc::new(nullable_order_registry());
         let authority = matching_authority(&registry);
         let session = SessionHandle::with_limits(Arc::clone(&registry), limits);
@@ -909,7 +909,7 @@ functions:
             Err(crate::OrmError::Match(error)) => return Err(error.into()),
             Err(error) => panic!("unexpected validation failure: {error:?}"),
         };
-        prepare_remote_model_query_v2(
+        prepare_remote_model_query(
             &authority,
             &registry,
             validated,
@@ -935,20 +935,20 @@ functions:
             crate::match_request::PredicateHandle,
             usize,
         ) -> crate::match_request::QueryHandle,
-    ) -> RemoteModelQueryV2Error {
+    ) -> RemoteModelQueryError {
         match try_prepare_person_count(limits, b"not an advertisement", compose) {
             Err(error) => error,
             Ok(_) => panic!("an undecodable advertisement cannot prepare a request"),
         }
     }
 
-    fn contract_diagnostic(error: RemoteModelQueryV2Error) -> Diagnostic {
+    fn contract_diagnostic(error: RemoteModelQueryError) -> Diagnostic {
         match error {
-            RemoteModelQueryV2Error::Diagnostic(diagnostic) => diagnostic,
-            RemoteModelQueryV2Error::Execution(error) => {
+            RemoteModelQueryError::Diagnostic(diagnostic) => diagnostic,
+            RemoteModelQueryError::Execution(error) => {
                 panic!("unexpected execution error: {error:?}")
             }
-            RemoteModelQueryV2Error::Match(error) => {
+            RemoteModelQueryError::Match(error) => {
                 panic!("expected a contract diagnostic, got {error:?}")
             }
         }
@@ -956,7 +956,7 @@ functions:
 
     /// Alternating disjunction and conjunction is real nesting that no
     /// flattening removes: forty-six terms exceed the native default codec depth.
-    fn nested_person_count(limits: QueryLimits) -> RemoteModelQueryV2Error {
+    fn nested_person_count(limits: QueryLimits) -> RemoteModelQueryError {
         match try_nested_person_count(limits, b"not an advertisement") {
             Err(error) => error,
             Ok(_) => panic!("an undecodable advertisement cannot prepare a request"),
@@ -966,7 +966,7 @@ functions:
     fn try_nested_person_count(
         limits: QueryLimits,
         advertisement_bytes: &[u8],
-    ) -> Result<(PendingRemoteModelQueryV2, QueryAuthority), RemoteModelQueryV2Error> {
+    ) -> Result<(PendingRemoteModelQuery, QueryAuthority), RemoteModelQueryError> {
         let nested = std::cell::RefCell::new(None::<crate::match_request::PredicateHandle>);
         try_prepare_person_count(limits, advertisement_bytes, |query, term, index| {
             let combined = match nested.borrow().as_ref() {
@@ -1035,7 +1035,7 @@ functions:
         let error = prepare_person_count(lowered, |query, term, _| {
             query.where_predicate(term).expect("attached predicate")
         });
-        let RemoteModelQueryV2Error::Match(error) = error else {
+        let RemoteModelQueryError::Match(error) = error else {
             panic!("a lowered structural limit refuses at request validation");
         };
         assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
@@ -1188,7 +1188,7 @@ functions:
                 signer.public_key(),
             )
         };
-        let unsupported = prepare_remote_model_query_v2(
+        let unsupported = prepare_remote_model_query(
             &authority,
             &registry,
             validate_match_request(&registry, validated.request().clone()).unwrap(),
@@ -1198,11 +1198,11 @@ functions:
         .err()
         .expect("given capability required");
         assert!(
-            matches!(unsupported, RemoteModelQueryV2Error::Match(error) if error.code().as_str()=="schema_function_given_rows_unsupported")
+            matches!(unsupported, RemoteModelQueryError::Match(error) if error.code().as_str()=="schema_function_given_rows_unsupported")
         );
         capabilities.insert(query_given_rows_capability());
         let advertisement = make_ad(capabilities);
-        let pending = prepare_remote_model_query_v2(
+        let pending = prepare_remote_model_query(
             &authority,
             &registry,
             validated,
@@ -1241,7 +1241,7 @@ functions:
             MatchResult::Exists { value: false, .. }
         ));
         assert!(
-            matches!(pending.claim_reply(),Err(RemoteModelQueryV2Error::Diagnostic(error)) if error.code().as_str()=="query_remote_reply_replayed")
+            matches!(pending.claim_reply(),Err(RemoteModelQueryError::Diagnostic(error)) if error.code().as_str()=="query_remote_reply_replayed")
         );
     }
 
@@ -1287,7 +1287,7 @@ functions:
                 .expect("executor binding"),
             signer.public_key(),
         );
-        let expired = prepare_remote_model_query_v2_with_budget(
+        let expired = prepare_remote_model_query_with_budget(
             &authority,
             &registry,
             validated(),
@@ -1305,7 +1305,7 @@ functions:
             QueryExecutionDeadline::expired(),
             &AnswerCancellation::default(),
         );
-        let RemoteModelQueryV2Error::Match(expired) = expired
+        let RemoteModelQueryError::Match(expired) = expired
             .err()
             .expect("zero-timeout preparation must not publish a pending request")
         else {
@@ -1320,7 +1320,7 @@ functions:
 
         let cancellation = AnswerCancellation::default();
         cancellation.cancel();
-        let cancelled_pending = prepare_remote_model_query_v2(
+        let cancelled_pending = prepare_remote_model_query(
             &authority,
             &registry,
             validated(),
@@ -1341,7 +1341,7 @@ functions:
             Err(error) => error,
             Ok(_) => panic!("pre-cancelled claim must not publish a claimed reply"),
         };
-        let RemoteModelQueryV2Error::Diagnostic(claim_error) = claim_error else {
+        let RemoteModelQueryError::Diagnostic(claim_error) = claim_error else {
             panic!("claim cancellation must retain remote Diagnostic authority")
         };
         assert_eq!(claim_error.category(), DiagnosticCategory::Cancelled);
@@ -1350,13 +1350,13 @@ functions:
             Err(error) => error,
             Ok(_) => panic!("cancelled semantic claim must consume the one-shot request"),
         };
-        let RemoteModelQueryV2Error::Diagnostic(replay) = replay else {
+        let RemoteModelQueryError::Diagnostic(replay) = replay else {
             panic!("claim replay must retain remote Diagnostic authority")
         };
         assert_eq!(replay.category(), DiagnosticCategory::Integrity);
         assert_eq!(replay.code().as_str(), "query_remote_reply_replayed");
 
-        let expired_pending = prepare_remote_model_query_v2(
+        let expired_pending = prepare_remote_model_query(
             &authority,
             &registry,
             validated(),
@@ -1378,7 +1378,7 @@ functions:
             Err(error) => error,
             Ok(_) => panic!("expired semantic claim must not publish a claimed reply"),
         };
-        let RemoteModelQueryV2Error::Diagnostic(expired) = expired else {
+        let RemoteModelQueryError::Diagnostic(expired) = expired else {
             panic!("claim deadline must retain remote Diagnostic authority")
         };
         assert_eq!(expired.category(), DiagnosticCategory::ResourceLimit);
@@ -1387,13 +1387,13 @@ functions:
             Err(error) => error,
             Ok(_) => panic!("expired semantic claim must consume the one-shot request"),
         };
-        let RemoteModelQueryV2Error::Diagnostic(replay) = replay else {
+        let RemoteModelQueryError::Diagnostic(replay) = replay else {
             panic!("expired claim replay must retain remote Diagnostic authority")
         };
         assert_eq!(replay.category(), DiagnosticCategory::Integrity);
         assert_eq!(replay.code().as_str(), "query_remote_reply_replayed");
 
-        let closed_pending = prepare_remote_model_query_v2(
+        let closed_pending = prepare_remote_model_query(
             &authority,
             &registry,
             validated(),
@@ -1419,14 +1419,14 @@ functions:
                 Err(error) => error,
                 Ok(_) => panic!("closed pending request must reject claim"),
             };
-            let RemoteModelQueryV2Error::Diagnostic(closed) = closed else {
+            let RemoteModelQueryError::Diagnostic(closed) = closed else {
                 panic!("closed request must retain remote Diagnostic authority")
             };
             assert_eq!(closed.category(), DiagnosticCategory::InvalidContract);
             assert_eq!(closed.code().as_str(), "query_resource_closed");
         }
 
-        let closed_claim_pending = prepare_remote_model_query_v2(
+        let closed_claim_pending = prepare_remote_model_query(
             &authority,
             &registry,
             validated(),
@@ -1447,7 +1447,7 @@ functions:
         closed_claim.close();
         closed_claim.close();
         assert!(closed_claim.is_closed());
-        let RemoteModelQueryV2Error::Diagnostic(closed_claim_error) = closed_claim
+        let RemoteModelQueryError::Diagnostic(closed_claim_error) = closed_claim
             .decode(b"must not be inspected")
             .expect_err("closed claim must reject before response decode")
         else {
@@ -1459,7 +1459,7 @@ functions:
         );
         assert_eq!(closed_claim_error.code().as_str(), "query_resource_closed");
 
-        let pending = prepare_remote_model_query_v2(
+        let pending = prepare_remote_model_query(
             &authority,
             &registry,
             validated(),
@@ -1522,7 +1522,7 @@ functions:
             Err(error) => error,
             Ok(_) => panic!("close after claim must retain replay semantics"),
         };
-        let RemoteModelQueryV2Error::Diagnostic(replay) = replay else {
+        let RemoteModelQueryError::Diagnostic(replay) = replay else {
             panic!("claim replay must retain remote Diagnostic authority")
         };
         assert_eq!(replay.category(), DiagnosticCategory::Integrity);
