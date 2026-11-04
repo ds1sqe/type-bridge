@@ -90,6 +90,18 @@ _REMOTE_RESOURCES = QueryExecutionResourceLimits(
     role_players=30,
 )
 
+# Historical-policy replay: 07.0 changed the default timeout from 30 s to 60 s.
+_HISTORICAL_QUERY_POLICY = {
+    "timeout_milliseconds": 30_000,
+    "items": 65_536,
+    "bytes": 33_554_432,
+    "graph_nodes": 65_536,
+    "attribute_values": 65_536,
+    "collection_members": 65_536,
+    "role_players": 65_536,
+    # Omitted statement ceilings admit the complete static typed-read stack.
+}
+
 
 _CORPUS_CODES = {
     case["id"]: (case["expected"]["error_category"], case["expected"]["error_code"])
@@ -937,16 +949,10 @@ def _sdk_queries_resource_limits(
     remote_exchange: Any,
     membership_iid: str,
 ) -> dict[str, object]:
-    defaults = {
-        "timeout_milliseconds": 30_000,
-        "items": 65_536,
-        "bytes": 33_554_432,
-        "graph_nodes": 65_536,
-        "attribute_values": 65_536,
-        "collection_members": 65_536,
-        "role_players": 65_536,
-        "statements": 3,
-    }
+    assert generated.QueryExecutionResourceLimits().timeout_milliseconds == 60_000
+    historical = generated.QueryExecutionResourceLimits(**_HISTORICAL_QUERY_POLICY, statements=3)
+    defaults = _resource_policy(historical)
+    assert defaults == _HISTORICAL_QUERY_POLICY | {"statements": 3}
     # Every dimension but the statement count may be raised past its
     # default and is kept as given.
     raisable = {name: value + 1 for name, value in defaults.items() if name != "statements"}
@@ -957,18 +963,20 @@ def _sdk_queries_resource_limits(
         and plus.statements is None
     )
     zero_tightening_all = all(getattr(zero, name) == 0 for name in defaults)
+    above_day = generated.QueryExecutionResourceLimits(timeout_milliseconds=86_400_001)
+    assert above_day.timeout_milliseconds == 86_400_001
     # Past a supported maximum a value is refused by name, never clamped.
-    past_maximum_refused = True
-    for arguments in ({"statements": 4097}, {"timeout_milliseconds": 86_400_001}):
-        try:
-            generated.QueryExecutionResourceLimits(**arguments)
-        except ValueError as error:
-            past_maximum_refused = past_maximum_refused and next(iter(arguments)) in str(error)
-        else:
-            past_maximum_refused = False
+    try:
+        generated.QueryExecutionResourceLimits(statements=4097)
+    except ValueError as error:
+        past_maximum_refused = "statements" in str(error)
+    else:
+        past_maximum_refused = False
 
     def limited_session(*, remote: bool) -> Any:
-        limits = generated.QueryExecutionResourceLimits(role_players=0)
+        limits = generated.QueryExecutionResourceLimits(
+            **(_HISTORICAL_QUERY_POLICY | {"role_players": 0})
+        )
         connection = (
             generated.ExchangeConnection(remote_advertisement, remote_exchange)
             if remote
@@ -1013,7 +1021,9 @@ def _sdk_queries_lifecycle(
     remote_requests: list[bytes],
 ) -> dict[str, object]:
     async def lane(connection: object) -> tuple[dict[str, bool | int], object]:
-        session = generated.Person.query(connection)
+        session = generated.Person.query(
+            connection, resources=generated.QueryExecutionResourceLimits(**_HISTORICAL_QUERY_POLICY)
+        )
         person = session.exact(generated.Person)
         identifier = person.field(generated.Person.identifier)
         scope = identifier.eq(generated.Identifier("query-ada"))
@@ -1165,7 +1175,12 @@ def _run_sdk_queries_journey(
         entity_read_after_create = person_manager.get_by_iid(person_iids[0]) is not None
         relation_read_after_create = membership_manager.get_by_iid(membership_iid) is not None
 
-        direct_session = blocking(generated.Person.query(clean_db))
+        direct_session = blocking(
+            generated.Person.query(
+                clean_db,
+                resources=generated.QueryExecutionResourceLimits(**_HISTORICAL_QUERY_POLICY),
+            )
+        )
         direct_person = direct_session.exact(generated.Person)
         direct_identifier = direct_person.field(generated.Person.identifier)
         scoped = direct_identifier.eq(generated.Identifier("query-ada")) | direct_identifier.eq(

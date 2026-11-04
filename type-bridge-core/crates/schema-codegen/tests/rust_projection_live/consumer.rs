@@ -2295,9 +2295,31 @@ async fn sdk_queries_remote_cancellation(
     })
 }
 
+fn sdk_queries_historical_resources() -> QueryExecutionResourceLimits {
+    // Historical-policy replay: 07.0 changed the default timeout from 30 s to 60 s.
+    QueryExecutionResourceLimits {
+        collect_phase_timestamps: false,
+        timeout_milliseconds: type_bridge::QueryTimeout::from_milliseconds(30_000),
+        items: 65_536,
+        bytes: 33_554_432,
+        graph_nodes: 65_536,
+        attribute_values: 65_536,
+        collection_members: 65_536,
+        role_players: 65_536,
+        // Omitted statement ceilings admit the complete static typed-read stack.
+        statements: None,
+    }
+}
+
 fn sdk_queries_resource_limit_base() -> Value {
-    // The frozen SDK-v2 journey records the wire/proxy defaults.
-    let hard = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+    for transport in [AnswerTransport::Direct, AnswerTransport::Proxy] {
+        assert_eq!(
+            QueryExecutionResourceLimits::default_for(transport)
+                .timeout_milliseconds.milliseconds(),
+            Some(60_000),
+        );
+    }
+    let hard = sdk_queries_historical_resources();
     // Every dimension but the statement count may be raised past its default
     // and is kept as given.
     let raised = QueryExecutionResourceLimits {
@@ -2322,7 +2344,8 @@ fn sdk_queries_resource_limit_base() -> Value {
     .validate()
     .is_err_and(|refusal| refusal.limit == "statements");
     let zero = QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0);
-    let zero_tightening_all = zero.timeout_milliseconds == hard.timeout_milliseconds
+    let zero_tightening_all = zero.timeout_milliseconds
+        == QueryExecutionResourceLimits::default_for(AnswerTransport::Direct).timeout_milliseconds
         && zero.items == 0
         && zero.bytes == 0
         && zero.graph_nodes == 0
@@ -2685,7 +2708,9 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
         "queries public create operations diverged from journey order"
     );
 
-    let mut direct_session = db.query().expect("queries direct query session");
+    let mut direct_session = db
+        .query_with_resources(sdk_queries_historical_resources(), AnswerCancellation::default())
+        .expect("queries direct query session");
     let direct_observations = sdk_queries_query_observations(
         &mut direct_session,
         records,
@@ -2717,14 +2742,19 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
     let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("queries remote URL");
     let exchange_count = Arc::new(AtomicUsize::new(0));
     let remote: ProxyDatabase<AppSchema> =
-        ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
-            HttpTransport::recording(remote_url.clone(), Arc::clone(&exchange_count)),
-        ))
+        ProxyDatabase::connect(
+            ProxyConnectionPolicy::with_exchange(HttpTransport::recording(
+                remote_url.clone(), Arc::clone(&exchange_count),
+            ))
+            .admission_window_milliseconds(std::num::NonZeroU64::new(60_000).unwrap()),
+        )
         .await
         .expect("queries remote database connects")
         .with_schema(SCHEMA)
         .expect("queries remote schema binds");
-    let mut remote_session = remote.query().expect("queries remote query session");
+    let mut remote_session = remote
+        .query_with_resources(sdk_queries_historical_resources(), AnswerCancellation::default())
+        .expect("queries remote query session");
     let remote_observations = sdk_queries_query_observations(
         &mut remote_session,
         records,
@@ -2757,7 +2787,9 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
     }
 
     let structured_query_diagnostic = {
-        let mut session = db.query().expect("queries structured diagnostic session");
+        let mut session = db
+            .query_with_resources(sdk_queries_historical_resources(), AnswerCancellation::default())
+            .expect("queries structured diagnostic session");
         let person = session
             .exact::<Person>()
             .expect("queries structured diagnostic binding");
@@ -2797,7 +2829,7 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
     let limited_dimension = "role_players";
     let limited = QueryExecutionResourceLimits {
         role_players: 0,
-        ..QueryExecutionResourceLimits::default()
+        ..sdk_queries_historical_resources()
     };
     let direct_enforced = {
         let mut session = db
@@ -2819,12 +2851,16 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
 
     let direct_lane = "direct";
     let (direct_lifecycle, direct_result_survives) = {
-        let mut session = db.query().expect("queries direct lifecycle session");
+        let mut session = db
+            .query_with_resources(sdk_queries_historical_resources(), AnswerCancellation::default())
+            .expect("queries direct lifecycle session");
         sdk_queries_lifecycle_lane(&mut session, &ada_key, None).await
     };
     let remote_lane = "remote";
     let (remote_lifecycle, remote_result_survives) = {
-        let mut session = remote.query().expect("queries remote lifecycle session");
+        let mut session = remote
+            .query_with_resources(sdk_queries_historical_resources(), AnswerCancellation::default())
+            .expect("queries remote lifecycle session");
         sdk_queries_lifecycle_lane(&mut session, &ada_key, Some(&exchange_count)).await
     };
     assert_eq!(direct_lifecycle, remote_lifecycle);

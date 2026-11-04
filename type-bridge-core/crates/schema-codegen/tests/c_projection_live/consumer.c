@@ -2632,8 +2632,21 @@ static int run_typed_query_function_and_remote(
   caller_http_body_t advertisement = {NULL, 0u};
   caller_http_body_t response = {NULL, 0u};
   type_bridge_byte_view_t request = {NULL, 0u};
-  type_bridge_query_execution_limits_v1_t limits =
+  const type_bridge_query_execution_limits_v1_t current_defaults =
       TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
+  /* Historical-policy replay: 07.0 moved other SDKs to 60 s; C stays 30 s until 06.11. */
+  type_bridge_query_execution_limits_v1_t limits = {
+      .struct_size = (uint32_t)sizeof(type_bridge_query_execution_limits_v1_t),
+      .version = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_VERSION,
+      .timeout_milliseconds = 30000u,
+      .items = 65536u,
+      .bytes = 33554432u,
+      .graph_nodes = 65536u,
+      .attribute_values = 65536u,
+      .collection_members = 65536u,
+      .role_players = 65536u,
+      .statements = 3u,
+  };
   fixture_qualifyingzhscore_query_arguments_v1_t arguments = {0};
   size_t response_limit = 0u;
   size_t remote_exchange_count = 0u;
@@ -2689,6 +2702,7 @@ static int run_typed_query_function_and_remote(
 
   (void)network_link_iid;
 
+  CHECK(current_defaults.timeout_milliseconds == 30000u);
   CHECK(remote_port != 0u);
   CHECK(fixture_query_session_open(package, &session, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);

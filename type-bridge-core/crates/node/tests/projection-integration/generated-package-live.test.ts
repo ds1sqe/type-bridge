@@ -705,6 +705,16 @@ function sdkQueriesCardinalityDiagnostic(error: any): Record<string, unknown> {
   };
 }
 
+// Historical-policy replay: 07.0 changed the default timeout from 30 s to 60 s.
+function historicalQueryResources(generated: any, overrides: Record<string, bigint> = {}): any {
+  return new generated.QueryExecutionResourceLimits({
+    timeoutMilliseconds: 30_000n, items: 65_536n, bytes: 33_554_432n,
+    graphNodes: 65_536n, attributeValues: 65_536n, collectionMembers: 65_536n,
+    // Omitted statement ceilings admit the complete static typed-read stack.
+    rolePlayers: 65_536n, ...overrides,
+  });
+}
+
 async function sdkQueriesResourceLimits(
   generated: any,
   database: any,
@@ -712,15 +722,17 @@ async function sdkQueriesResourceLimits(
   exchange: (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>,
   membershipIid: string,
 ): Promise<Record<string, unknown>> {
+  assert.equal(new generated.QueryExecutionResourceLimits().timeoutMilliseconds, 60_000n);
+  const historical = historicalQueryResources(generated, { statements: 3n });
   const defaults = {
-    timeout_milliseconds: 30_000,
-    items: 65_536,
-    bytes: 33_554_432,
-    graph_nodes: 65_536,
-    attribute_values: 65_536,
-    collection_members: 65_536,
-    role_players: 65_536,
-    statements: 3,
+    timeout_milliseconds: Number(historical.timeoutMilliseconds),
+    items: Number(historical.items),
+    bytes: Number(historical.bytes),
+    graph_nodes: Number(historical.graphNodes),
+    attribute_values: Number(historical.attributeValues),
+    collection_members: Number(historical.collectionMembers),
+    role_players: Number(historical.rolePlayers),
+    statements: Number(historical.statements),
   };
   // Every dimension but the statement count may be raised past its default
   // and is kept as given.
@@ -735,6 +747,8 @@ async function sdkQueriesResourceLimits(
     statements: BigInt(defaults.statements),
   });
   const plus = new generated.QueryExecutionResourceLimits(raised(1));
+  const aboveDay = new generated.QueryExecutionResourceLimits({ timeoutMilliseconds: 86_400_001n });
+  assert.equal(aboveDay.timeoutMilliseconds, 86_400_001n);
   // Past a supported maximum a value is refused by name, never clamped.
   const refusedByName = (options: Record<string, bigint>, name: string): boolean => {
     try {
@@ -744,9 +758,7 @@ async function sdkQueriesResourceLimits(
       return String((error as Error).message).includes(name);
     }
   };
-  const pastMaximumRefused =
-    refusedByName({ statements: 4097n }, "statements") &&
-    refusedByName({ timeoutMilliseconds: 86_400_001n }, "timeout_milliseconds");
+  const pastMaximumRefused = refusedByName({ statements: 4097n }, "statements");
   const zero = new generated.QueryExecutionResourceLimits({
     timeoutMilliseconds: 0n,
     items: 0n,
@@ -772,7 +784,7 @@ async function sdkQueriesResourceLimits(
   const zeroTighteningAll = values(zero).every((value) => value === 0);
   const errors: readonly [string, string][] = await Promise.all(
     [false, true].map(async (remote) => {
-      const limits = new generated.QueryExecutionResourceLimits({ rolePlayers: 0n });
+      const limits = historicalQueryResources(generated, { rolePlayers: 0n });
       const connection = remote
         ? new generated.ExchangeConnection(advertisement, exchange)
         : database;
@@ -887,9 +899,13 @@ async function sdkQueriesLifecycle(
     session.close();
     return [observation, result];
   };
-  const [direct, directResult] = await lane(new generated.QuerySession(database));
+  const [direct, directResult] = await lane(new generated.QuerySession(database, {
+    resources: historicalQueryResources(generated),
+  }));
   const [remote, remoteResult] = await lane(
-    new generated.QuerySession(new generated.ExchangeConnection(advertisement, exchange)),
+    new generated.QuerySession(new generated.ExchangeConnection(advertisement, exchange), {
+      resources: historicalQueryResources(generated),
+    }),
   );
   assert.deepEqual(remote, direct);
   return {
@@ -1705,7 +1721,9 @@ async function runSdkQueriesJourney(
       membershipIid,
       networkIid,
     );
-    const directSession = new generated.QuerySession(database);
+    const directSession = new generated.QuerySession(database, {
+      resources: historicalQueryResources(generated),
+    });
     const direct = await lane(directSession).finally(() => directSession.close());
     const capture = (exchange as any).planWitness as FixturePlanWitness | undefined;
     if (capture !== undefined) {
