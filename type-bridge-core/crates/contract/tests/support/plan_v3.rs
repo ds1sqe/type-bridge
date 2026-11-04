@@ -328,7 +328,6 @@ pub fn spec(pipeline: Vec<Stage>, output: Vec<u16>) -> PlanSpec {
             columns: output.into_iter().map(id).collect(),
         },
         managed_semantics: semantics(),
-        compatibility: None,
         functions: vec![],
     }
 }

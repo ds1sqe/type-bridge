@@ -378,7 +378,6 @@ impl<'a> Draft<'a> {
                     .managed_state()
                     .managed_semantic_schema()
                     .clone(),
-                compatibility: None,
                 functions: vec![],
             },
             self.authority.declared(),

@@ -176,7 +176,6 @@ fn spec(operation: Operation, pipeline: Vec<Stage>, columns: Vec<BindingId>) -> 
             b"server-v3-route",
         )
         .expect("semantics"),
-        compatibility: None,
         functions: vec![],
     }
 }

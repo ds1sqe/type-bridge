@@ -2134,7 +2134,6 @@ async fn native_batches_keep_key_identity_replace_players_and_collect_without_ca
                     b"batch-live",
                 )
                 .unwrap(),
-            compatibility: None,
             functions: vec![],
         },
         &declared,

@@ -30,7 +30,7 @@ use crate::migration_assertion::{
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
 
-/// Additive read/write plans with frozen V2 lifting.
+/// Native read/write plans.
 #[path = "query_plan_v3.rs"]
 pub mod v3;
 pub use v3::{
@@ -1101,15 +1101,6 @@ impl QueryPlan {
         }
 
         Ok(())
-    }
-
-    /// Lift a read plan into V3 after validation against declared schema authority.
-    /// The returned V3 plan has its own format and fingerprint domain version.
-    pub fn to_v3(
-        &self,
-        schema: &crate::schema::DeclaredSchema,
-    ) -> Result<v3::QueryPlanV3, Diagnostic> {
-        v3::QueryPlanV3::from_read_plan(self, schema)
     }
 
     /// Return the exact wire format discriminator.

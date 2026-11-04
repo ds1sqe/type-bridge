@@ -302,7 +302,6 @@ impl Builder {
                 pipeline: self.stages,
                 output: QueryOutput::Rows { columns: vec![] },
                 managed_semantics: plans.semantics.clone(),
-                compatibility: None,
                 functions: vec![],
             },
             &plans.schema,

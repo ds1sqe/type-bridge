@@ -200,6 +200,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust `QueryPlan::to_v3`, `QueryPlanV3::compatibility`, and
+  `PlanSpec::compatibility` are removed. Construct native plans with
+  `QueryPlanV3::new` or `PlanBuilder`; V3 decoding refuses a `compatibility`
+  member, including `null`, instead of admitting lifted legacy evidence.
+
 - Python and Node `QueryV2Authority` and `QueryV2Error` are now
   `PlanAuthority` and `PlanError`. Native authority constructors are
   `plan_authority`, `plan_authority_from_schema_authority`, and

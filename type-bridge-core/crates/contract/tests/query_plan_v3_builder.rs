@@ -222,7 +222,6 @@ fn hand_built_purchase() -> QueryPlanV3 {
         ],
         output: QueryOutput::Rows { columns: vec![] },
         managed_semantics: semantics(),
-        compatibility: None,
         functions: vec![],
     };
     QueryPlanV3::new(spec, &schema()).unwrap()
@@ -746,7 +745,6 @@ fn builder_fetch_matches_validated_document_plans() {
             },
             output: QueryOutput::Rows { columns: vec![] },
             managed_semantics: semantics(),
-            compatibility: None,
             functions: vec![],
         };
         spec.pipeline

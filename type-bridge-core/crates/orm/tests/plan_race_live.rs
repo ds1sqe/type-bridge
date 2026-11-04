@@ -154,7 +154,6 @@ impl Plan {
                     snippet("schema").as_bytes(),
                 )
                 .unwrap(),
-                compatibility: None,
                 functions: vec![],
             },
             schema,

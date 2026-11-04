@@ -195,7 +195,6 @@ pub fn hand_built_purchase(
         ],
         output: QueryOutput::Rows { columns: vec![] },
         managed_semantics: semantics,
-        compatibility: None,
         functions: vec![],
     };
     QueryPlanV3::new(spec, declared).unwrap()

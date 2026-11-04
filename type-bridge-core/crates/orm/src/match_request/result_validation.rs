@@ -2217,7 +2217,6 @@ mod tests {
                     .managed_state()
                     .managed_semantic_schema()
                     .clone(),
-                compatibility: None,
                 functions: vec![],
             },
             authority.declared(),
@@ -2307,7 +2306,6 @@ mod tests {
                     .collect(),
                 output: source.output().clone(),
                 managed_semantics: source.managed_semantics().clone(),
-                compatibility: None,
                 functions: vec![],
             },
             authority.declared(),

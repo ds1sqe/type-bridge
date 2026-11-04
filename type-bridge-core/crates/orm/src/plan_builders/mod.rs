@@ -189,7 +189,6 @@ impl PlanDraft {
                 pipeline,
                 output,
                 managed_semantics: authority.managed_semantics().clone(),
-                compatibility: None,
                 functions: Vec::new(),
             },
             authority.declared(),

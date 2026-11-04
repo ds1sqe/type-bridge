@@ -491,36 +491,21 @@ fn v3_stages_have_stable_golden_bytes_and_round_trip() {
 }
 
 #[test]
-fn v2_lift_does_not_change_v2_bytes_or_fingerprint() {
-    let old = QueryPlan::new_v2(
-        vec![binding(0, "account")],
-        vec![],
-        vec![ReadStage::Match {
-            patterns: vec![isa(0, entity("account"))],
-        }],
-        QueryOutput::Rows {
-            columns: vec![id(0)],
-        },
-        semantics(),
-    )
-    .unwrap();
-    let bytes = old.canonical_bytes().unwrap();
-    let fingerprint = old.fingerprint().unwrap();
-    let decoded = decode_query_plan(&bytes).unwrap();
-    let lifted = decoded.to_v3(&schema()).unwrap();
-    assert_eq!(old.canonical_bytes().unwrap(), bytes);
-    assert_eq!(old.fingerprint().unwrap(), fingerprint);
-    assert_ne!(lifted.fingerprint().unwrap(), fingerprint);
-    assert_eq!(
-        type_bridge_contract::query_plan::v3::decode_query_plan_v3_with_limits(
-            &lifted.canonical_bytes().unwrap(),
-            &schema(),
-            lifted.limits()
-        )
-        .unwrap(),
-        lifted
-    );
-    assert!(decode_query_plan(&lifted.canonical_bytes().unwrap()).is_err());
+fn native_plan_refuses_removed_compatibility_evidence() {
+    let plan = QueryPlanV3::new(spec(vec![matched()], vec![0]), &schema()).unwrap();
+    let bytes = plan.canonical_bytes().unwrap();
+    let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(wire.get("compatibility").is_none());
+    for compatibility in [Value::Null, json!({})] {
+        wire["compatibility"] = compatibility;
+        assert_eq!(
+            decode_query_plan_v3(&to_canonical_json(&wire).unwrap(), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "invalid_canonical_value"
+        );
+    }
 }
 
 #[test]
@@ -1105,55 +1090,57 @@ fn let_cannot_reassign_a_branch_local_concept_binding() {
 }
 
 #[test]
-fn v2_inputs_lift_to_a_reusable_v3_template_then_bind_without_mutating_v2() {
+fn native_input_template_binds_without_mutating_the_template() {
     use type_bridge_contract::id::AttributeId;
     use type_bridge_contract::migration_assertion::ValueComparator;
-    use type_bridge_contract::query_plan::v3::Operation;
+    use type_bridge_contract::query_plan::v3::{Operation, PlanSpec};
     use type_bridge_contract::query_plan::{
         InputColumn, InputColumnId, InputRow, QueryOperand, QueryPattern,
     };
     use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
-    let old = QueryPlan::new_v2(
-        vec![binding(0, "account"), binding(1, "score")],
-        vec![InputColumn::new(
-            InputColumnId::new(0),
-            type_bridge_contract::migration_assertion::QueryVariable::new("minimum").unwrap(),
-            ValueTypeTag::Long,
-            false,
-        )],
-        vec![ReadStage::Match {
-            patterns: vec![
-                isa(0, entity("account")),
-                QueryPattern::Has {
-                    owner: id(0),
-                    attribute: id(1),
-                    attribute_id: AttributeId::new("score").unwrap(),
-                },
-                QueryPattern::Value {
-                    comparator: ValueComparator::Greater,
-                    left: QueryOperand::Binding { binding: id(1) },
-                    right: QueryOperand::Input {
-                        column: InputColumnId::new(0),
-                    },
-                },
-            ],
-        }],
-        QueryOutput::Rows {
-            columns: vec![id(0)],
+    let template = QueryPlanV3::new(
+        PlanSpec {
+            bindings: vec![binding(0, "account"), binding(1, "score")],
+            inputs: vec![InputColumn::new(
+                InputColumnId::new(0),
+                type_bridge_contract::migration_assertion::QueryVariable::new("minimum").unwrap(),
+                ValueTypeTag::Long,
+                false,
+            )],
+            given_rows: None,
+            operation: Operation::Rows,
+            pipeline: vec![Stage::Match {
+                patterns: vec![
+                    isa(0, entity("account")).into(),
+                    QueryPattern::Has {
+                        owner: id(0),
+                        attribute: id(1),
+                        attribute_id: AttributeId::new("score").unwrap(),
+                    }
+                    .into(),
+                    QueryPattern::Value {
+                        comparator: ValueComparator::Greater,
+                        left: QueryOperand::Binding { binding: id(1) },
+                        right: QueryOperand::Input {
+                            column: InputColumnId::new(0),
+                        },
+                    }
+                    .into(),
+                ],
+            }],
+            output: QueryOutput::Rows {
+                columns: vec![id(0)],
+            },
+            managed_semantics: semantics(),
+            functions: vec![],
         },
-        semantics(),
+        &schema(),
     )
     .unwrap();
-    let old_bytes = old.canonical_bytes().unwrap();
-    let template = old.to_v3(&schema()).unwrap();
+    let template_bytes = template.canonical_bytes().unwrap();
     assert!(template.given_rows().is_none());
     assert_eq!(
-        type_bridge_contract::query_plan::v3::decode_query_plan_v3_with_limits(
-            &template.canonical_bytes().unwrap(),
-            &schema(),
-            template.limits()
-        )
-        .unwrap(),
+        decode_query_plan_v3(&template_bytes, &schema()).unwrap(),
         template
     );
     let bound = template
@@ -1168,14 +1155,9 @@ fn v2_inputs_lift_to_a_reusable_v3_template_then_bind_without_mutating_v2() {
         bound.fingerprint().unwrap(),
         template.fingerprint().unwrap()
     );
-    assert_eq!(old.canonical_bytes().unwrap(), old_bytes);
+    assert_eq!(template.canonical_bytes().unwrap(), template_bytes);
     assert_eq!(
-        type_bridge_contract::query_plan::v3::decode_query_plan_v3_with_limits(
-            &bound.canonical_bytes().unwrap(),
-            &schema(),
-            bound.limits()
-        )
-        .unwrap(),
+        decode_query_plan_v3(&bound.canonical_bytes().unwrap(), &schema()).unwrap(),
         bound
     );
 }

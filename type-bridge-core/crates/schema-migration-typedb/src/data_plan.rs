@@ -185,7 +185,6 @@ impl Builder {
                 pipeline: self.stages,
                 output: QueryOutput::Rows { columns },
                 managed_semantics: semantics.clone(),
-                compatibility: None,
                 functions: vec![],
             },
             schema,

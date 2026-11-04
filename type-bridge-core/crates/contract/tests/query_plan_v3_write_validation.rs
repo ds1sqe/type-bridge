@@ -7,7 +7,7 @@ use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::query_plan::v3::{InsertThing, QueryPlanV3, Set, Stage};
-use type_bridge_contract::query_plan::{QueryOutput, QueryPattern, QueryPlan, ReadStage};
+use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
 use type_bridge_contract::schema::*;
 
 #[test]
@@ -85,25 +85,20 @@ fn relation_insert_checks_player_type_and_accepts_same_stage_player() {
 }
 
 #[test]
-fn v2_lift_revalidates_schema_instead_of_trusting_read_type_labels() {
-    let old = QueryPlan::new_v2(
-        vec![binding(0, "missing")],
-        vec![],
-        vec![ReadStage::Match {
-            patterns: vec![isa(0, entity("missing"))],
+fn native_read_revalidates_schema_instead_of_trusting_type_labels() {
+    let plan = spec(
+        vec![Stage::Match {
+            patterns: vec![isa(0, entity("missing")).into()],
         }],
-        QueryOutput::Rows {
-            columns: vec![id(0)],
-        },
-        semantics(),
-    )
-    .unwrap();
-    let original = old.canonical_bytes().unwrap();
+        vec![0],
+    );
     assert_eq!(
-        old.to_v3(&schema()).unwrap_err().code().as_str(),
+        QueryPlanV3::new(plan, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
         "query_plan_unknown_type"
     );
-    assert_eq!(old.canonical_bytes().unwrap(), original);
 }
 
 #[test]

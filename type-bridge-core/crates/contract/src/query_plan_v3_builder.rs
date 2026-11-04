@@ -937,7 +937,6 @@ impl PlanBuilder {
                     },
                 },
                 managed_semantics: semantics,
-                compatibility: None,
                 functions: vec![],
             },
             schema,

@@ -1,4 +1,4 @@
-//! Additive canonical read/write plans. V1/V2 representations remain frozen.
+//! Canonical native read/write plans.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -545,8 +545,6 @@ pub struct PlanSpec {
     pub output: QueryOutput,
     /// Expected managed schema semantics.
     pub managed_semantics: ManagedSemanticSchemaFingerprint,
-    /// Retained V2 read semantics when lifting a model-query plan.
-    pub compatibility: Option<QueryPlanV2Compatibility>,
     /// Plan-local read functions.
     pub functions: Vec<LocalFunction>,
 }
@@ -555,8 +553,6 @@ pub struct PlanSpec {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct QueryPlanV3 {
     bindings: Vec<AssertionBinding>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    compatibility: Option<QueryPlanV2Compatibility>,
     format: String,
     functions: Vec<LocalFunction>,
     inputs: Vec<InputColumn>,
@@ -703,17 +699,9 @@ impl QueryPlanV3 {
                 }
             }
         }
-        if let Some(compatibility) = &spec.compatibility {
-            compatibility.validate(spec.bindings.len(), limits)?;
-        }
         let reads: Vec<_> = spec.pipeline.iter().filter_map(Stage::read_stage).collect();
-        let mut required_capabilities = derive_capabilities(
-            &reads,
-            &spec.functions,
-            &spec.inputs,
-            &spec.output,
-            spec.compatibility.as_ref(),
-        )?;
+        let mut required_capabilities =
+            derive_capabilities(&reads, &spec.functions, &spec.inputs, &spec.output, None)?;
         insert_capability(&mut required_capabilities, "query.plan.v3")?;
         if has_wide_strings(&spec) {
             insert_capability(&mut required_capabilities, CAP_QUERY_INPUT_WIDE_STRINGS)?;
@@ -861,7 +849,7 @@ impl QueryPlanV3 {
         let scalar_types = (!scalar_types.is_empty()).then(|| Box::new(scalar_types));
         let plan = Self {
             bindings: spec.bindings,
-            compatibility: spec.compatibility,
+
             format: QUERY_PLAN_FORMAT_V3.into(),
             functions: spec.functions,
             inputs: spec.inputs,
@@ -879,34 +867,6 @@ impl QueryPlanV3 {
         };
         plan.canonical_bytes()?;
         Ok(plan)
-    }
-
-    pub(super) fn from_read_plan(
-        plan: &QueryPlan,
-        schema: &DeclaredSchema,
-    ) -> Result<Self, Diagnostic> {
-        Self::new_with_limits(
-            PlanSpec {
-                bindings: plan.bindings.clone(),
-                compatibility: plan.compatibility.clone(),
-                functions: plan.functions.clone(),
-                inputs: plan.inputs.clone(),
-                given_rows: None,
-                operation: Operation::Rows,
-                managed_semantics: plan.managed_semantics.clone(),
-                output: plan.output.clone(),
-                pipeline: plan.pipeline.iter().cloned().map(Stage::from).collect(),
-            },
-            schema,
-            {
-                let mut limits = plan.limits;
-                limits.structural.selected_slots = limits
-                    .structural
-                    .selected_slots
-                    .min(limits.structural.bindings);
-                limits
-            },
-        )
     }
 
     /// Exact format discriminator.
@@ -957,11 +917,6 @@ impl QueryPlanV3 {
     #[must_use]
     pub fn functions(&self) -> &[LocalFunction] {
         &self.functions
-    }
-    /// Frozen V2 model-query evidence retained by a lifted plan.
-    #[must_use]
-    pub fn compatibility(&self) -> Option<&QueryPlanV2Compatibility> {
-        self.compatibility.as_ref()
     }
     /// Whether the fetched root is deleted by this validated plan.
     #[must_use]
@@ -1044,7 +999,7 @@ impl QueryPlanV3 {
             pipeline: self.pipeline.clone(),
             output: self.output.clone(),
             managed_semantics: self.managed_semantics.clone(),
-            compatibility: self.compatibility.clone(),
+
             functions: self.functions.clone(),
         }
     }
@@ -2378,8 +2333,6 @@ impl<'a> SchemaIndex<'a> {
 #[serde(deny_unknown_fields)]
 struct PlanWire {
     bindings: Vec<QueryBindingWire>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    compatibility: Option<QueryPlanV2Compatibility>,
     format: String,
     functions: Vec<LocalFunctionWire>,
     inputs: Vec<InputColumnWire>,
@@ -2803,7 +2756,7 @@ pub fn decode_query_plan_v3_with_limits(
             managed_semantics: ManagedSemanticSchemaFingerprint::from_wire(
                 wire.managed_semantics.rebuild()?,
             )?,
-            compatibility: wire.compatibility,
+
             functions: wire
                 .functions
                 .into_iter()

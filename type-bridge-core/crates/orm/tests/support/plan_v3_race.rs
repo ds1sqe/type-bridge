@@ -238,7 +238,6 @@ fn spec(names: &[&str], pipeline: Vec<Stage>, operation: Operation, output: Vec<
             b"plan-v3-race-authority",
         )
         .unwrap(),
-        compatibility: None,
         functions: vec![],
     }
 }

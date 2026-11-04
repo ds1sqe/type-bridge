@@ -177,7 +177,6 @@ pub(crate) fn build_under_authority(
         ));
     }
     if plan.operation() != Operation::Rows
-        || plan.compatibility().is_some()
         || model_slots.is_empty()
         || plan.managed_semantics()
             != authority
@@ -469,7 +468,6 @@ fn rebuild_with_bindings(
             pipeline,
             output: QueryOutput::Rows { columns },
             managed_semantics: plan.managed_semantics().clone(),
-            compatibility: None,
             functions: plan.functions().to_vec(),
         },
         authority.declared(),
@@ -553,7 +551,6 @@ fn retain_inputs(
             pipeline,
             output: plan.output().clone(),
             managed_semantics: plan.managed_semantics().clone(),
-            compatibility: None,
             functions: plan.functions().to_vec(),
         },
         authority.declared(),

@@ -10,8 +10,7 @@ envelope that carries ordered stacks of plans.
 
 Required members are `format`, `bindings`, `inputs`, `functions`, `pipeline`,
 `output`, `operation`, `managed_semantics`, and `required_capabilities`.
-`format` is exactly `typebridge.query-plan/v3`. Optional `given_rows` and
-`compatibility` members are omitted when absent. Empty required arrays remain
+`format` is exactly `typebridge.query-plan/v3`. The optional `given_rows` member is omitted when absent. Empty required arrays remain
 present. Unknown fields, duplicate keys, unknown tags and forged capability
 claims are rejected. The schema is provided separately to the decoder; the
 embedded managed fingerprint is an expected identity, not schema authority.
@@ -459,8 +458,7 @@ The retained read vocabulary is `query.pattern.isa`, `query.pattern.isa-subtypes
 `query.stage.distinct`, `query.stage.reduce`, `query.stage.sort`,
 `query.stage.offset`, `query.stage.limit`, `query.output.rows`, and
 `query.output.documents`. Each construct contributes its corresponding feature.
-Inputs or any literal/input operand add `query.input.given-rows`. Lifted
-compatibility syntax additionally retains its V2 capability derivation.
+Inputs or any literal/input operand add `query.input.given-rows`.
 Providers must advertise every required feature.
 
 Derivation and advertisement are separate. `query_plan_v3_capability_vocabulary()`
@@ -619,18 +617,10 @@ lowercase plan variables.
 
 ## Versioning
 
-V1/V2 bytes and fingerprints are frozen. `QueryPlan::to_v3(&schema)` revalidates
-against declared schema with the original plan's limits and returns a result.
-It preserves bindings,
-inputs, ordered read stages, output, local functions, managed semantics and V2
-compatibility. It chooses rows operation and omits given rows. Bind invocation
-rows and choose count/exists explicitly as needed. The new discriminator,
-capabilities and c14n version produce a V3 fingerprint, not the old digest.
-
-Native V3 producers normally omit compatibility. Lifted plans preserve the
-released object containing `allowed_cross_joins`, nullable `model_query` and
-nullable `predicate` under the [V2 contract](../development/typed-query-contract.md).
-V3 does not reinterpret those model-query predicates or terminal shapes.
+Construct native V3 plans with `QueryPlanV3::new` or the shared `PlanBuilder`.
+Legacy plans cannot be lifted into V3. The decoder rejects a `compatibility`
+member, including `null`. Bind invocation rows and choose count/exists on a
+native template explicitly as needed.
 
 New constructs may extend `query-plan/v3` in place when each is fenced by a
 required capability. Plans that do not use an added construct retain their

@@ -1816,7 +1816,6 @@ fn native_read_stacks_cover_rows_pages_counts_and_exists_without_compatibility()
             crate::match_request::plan_adapter::adapt_match_request(&registry, &request).unwrap();
         assert!(!stack.plans.is_empty());
         for plan in &stack.plans {
-            assert!(plan.compatibility().is_none());
             assert!(!plan.writes());
             crate::query_plan_exec::lower(plan).unwrap();
         }
@@ -2426,7 +2425,6 @@ pub(crate) fn generic_model_selection(
                 .managed_state()
                 .managed_semantic_schema()
                 .clone(),
-            compatibility: None,
             functions: vec![],
         },
         authority.declared(),

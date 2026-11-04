@@ -82,7 +82,6 @@ fn build(
             pipeline,
             output: QueryOutput::Rows { columns: vec![] },
             managed_semantics: semantics.clone(),
-            compatibility: None,
             functions: vec![],
         },
         schema,

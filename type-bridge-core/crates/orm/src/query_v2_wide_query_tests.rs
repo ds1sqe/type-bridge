@@ -935,7 +935,6 @@ fn tuple_with_independent_selection(
             pipeline: prefix,
             output: plan.output().clone(),
             managed_semantics: plan.managed_semantics().clone(),
-            compatibility: None,
             functions: plan.functions().to_vec(),
         },
         authority.declared(),

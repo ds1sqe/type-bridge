@@ -1544,7 +1544,6 @@ mod tests {
                     managed_semantics: crate::query_plan_exec::race::touch()
                         .managed_semantics()
                         .clone(),
-                    compatibility: None,
                     functions: vec![],
                 };
                 if case == "mismatched_guard" {

@@ -1219,7 +1219,6 @@ functions:
         assert_eq!(staged.kind(), StagedKindV3::Read);
         assert_eq!(staged.plans().len(), 1);
         let plan = staged.plans()[0].plan();
-        assert!(plan.compatibility().is_none());
         assert_eq!(
             plan.given_rows().unwrap()[0].values(),
             &[Some(CanonicalValue::Long(40))]
