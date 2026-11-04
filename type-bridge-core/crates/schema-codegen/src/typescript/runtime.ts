@@ -42,7 +42,7 @@ export {
   type ProxyConnectionOptions,
   type ProxyTlsMode,
 } from "@type-bridge/node/runtime-projection";
-import type { PlanAuthority } from "@type-bridge/node/query-v2";
+import type { PlanAuthority } from "@type-bridge/node";
 import type { Database } from "@type-bridge/node";
 import { Pending, StagedTransaction } from "@type-bridge/node";
 import { Plan, Handle as PlanHandle, Value as PlanValue, Expr as PlanExpr, PlanInput, planFieldToken, planMatch, planInsert, planInsertMany, type FieldToken as AuthoringFieldToken, type PlanModelAuthoring } from "@type-bridge/node";
