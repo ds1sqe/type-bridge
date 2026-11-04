@@ -474,6 +474,181 @@ async fn wide_manager_proxy_preserves_plural_roots_and_rolls_back_last_piece() {
     db.close().unwrap();
 }
 
+#[tokio::test]
+#[ignore = "requires an explicitly configured TypeDB"]
+async fn partial_relation_update_by_player_keeps_all_roots_when_pieced() {
+    let address = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap();
+    let version = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION").unwrap();
+    let name = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_DATABASE").unwrap();
+    let db = Database::connect_with_options(
+        &address,
+        &name,
+        "admin",
+        "password",
+        ConnectOptions {
+            http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
+            tls: false,
+            server_version: Some(version.parse().unwrap()),
+        },
+    )
+    .await
+    .unwrap();
+    db.create_database().await.unwrap();
+    db.execute_raw(TYPEQL, TxType::Schema).await.unwrap();
+    let declared = normalize_documents(
+        &SchemaDocumentSet::parse([(DocumentId::new("proxy-wide.yaml").unwrap(), YAML)]).unwrap(),
+    )
+    .unwrap();
+    let profile_name = if version.starts_with("3.12.") {
+        "typedb-3.12.1/v1"
+    } else {
+        "typedb-3.13.6/v1"
+    };
+    let profile = SemanticProfileId::new(profile_name).unwrap();
+    let context = type_bridge_schema::ManagedDeltaContext::new(
+        ManagedScopeId::new("proxy-wide").unwrap(),
+        profile.clone(),
+        type_bridge_schema::schema_authority_capability_vocabulary(),
+    );
+    let authority = type_bridge_schema::build_schema_authority(
+        &declared,
+        declared.required_capabilities(),
+        &context,
+    )
+    .unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap()
+    .with_schema_authority(&authority);
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let people = DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("proxy-person").unwrap(),
+    );
+
+    let player = people
+        .insert(&vec![(
+            "proxy-selector".into(),
+            AttributeValue::String("shared-player".into()),
+        )])
+        .await
+        .unwrap();
+    let players = vec![DynamicRolePlayerInput {
+        role_name: "member".into(),
+        player_type_name: "proxy-person".into(),
+        iid: player.items()[0].iid.clone(),
+        key: None,
+    }];
+    let links = DynamicRelationManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.relation("proxy-link").unwrap(),
+    );
+    for _ in 0..2 {
+        assert_eq!(links.insert(&vec![], &players).await.unwrap().count(), 1);
+    }
+    let fields = (0..8)
+        .map(|index| {
+            (
+                "proxy-tag".into(),
+                AttributeValue::String(format!("value-{index}")),
+            )
+        })
+        .collect::<DynamicAttributeMap>();
+    let mut raised = QueryLimits::V3;
+    raised.structural.bindings = 1024;
+    raised.structural.selected_slots = 1024;
+    raised.structural.boolean_terms = 1024;
+    let high_db = db.clone().with_query_limits(raised).unwrap();
+    let high = DynamicRelationManager::from_registry(
+        &high_db,
+        Arc::clone(&registry),
+        registry.relation("proxy-link").unwrap(),
+    );
+    let high_limits = Arc::new(raised);
+    let high_plans = ManagerPlans::new(Arc::clone(&registry)).with_query_limits(Some(&high_limits));
+    assert!(matches!(
+        high_plans
+            .single_write_program(
+                "proxy-link",
+                WriteKind::PartialUpdate,
+                None,
+                &fields,
+                &players
+            )
+            .unwrap(),
+        ManagerWrite::One(_)
+    ));
+    let expected = high.update(None, &fields, &players).await.unwrap();
+    let mut limits = QueryLimits::V3;
+    limits.structural.bindings = 8;
+    limits.structural.selected_slots = 8;
+    limits.structural.input_rows = 2;
+    let low_db = db.clone().with_query_limits(limits).unwrap();
+    let low = DynamicRelationManager::from_registry(
+        &low_db,
+        Arc::clone(&registry),
+        registry.relation("proxy-link").unwrap(),
+    );
+    let low_limits = Arc::new(limits);
+    let low_plans = ManagerPlans::new(Arc::clone(&registry)).with_query_limits(Some(&low_limits));
+    let ManagerWrite::Pieces(program) = low_plans
+        .single_write_program(
+            "proxy-link",
+            WriteKind::PartialUpdate,
+            None,
+            &fields,
+            &players,
+        )
+        .unwrap()
+    else {
+        panic!("forced pieces");
+    };
+    eprintln!(
+        "partial relation update pieces={}",
+        program.statement_count()
+    );
+    assert!(program.statement_count() > 1);
+    let actual = low.update(None, &fields, &players).await;
+    let stored = links.all().await;
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+    let actual = actual.unwrap();
+    let stored = stored.unwrap();
+    assert_eq!(expected.count(), 2);
+    assert_eq!(actual.count(), 2);
+    assert_eq!(stored.len(), 2);
+    for rows in [expected.items(), actual.items(), stored.as_slice()] {
+        for row in rows {
+            assert_eq!(
+                row.attributes.len(),
+                fields.len(),
+                "{}",
+                row.iid.as_deref().unwrap()
+            );
+            assert!(fields.iter().all(|field| row.attributes.contains(field)));
+            assert_eq!(row.role_players.len(), 1);
+        }
+    }
+    let ids = |rows: &[DynamicRelationRow]| {
+        let mut ids = rows.iter().map(|row| row.iid.clone()).collect::<Vec<_>>();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ids(expected.items()), ids(actual.items()));
+    assert_eq!(ids(expected.items()), ids(&stored));
+}
+
 async fn benchmark_count(
     proxy: &ProxyQueryConnection,
     installed: &InstalledRuntimeProjection,

@@ -731,6 +731,122 @@ mod static_tests {
     use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 
     #[test]
+    fn partial_relation_update_player_identity_keeps_attachment_templates_singleton() {
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
+        let yaml = "format: typebridge.schema/v2\nattributes:\n  selector: { value: string }\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      selector: { card: { min: 0, max: 1 } }\nrelations:\n  edge:\n    owns:\n      tag: { card: { min: 0 } }\n    relates:\n      member: { card: { min: 1, max: 1 } }\nplays:\n  person:\n    edge: [member]\n";
+        let declared = normalize_documents(
+            &SchemaDocumentSet::parse([(DocumentId::new("static-relation.yaml").unwrap(), yaml)])
+                .unwrap(),
+        )
+        .unwrap();
+        let relation = TypeId::new(TypeKind::Relation, "edge").unwrap();
+        let field = OwnsFactId::new(relation.clone(), AttributeId::new("tag").unwrap()).unwrap();
+
+        let base = PlanAuthority::new(
+            declared,
+            ManagedSemanticSchemaFingerprint::compute(
+                SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                b"relation-player-zip",
+            )
+            .unwrap(),
+        );
+        let candidates = [TypeId::new(TypeKind::Entity, "person").unwrap()];
+        let players = [(
+            RoleId::new("edge", "member").unwrap(),
+            Reference {
+                candidates: &candidates,
+                identity: ReferenceIdentity::Iid("0x10"),
+            },
+        )];
+
+        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        limits.structural.bindings = 8;
+        limits.structural.selected_slots = 8;
+        limits.structural.input_rows = 2;
+        let authority = base.with_query_limits(std::sync::Arc::new(limits));
+        let fields = (0..8)
+            .map(|index| {
+                (
+                    field.clone(),
+                    CanonicalValue::String(CanonicalString::new(format!("tag-{index}")).unwrap()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let program = write_many(
+            &authority,
+            WriteKind::PartialUpdate,
+            WriteShape {
+                type_id: &relation,
+                keys: &[],
+                cleared_fields: std::slice::from_ref(&field),
+                cleared_roles: &[],
+                document_roles: vec![],
+                include_subtypes: true,
+                return_documents: true,
+                references_see_prior_writes: false,
+                single_input: true,
+            },
+            &[WriteRow {
+                iid: None,
+                fields: &fields,
+                players: &players,
+            }],
+        )
+        .unwrap()
+        .prepare_static()
+        .unwrap();
+        let WriteProgram::Static(program) = program else {
+            panic!("forced static pieces");
+        };
+        assert!(program.entries.len() > 1);
+        assert_eq!(program.entries[0].rows().len(), 1);
+        // A unique player can belong to multiple relation roots.
+        let answer = StagedAnswerV3::Rows {
+            rows: ["0x20", "0x21"]
+                .into_iter()
+                .map(|iid| {
+                    vec![
+                        RemoteValue::Value {
+                            value: CanonicalValue::Long(0),
+                        },
+                        RemoteValue::Thing {
+                            iid: iid.into(),
+                            type_id: relation.clone(),
+                        },
+                    ]
+                })
+                .collect(),
+        };
+        for entry in &program.entries[1..] {
+            let [reference] = entry.result_refs() else {
+                panic!("one allocation source");
+            };
+            assert_eq!(reference.source_plan, 0);
+            assert_eq!(
+                entry.rows().len(),
+                1,
+                "plural relation roots require broadcast of the whole attachment piece"
+            );
+            let bound = entry
+                .bind_source_result(&answer, authority.declared())
+                .unwrap();
+            let rows = bound.given_rows().unwrap();
+            assert_eq!(rows.len(), 2);
+            let target = usize::from(reference.input.get());
+            for (row, iid) in rows.iter().zip(["0x20", "0x21"]) {
+                for (column, value) in row.values().iter().enumerate() {
+                    if column == target {
+                        assert_eq!(*value, Some(super::super::iid(iid).unwrap()));
+                    } else {
+                        assert_eq!(*value, entry.rows()[0].values()[column]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn compact_source_layout_requires_iid_or_common_inherited_uniqueness() {
         use type_bridge_contract::schema::DocumentId;
         use type_bridge_schema::{SchemaDocumentSet, normalize_documents};

@@ -970,10 +970,13 @@ fn split_with_guards(
                     .fields
                     .iter()
                     .any(|(field, _)| shape.keys.contains(field)))
-            || seed
-                .players
-                .first()
-                .is_some_and(|player| unique_player_identity(authority, player));
+            // A unique player bounds creation, not the number of existing
+            // relation roots matched by an update or full-match put.
+            || (matches!(kind, WriteKind::Insert | WriteKind::Put | WriteKind::PartialPut)
+                && seed
+                    .players
+                    .first()
+                    .is_some_and(|player| unique_player_identity(authority, player)));
         attach_shape.single_input = !single_allocation;
         attach_shape.cleared_fields = &[];
         attach_shape.cleared_roles = &[];
