@@ -136,6 +136,7 @@ impl VerifiedMigrationRollbackManifest {
 /// A complete pre-verified rollback plan in reverse-topological order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedMigrationRollbackPlan {
+    schema_authorities: Vec<DeclaredSchema>,
     rollbacks: Vec<VerifiedMigrationRollbackManifest>,
     remaining_applied: Vec<MigrationId>,
     source_state: ManagedSchemaState,
@@ -145,6 +146,12 @@ pub struct VerifiedMigrationRollbackPlan {
 }
 
 impl VerifiedMigrationRollbackPlan {
+    /// Return replay-authoritative schemas at every planned reverse boundary.
+    /// Providers use these declared domains without rediscovering schema during data execution.
+    pub fn schema_authorities(&self) -> &[DeclaredSchema] {
+        &self.schema_authorities
+    }
+
     /// Return rollback manifests in execution order.
     pub fn rollbacks(&self) -> &[VerifiedMigrationRollbackManifest] {
         &self.rollbacks
@@ -272,6 +279,7 @@ fn build_verified_migration_rollback_plan_inner(
     let source_state = current_state.clone();
 
     let mut rollbacks = Vec::with_capacity(ordered_ids.len());
+    let mut schema_authorities = Vec::new();
     for id in &ordered_ids {
         let manifest = graph.manifest(id).ok_or_else(|| {
             contract_failure(
@@ -348,6 +356,7 @@ fn build_verified_migration_rollback_plan_inner(
             }
         }
 
+        schema_authorities.extend(boundaries.iter().cloned());
         let mut rollback_safety = SafetyClass::FormalOnly;
         let mut steps = Vec::new();
         let mut backfills = Vec::new();
@@ -501,6 +510,7 @@ fn build_verified_migration_rollback_plan_inner(
         .cloned()
         .collect();
     Ok(VerifiedMigrationRollbackPlan {
+        schema_authorities,
         rollbacks,
         remaining_applied,
         source_state,

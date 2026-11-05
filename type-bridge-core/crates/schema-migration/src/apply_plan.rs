@@ -237,6 +237,7 @@ impl VerifiedMigrationApplyManifest {
 /// An opaque, deterministic, pre-I/O migration apply plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedMigrationApplyPlan {
+    schema_authorities: Vec<DeclaredSchema>,
     applied_migrations: Vec<MigrationId>,
     applied_frontier: Vec<MigrationId>,
     migrations: Vec<VerifiedMigrationApplyManifest>,
@@ -250,6 +251,12 @@ pub struct VerifiedMigrationApplyPlan {
 }
 
 impl VerifiedMigrationApplyPlan {
+    /// Return replay-authoritative schemas at every planned data/schema boundary.
+    /// Providers use these declared domains without rediscovering schema during data execution.
+    pub fn schema_authorities(&self) -> &[DeclaredSchema] {
+        &self.schema_authorities
+    }
+
     /// Return every migration identity supplied as applied, in canonical order.
     pub fn applied_migrations(&self) -> &[MigrationId] {
         &self.applied_migrations
@@ -420,6 +427,7 @@ fn build_verified_migration_apply_plan_inner(
     let source_from_applied = current_schema.clone();
     let state_from_applied = current_state.clone();
     let mut migrations = Vec::with_capacity(ordered_ids.len());
+    let mut schema_authorities = Vec::new();
     let mut required_capabilities = CapabilitySet::new();
 
     for id in ordered_ids {
@@ -510,6 +518,7 @@ fn build_verified_migration_apply_plan_inner(
         let mut replayed = current_schema
             .clone()
             .expect("a planned manifest establishes a source schema");
+        schema_authorities.push(replayed.clone());
         let mut verified_steps = Vec::with_capacity(manifest.steps().len());
         let mut pending_assertions = Vec::new();
         for step in manifest.steps() {
@@ -562,6 +571,7 @@ fn build_verified_migration_apply_plan_inner(
                 lowering: Box::new(lowering),
             });
             replayed = target_schema;
+            schema_authorities.push(replayed.clone());
         }
         if !pending_assertions.is_empty() {
             return Err(contract_failure(
@@ -624,6 +634,7 @@ fn build_verified_migration_apply_plan_inner(
     resulting_applied.extend(migrations.iter().map(|entry| entry.manifest().id().clone()));
     let target_frontier = graph.applied_frontier(&resulting_applied)?;
     Ok(VerifiedMigrationApplyPlan {
+        schema_authorities,
         applied_migrations: applied.iter().cloned().collect(),
         applied_frontier,
         migrations,

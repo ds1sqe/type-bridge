@@ -1253,3 +1253,64 @@ fn destructive_reject_policy_wins_over_a_valid_approval() {
         "migration_apply_safety_policy_rejected"
     );
 }
+
+#[test]
+fn apply_and_rollback_retain_each_intermediate_declared_schema_in_one_manifest() {
+    let schemas = [
+        declared(&["person"]),
+        declared(&["person", "company"]),
+        declared(&["person", "company", "team"]),
+    ];
+    let context = context();
+    let steps = schemas
+        .windows(2)
+        .enumerate()
+        .map(|(index, pair)| {
+            let delta = diff_managed(&pair[0], &pair[1], &context).unwrap();
+            let reverse = inverse_delta(&delta).unwrap();
+            SchemaDeltaStep::new(
+                MigrationStepId::new(format!("boundary-{index}")).unwrap(),
+                delta,
+                Some(reverse),
+            )
+            .unwrap()
+        })
+        .collect();
+    let manifest = build_verified_manifest(
+        SchemaMigrationDraft::new(migration_id("0001_boundaries"), vec![], steps).unwrap(),
+        (&schemas[0], &context),
+    )
+    .unwrap();
+    let graph = MigrationHistoryGraph::from_verified([manifest.clone()]).unwrap();
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let apply = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &additive_policy(),
+        &[],
+    )
+    .unwrap();
+    let applied = BTreeSet::from([manifest.id().clone()]);
+    let rollback = build_verified_migration_rollback_plan(
+        &graph,
+        &applied,
+        &applied,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[MigrationApplyApproval::for_rollback(&manifest, SafetyClass::Destructive).unwrap()],
+    )
+    .unwrap();
+    for authorities in [apply.schema_authorities(), rollback.schema_authorities()] {
+        assert_eq!(authorities.len(), 3);
+        for (actual, expected) in authorities.iter().zip(&schemas) {
+            assert_eq!(
+                actual.declared_identity_fingerprint(),
+                expected.declared_identity_fingerprint()
+            );
+        }
+    }
+}
