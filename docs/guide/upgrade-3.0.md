@@ -87,6 +87,9 @@ Declare staged identity columns with `builder.input("target", "iid")` or
 staged result references require `PlanInput<Iid>`; ordinary string columns are
 refused. Query and staged plan bytes retain the existing string transport.
 
+Node `getByIid(iid)` permanently redirects to `filter({ iid }).first()`,
+retaining existing canonical keyword selection.
+
 Node `filter(...).where(...)` preserves IID and closed scalar comparisons.
 Wider lookups remain available through keyword read terminals and refuse
 `.where()` with `unsupported_manager_filter`; read matching models first, then

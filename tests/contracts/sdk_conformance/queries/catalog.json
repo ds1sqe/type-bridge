@@ -40,7 +40,7 @@
       "node": {
         "algorithm": "sha256",
         "canonicalization": "typebridge.binding-projection/v1",
-        "digest": "38e3b014fdcb9380617d2808e13aa130ee8822a36655d4e99a3266669fc42a52",
+        "digest": "a0e58c5a32b606db6f724b91fc2e21f0f318fa863819aeff14c4cac6e2c8fc43",
         "domain": "typebridge.binding.projection",
         "semantic_profile": "typedb-3.12.1/v1"
       },

@@ -122,6 +122,7 @@ export interface ProjectedModelManager<Complete> {
   filter(
     filters: ProjectedManagerKeywords,
   ): ProjectedModelManager<Complete>;
+  /** Permanent redirect to `filter({ iid }).first()`. */
   getByIid(iid: Iid): Complete | null;
   all(): readonly Complete[];
   first(): Complete | null;

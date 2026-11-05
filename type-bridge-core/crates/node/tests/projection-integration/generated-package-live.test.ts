@@ -2373,6 +2373,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     const filteredManager = personManager.filter({ score__gte: Score.create(3n) });
     assert.equal(personManager.filter({ identifier: Identifier.create("absent") })
       .where(Person.score, "eq", Score.create(3n)).count(), 0n);
+    assert.equal(personManager.filter({ identifier: Identifier.create("absent") }).getByIid(insertedPerson.iid), null);
     assert.equal(personManager.filter({ iid: insertedPerson.iid }).where().first().iid.toString(), insertedPerson.iid.toString());
     assert.equal(personManager.filter({ iid__in: [insertedPerson.iid] }).where().count(), 1n);
     const emptyIids = personManager.filter({ iid__in: [] }).filter({ identifier__contains: Identifier.create("person") });

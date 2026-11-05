@@ -3596,30 +3596,14 @@ impl NodeProjectedModelManager {
         .map_err(napi_sdk_diagnostic)
     }
 
-    /// Read one projected value through the common projected executor.
+    /// Permanent redirect to the IID filter first terminal.
     #[napi(js_name = "getByIidProjected")]
     pub fn get_by_iid_projected(
         &self,
         iid: String,
     ) -> napi::Result<Option<NodeProjectedValueEnvelope>> {
-        let target = self
-            .target
-            .as_ref()
-            .ok_or_else(|| runtime_error("projected manager has no execution target"))?
-            .as_target();
-        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let projected = self
-            .runtime
-            .block_on(executor.get_by_iid_on_target(target, &self.type_id, &iid, None))
-            .map_err(|error| {
-                error.into_diagnostic(
-                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
-                )
-            })
-            .map_err(napi_sdk_diagnostic)?;
-        projected
-            .map(|projected| projected_envelope(Arc::clone(&self.package), projected))
-            .transpose()
+        self.filter_iid(&Iid::new(iid).map_err(diagnostic_error)?)?
+            .first_projected()
     }
 
     /// Delete one exact value and retain its stored pre-delete snapshot.
@@ -3799,6 +3783,15 @@ impl NodeProjectedModelManager {
 }
 
 impl NodeProjectedModelManager {
+    fn filter_iid(&self, iid: &Iid) -> napi::Result<NodeProjectedManagerFilter> {
+        let mut filter = self.manager_filter()?;
+        filter.filter = filter
+            .filter
+            .try_and_iid(&self.package.projection, iid)
+            .map_err(napi_sdk_diagnostic)?;
+        Ok(filter)
+    }
+
     fn filter_handle(&self, filter: ProjectedManagerFilter) -> NodeProjectedManagerFilter {
         NodeProjectedManagerFilter {
             package: Arc::clone(&self.package),
@@ -4234,6 +4227,7 @@ struct OrderedManagerFilterEntry {
     value: Value,
 }
 
+#[cfg(test)]
 fn projected_envelope(
     package: Arc<InstalledPackage>,
     thing: ProjectedThing,
@@ -9876,6 +9870,43 @@ plays:
         );
     }
 
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn iid_read_redirect_preserves_provider_query_bytes() {
+        use type_bridge_orm::session::backend::QueryResult;
+        let projection = ordered_runtime();
+        let model = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let (database, state) = projection_recording_database_for_test(vec![
+            ProjectionRecordingResponse::Query(QueryResult::Documents(vec![])),
+            ProjectionRecordingResponse::Query(QueryResult::Documents(vec![])),
+        ]);
+        let mut manager = manager_without_execution_target(&projection, model.clone());
+        manager.target = Some(OwnedQueryTarget::Database(Arc::clone(&database)));
+        assert!(
+            manager
+                .get_by_iid_projected("0xa1".into())
+                .unwrap()
+                .is_none()
+        );
+        let executor = ProjectedCrudExecutor::new(&projection.package.projection);
+        assert!(
+            manager
+                .runtime
+                .block_on(executor.get_by_iid_on_target(
+                    QueryTarget::Database(&database),
+                    &model,
+                    "0xa1",
+                    None
+                ))
+                .unwrap()
+                .is_none()
+        );
+        let state = state.lock().unwrap();
+        assert_eq!(state.queries.len(), 2);
+        assert_eq!(state.queries[0], state.queries[1]);
+        assert_eq!(state.commits, 0);
+    }
+
     #[test]
     fn unordered_projected_read_reaches_native_target_resolution() {
         let runtime = runtime_for_schema(UNORDERED_SCHEMA, "node-legacy-read.yaml");
@@ -9887,7 +9918,10 @@ plays:
             Ok(_) => panic!("unordered projected read must fail"),
         };
 
-        assert_eq!(error.reason, "projected manager has no execution target");
+        assert_eq!(
+            error.reason,
+            "projected manager filter has no execution target"
+        );
     }
 
     #[test]

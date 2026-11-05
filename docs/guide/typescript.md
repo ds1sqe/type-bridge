@@ -101,6 +101,9 @@ if (stored.iid !== null) {
 }
 ```
 
+`getByIid(iid)` permanently redirects to `filter({ iid }).first()`, retaining
+any existing canonical keyword selection.
+
 Generated entity and relation managers expose `insert`, `insertMany`, `put`,
 `putMany`, immutable replacement `update`, `delete`, `getByIid`, `filter`,
 `all`, `first`, `count`, and `exists`.

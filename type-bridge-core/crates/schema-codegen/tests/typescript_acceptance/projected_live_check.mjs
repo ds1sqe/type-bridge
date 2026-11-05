@@ -43,7 +43,7 @@ export const SEMANTIC_SCHEMA_FINGERPRINT = Object.freeze({
 export const PROJECTION_FINGERPRINT = Object.freeze({
   algorithm: "sha256",
   canonicalization: "typebridge.binding-projection/v1",
-  digest: "c1b73b1cf013e204cf508a14ff2976c0f8cd2b78c846c4c70bbcd264b6946c9a",
+  digest: "6f647759eb00286d37fc37b881613fd9e76502564d2aeb80d62c157c5a5f596b",
   domain: "typebridge.binding.projection",
   semantic_profile: SEMANTIC_PROFILE,
 });
