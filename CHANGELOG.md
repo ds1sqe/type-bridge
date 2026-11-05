@@ -6,6 +6,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Added
 
+- Node canonical filters and explicit keyword filters expose `delete()` for all
+  matches. IID `delete(iid)` permanently redirects to `filter({ iid }).delete()`;
+  existing keyword predicates are retained. Unfiltered zero-argument manager
+  deletion is refused; use an explicit `filter({})` or `where()` to select all.
+
 - Python canonical manager filters expose `delete()` and `update(replacement)`
   for all matches through the shared native mutation path. These terminals run
   no instance CRUD hooks;

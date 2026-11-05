@@ -139,6 +139,12 @@ those selections with `unsupported_manager_filter`. Read their matching models
 before explicit instance or IID batch operations. `filter({ iid__in: [] })` reads
 no matches without a provider request, including with wider keyword lookups.
 
+Delete all selected rows with `manager.filter({ iid }).delete()` or
+`manager.where(Person.fields.age, "gte", Age.create(18n)).delete()`.
+`delete(iid)` permanently redirects to the same IID filter terminal. A direct
+zero-argument manager `delete()` refuses; use an explicit `filter({})` or `where()`
+when deleting every row is intended. Empty IID lists send no deletion request.
+
 For example:
 
 ```ts

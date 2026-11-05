@@ -87,6 +87,13 @@ Declare staged identity columns with `builder.input("target", "iid")` or
 staged result references require `PlanInput<Iid>`; ordinary string columns are
 refused. Query and staged plan bytes retain the existing string transport.
 
+Node filter `delete()` acts on every match. Use `filter({ iid }).delete()` or
+`where(field, comparison, value).delete()`; IID `delete(iid)` is a permanent
+redirect to that filter terminal and retains any existing predicates. A direct
+unfiltered `manager.delete()` refuses: select all explicitly with `filter({})`
+or `where()`. Wider keyword filters require an explicit read followed by instance
+or IID batch operations. Node has no public CRUD hook API.
+
 Node `getByIid(iid)` permanently redirects to `filter({ iid }).first()`,
 retaining existing canonical keyword selection.
 

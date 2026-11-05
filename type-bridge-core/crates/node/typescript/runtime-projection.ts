@@ -458,6 +458,7 @@ export interface NativeProjectedManagerFilter {
   firstProjected(): NativeProjectedValueEnvelope | null;
   count(): bigint;
   exists(): boolean;
+  delete(): void;
 }
 
 /** @internal Preserve structured SDK diagnostics from generated-manager N-API calls. */

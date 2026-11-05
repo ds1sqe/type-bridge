@@ -3343,6 +3343,7 @@ pub struct NodeProjectedManagerFilter {
     filter: ProjectedManagerFilter,
     target: Option<OwnedQueryTarget>,
     runtime: Arc<ProviderRuntimeOwner>,
+    successor_batch_marker: Option<Arc<AtomicBool>>,
 }
 
 #[napi]
@@ -3380,6 +3381,7 @@ impl NodeProjectedManagerFilter {
             filter,
             target: self.target.clone(),
             runtime: Arc::clone(&self.runtime),
+            successor_batch_marker: self.successor_batch_marker.clone(),
         })
     }
 
@@ -3393,6 +3395,39 @@ impl NodeProjectedManagerFilter {
                     .expect("static manager predicate argument is canonical"),
             ),
         ])))
+    }
+
+    /// Delete every match through the shared canonical mutation executor.
+    #[napi]
+    pub fn delete(&self) -> napi::Result<()> {
+        let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
+        self.runtime.block_on(async {
+            let target = self.target()?;
+            let transaction = self.target.as_ref().and_then(OwnedQueryTarget::transaction);
+            let prior = match transaction {
+                Some(transaction) => Some(transaction.lifecycle_state().await),
+                None => None,
+            };
+            let result = executor
+                .delete_on_target(target, &self.filter, self.control())
+                .await;
+            if let (Some(transaction), Some(marker)) = (transaction, &self.successor_batch_marker)
+                && !self.filter.matches_none()
+                && matches!(
+                    prior,
+                    Some(TransactionContextState::Active | TransactionContextState::RolledBack)
+                )
+                && (result.is_ok()
+                    || transaction.lifecycle_state().await == TransactionContextState::RollbackOnly)
+            {
+                marker.store(true, Ordering::Release);
+            }
+            result.map_err(|error| {
+                napi_sdk_diagnostic(error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                ))
+            })
+        })
     }
 
     /// Return all exact-model matches with opaque successor proof retention.
@@ -3628,23 +3663,11 @@ impl NodeProjectedModelManager {
         self.execute_materialized_batch(&env, &batch, control, true, false)
     }
 
-    /// Delete one exact projected value by its canonical TypeDB IID.
+    /// Permanent redirect to the IID filter delete terminal.
     #[napi(js_name = "deleteByIid")]
     pub fn delete_by_iid(&self, iid: String) -> napi::Result<()> {
-        let control =
-            ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
-        let batch = ProjectedBatch::try_single_delete(
-            self.package.projection.as_ref(),
-            self.type_id.clone(),
-            iid,
-            &control,
-        )
-        .map_err(napi_sdk_diagnostic)?;
-        self.execute_projected_batch(&batch, control, false, (), |result| match result {
-            ProjectedBatchResult::Deleted => Ok(()),
-            _ => Err(SdkExecutionDiagnostic::internal_failure()),
-        })
-        .map_err(napi_sdk_diagnostic)
+        self.filter_iid(&Iid::new(iid).map_err(diagnostic_error)?)?
+            .delete()
     }
 
     /// Start one immutable canonical field-token filter for a generated package.
@@ -3666,6 +3689,7 @@ impl NodeProjectedModelManager {
             filter,
             target: self.target.clone(),
             runtime: Arc::clone(&self.runtime),
+            successor_batch_marker: self.successor_batch_marker.clone(),
         })
     }
 
@@ -3798,6 +3822,7 @@ impl NodeProjectedModelManager {
             filter,
             target: self.target.clone(),
             runtime: Arc::clone(&self.runtime),
+            successor_batch_marker: self.successor_batch_marker.clone(),
         }
     }
 
@@ -7707,6 +7732,18 @@ entities:
         assert_eq!(empty.count().unwrap().words, [0]);
         assert!(!empty.exists().unwrap());
         assert!(empty.manager_filter().is_err());
+        manager
+            .filter_entries_json(
+                serde_json::json!([
+                    {"name":"iid__in", "value":[]}
+                ])
+                .to_string(),
+            )
+            .unwrap()
+            .manager_filter()
+            .unwrap()
+            .delete()
+            .unwrap();
         let large = manager.filter_entries_json(serde_json::json!([
             {"name":"iid__in", "value": (0..257).map(|index| format!("0x{index:x}")).collect::<Vec<_>>()}
         ]).to_string()).unwrap();
@@ -9905,6 +9942,40 @@ plays:
         assert_eq!(state.queries.len(), 2);
         assert_eq!(state.queries[0], state.queries[1]);
         assert_eq!(state.commits, 0);
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn iid_delete_redirect_preserves_provider_query_bytes() {
+        use type_bridge_orm::session::backend::QueryResult;
+        let projection = ordered_runtime();
+        let model = TypeId::new(TypeKind::Entity, "group").unwrap();
+        let (database, state) = projection_recording_database_for_test(vec![
+            ProjectionRecordingResponse::Query(QueryResult::Rows(vec![])),
+            ProjectionRecordingResponse::Query(QueryResult::Rows(vec![])),
+        ]);
+        let mut manager = manager_without_execution_target(&projection, model.clone());
+        manager.target = Some(OwnedQueryTarget::Database(database));
+        manager.delete_by_iid("0xa1".into()).unwrap();
+        let control =
+            ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+        let batch = ProjectedBatch::try_single_delete(
+            &projection.package.projection,
+            model,
+            "0xa1".into(),
+            &control,
+        )
+        .unwrap();
+        manager
+            .execute_projected_batch(&batch, control, false, (), |result| match result {
+                ProjectedBatchResult::Deleted => Ok(()),
+                _ => panic!("delete returned values"),
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.queries.len(), 2);
+        assert_eq!(state.queries[0], state.queries[1]);
+        assert_eq!(state.commits, 2);
     }
 
     #[test]

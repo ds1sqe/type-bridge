@@ -390,3 +390,7 @@ const batchItems: readonly Person[] = insertedPeople.items;
 void batchCount;
 void batchIndexes;
 void batchItems;
+
+// Canonical and keyword filters expose mutation terminals.
+nativePersonManager.filter({ iid: new Iid("0xa1") }).delete();
+nativePersonManager.where(Person.identifier, "eq", Identifier.create("alice")).delete();

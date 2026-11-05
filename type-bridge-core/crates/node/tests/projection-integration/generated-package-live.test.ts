@@ -2371,6 +2371,19 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       [insertedPerson.iid],
     );
     const filteredManager = personManager.filter({ score__gte: Score.create(3n) });
+    assert.throws(() => personManager.delete(), /requires an explicit manager filter/);
+    const deleteProbe = oneWritten(personManager.insert(generatedPerson("filter-delete-probe", 99n)));
+    personManager.filter({ identifier: Identifier.create("absent") }).delete(deleteProbe.iid);
+    assert.notEqual(personManager.getByIid(deleteProbe.iid), null);
+    personManager.filter({ iid__in: [] }).delete();
+    personManager.filter({ iid: deleteProbe.iid }).where(Person.score, "eq", Score.create(99n)).delete();
+    assert.equal(personManager.getByIid(deleteProbe.iid), null);
+    const keywordDeleteProbe = oneWritten(personManager.insert(generatedPerson("keyword-delete-probe", 98n)));
+    personManager.filter({ identifier: Identifier.create("keyword-delete-probe") }).delete();
+    assert.equal(personManager.getByIid(keywordDeleteProbe.iid), null);
+    assert.throws(() => personManager.filter({ identifier__contains: Identifier.create("person") }).delete(),
+      (error: any) => error.code === "unsupported_manager_filter");
+
     assert.equal(personManager.filter({ identifier: Identifier.create("absent") })
       .where(Person.score, "eq", Score.create(3n)).count(), 0n);
     assert.equal(personManager.filter({ identifier: Identifier.create("absent") }).getByIid(insertedPerson.iid), null);

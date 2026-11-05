@@ -116,6 +116,9 @@ export interface ProjectedModelManager<Complete> {
   put(instance: Complete): WriteResult<Complete>;
   putMany(instances: readonly Complete[]): BatchWriteResult<Complete>;
   update(iid: Iid, replacement: Complete): WriteResult<Complete>;
+  /** Delete every match of an explicit keyword filter. */
+  delete(): void;
+  /** Permanent IID redirect to `filter({ iid }).delete()`. */
   delete(instanceOrIid: Complete | Iid): void;
   deleteReturning(iid: Iid): WriteResult<Complete>;
   deleteManyReturning(iids: readonly Iid[]): BatchWriteResult<Complete>;
@@ -4291,6 +4294,8 @@ export interface ProjectedModelFilter<Complete, Owner extends string = string> {
   first(): Complete | null;
   count(): bigint;
   exists(): boolean;
+  /** Delete every match through the shared native mutation path. */
+  delete(): void;
 }
 
 /** Native batch-complete manager surface for every generated package. */
@@ -4607,6 +4612,7 @@ function orderedProjectedManager<Complete, Owner extends string>(
 function orderedProjectedManagerForNative<Complete, Owner extends string>(
   typeKey: Owner,
   native: NativeProjectedManager,
+  filtered = false,
 ): OrderedProjectedModelManager<Complete, Owner> {
   const exactWire = (instance: Complete, operation: string): ProjectedWire => {
     requireLiveSnapshot(instance);
@@ -4691,7 +4697,12 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
         };
       }));
     },
-    delete(instanceOrIid: Complete | Iid): void {
+    delete(instanceOrIid?: Complete | Iid): void {
+      if (arguments.length === 0) {
+        if (!filtered) throw new TypeError("delete() requires an explicit manager filter");
+        return projectedManagerNativeCall(() => native.managerFilter().delete());
+      }
+      if (instanceOrIid === undefined) throw new TypeError("delete requires an attached model or Iid");
       requireLiveSnapshot(instanceOrIid);
       const iid = instanceOrIid instanceof Iid
         ? iidText(instanceOrIid)
@@ -4745,6 +4756,7 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       return orderedProjectedManagerForNative(
         typeKey,
         projectedManagerNativeCall(() => native.filterEntriesJson(JSON.stringify(lowered))),
+        true,
       );
     },
     where<Attribute extends string, Value>(
@@ -4836,6 +4848,9 @@ function orderedProjectedFilterForNative<
           ),
         ),
       );
+    },
+    delete(): void {
+      projectedManagerNativeCall(() => native.delete());
     },
     all(): readonly Complete[] {
       return Object.freeze(
