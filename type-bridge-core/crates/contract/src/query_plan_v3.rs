@@ -1210,14 +1210,22 @@ fn validate_stages(
             ));
         }
         if reading && stage.is_write() {
-            if !matches!(
+            let projection = matches!(
                 read_tail.as_slice(),
                 [ReadStage::Select { .. }, ReadStage::Distinct]
-            ) || !matches!(spec.operation, Operation::Write { .. })
+            );
+            let bounded_mutation =
+                matches!(
+                    read_tail.as_slice(),
+                    [ReadStage::Sort { .. }, ReadStage::Limit { .. }]
+                ) && matches!(stage, Stage::Attach { .. } | Stage::Delete { .. })
+                    && !spec.pipeline[..stage_index].iter().any(Stage::is_write);
+            if !(projection || bounded_mutation)
+                || !matches!(spec.operation, Operation::Write { .. })
             {
                 return Err(invalid(
                     "query_plan_stage_order",
-                    "only select followed by distinct may separate write stages",
+                    "write stages require select/distinct or an initial sort/limit before attach/delete",
                 ));
             }
             (mandatory, optional) = validate_v3_read_tail(

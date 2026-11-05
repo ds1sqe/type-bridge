@@ -591,3 +591,95 @@ fn terminal_count_retains_its_scalar_domain_through_codec_roundtrip() {
         );
     }
 }
+
+#[test]
+fn sorted_bounded_attach_and_delete_keep_the_matching_binding_types() {
+    use type_bridge_contract::query_plan::v3::{AttachItem, DeleteItem};
+    use type_bridge_contract::query_plan::{OrderDirection, OrderTerm, QueryOperand};
+    let prefix = || Stage::Match {
+        patterns: vec![
+            isa(0, entity("account")).into(),
+            QueryPattern::Has {
+                owner: id(0),
+                attribute: id(1),
+                attribute_id: type_bridge_contract::id::AttributeId::new("score").unwrap(),
+            }
+            .into(),
+        ],
+    };
+    let sort = || Stage::Sort {
+        terms: vec![OrderTerm::new(id(1), OrderDirection::Ascending)],
+    };
+    let limit = || Stage::Limit { rows: 37 };
+    let attach = || Stage::Attach {
+        items: vec![AttachItem::Has {
+            optional: false,
+            owner: id(0),
+            field: field("score"),
+            operand: QueryOperand::Binding { binding: id(1) },
+        }],
+    };
+    let delete = || Stage::Delete {
+        items: vec![DeleteItem::Has {
+            owner: id(0),
+            field: field("score"),
+        }],
+    };
+    for mutation in [attach(), delete()] {
+        let plan = QueryPlanV3::new(
+            spec(vec![prefix(), sort(), limit(), mutation], vec![0, 1]),
+            &schema(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.scalar_value_type(id(1)),
+            Some(type_bridge_contract::value::ValueTypeTag::Long)
+        );
+        assert_eq!(
+            decode_query_plan_v3(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
+            plan
+        );
+        assert_eq!(plan.statement_counts(), (0, 1));
+    }
+    for middle in [
+        vec![limit()],
+        vec![sort()],
+        vec![limit(), sort()],
+        vec![sort(), Stage::Offset { rows: 1 }, limit()],
+        vec![sort(), limit(), Stage::Distinct],
+    ] {
+        let mut pipeline = vec![prefix()];
+        pipeline.extend(middle);
+        pipeline.push(attach());
+        assert_eq!(
+            QueryPlanV3::new(spec(pipeline, vec![]), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_stage_order"
+        );
+    }
+    for pipeline in [
+        vec![prefix(), attach(), sort(), limit(), delete()],
+        vec![
+            prefix(),
+            sort(),
+            limit(),
+            Stage::Update {
+                sets: vec![type_bridge_contract::query_plan::v3::Set::Field {
+                    owner: id(0),
+                    field: field("score"),
+                    operand: literal(1),
+                }],
+            },
+        ],
+    ] {
+        assert_eq!(
+            QueryPlanV3::new(spec(pipeline, vec![]), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_stage_order"
+        );
+    }
+}
