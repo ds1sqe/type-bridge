@@ -225,3 +225,16 @@ Custom forward/reverse strings and textual filters are refused on
 `CopyAttribute`. For custom native behavior, `RunPlan` accepts canonical V3
 `forward` and optional `reverse` plan objects, validated at planning and again
 when persisted execution plans are decoded.
+
+`RunTypeql` sends its statement once, unchanged, without validation,
+rewriting, an annotation gate, or derived count queries. Inside a migration,
+the step still runs within the migration's cutover guard and recovery
+bookkeeping; these lifecycle checks apply equally to native and raw steps.
+Raw steps report no backfill counts (`None` in Rust), rather than zero counts.
+The caller owns the raw statement's correctness and effects, including changes
+to schema.
+
+Recovery uses the same persisted native program or raw bytes as initial
+execution. A step proven committed is skipped; an indeterminate commit is not
+assumed safe to replay. The raw escape hatch does not change that recovery
+contract.
