@@ -677,12 +677,7 @@ where
 }
 
 fn filter_target_error(error: QueryTargetError) -> Error {
-    match error {
-        QueryTargetError::Callback(_) => crate::remote::target_error(error),
-        other => manager_filter_error(
-            other.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read),
-        ),
-    }
+    crate::remote::target_error(error)
 }
 
 /// Preserve the manager item ceiling while capturing the ordinary read budget.
@@ -699,6 +694,60 @@ pub(crate) fn manager_read_control(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_filter_target_preserves_provider_categories_and_sources() {
+        for (provider, category) in [
+            (
+                type_bridge_orm::OrmError::Connection("offline".into()),
+                crate::ErrorCategory::Connection,
+            ),
+            (
+                type_bridge_orm::OrmError::QueryExecution("rejected".into()),
+                crate::ErrorCategory::QueryExecution,
+            ),
+            (
+                type_bridge_orm::OrmError::Transaction("closed".into()),
+                crate::ErrorCategory::Transaction,
+            ),
+        ] {
+            let source = provider.to_string();
+            let error = filter_target_error(QueryTargetError::Direct(provider));
+            assert_eq!(error.category(), category);
+            assert_eq!(
+                std::error::Error::source(&error).unwrap().to_string(),
+                source
+            );
+        }
+    }
+
+    #[test]
+    fn shared_filter_target_preserves_input_and_hydration_phases() {
+        use type_bridge_contract::sdk_diagnostic::{
+            SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
+        };
+        for hydration in [false, true] {
+            let diagnostic = SdkExecutionDiagnostic::integrity(
+                SdkDiagnosticCode::new("invalid_provider_evidence").unwrap(),
+                SdkDiagnosticMessage::new("Invalid model evidence").unwrap(),
+            );
+            let error = type_bridge_orm::RemoteModelQueryError::Execution(diagnostic);
+            let error = filter_target_error(if hydration {
+                QueryTargetError::Reply(error)
+            } else {
+                QueryTargetError::Prepare(error)
+            });
+            assert_eq!(error.code(), Some("invalid_provider_evidence"));
+            assert_eq!(
+                error.model_validation_phase(),
+                Some(if hydration {
+                    ModelValidationPhase::Hydration
+                } else {
+                    ModelValidationPhase::Input
+                })
+            );
+        }
+    }
 
     #[test]
     fn shared_filter_target_keeps_application_error_and_source() {
