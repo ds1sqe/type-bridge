@@ -85,8 +85,6 @@ Employment(
 person(7)  # E: wrong_scalar:reportArgumentType
 
 person_manager = Person.manager(Database(address="localhost:1729", database="generated-manager"))
-person_manager.delete()  # E: delete_requires_explicit_iid:reportCallIssue
-person_manager.filter(score=Score(3)).delete()  # E: filtered_delete_requires_iid:reportCallIssue
 person_manager.update_with = None  # E: removed_update_with:reportAttributeAccessIssue
 person_manager.where(
     Robot.robot_id,  # E: wrong_manager_field_owner:reportArgumentType
@@ -193,14 +191,24 @@ async def staged_pending_requires_resolution(tx: StagedTransaction) -> None:
         root.field(Person.score).eq(pending)  # E: staged_pending_is_not_scalar:reportArgumentType
     )
 
+
 person_var.iid("0x1")  # E: string_iid:reportArgumentType
 person_var.iid_in(["0x1"])  # E: string_iid_list:reportArgumentType
 
 PersonRef("0xa1", identifier=Identifier("person-1"))  # E: reference_string_iid:reportArgumentType
 person_manager.get_by_iid("0xa1")  # E: manager_string_iid:reportArgumentType
+
+
 def accepts_string_delete(delete: Callable[[str], None]) -> None:
     del delete
 
 
 accepts_string_delete(person_manager.delete)  # E: delete_string_iid:reportArgumentType
 person(Identifier("person-1")).attach_runtime_iid("0xa1")  # E: attach_string_iid:reportArgumentType
+
+person_manager.filter(iid="0xa1")  # E: keyword_string_iid:reportArgumentType
+person_manager.filter(iid__in=["0xa1"])  # E: keyword_string_iids:reportArgumentType
+person_manager.filter(_iid="0xa1")  # E: keyword_alias_string_iid:reportArgumentType
+person_manager.filter(iid__eq="0xa1")  # E: keyword_eq_string_iid:reportArgumentType
+person_manager.filter(_iid__eq="0xa1")  # E: keyword_alias_eq_string_iid:reportArgumentType
+person_manager.filter(_iid__in=["0xa1"])  # E: keyword_alias_string_iids:reportArgumentType

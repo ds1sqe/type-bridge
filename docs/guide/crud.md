@@ -132,7 +132,7 @@ const ada = Person.manager(db)
 Canonical filters expose `where`, `all`, `first`, `count`, and `exists`.
 Python filters also expose `delete()` and `update(replacement)`; these mutations
 act on every match and do not run instance CRUD hooks. Python
-`filter(iid=Iid("0x1234")).where()` retains the IID selection for those terminals.
+`filter(iid=Iid("0x1234"))` retains the IID selection for those terminals.
 Use `iid__in` for a list or iterable of `Iid` values; an empty list matches
 nothing without a provider request. String IID arguments are refused.
 Their `first` is identity-strict: supply a single IID or one semantically

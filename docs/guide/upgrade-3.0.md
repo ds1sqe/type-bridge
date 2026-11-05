@@ -45,8 +45,8 @@ now raises a type error instead of returning `None`.
 
 Python IID lists are consumed once. `filter(iid__in=[])` returns no matches
 without a provider request, including when combined with other read lookups.
-For canonical mutations, use `filter(iid=target).where().delete()` or
-`filter(iid__in=targets).where().update(replacement)`. Pure IID-list deletes
+For canonical mutations, use `filter(iid=target).delete()` or
+`filter(iid__in=targets).update(replacement)`. Pure IID-list deletes
 retain the batch input limits; reads and updates retain the 256-term Boolean
 limit and refuse larger lists before I/O.
 
@@ -182,8 +182,10 @@ to delete every matching model in one native mutation. Use the same selection's
 all written models. Both filter terminals run no instance CRUD hooks. For hooks, read the instances explicitly and call
 `manager.delete_many(instances)`.
 
-Chaining `where()` after a keyword filter preserves its supported scalar
-predicates. Wider keyword lookups refuse the canonical path with
+Call `manager.filter(...).delete()` or `manager.filter(...).update(replacement)`
+to mutate a supported keyword selection directly. An unfiltered no-argument
+`manager.delete()` remains refused. Chaining `where()` after a keyword filter
+also preserves its supported scalar and IID predicates. Wider keyword lookups refuse the canonical path with
 `unsupported_manager_filter`; use `instances = manager.filter(...).all()`
 and then instance operations. Borrowed write transactions may construct
 filters and mutate through them. Canonical read terminals accept borrowed

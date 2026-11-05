@@ -198,6 +198,10 @@ assert_type(filtered_person_manager.all(), list[Person])
 assert_type(filtered_person_manager.first(), Person | None)
 assert_type(filtered_person_manager.count(), int)
 assert_type(filtered_person_manager.exists(), bool)
+assert_type(filtered_person_manager.delete(), None)
+assert_type(filtered_person_manager.update(person), WriteResult[Person])
+assert_type(person_manager.filter(iid=Iid("0xa1")).first(), Person | None)
+assert_type(person_manager.filter(iid__in=(Iid(text) for text in ["0xa1"])).all(), list[Person])
 
 
 class PersonHook(CrudHook[Person]):

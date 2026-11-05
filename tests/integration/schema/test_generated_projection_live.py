@@ -3242,12 +3242,12 @@ def test_generated_iid_keyword_selection_live(
     with clean_db.transaction("write") as transaction:
         borrowed = generated.Person.manager(transaction)
         replacement = _make_generated_person(generated, "iid-selected", 11)
-        result = borrowed.filter(iid=selected.iid).where().update(replacement)
+        result = borrowed.filter(iid=selected.iid).update(replacement)
         assert result.count == 1
         assert result.item.iid == selected.iid
         assert borrowed.filter(iid=selected.iid).first().score.value == 11
         assert people.filter(iid=selected.iid).first().score.value == 10
-        borrowed.filter(iid__in=[excluded.iid]).where().delete()
+        borrowed.filter(iid__in=[excluded.iid]).delete()
     assert people.filter(iid=selected.iid).first().score.value == 11
     assert people.filter(iid=excluded.iid).first() is None
 

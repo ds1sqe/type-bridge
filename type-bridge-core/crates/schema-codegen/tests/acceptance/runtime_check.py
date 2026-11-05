@@ -223,6 +223,16 @@ canonical_filter.delete()
 replacement_sentinel = object()
 assert canonical_filter.update(replacement_sentinel) is replacement_sentinel
 assert canonical_filter._native.deletes == 1
+object.__setattr__(canonical_manager, "_filtered", True)
+assert canonical_manager.update(replacement_sentinel) is replacement_sentinel
+canonical_manager.delete()
+object.__setattr__(canonical_manager, "_filtered", False)
+try:
+    canonical_manager.delete()
+except TypeError as error:
+    assert str(error) == "delete() without an instance requires filter(...)"
+else:
+    raise AssertionError("unfiltered no-argument delete was accepted")
 canonical_manager._hooks.clear()
 assert (
     canonical_filter.where(
@@ -588,6 +598,10 @@ class FakeExplicitIidBatchNative:
     def __init__(self) -> None:
         self.inputs: list[OrderedPerson] = []
         self.deleted_iids: list[Iid] = []
+        self.selection = FakeCanonicalFilterNative()
+
+    def canonical_filter(self) -> FakeCanonicalFilterNative:
+        return self.selection
 
     def update_many(
         self, instances: list[OrderedPerson]
@@ -622,12 +636,9 @@ assert explicit_native.deleted_iids == [Iid("0x10"), Iid("0x20")]
 assert not hasattr(explicit_manager, "update_with")
 assert not hasattr(OrderedProjectedModelManager, "_resolve_instance_iid")
 assert not hasattr(type_bridge_core.PyProjectedModelManager, "resolve_iid")
-try:
-    getattr(explicit_manager, "delete")()
-except TypeError:
-    pass
-else:
-    raise AssertionError("filtered deletion accepted an implicit target")
+explicit_manager.delete()
+assert explicit_native.selection.deletes == 1
+assert explicit_native.deleted_iids == [Iid("0x10"), Iid("0x20")]
 
 try:
     make_person("person-1", aliases="not-a-sequence-value")

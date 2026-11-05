@@ -494,6 +494,9 @@ class ProjectedModelManager[ModelT: ModelBase]:
         return result
 
     def update(self, instance: ModelT) -> WriteResult[ModelT]:
+        """Replace the filtered selection, or update an attached instance with hooks."""
+        if self._filtered:
+            return self.where().update(instance)
         self._run_pre(CrudEvent.PRE_UPDATE, instance)
         if instance.iid is None:
             type(instance).__runtime_projection__.validate_create(type(instance), instance)
@@ -514,7 +517,15 @@ class ProjectedModelManager[ModelT: ModelBase]:
     @overload
     def delete(self, instance_or_iid: Iid) -> None: ...
 
-    def delete(self, instance_or_iid: ModelT | Iid) -> ModelT | None:
+    @overload
+    def delete(self) -> None: ...
+
+    def delete(self, instance_or_iid: ModelT | Iid | None = None) -> ModelT | None:
+        """Delete the filtered selection, or an explicit instance with hooks."""
+        if instance_or_iid is None:
+            if not self._filtered:
+                raise TypeError("delete() without an instance requires filter(...)")
+            return self.where().delete()
         if isinstance(instance_or_iid, str):
             raise TypeError("delete IID arguments require Iid, not a plain string")
         if isinstance(instance_or_iid, Iid):

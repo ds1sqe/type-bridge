@@ -1,4 +1,4 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum, StrEnum
 from typing import Any, ClassVar, Literal, Never, TypedDict, Unpack, overload
@@ -264,6 +264,8 @@ class ProjectedModelManager[ModelT: ModelBase]:
     def delete(self, instance_or_iid: ModelT) -> ModelT: ...
     @overload
     def delete(self, instance_or_iid: Iid) -> None: ...
+    @overload
+    def delete(self) -> None: ...
     def delete_returning(self, instance: ModelT) -> WriteResult[ModelT]: ...
     def delete_many_returning(self, instances: Sequence[ModelT]) -> BatchWriteResult[ModelT]: ...
     def delete_many(
@@ -272,7 +274,17 @@ class ProjectedModelManager[ModelT: ModelBase]:
         *,
         strict: bool = False,
     ) -> list[ModelT]: ...
-    def filter(self, **filters: object) -> ProjectedModelManager[ModelT]: ...
+    def filter(
+        self,
+        *,
+        iid: Iid = ...,
+        _iid: Iid = ...,
+        iid__eq: Iid = ...,
+        _iid__eq: Iid = ...,
+        iid__in: Iterable[Iid] = ...,
+        _iid__in: Iterable[Iid] = ...,
+        **filters: object,
+    ) -> ProjectedModelManager[ModelT]: ...
     @overload
     def where(self) -> ProjectedModelFilter[ModelT]: ...
     @overload
