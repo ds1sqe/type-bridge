@@ -493,7 +493,7 @@
               "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
               "anchors": [
                 "assert not hasattr(explicit_manager, \"update_with\")",
-                "getattr(explicit_manager, \"delete\")()"
+                "assert explicit_native.selection.deletes == 1"
               ]
             }
           ]
@@ -737,7 +737,7 @@
                 "[Manager.typeKey, insertedManager.iid]",
                 "session.subtypes(Membership)",
                 "subtype_relation: [Employment.typeKey, insertedPerson.iid, false]",
-                "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)"
+                "assertIidsEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)"
               ]
             }
           ]
@@ -888,7 +888,7 @@
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
                 "session.reachable(",
-                "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)",
+                "assertIidsEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)",
                 ".allowCrossJoin(crossLeft, crossRight)"
               ]
             }
@@ -1247,7 +1247,7 @@
               "anchors": [
                 "const reducers = await terminal(() => allPeopleQuery.aggregate(personVariable, [",
                 "reducers: reducers.slice(0, 6),",
-                "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)",
+                "assertIidsEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)",
                 "assert.equal(requests.length, requestsBefore + 1)"
               ]
             }
@@ -1394,7 +1394,7 @@
               "anchors": [
                 "const detachedCounter = Counter.create",
                 "attached TypeDB IID",
-                "assert.equal((await counterQuery.one()).iid, insertedCounter.iid)",
+                "assertIidsEqual((await counterQuery.one()).iid, insertedCounter.iid)",
                 "counterQuery.rows({ limit: 2n })"
               ]
             }

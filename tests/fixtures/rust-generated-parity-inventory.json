@@ -364,7 +364,7 @@
       "node": [
         {
           "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
-          "anchors": ["session.reachable(", "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)", ".allowCrossJoin(crossLeft, crossRight)"]
+          "anchors": ["session.reachable(", "assertIidsEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)", ".allowCrossJoin(crossLeft, crossRight)"]
         }
       ],
       "rust": [
