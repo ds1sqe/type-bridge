@@ -321,7 +321,7 @@ async function runPipeline(name, config, declared) {
     setup("apply", database);
     const db = connect(database);
     try {
-      const authority = PlanAuthority.queryOnly(db, declared, SCOPE, PROFILE);
+      const authority = new PlanAuthority(declared, SCOPE, PROFILE);
       await seed(name, db, authority, config.warmup + config.iterations);
       const samples = [];
       for (let number = 0; number < config.warmup + config.iterations; number += 1) {

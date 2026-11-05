@@ -107,7 +107,7 @@ class Workspace:
         self.run("migration", "apply", "--environment", "perf")
 
     def declared(self) -> bytes:
-        """The canonical declared schema the query-only authority checks."""
+        """The canonical declared schema used by the SDK plan authorities."""
         self.run("schema", "export-declared")
         return (self.root / "declared-schema.json").read_bytes()
 

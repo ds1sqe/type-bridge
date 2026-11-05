@@ -39,7 +39,6 @@ from type_bridge_core import (
     PlanAuthority,
     PyDatabase,
     plan_authority,
-    plan_query_only_authority,
 )
 
 from perf.drivers.workspace import PROFILE, SCOPE, Workspace, drop
@@ -325,7 +324,7 @@ def run_pipeline(
         workspace.apply(database)
         db = connect(config, database)
         try:
-            authority = plan_query_only_authority(db, declared, SCOPE, PROFILE)
+            authority = plan_authority(declared, SCOPE, PROFILE)
             seed(name, db, authority, config.warmup + config.iterations)
             samples: list[dict[str, object]] = []
             for number in range(config.warmup + config.iterations):
