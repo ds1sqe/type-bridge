@@ -739,14 +739,17 @@ async fn run_owned(kind: Kind, operation: Operation, rust_v2: bool) {
         (Kind::Entity, Operation::Update) => {
             let output = database
                 .entities::<Person>()
-                .update_many(vec![("0x10".to_owned(), PersonCreate::named("person"))])
+                .update_many(typed_update_inputs(vec![(
+                    "0x10".to_owned(),
+                    PersonCreate::named("person"),
+                )]))
                 .await
                 .unwrap();
             assert_eq!(output.items()[0].iid, "0x10");
         }
         (Kind::Entity, Operation::Delete) => database
             .entities::<Person>()
-            .delete_many(&["0x10".to_owned()])
+            .delete_many(&typed_iids(&["0x10".to_owned()]))
             .await
             .unwrap(),
         (Kind::Relation, Operation::Insert) => {
@@ -770,10 +773,10 @@ async fn run_owned(kind: Kind, operation: Operation, rust_v2: bool) {
         (Kind::Relation, Operation::Update) => {
             let output = database
                 .relations::<Assignment>()
-                .update_many(vec![(
+                .update_many(typed_update_inputs(vec![(
                     "0x30".to_owned(),
                     AssignmentCreate::named("position"),
-                )])
+                )]))
                 .await
                 .unwrap();
             assert_eq!(output.items()[0].iid, "0x30");
@@ -781,7 +784,7 @@ async fn run_owned(kind: Kind, operation: Operation, rust_v2: bool) {
         }
         (Kind::Relation, Operation::Delete) => database
             .relations::<Assignment>()
-            .delete_many(&["0x30".to_owned()])
+            .delete_many(&typed_iids(&["0x30".to_owned()]))
             .await
             .unwrap(),
     }
@@ -819,13 +822,16 @@ async fn run_borrowed(kind: Kind, operation: Operation, rust_v2: bool) {
         (Kind::Entity, Operation::Update) => {
             transaction
                 .entities::<Person>()
-                .update_many(vec![("0x10".to_owned(), PersonCreate::named("person"))])
+                .update_many(typed_update_inputs(vec![(
+                    "0x10".to_owned(),
+                    PersonCreate::named("person"),
+                )]))
                 .await
                 .unwrap();
         }
         (Kind::Entity, Operation::Delete) => transaction
             .entities::<Person>()
-            .delete_many(&["0x10".to_owned()])
+            .delete_many(&typed_iids(&["0x10".to_owned()]))
             .await
             .unwrap(),
         (Kind::Relation, Operation::Insert) => {
@@ -845,16 +851,16 @@ async fn run_borrowed(kind: Kind, operation: Operation, rust_v2: bool) {
         (Kind::Relation, Operation::Update) => {
             transaction
                 .relations::<Assignment>()
-                .update_many(vec![(
+                .update_many(typed_update_inputs(vec![(
                     "0x30".to_owned(),
                     AssignmentCreate::named("position"),
-                )])
+                )]))
                 .await
                 .unwrap();
         }
         (Kind::Relation, Operation::Delete) => transaction
             .relations::<Assignment>()
-            .delete_many(&["0x30".to_owned()])
+            .delete_many(&typed_iids(&["0x30".to_owned()]))
             .await
             .unwrap(),
     }
@@ -891,7 +897,7 @@ async fn returning_delete_models_keep_snapshot_origin_and_input_order() {
     );
     let snapshots = database
         .entities::<Person>()
-        .delete_many_returning(&["0x10".into(), "0x11".into(), "0x12".into()])
+        .delete_many_returning(&typed_iids(&["0x10".into(), "0x11".into(), "0x12".into()]))
         .await
         .unwrap();
     assert_eq!(
@@ -916,7 +922,7 @@ async fn returning_delete_models_keep_snapshot_origin_and_input_order() {
     let transaction = database.write().await.unwrap();
     let snapshot = transaction
         .entities::<Person>()
-        .delete_returning("0x10")
+        .delete_returning(&crate::Iid::new("0x10").unwrap())
         .await
         .unwrap()
         .into_items()
@@ -1207,10 +1213,10 @@ async fn duplicate_key_and_target_keep_common_details_and_run_no_hooks_or_io() {
 
         let target = database
             .entities::<Person>()
-            .update_many(vec![
+            .update_many(typed_update_inputs(vec![
                 ("0xAb".to_owned(), PersonCreate::named("one")),
                 ("0xab".to_owned(), PersonCreate::named("two")),
-            ])
+            ]))
             .await
             .unwrap_err();
         assert_eq!(target.category(), ErrorCategory::ModelValidation);
@@ -1240,7 +1246,7 @@ async fn duplicate_key_and_target_keep_common_details_and_run_no_hooks_or_io() {
             .unwrap_err();
         assert_eq!(repeated_put.code(), Some("duplicate_batch_key"));
         let repeated_delete = manager
-            .delete_many(&["0xAb".into(), "0xab".into()])
+            .delete_many(&typed_iids(&["0xAb".into(), "0xab".into()]))
             .await
             .unwrap_err();
         assert_eq!(repeated_delete.code(), Some("duplicate_batch_target"));
@@ -1266,10 +1272,10 @@ async fn duplicate_key_and_target_keep_common_details_and_run_no_hooks_or_io() {
         );
         assert_eq!(
             borrowed
-                .update_many(vec![
+                .update_many(typed_update_inputs(vec![
                     ("0xAb".into(), PersonCreate::named("one")),
                     ("0xab".into(), PersonCreate::named("two"))
-                ])
+                ]))
                 .await
                 .unwrap_err()
                 .code(),
@@ -1277,7 +1283,7 @@ async fn duplicate_key_and_target_keep_common_details_and_run_no_hooks_or_io() {
         );
         assert_eq!(
             borrowed
-                .delete_many(&["0xAb".into(), "0xab".into()])
+                .delete_many(&typed_iids(&["0xAb".into(), "0xab".into()]))
                 .await
                 .unwrap_err()
                 .code(),
@@ -1344,72 +1350,17 @@ async fn generated_input_failures_keep_rows_index_and_field_suffix() {
 }
 
 #[tokio::test]
-async fn invalid_later_iid_is_common_validated_before_hooks_and_model_authority_wins() {
+async fn typed_batch_model_authority_is_refused_before_io() {
     let (database, state) = fixture(vec![], CommitBehavior::Success);
-    let hook = Arc::new(CountingHook::default());
-    let mut manager = database.entities::<Person>();
-    manager.add_hook(hook.clone());
-    let error = manager
-        .update_many(vec![
-            ("0x10".to_owned(), PersonCreate::named("one")),
-            ("not-an-iid".to_owned(), PersonCreate::named("two")),
-        ])
-        .await
-        .unwrap_err();
-    assert_eq!(error.code(), Some("noncanonical_iid"));
-    assert_eq!(
-        error.diagnostic_path(),
-        Some(
-            &[
-                ErrorPathSegment::Argument("rows".to_owned()),
-                ErrorPathSegment::Index(1),
-                ErrorPathSegment::Argument("iid".to_owned()),
-            ][..]
-        )
-    );
-    assert_eq!(hook.before.load(Ordering::SeqCst), 0);
-
-    let authority = database
+    let error = database
         .entities::<WrongPerson>()
-        .update_many(vec![(
-            "not-an-iid".to_owned(),
+        .update_many(typed_update_inputs(vec![(
+            "0x10".to_owned(),
             PersonCreate::named("ignored"),
-        )])
+        )]))
         .await
         .unwrap_err();
-    assert_eq!(authority.code(), Some("wrong_model_kind"));
-    let state = state.lock().unwrap();
-    assert!(state.opens.is_empty());
-    assert!(state.calls.is_empty());
-}
-
-#[tokio::test]
-async fn rust_v1_handler_delete_many_uses_v3_iid_preflight_without_hooks() {
-    let (database, state) = fixture_named(
-        "legacy-delete",
-        vec![],
-        CommitBehavior::Success,
-        installed_from(SUCCESSOR_SCHEMA, false),
-    );
-    let hook = Arc::new(CountingHook::default());
-    let mut manager = database.entities::<Person>();
-    manager.add_hook(hook.clone());
-    let error = manager
-        .delete_many(&["not-an-iid".to_owned()])
-        .await
-        .unwrap_err();
-    assert_eq!(error.code(), Some("noncanonical_iid"));
-    assert_eq!(
-        error.diagnostic_path(),
-        Some(
-            &[
-                ErrorPathSegment::Argument("rows".into()),
-                ErrorPathSegment::Index(0),
-                ErrorPathSegment::Argument("iid".into())
-            ][..]
-        )
-    );
-    assert_eq!(hook.before.load(Ordering::SeqCst), 0);
+    assert_eq!(error.code(), Some("wrong_model_kind"));
     let state = state.lock().unwrap();
     assert!(state.opens.is_empty());
     assert!(state.calls.is_empty());
@@ -2295,7 +2246,9 @@ async fn pure_iid_lists_keep_batch_admission_and_refuse_oversized_boolean_plans_
         Err(error) => error,
     };
     let original = manager
-        .delete_many(&iids.iter().map(ToString::to_string).collect::<Vec<_>>())
+        .delete_many(&typed_iids(
+            &iids.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        ))
         .await
         .unwrap_err();
     assert_eq!(filtered.code(), Some("batch_item_limit"));
@@ -2327,7 +2280,9 @@ async fn filter_delete_list_admission_and_hook_failures_match_batch_delete() {
                 .unwrap_err()
         } else {
             manager
-                .delete_many(&iids.iter().map(ToString::to_string).collect::<Vec<_>>())
+                .delete_many(&typed_iids(
+                    &iids.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                ))
                 .await
                 .unwrap_err()
         };
@@ -2356,7 +2311,9 @@ async fn filter_delete_list_admission_and_hook_failures_match_batch_delete() {
                 .unwrap_err()
         } else {
             manager
-                .delete_many(&iids.iter().map(ToString::to_string).collect::<Vec<_>>())
+                .delete_many(&typed_iids(
+                    &iids.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                ))
                 .await
                 .unwrap_err()
         };
@@ -2612,4 +2569,17 @@ async fn filter_materialization_failure_prevents_owned_and_borrowed_commit() {
         Some("transaction_rollback_only")
     );
     assert_eq!(state.lock().unwrap().commits, 0);
+}
+
+fn typed_iids(iids: &[String]) -> Vec<crate::Iid> {
+    iids.iter()
+        .map(|iid| crate::Iid::new(iid.as_str()).unwrap())
+        .collect()
+}
+
+fn typed_update_inputs<T>(inputs: Vec<(String, T)>) -> Vec<(crate::Iid, T)> {
+    inputs
+        .into_iter()
+        .map(|(iid, input)| (crate::Iid::new(iid).unwrap(), input))
+        .collect()
 }

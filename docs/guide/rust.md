@@ -211,6 +211,11 @@ emit no hooks or provider requests. A pure IID-list delete keeps the existing
 batch input limits. Reads and updates that compile the list as an OR predicate
 retain the 256-term Boolean limit and refuse oversized lists before I/O.
 
+`delete_many(&[Iid])` permanently redirects to `filter()?.iids(iids)?.delete()`.
+For different replacements per row, `update_many` takes `Vec<(Iid, Create)>` and
+preserves ordinal batch results. `delete_many_returning(&[Iid])` returns ordinal
+snapshots; `delete_returning(&Iid)` wraps a single returning batch row.
+
 Filters inherit the manager's registered lifecycle hooks. Pure IID filters emit
 one event per supplied IID. Field and mixed filters emit one invocation event
 with no IID; update events carry the authored replacement. Use an IID filter or

@@ -19,6 +19,13 @@ Their permanent redirects are `filter()?.iid(&iid)?.update(input).await` and
 `filter()?.iid(&iid)?.delete().await`. Lifecycle hooks run in those filter
 terminals, so aliases and direct filter calls have the same events.
 
+Rust `delete_many` and `delete_many_returning` take `&[Iid]`, `delete_returning`
+takes `&Iid`, and `update_many` takes `Vec<(Iid, Create)>`, including transaction
+managers. `delete_many` redirects to `filter()?.iids(&iids)?.delete().await`.
+`update_many` retains heterogeneous per-row replacements and ordinal results;
+`delete_many_returning` retains ordinal snapshots, and `delete_returning` wraps
+one returning batch row. Their existing lifecycle events remain unchanged.
+
 ## Single-item manager write results
 
 Single-item `insert`, `put`, `update`, and `delete_returning` calls now return

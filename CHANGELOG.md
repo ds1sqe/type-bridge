@@ -208,6 +208,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust manager `delete_many` and `delete_many_returning` now take `&[Iid]`,
+  `delete_returning` takes `&Iid`, and `update_many` takes `Vec<(Iid, Create)>`,
+  including transaction forms. `delete_many` permanently redirects to
+  `filter()?.iids(iids)?.delete()`. Heterogeneous updates and returning deletes
+  retain their ordinal batch results and hooks.
+
 - Rust entity/relation manager `update` and `delete`, including transaction
   forms, now require `&Iid`. They permanently redirect to
   `filter()?.iid(iid)?.update(input)` and `filter()?.iid(iid)?.delete()`.

@@ -20,8 +20,8 @@ use crate::entity_codec::{hydrate_entity, map_validation_error, resolve_entity_a
 use crate::error::{Error, ModelValidationPhase};
 use crate::hooks::{CrudOperation, ModelKind};
 use crate::projected_batch::{
-    create_operation, create_rows, delete_rows, execute_borrowed_delete, execute_borrowed_things,
-    prepare_batch, update_rows, validate_binding_row_count,
+    create_operation, create_rows, delete_rows, execute_borrowed_things, prepare_batch,
+    update_rows, validate_binding_row_count,
 };
 use crate::projected_codec::project_create;
 use crate::relation_codec::{hydrate_relation, resolve_relation_authority};
@@ -361,8 +361,8 @@ where
 
     /// Delete the exact model and return its pre-delete snapshot without committing.
     /// An absent IID returns an empty write result.
-    pub async fn delete_returning(&self, iid: &str) -> Result<WriteResult<M>> {
-        self.delete_many_returning(&[iid.to_owned()])
+    pub async fn delete_returning(&self, iid: &crate::Iid) -> Result<WriteResult<M>> {
+        self.delete_many_returning(std::slice::from_ref(iid))
             .await
             .map(|result| WriteResult::new(result.into_items()))
     }
@@ -370,7 +370,7 @@ where
     /// Delete exact models and return existing snapshots in input order without committing.
     pub async fn delete_many_returning(
         &self,
-        iids: &[String],
+        iids: &[crate::Iid],
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(iids.len())?;
         let installed = self.transaction.installed()?;
@@ -404,7 +404,7 @@ where
     /// dispatch make the transaction rollback-only.
     pub async fn update_many(
         &self,
-        inputs: Vec<(String, M::Create)>,
+        inputs: Vec<(crate::Iid, M::Create)>,
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         let installed = self.transaction.installed()?;
@@ -419,25 +419,9 @@ where
         execute_borrowed_things(&self.transaction.tx, installed, &batch).await
     }
 
-    /// Deletes every exact entity at the supplied canonical IIDs without
-    /// committing. Batch failures after mutation dispatch make
-    /// the transaction rollback-only.
-    pub async fn delete_many(&self, iids: &[String]) -> Result<()> {
-        validate_binding_row_count(iids.len())?;
-        let installed = self.transaction.installed()?;
-        let (id, _descriptor) = resolve_entity_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let batch = prepare_batch(
-            installed,
-            id,
-            ProjectedBatchOperation::Delete,
-            delete_rows(iids)?,
-        )?;
-        execute_borrowed_delete(&self.transaction.tx, installed, &batch).await
+    /// Redirect to `filter()?.iids(iids)?.delete()` for the exact model scope.
+    pub async fn delete_many(&self, iids: &[crate::Iid]) -> Result<()> {
+        self.filter()?.iids(iids)?.delete().await
     }
 
     /// Redirect to `filter()?.iid(iid)?.first()`, preserving the manager's model scope.
@@ -623,8 +607,8 @@ where
 
     /// Delete the exact model and return its pre-delete snapshot without committing.
     /// An absent IID returns an empty write result.
-    pub async fn delete_returning(&self, iid: &str) -> Result<WriteResult<M>> {
-        self.delete_many_returning(&[iid.to_owned()])
+    pub async fn delete_returning(&self, iid: &crate::Iid) -> Result<WriteResult<M>> {
+        self.delete_many_returning(std::slice::from_ref(iid))
             .await
             .map(|result| WriteResult::new(result.into_items()))
     }
@@ -632,7 +616,7 @@ where
     /// Delete exact models and return existing snapshots in input order without committing.
     pub async fn delete_many_returning(
         &self,
-        iids: &[String],
+        iids: &[crate::Iid],
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(iids.len())?;
         let installed = self.transaction.installed()?;
@@ -666,7 +650,7 @@ where
     /// dispatch make the transaction rollback-only.
     pub async fn update_many(
         &self,
-        inputs: Vec<(String, M::Create)>,
+        inputs: Vec<(crate::Iid, M::Create)>,
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         let installed = self.transaction.installed()?;
@@ -681,25 +665,9 @@ where
         execute_borrowed_things(&self.transaction.tx, installed, &batch).await
     }
 
-    /// Deletes every exact relation at the supplied canonical IIDs without
-    /// committing. Batch failures after mutation dispatch make
-    /// the transaction rollback-only.
-    pub async fn delete_many(&self, iids: &[String]) -> Result<()> {
-        validate_binding_row_count(iids.len())?;
-        let installed = self.transaction.installed()?;
-        let (id, _descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let batch = prepare_batch(
-            installed,
-            id,
-            ProjectedBatchOperation::Delete,
-            delete_rows(iids)?,
-        )?;
-        execute_borrowed_delete(&self.transaction.tx, installed, &batch).await
+    /// Redirect to `filter()?.iids(iids)?.delete()` for the exact model scope.
+    pub async fn delete_many(&self, iids: &[crate::Iid]) -> Result<()> {
+        self.filter()?.iids(iids)?.delete().await
     }
 
     /// Redirect to `filter()?.iid(iid)?.first()`, preserving the manager's model scope.

@@ -59,9 +59,9 @@ impl type_bridge::LifecycleHook for GeneratedLifecycleHook {
 
 async fn generated_manager_mutation_parity_compiles(
     database: &type_bridge::Database<AppSchema>,
-    person_iid: String,
+    person_iid: type_bridge::Iid,
     person_input: PersonCreate,
-    employment_iid: String,
+    employment_iid: type_bridge::Iid,
     employment_input: EmploymentCreate,
 ) -> type_bridge::Result<()> {
     let mut people = database.entities::<Person>();

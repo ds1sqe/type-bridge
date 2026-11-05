@@ -52,6 +52,10 @@ impl Iid {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+    /// Consume the identifier and return its validated spelling without allocating.
+    pub fn into_string(self) -> String {
+        self.0
+    }
 }
 
 impl fmt::Display for Iid {
@@ -306,6 +310,10 @@ mod tests {
         let json = serde_json::to_string(&iid).unwrap();
         assert_eq!(json, "\"0xAbCdEf\"");
         assert_eq!(serde_json::from_str::<Iid>(&json).unwrap(), iid);
+        let pointer = iid.as_str().as_ptr();
+        let text = iid.into_string();
+        assert_eq!(text, spelling);
+        assert_eq!(text.as_ptr(), pointer);
         for invalid in ["", "0x", "0X01", "0xgg", " 0x01", "0x01 "] {
             assert_eq!(
                 Iid::new(invalid).unwrap_err().code().as_str(),

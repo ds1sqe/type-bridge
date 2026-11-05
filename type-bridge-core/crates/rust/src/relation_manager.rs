@@ -15,8 +15,8 @@ use crate::error::{Error, ModelValidationPhase};
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, ModelKind};
 use crate::projected_batch::{
     checked_batch_ordinal, create_operation, create_rows, delete_rows, encode_batch_create,
-    execute_owned_delete, execute_owned_things, prepare_batch, project_encoded_batch_create,
-    reserved_binding_vec, validate_binding_row_count,
+    execute_owned_things, prepare_batch, project_encoded_batch_create, reserved_binding_vec,
+    validate_binding_row_count,
 };
 use crate::projected_codec::{materialize_projected, project_create};
 use type_bridge_orm::{ProjectedManagerFilterExecutor, QueryTarget};
@@ -202,8 +202,8 @@ where
     }
 
     /// Delete an exact model and return its snapshots in a write result.
-    pub async fn delete_returning(&self, iid: &str) -> Result<WriteResult<M>> {
-        self.delete_many_returning(&[iid.to_owned()])
+    pub async fn delete_returning(&self, iid: &crate::Iid) -> Result<WriteResult<M>> {
+        self.delete_many_returning(std::slice::from_ref(iid))
             .await
             .map(|result| WriteResult::new(result.into_items()))
     }
@@ -212,7 +212,7 @@ where
     /// Pre-hooks run before provider work; post-hooks run after commit.
     pub async fn delete_many_returning(
         &self,
-        iids: &[String],
+        iids: &[crate::Iid],
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(iids.len())?;
         let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
@@ -241,7 +241,7 @@ where
                             M::TYPE_ID_JSON,
                             ModelKind::Relation,
                             CrudOperation::Delete,
-                            Some(iid),
+                            Some(iid.as_str()),
                             None,
                         )
                         .await
@@ -259,7 +259,7 @@ where
                     M::TYPE_ID_JSON,
                     ModelKind::Relation,
                     CrudOperation::Delete,
-                    Some(iid),
+                    Some(iid.as_str()),
                     None,
                     state,
                 )
@@ -278,7 +278,7 @@ where
     /// before database work begins; any write or hydration failure rolls back the whole batch.
     pub async fn update_many(
         &self,
-        inputs: Vec<(String, M::Create)>,
+        inputs: Vec<(crate::Iid, M::Create)>,
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
         let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
@@ -299,7 +299,7 @@ where
         for (ordinal, (iid, input)) in inputs.into_iter().enumerate() {
             let encoded = encode_batch_create(input, ordinal)?;
             rows.push(ProjectedBatchRow::Update {
-                iid: iid.clone(),
+                iid: iid.as_str().to_owned(),
                 replacement: project_encoded_batch_create(&encoded, &id, installed, ordinal)?,
             });
             hook_inputs.push((iid, encoded));
@@ -314,7 +314,7 @@ where
                         M::TYPE_ID_JSON,
                         ModelKind::Relation,
                         CrudOperation::Update,
-                        Some(iid),
+                        Some(iid.as_str()),
                         Some(encoded),
                     )
                     .await
@@ -338,61 +338,9 @@ where
         Ok(outputs)
     }
 
-    /// Atomically deletes every exact relation at the supplied canonical IIDs. All IIDs and
-    /// pre-hooks are accepted before database work begins; any write failure rolls back the
-    /// whole batch, and post-hook failures do not change the committed result.
-    pub async fn delete_many(&self, iids: &[String]) -> Result<()> {
-        validate_binding_row_count(iids.len())?;
-        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
-        let (id, _descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let batch = prepare_batch(
-            installed,
-            id,
-            ProjectedBatchOperation::Delete,
-            delete_rows(iids)?,
-        )?;
-        let mut states = if self.hooks.has_hooks() {
-            reserved_binding_vec(iids.len())?
-        } else {
-            Vec::new()
-        };
-        if self.hooks.has_hooks() {
-            for (ordinal, iid) in iids.iter().enumerate() {
-                states.push(
-                    self.hooks
-                        .run_pre(
-                            M::TYPE_ID_JSON,
-                            ModelKind::Relation,
-                            CrudOperation::Delete,
-                            Some(iid),
-                            None,
-                        )
-                        .await
-                        .map_err(|error| {
-                            error.with_projected_batch_row(checked_batch_ordinal(ordinal))
-                        })?,
-                );
-            }
-        }
-        execute_owned_delete(target, installed, &batch).await?;
-        for (iid, state) in iids.iter().zip(states) {
-            self.hooks
-                .run_post(
-                    M::TYPE_ID_JSON,
-                    ModelKind::Relation,
-                    CrudOperation::Delete,
-                    Some(iid),
-                    None,
-                    state,
-                )
-                .await;
-        }
-        Ok(())
+    /// Redirect to `filter()?.iids(iids)?.delete()` for the exact model scope.
+    pub async fn delete_many(&self, iids: &[crate::Iid]) -> Result<()> {
+        self.filter()?.iids(iids)?.delete().await
     }
 
     async fn projected_write(

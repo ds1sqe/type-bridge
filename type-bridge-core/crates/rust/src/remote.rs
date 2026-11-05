@@ -642,6 +642,19 @@ fn remote_model_hydration_error(error: RemoteModelQueryError) -> Error {
 
 #[cfg(test)]
 mod tests {
+
+    fn typed_iids(iids: &[String]) -> Vec<crate::Iid> {
+        iids.iter()
+            .map(|iid| crate::Iid::new(iid.as_str()).unwrap())
+            .collect()
+    }
+
+    fn typed_update_inputs<T>(inputs: Vec<(String, T)>) -> Vec<(crate::Iid, T)> {
+        inputs
+            .into_iter()
+            .map(|(iid, input)| (crate::Iid::new(iid).unwrap(), input))
+            .collect()
+    }
     #[test]
     fn admission_window_defaults_and_round_trips() {
         let policy = super::ProxyConnectionPolicy::new(type_bridge_orm::ProxyEndpoint::new(
@@ -1554,15 +1567,15 @@ mod tests {
                         .is_empty()
                 );
                 assert!(
-                    one_exchange!(manager.update_many(vec![("0x10".into(), $create)]))
+                    one_exchange!(manager.update_many(typed_update_inputs(vec![("0x10".into(), $create)])))
                         .items()
                         .is_empty()
                 );
                 one_exchange!(manager.delete(&crate::Iid::new("0x10").unwrap()));
-                one_exchange!(manager.delete_many(&["0x10".into()]));
-                assert_eq!(one_exchange!(manager.delete_returning("0x10")).count(), 0);
+                one_exchange!(manager.delete_many(&typed_iids(&["0x10".into()])));
+                assert_eq!(one_exchange!(manager.delete_returning(&crate::Iid::new("0x10").unwrap())).count(), 0);
                 assert!(
-                    one_exchange!(manager.delete_many_returning(&["0x10".into()]))
+                    one_exchange!(manager.delete_many_returning(&typed_iids(&["0x10".into()])))
                         .items()
                         .is_empty()
                 );

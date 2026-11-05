@@ -209,12 +209,12 @@ pub(crate) fn project_encoded_batch_create(
 pub(crate) fn update_rows<T: IntoEncodedCreate>(
     installed: &InstalledRuntimeProjection,
     model: &TypeId,
-    inputs: Vec<(String, T)>,
+    inputs: Vec<(crate::Iid, T)>,
 ) -> Result<Vec<ProjectedBatchRow>> {
     let mut rows = reserved_binding_vec(inputs.len())?;
     for (ordinal, (iid, input)) in inputs.into_iter().enumerate() {
         rows.push(ProjectedBatchRow::Update {
-            iid,
+            iid: iid.into_string(),
             replacement: project_batch_create(input, model, installed, ordinal)?,
         });
     }
@@ -231,10 +231,12 @@ pub(crate) fn project_batch_create<T: IntoEncodedCreate>(
         .map_err(|error| error.with_projected_batch_row(checked_batch_ordinal(ordinal)))
 }
 
-pub(crate) fn delete_rows(iids: &[String]) -> Result<Vec<ProjectedBatchRow>> {
+pub(crate) fn delete_rows(iids: &[crate::Iid]) -> Result<Vec<ProjectedBatchRow>> {
     let mut rows = reserved_binding_vec(iids.len())?;
     for iid in iids {
-        rows.push(ProjectedBatchRow::Delete { iid: iid.clone() });
+        rows.push(ProjectedBatchRow::Delete {
+            iid: iid.as_str().to_owned(),
+        });
     }
     Ok(rows)
 }
@@ -309,40 +311,6 @@ pub(crate) async fn execute_borrowed_deleted_things<M: CompleteModel>(
         .map_err(map_execution_error)
 }
 
-pub(crate) async fn execute_owned_delete(
-    target: QueryTarget<'_>,
-    installed: &InstalledRuntimeProjection,
-    batch: &ProjectedBatch,
-) -> Result<()> {
-    ProjectedBatchExecutor::new(installed)
-        .execute_on_target_mapped(
-            target,
-            batch,
-            control(target.answer_limits().unwrap_or_default()),
-            (),
-            deleted_result,
-        )
-        .await
-        .map_err(map_target_execution_error)
-}
-
-pub(crate) async fn execute_borrowed_delete(
-    transaction: &TransactionContext,
-    installed: &InstalledRuntimeProjection,
-    batch: &ProjectedBatch,
-) -> Result<()> {
-    ProjectedBatchExecutor::new(installed)
-        .execute_in_transaction_mapped(
-            transaction,
-            batch,
-            transaction_control(transaction),
-            (),
-            deleted_result,
-        )
-        .await
-        .map_err(map_execution_error)
-}
-
 pub(crate) fn prepare_batch(
     installed: &InstalledRuntimeProjection,
     model: TypeId,
@@ -388,14 +356,6 @@ fn reserved_binding_vec_inner<T>(capacity: usize, fail_reservation: bool) -> Res
         ));
     }
     Ok(rows)
-}
-
-fn deleted_result(result: ProjectedBatchResult) -> std::result::Result<(), SdkExecutionDiagnostic> {
-    match result {
-        ProjectedBatchResult::Deleted => Ok(()),
-        ProjectedBatchResult::Things(_) => Err(SdkExecutionDiagnostic::internal_failure()),
-        _ => Err(SdkExecutionDiagnostic::internal_failure()),
-    }
 }
 
 fn control(limits: QueryExecutionResourceLimits) -> ProjectedBatchInvocationControl {

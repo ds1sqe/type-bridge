@@ -341,7 +341,151 @@ fn generated_manager_filter_compile_boundaries_fail_independently() {
     let generated = stage.path().join("generated");
     write_package(&emit(), &generated);
 
-    let cases: [(&str, &str, &[&str]); 22] = [
+    let cases: [(&str, &str, &[&str]); 38] = [
+        (
+            "entities-exact-delete-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().delete_many(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-exact-delete-many-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().delete_many_returning(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-exact-delete-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().delete_returning("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-exact-update-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>, input: generated::PersonCreate) {
+    let _ = db.entities::<Person>().update_many(vec![("0x10".to_owned(), input)]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-delete-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.entities::<Person>().delete_many(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-delete-many-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.entities::<Person>().delete_many_returning(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-delete-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.entities::<Person>().delete_returning("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-update-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>, input: generated::PersonCreate) {
+    let _ = db.entities::<Person>().update_many(vec![("0x10".to_owned(), input)]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-delete-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.relations::<Employment>().delete_many(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-delete-many-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.relations::<Employment>().delete_many_returning(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-delete-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.relations::<Employment>().delete_returning("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-update-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>, input: generated::EmploymentCreate) {
+    let _ = db.relations::<Employment>().update_many(vec![("0x10".to_owned(), input)]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-delete-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.relations::<Employment>().delete_many(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-delete-many-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.relations::<Employment>().delete_many_returning(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-delete-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.relations::<Employment>().delete_returning("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-update-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>, input: generated::EmploymentCreate) {
+    let _ = db.relations::<Employment>().update_many(vec![("0x10".to_owned(), input)]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
         (
             "entities-exact-delete-rejects-string-iid",
             r#"use generated::{AppSchema, Person};
@@ -1034,9 +1178,9 @@ async fn positive(db: &Database<AppSchema>, create: PersonCreate) {
     let _: BatchWriteResult<Person> = exact.insert_many(vec![create.clone()]).await.unwrap();
     let _: BatchWriteResult<Person> = exact.put_many(vec![create.clone()]).await.unwrap();
     let _: () = exact.delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
-    let snapshot: WriteResult<Person> = exact.delete_returning("0x1").await.unwrap();
+    let snapshot: WriteResult<Person> = exact.delete_returning(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     if let Some(snapshot) = snapshot.item() { let _: bool = snapshot.deleted(); }
-    let _: BatchWriteResult<Person> = exact.delete_many_returning(&["0x1".into()]).await.unwrap();
+    let _: BatchWriteResult<Person> = exact.delete_many_returning(&[type_bridge::Iid::new("0x1").unwrap()]).await.unwrap();
     let _: Option<Person> = exact.get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Person> = exact.all().await.unwrap();
     let _: u64 = exact.count().await.unwrap();
@@ -1070,9 +1214,9 @@ async fn relation_positive(db: &Database<AppSchema>, create: ContractCreate) {
     let _: BatchWriteResult<Contract> = exact.insert_many(vec![create.clone()]).await.unwrap();
     let _: BatchWriteResult<Contract> = exact.put_many(vec![create.clone()]).await.unwrap();
     let _: () = exact.delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
-    let snapshot: WriteResult<Contract> = exact.delete_returning("0x1").await.unwrap();
+    let snapshot: WriteResult<Contract> = exact.delete_returning(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     if let Some(snapshot) = snapshot.item() { let _: bool = snapshot.deleted(); }
-    let _: BatchWriteResult<Contract> = exact.delete_many_returning(&["0x1".into()]).await.unwrap();
+    let _: BatchWriteResult<Contract> = exact.delete_many_returning(&[type_bridge::Iid::new("0x1").unwrap()]).await.unwrap();
     let _: Option<Contract> = exact.get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Contract> = exact.all().await.unwrap();
     let _: u64 = exact.count().await.unwrap();
@@ -1094,7 +1238,7 @@ async fn transaction_positive(db: &Database<AppSchema>, create: PersonCreate, re
     let _: BatchWriteResult<Person> = tx.entities::<Person>().insert_many(vec![create.clone()]).await.unwrap();
     let _: BatchWriteResult<Person> = tx.entities::<Person>().put_many(vec![create.clone()]).await.unwrap();
     let _: () = tx.entities::<Person>().delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
-    let _: WriteResult<Person> = tx.entities::<Person>().delete_returning("0x1").await.unwrap();
+    let _: WriteResult<Person> = tx.entities::<Person>().delete_returning(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Option<Person> = tx.entities::<Person>().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Person> = tx.entities::<Person>().all().await.unwrap();
     let _: u64 = tx.entities::<Person>().count().await.unwrap();
@@ -1104,7 +1248,7 @@ async fn transaction_positive(db: &Database<AppSchema>, create: PersonCreate, re
     let _: BatchWriteResult<Contract> = tx.relations::<Contract>().insert_many(vec![relation_create.clone()]).await.unwrap();
     let _: BatchWriteResult<Contract> = tx.relations::<Contract>().put_many(vec![relation_create.clone()]).await.unwrap();
     let _: () = tx.relations::<Contract>().delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
-    let _: WriteResult<Contract> = tx.relations::<Contract>().delete_returning("0x1").await.unwrap();
+    let _: WriteResult<Contract> = tx.relations::<Contract>().delete_returning(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Option<Contract> = tx.relations::<Contract>().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Contract> = tx.relations::<Contract>().all().await.unwrap();
     let _: u64 = tx.relations::<Contract>().count().await.unwrap();

@@ -5502,18 +5502,18 @@ async fn manager_program(
                 assert_eq!(item.iid().as_str(), iids[index]);
                 assert_eq!(observe(item), "many-put");
             }
-            let update_many = terminal!(manager.update_many(["b", "c", "d"].iter().enumerate()
-                .map(|(index, key)| (iids[&index].clone(), make(key, "many-update"))).collect()));
+            let update_many = terminal!(manager.update_many(typed_update_inputs(["b", "c", "d"].iter().enumerate()
+                .map(|(index, key)| (iids[&index].clone(), make(key, "many-update"))).collect())));
             assert_eq!(update_many.items().len(), 3);
             for (item, index) in update_many.items().iter().zip(update_many.input_indexes()) {
                 assert_eq!(item.iid().as_str(), iids[index]);
                 assert_eq!(observe(item), "many-update");
             }
-            terminal!(manager.delete_many(&[iids[&0].clone()]));
-            let deleted = one_written(terminal!(manager.delete_returning(&iids[&1])));
+            terminal!(manager.delete_many(&typed_iids(&[iids[&0].clone()])));
+            let deleted = one_written(terminal!(manager.delete_returning(&type_bridge::Iid::new(&iids[&1]).unwrap())));
             assert_eq!(deleted.iid().as_str(), iids[&1]);
             assert_eq!(observe(&deleted), "many-update");
-            let deleted_many = terminal!(manager.delete_many_returning(&[iids[&2].clone()]));
+            let deleted_many = terminal!(manager.delete_many_returning(&typed_iids(&[iids[&2].clone()])));
             assert_eq!(deleted_many.items().len(), 1);
             assert_eq!(deleted_many.input_indexes(), [0]);
             assert_eq!(deleted_many.items()[0].iid().as_str(), iids[&2]);
@@ -6174,7 +6174,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
         RecordingLifecycleHook::new("second", Arc::clone(&events)).rejecting("cancel-b"),
     ));
     let rejected = rejecting
-        .update_many(vec![
+        .update_many(typed_update_inputs(vec![
             (
                 first_iid.clone(),
                 relation_person_input("p-400", "would-change-a"),
@@ -6183,7 +6183,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
                 second_iid.clone(),
                 relation_person_input("p-401", "cancel-b"),
             ),
-        ])
+        ]))
         .await;
     let error = match rejected {
         Ok(_) => panic!("second generated pre-hook must cancel the whole batch"),
@@ -6211,13 +6211,13 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
 
     let partially_matched = db
         .entities::<Person>()
-        .update_many(vec![
+        .update_many(typed_update_inputs(vec![
             (
                 first_iid.clone(),
                 relation_person_input("p-400", "matched-update"),
             ),
             (absent_iid.clone(), relation_person_input("p-402", "absent")),
-        ])
+        ]))
         .await
         .expect("a missing input does not discard matched writes");
     assert_eq!(partially_matched.count(), 1);
@@ -6245,7 +6245,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
         RecordingLifecycleHook::new("second", Arc::clone(&events)).failing_after(),
     ));
     let updated = hooked
-        .update_many(vec![
+        .update_many(typed_update_inputs(vec![
             (
                 first_iid.clone(),
                 relation_person_input("p-400", "updated-a"),
@@ -6254,7 +6254,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
                 second_iid.clone(),
                 relation_person_input("p-401", "updated-b"),
             ),
-        ])
+        ]))
         .await
         .expect("post-hook failure is non-fatal after atomic update")
         .into_items();
@@ -6296,7 +6296,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
         RecordingLifecycleHook::new("second", Arc::clone(&events)).failing_after(),
     ));
     let updated_relations = hooked_relations
-        .update_many(vec![
+        .update_many(typed_update_inputs(vec![
             (
                 first_employment_iid.clone(),
                 EmploymentCreate::new(updated[1].reference())
@@ -6307,7 +6307,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
                 EmploymentCreate::new(updated[0].reference())
                     .expect("second employment replacement"),
             ),
-        ])
+        ]))
         .await
         .expect("relation update batch commits despite post-hook failure")
         .into_items();
@@ -6323,7 +6323,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
 
     events.lock().expect("hook event lock").clear();
     hooked_relations
-        .delete_many(&[first_employment_iid, second_employment_iid])
+        .delete_many(&typed_iids(&[first_employment_iid, second_employment_iid]))
         .await
         .expect("relation delete batch with hooks");
     assert_eq!(
@@ -6344,7 +6344,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
     );
 
     hooked
-        .delete_many(&[first_iid, second_iid])
+        .delete_many(&typed_iids(&[first_iid, second_iid]))
         .await
         .expect("entity delete batch with hooks");
     assert_eq!(
@@ -6713,7 +6713,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("");
     model_plan_mark("entity_batch_update_delete_atomic.update");
     let updated_many = manager
-        .update_many(vec![
+        .update_many(typed_update_inputs(vec![
             (
                 ids[0].clone(),
                 CounterCreate::new(CounterValue::new(11).unwrap()).unwrap(),
@@ -6722,7 +6722,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
                 ids[1].clone(),
                 CounterCreate::new(CounterValue::new(2).unwrap()).unwrap(),
             ),
-        ])
+        ]))
         .await
         .unwrap()
         .into_items();
@@ -6735,7 +6735,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
         ids.iter().map(String::as_str).collect::<Vec<_>>()
     );
     model_plan_mark("delete");
-    manager.delete_many(&ids).await.unwrap();
+    manager.delete_many(&typed_iids(&ids)).await.unwrap();
     model_plan_mark("");
     assert_eq!(manager.count().await.unwrap(), before);
     let returned = manager
@@ -6750,17 +6750,15 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
         model_plan_identity(name, value.iid().as_str());
     }
     model_plan_mark("manager_returning_delete.entity");
-    let snapshot = one_written(manager.delete_returning(returned[0].iid().as_str()).await.unwrap());
+    let snapshot = one_written(manager.delete_returning(returned[0].iid()).await.unwrap());
     model_plan_mark("");
     assert_eq!(*snapshot.counter_value().value(), 1);
     model_plan_mark("manager_returning_delete.entity_many");
     let snapshots = manager
-        .delete_many_returning(
-            &returned
+        .delete_many_returning(&typed_iids(&returned
                 .iter()
                 .map(|value| value.iid().as_str().to_owned())
-                .collect::<Vec<_>>(),
-        )
+                .collect::<Vec<_>>(),))
         .await
         .unwrap()
         .into_items();
@@ -6921,12 +6919,10 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
         model_plan_identity(name, value.iid().as_str());
     }
     links
-        .delete_many(
-            &put_links
+        .delete_many(&typed_iids(&put_links
                 .iter()
                 .map(|value| value.iid().as_str().to_owned())
-                .collect::<Vec<_>>(),
-        )
+                .collect::<Vec<_>>(),))
         .await
         .unwrap();
     model_plan_mark("relation_batch_insert_put.insert");
@@ -6947,13 +6943,13 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     }
     model_plan_mark("relation_batch_update_delete_atomic.update");
     let updated = links
-        .update_many(vec![
+        .update_many(typed_update_inputs(vec![
             (
                 batch_links[0].iid().as_str().into(),
                 batch_input("data-link-forward"),
             ),
             (batch_links[1].iid().as_str().into(), batch_input("data-link-return")),
-        ])
+        ]))
         .await
         .unwrap()
         .into_items();
@@ -6967,12 +6963,10 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     );
     model_plan_mark("relation_batch_update_delete_atomic.delete");
     links
-        .delete_many(
-            &batch_links
+        .delete_many(&typed_iids(&batch_links
                 .iter()
                 .map(|value| value.iid().as_str().to_owned())
-                .collect::<Vec<_>>(),
-        )
+                .collect::<Vec<_>>(),))
         .await
         .unwrap();
     model_plan_mark("");
@@ -6988,18 +6982,16 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
         model_plan_identity(name, value.iid().as_str());
     }
     model_plan_mark("manager_returning_delete.relation");
-    let snapshot = one_written(links.delete_returning(returned[0].iid().as_str()).await.unwrap());
+    let snapshot = one_written(links.delete_returning(returned[0].iid()).await.unwrap());
     model_plan_mark("");
     assert_eq!(snapshot.identifier().value(), "data-link-forward");
     assert_eq!(snapshot.origin().iid().as_str(), ada.iid().as_str());
     model_plan_mark("manager_returning_delete.relation_many");
     let snapshots = links
-        .delete_many_returning(
-            &returned
+        .delete_many_returning(&typed_iids(&returned
                 .iter()
                 .map(|value| value.iid().as_str().to_owned())
-                .collect::<Vec<_>>(),
-        )
+                .collect::<Vec<_>>(),))
         .await
         .unwrap()
         .into_items();
@@ -7182,7 +7174,7 @@ async fn sdk_models_data_model_runtime_live() {
     let batch_right_iid = batch_counters[1].iid().as_str().to_owned();
     let updated_counters = db
         .entities::<Counter>()
-        .update_many(vec![
+        .update_many(typed_update_inputs(vec![
             (
                 batch_left_iid.clone(),
                 CounterCreate::new(CounterValue::new(11).expect("left replacement"))
@@ -7193,7 +7185,7 @@ async fn sdk_models_data_model_runtime_live() {
                 CounterCreate::new(CounterValue::new(22).expect("right replacement"))
                     .expect("right replacement input"),
             ),
-        ])
+        ]))
         .await
         .expect("counter update batch").into_items();
     assert_eq!(updated_counters[0].iid().as_str(), batch_left_iid);
@@ -7202,7 +7194,7 @@ async fn sdk_models_data_model_runtime_live() {
     assert_eq!(updated_counters[1].counter_value().value(), &22);
     let duplicate_target = db
         .entities::<Counter>()
-        .update_many(vec![
+        .update_many(typed_update_inputs(vec![
             (
                 batch_left_iid.clone(),
                 CounterCreate::new(CounterValue::new(31).expect("duplicate replacement"))
@@ -7213,7 +7205,7 @@ async fn sdk_models_data_model_runtime_live() {
                 CounterCreate::new(CounterValue::new(32).expect("duplicate replacement"))
                     .expect("duplicate replacement input"),
             ),
-        ])
+        ]))
         .await
         .expect_err("duplicate update target is rejected");
     assert_eq!(duplicate_target.code(), Some("duplicate_batch_target"));
@@ -7227,7 +7219,7 @@ async fn sdk_models_data_model_runtime_live() {
     ));
     let delete_failure = db
         .entities::<Counter>()
-        .delete_many(&[batch_left_iid.clone(), batch_left_iid.clone()])
+        .delete_many(&typed_iids(&[batch_left_iid.clone(), batch_left_iid.clone()]))
         .await;
     assert!(delete_failure.is_err());
     let all_targets_remain = db
@@ -7243,7 +7235,7 @@ async fn sdk_models_data_model_runtime_live() {
             .expect("right counter read")
             .is_some();
     db.entities::<Counter>()
-        .delete_many(&[batch_left_iid.clone(), batch_right_iid.clone()])
+        .delete_many(&typed_iids(&[batch_left_iid.clone(), batch_right_iid.clone()]))
         .await
         .expect("counter delete batch");
     let all_targets_absent = db
@@ -7259,7 +7251,7 @@ async fn sdk_models_data_model_runtime_live() {
             .expect("deleted right counter read")
             .is_none();
     db.entities::<Counter>()
-        .delete_many(&[batch_left_iid, batch_right_iid])
+        .delete_many(&typed_iids(&[batch_left_iid, batch_right_iid]))
         .await
         .expect("missing counter delete batch is idempotent");
     assert_eq!(
@@ -7604,7 +7596,7 @@ async fn sdk_models_data_model_runtime_live() {
     let membership_robot_iid = memberships[1].iid().as_str().to_owned();
     let updated_memberships = db
         .relations::<Membership>()
-        .update_many(vec![
+        .update_many(typed_update_inputs(vec![
             (
                 membership_ada_iid.clone(),
                 MembershipCreate::new(MembershipMemberRef::Person(people[1].reference()))
@@ -7615,7 +7607,7 @@ async fn sdk_models_data_model_runtime_live() {
                 MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
                     .expect("Ada membership replacement"),
             ),
-        ])
+        ]))
         .await
         .expect("membership update batch").into_items();
     let membership_identities_preserved = [
@@ -7627,7 +7619,7 @@ async fn sdk_models_data_model_runtime_live() {
         .all(|membership| matches!(membership.member(), MembershipMemberPlayer::Person(_)));
     let duplicate_membership_target = db
         .relations::<Membership>()
-        .update_many(vec![
+        .update_many(typed_update_inputs(vec![
             (
                 membership_ada_iid.clone(),
                 MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
@@ -7638,7 +7630,7 @@ async fn sdk_models_data_model_runtime_live() {
                 MembershipCreate::new(MembershipMemberRef::Person(people[1].reference()))
                     .expect("duplicate membership replacement"),
             ),
-        ])
+        ]))
         .await
         .expect_err("duplicate membership target is rejected");
     assert_eq!(
@@ -7647,7 +7639,7 @@ async fn sdk_models_data_model_runtime_live() {
     );
     let membership_delete_failure = db
         .relations::<Membership>()
-        .delete_many(&[membership_ada_iid.clone(), membership_ada_iid.clone()])
+        .delete_many(&typed_iids(&[membership_ada_iid.clone(), membership_ada_iid.clone()]))
         .await;
     assert!(membership_delete_failure.is_err());
     let membership_targets_remain = db
@@ -7663,7 +7655,7 @@ async fn sdk_models_data_model_runtime_live() {
             .expect("robot membership read")
             .is_some();
     db.relations::<Membership>()
-        .delete_many(&[membership_ada_iid.clone(), membership_robot_iid.clone()])
+        .delete_many(&typed_iids(&[membership_ada_iid.clone(), membership_robot_iid.clone()]))
         .await
         .expect("membership delete batch");
     let membership_targets_absent = db
@@ -7679,7 +7671,7 @@ async fn sdk_models_data_model_runtime_live() {
             .expect("deleted robot membership read")
             .is_none();
     db.relations::<Membership>()
-        .delete_many(&[membership_ada_iid, membership_robot_iid])
+        .delete_many(&typed_iids(&[membership_ada_iid, membership_robot_iid]))
         .await
         .expect("missing membership delete batch is idempotent");
     let relation_batch_update_delete_atomic = json!({
@@ -8322,4 +8314,12 @@ fn ownership_edge_person_input(
             .expect("relation lifecycle duration value"),
     )
     .expect("relation lifecycle person input")
+}
+
+fn typed_iids(iids: &[String]) -> Vec<type_bridge::Iid> {
+    iids.iter().map(|iid| type_bridge::Iid::new(iid.as_str()).unwrap()).collect()
+}
+
+fn typed_update_inputs<T>(inputs: Vec<(String, T)>) -> Vec<(type_bridge::Iid, T)> {
+    inputs.into_iter().map(|(iid, input)| (type_bridge::Iid::new(iid).unwrap(), input)).collect()
 }
