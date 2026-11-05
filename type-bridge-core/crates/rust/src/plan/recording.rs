@@ -346,7 +346,7 @@ impl<S: Schema> Recording<S> {
     pub fn matching<M: ThingModel<Schema = S>>(
         &mut self,
         subtypes: bool,
-        iid: Option<&str>,
+        iid: Option<&crate::Iid>,
     ) -> Handle<M> {
         self.matching_mode::<M, Exact>(subtypes, iid)
     }
@@ -355,7 +355,7 @@ impl<S: Schema> Recording<S> {
     #[doc(hidden)]
     pub fn subtypes<M: ThingModel<Schema = S>>(
         &mut self,
-        iid: Option<&str>,
+        iid: Option<&crate::Iid>,
     ) -> Handle<M, Subtypes> {
         self.matching_mode::<M, Subtypes>(true, iid)
     }
@@ -363,7 +363,7 @@ impl<S: Schema> Recording<S> {
     fn matching_mode<M: ThingModel<Schema = S>, Mode: SelectionMode>(
         &mut self,
         subtypes: bool,
-        iid: Option<&str>,
+        iid: Option<&crate::Iid>,
     ) -> Handle<M, Mode> {
         let mut inner = self.inner.borrow_mut();
         let binding = match inner.check(super::type_id::<M>()) {
@@ -377,7 +377,7 @@ impl<S: Schema> Recording<S> {
             None => BindingId::new(0).expect("zero binding"),
         };
         if let Some(iid) = iid {
-            inner.core.by_iid(binding, iid);
+            inner.core.by_iid(binding, iid.as_str());
         }
         Handle {
             inner: Rc::new(HandleInner {

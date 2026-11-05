@@ -169,10 +169,10 @@ async fn reusable_read_context_compiles(
     let _ = session
         .query(person)?
         .where_(person.field(PersonType::score).is_present())?;
-    let _ = session.query(person)?.where_(person.iid("0x1"))?;
+    let _ = session.query(person)?.where_(person.iid(&type_bridge::Iid::new("0x1").unwrap()))?;
     let _ = session
         .query(person)?
-        .where_(person.iid_in(["0x1", "0x2"]))?;
+        .where_(person.iid_in([&type_bridge::Iid::new("0x1").unwrap(), &type_bridge::Iid::new("0x2").unwrap()]))?;
     let query = session.query(person)?;
     let tuple_field_grouped = query.group_by_fields((
         person.field(PersonType::val_bool),
@@ -623,4 +623,15 @@ async fn staged_query_terminals_keep_their_output_types(
     tx.commit().await?;
     let _: Person = pending.result()?;
     Ok(())
+}
+
+fn nominal_iid_authoring_compiles(iid: type_bridge::Iid) {
+    let mut plan = type_bridge::plan::PlanBuilder::<AppSchema>::new();
+    let _ = plan.by_iid::<Person>(&iid);
+    let column = plan.input::<type_bridge::Iid>("iid");
+    let _ = plan.by_iid_input::<Person>(column);
+    let _ = column.value(iid.clone());
+    let _ = column.result_ref::<Person>(0, 0).unwrap();
+    let mut recording = type_bridge::plan::recording::Recording::<AppSchema>::new(Default::default());
+    let _ = Person::by_iid(&mut recording, &iid);
 }

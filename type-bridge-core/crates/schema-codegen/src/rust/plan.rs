@@ -153,7 +153,7 @@ pub(super) fn render(projection: &RuntimeProjection) -> Result<String, Diagnosti
         }
         let _ = writeln!(
             output,
-            "pub fn by_iid(p: &mut recording::Recording<AppSchema>, iid: &str) -> {name}Handle<Subtypes> {{ {name}Handle {{ __tb_handle: p.subtypes::<Self>(Some(iid)) }} }}\n}}"
+            "pub fn by_iid(p: &mut recording::Recording<AppSchema>, iid: &type_bridge::Iid) -> {name}Handle<Subtypes> {{ {name}Handle {{ __tb_handle: p.subtypes::<Self>(Some(iid)) }} }}\n}}"
         );
         let _ = writeln!(
             output,

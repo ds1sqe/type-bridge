@@ -341,7 +341,42 @@ fn generated_manager_filter_compile_boundaries_fail_independently() {
     let generated = stage.path().join("generated");
     write_package(&emit(), &generated);
 
-    let cases: [(&str, &str, &[&str]); 38] = [
+    let cases: [(&str, &str, &[&str]); 43] = [
+        (
+            "query-binding-iid-rejects-string",
+            r#"use generated::{AppSchema, Person};
+fn check(mut session: type_bridge::QuerySession<'_, AppSchema>) { let person = session.exact::<Person>().unwrap(); let _ = person.iid("0x10"); }
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "query-binding-iid-list-rejects-string",
+            r#"use generated::{AppSchema, Person};
+fn check(mut session: type_bridge::QuerySession<'_, AppSchema>) { let person = session.exact::<Person>().unwrap(); let _ = person.iid_in(["0x10"]); }
+fn main() {}"#,
+            &["type mismatch", "Iid"],
+        ),
+        (
+            "plan-iid-rejects-string",
+            r#"use generated::{AppSchema, Person};
+fn check(mut plan: type_bridge::plan::PlanBuilder<AppSchema>) { let _ = plan.by_iid::<Person>("0x10"); }
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "plan-iid-input-rejects-string-column",
+            r#"use generated::{AppSchema, Person};
+fn check(mut plan: type_bridge::plan::PlanBuilder<AppSchema>) { let input = plan.input::<String>("iid"); let _ = plan.by_iid_input::<Person>(input); }
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "generated-iid-authoring-rejects-string",
+            r#"use generated::{AppSchema, Person};
+fn check(mut plan: type_bridge::plan::recording::Recording<AppSchema>) { let _ = Person::by_iid(&mut plan, "0x10"); }
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
         (
             "entities-exact-delete-many-rejects-string-iid",
             r#"use generated::{AppSchema, Person};

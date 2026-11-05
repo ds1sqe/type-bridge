@@ -26,6 +26,12 @@ managers. `delete_many` redirects to `filter()?.iids(&iids)?.delete().await`.
 `delete_many_returning` retains ordinal snapshots, and `delete_returning` wraps
 one returning batch row. Their existing lifecycle events remain unchanged.
 
+Query bindings use `binding.iid(&iid)` and `binding.iid_in([&first, &second])`.
+`PlanBuilder::by_iid` and generated model `by_iid` authoring likewise borrow
+`Iid`. Declare staged identifier columns with `input::<Iid>("target_iid")`;
+`Input<Iid>` accepts nominal identifier values and earlier staged IID result
+references. These authoring methods retain their existing staged plans.
+
 ## Single-item manager write results
 
 Single-item `insert`, `put`, `update`, and `delete_returning` calls now return

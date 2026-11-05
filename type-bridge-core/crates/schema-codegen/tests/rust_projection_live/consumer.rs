@@ -1599,7 +1599,7 @@ async fn sdk_queries_query_observations(
         &session
             .query(person)
             .expect("queries IID-set query")
-            .where_(person.iid_in([person_iids[0].as_str(), person_iids[1].as_str()]))
+            .where_(person.iid_in(typed_iids(&[person_iids[0].clone(), person_iids[1].clone()]).iter()))
             .expect("queries IID-set predicate")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
@@ -1724,7 +1724,7 @@ async fn sdk_queries_query_observations(
         .match_(membership_person)
         .expect("queries membership member match")
         .where_(
-            membership.iid(membership_iid)
+            membership.iid(&type_bridge::Iid::new(membership_iid).unwrap())
                 & membership
                     .role(MembershipType::member)
                     .connects(membership_person)
@@ -1754,7 +1754,7 @@ async fn sdk_queries_query_observations(
         .match_(network_destination)
         .expect("queries attach network destination")
         .where_(
-            network.iid(network_iid)
+            network.iid(&type_bridge::Iid::new(network_iid).unwrap())
                 & network
                     .role(NetworkLinkType::origin)
                     .connects(network_origin)
@@ -1885,7 +1885,7 @@ async fn sdk_queries_query_observations(
         .distinct()
         .order_by(shape_participant_identifier.asc())
         .expect("queries collection order");
-    let shape_predicate = shape_link.iid(network_iid)
+    let shape_predicate = shape_link.iid(&type_bridge::Iid::new(network_iid).unwrap())
         & shape_link
             .role(NetworkLinkType::origin)
             .connects(shape_origin)
@@ -4611,7 +4611,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .query(person_binding)
             .expect("single worker IID query")
             .where_(
-                person_binding.iid(worker_a.iid().as_str()) & aliases.is_present() & nickname.is_missing(),
+                person_binding.iid(worker_a.iid()) & aliases.is_present() & nickname.is_missing(),
             )
             .expect("single worker IID and presence predicates")
             .one()
@@ -4621,7 +4621,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         let workers_by_iid = session
             .query(person_binding)
             .expect("worker IID set query")
-            .where_(person_binding.iid_in([worker_a.iid().as_str(), worker_b.iid().as_str()]))
+            .where_(person_binding.iid_in([worker_a.iid(), worker_b.iid()]))
             .expect("worker IID set predicate")
             .rows(RowsOptions::new(10).order_by(identifier.asc()))
             .await
@@ -4637,7 +4637,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .query(network_binding)
             .expect("network IID query")
             .where_(
-                network_binding.iid(graph_link_iids[0].clone())
+                network_binding.iid(&type_bridge::Iid::new(graph_link_iids[0].clone()).unwrap())
                     & network_binding
                         .field(NetworkLinkType::identifier)
                         .is_present()
@@ -4968,7 +4968,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .query(person_binding)
         .expect("F4 remote worker IID query")
         .where_(
-            person_binding.iid(worker_a.iid().as_str())
+            person_binding.iid(worker_a.iid())
                 & person_binding.field(PersonType::aliases).is_present()
                 & person_binding.field(PersonType::nickname).is_missing(),
         )
@@ -4980,7 +4980,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
     let remote_workers_by_iid = session
         .query(person_binding)
         .expect("F4 remote worker IID set query")
-        .where_(person_binding.iid_in([worker_a.iid().as_str(), worker_b.iid().as_str()]))
+        .where_(person_binding.iid_in([worker_a.iid(), worker_b.iid()]))
         .expect("F4 remote worker IID set predicate")
         .rows(RowsOptions::new(10).order_by(identifier.asc()))
         .await
@@ -4999,7 +4999,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .query(remote_network)
         .expect("F4 remote network IID query")
         .where_(
-            remote_network.iid(graph_link_iids[0].clone())
+            remote_network.iid(&type_bridge::Iid::new(graph_link_iids[0].clone()).unwrap())
                 & remote_network
                     .field(NetworkLinkType::identifier)
                     .is_present()
@@ -5298,7 +5298,7 @@ async fn role_player_refusal(
     let error = session
         .query(employment)
         .expect("limited employment query")
-        .where_(employment.iid(employment_iid))
+        .where_(employment.iid(&type_bridge::Iid::new(employment_iid).unwrap()))
         .expect("limited employment predicate")
         .one()
         .await

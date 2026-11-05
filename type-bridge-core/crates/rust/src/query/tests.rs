@@ -1345,13 +1345,15 @@ fn query_resources_close_idempotently_with_independent_persistent_lineages() {
     let record = session.exact::<Record>().unwrap();
     let input = session.query(record).unwrap();
     let cloned = input.clone();
-    let derived = input.where_(record.iid("0x01")).unwrap();
+    let derived = input
+        .where_(record.iid(&crate::Iid::new("0x01").unwrap()))
+        .unwrap();
     let sibling = session.query(record).unwrap();
 
     derived.close();
     derived.close();
     assert!(derived.is_closed());
-    let derived_error = match derived.where_(record.iid("0x02")) {
+    let derived_error = match derived.where_(record.iid(&crate::Iid::new("0x02").unwrap())) {
         Err(error) => error,
         Ok(_) => panic!("closed derived query must reject composition"),
     };

@@ -238,19 +238,22 @@ impl<S: Schema, M: ThingModel<Schema = S>, Mode: SelectionMode> Binding<S, M, Mo
 
     /// Match this generated binding by one canonical TypeDB thing IID.
     #[must_use]
-    pub fn iid(self, iid: impl Into<String>) -> Predicate<S> {
+    pub fn iid(self, iid: &crate::Iid) -> Predicate<S> {
         Predicate::new(PredicateExpr::BindingIid {
             binding: self.key,
-            iid: iid.into(),
+            iid: iid.as_str().to_owned(),
         })
     }
 
     /// Match this generated binding by one of a non-empty bounded IID set.
     #[must_use]
-    pub fn iid_in(self, iids: impl IntoIterator<Item = impl Into<String>>) -> Predicate<S> {
+    pub fn iid_in<'iid>(self, iids: impl IntoIterator<Item = &'iid crate::Iid>) -> Predicate<S> {
         Predicate::new(PredicateExpr::BindingIidIn {
             binding: self.key,
-            iids: iids.into_iter().map(Into::into).collect(),
+            iids: iids
+                .into_iter()
+                .map(|iid| iid.as_str().to_owned())
+                .collect(),
         })
     }
 

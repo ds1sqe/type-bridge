@@ -244,7 +244,7 @@ impl<V> Input<V> {
     }
 }
 
-impl Input<String> {
+impl Input<crate::Iid> {
     /// Read one selected IID column of an earlier entry in this staged stack.
     /// # Errors
     /// Returns an invalid generated model identity.
@@ -1168,16 +1168,16 @@ impl<S: Schema> PlanBuilder<S> {
     }
 
     /// Match a model by IID, admitting its concrete subtypes.
-    pub fn by_iid<M: ThingModel<Schema = S>>(&mut self, iid: &str) -> Thing<M, Subtypes> {
+    pub fn by_iid<M: ThingModel<Schema = S>>(&mut self, iid: &crate::Iid) -> Thing<M, Subtypes> {
         let thing = self.subtypes::<M>();
-        self.core.by_iid(thing.binding, iid);
+        self.core.by_iid(thing.binding, iid.as_str());
         thing
     }
 
     /// Match a model by an invocation IID, including a staged result reference.
     pub fn by_iid_input<M: ThingModel<Schema = S>>(
         &mut self,
-        input: Input<String>,
+        input: Input<crate::Iid>,
     ) -> Thing<M, Subtypes> {
         let thing = self.subtypes::<M>();
         self.core.by_iid_input(thing.binding, input.column);

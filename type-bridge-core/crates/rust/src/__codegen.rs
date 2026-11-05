@@ -458,6 +458,12 @@ pub trait IntoEncodedScalar {
     fn into_encoded_scalar(&self) -> EncodedScalar;
 }
 
+impl IntoEncodedScalar for crate::Iid {
+    fn into_encoded_scalar(&self) -> EncodedScalar {
+        EncodedScalar::String(self.as_str().to_owned())
+    }
+}
+
 impl IntoEncodedScalar for String {
     fn into_encoded_scalar(&self) -> EncodedScalar {
         EncodedScalar::String(self.clone())
@@ -542,6 +548,9 @@ pub trait GroupedQueryValue: QueryValued + Sized + 'static {
     fn from_group_scalar(value: EncodedScalar) -> Result<Self, ValidationError>;
 }
 
+impl QueryValued for crate::Iid {
+    type Domain = String;
+}
 impl QueryValued for String {
     type Domain = String;
 }

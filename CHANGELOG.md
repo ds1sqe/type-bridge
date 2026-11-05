@@ -208,6 +208,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust query binding `iid`/`iid_in`, `PlanBuilder::by_iid`, and generated model
+  `by_iid` authoring take typed `Iid` values. Staged IID input columns and result
+  references use `Input<Iid>` instead of `Input<String>`; plan bytes and staged
+  execution are unchanged.
+
 - Rust manager `delete_many` and `delete_many_returning` now take `&[Iid]`,
   `delete_returning` takes `&Iid`, and `update_many` takes `Vec<(Iid, Create)>`,
   including transaction forms. `delete_many` permanently redirects to

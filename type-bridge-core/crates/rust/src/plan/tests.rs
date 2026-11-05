@@ -272,7 +272,7 @@ fn recording_uses_caller_query_limits() {
 #[test]
 fn iid_match_uses_the_shared_builder() {
     let mut plan = Plan::<PlanAnswer, Shop>::builder();
-    let item = plan.by_iid::<Item>("0x01");
+    let item = plan.by_iid::<Item>(&crate::Iid::new("0x01").unwrap());
     plan.returning([item]);
     let bytes = plan.build(&package()).unwrap().canonical_bytes().unwrap();
     let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -868,7 +868,7 @@ async fn authored_iid_stack_binds_inside_one_transaction_and_keeps_commit_visibi
     source.returning([item]);
     let source = source.build_staged(&package(), vec![], vec![]).unwrap();
     let mut target = Plan::<PlanAnswer, Shop>::builder();
-    let iid = target.input::<String>("target_iid");
+    let iid = target.input::<crate::Iid>("target_iid");
     let item = target.by_iid_input::<Item>(iid);
     target
         .update(item, ItemType::stock, 7_i64)
@@ -911,4 +911,38 @@ async fn authored_iid_stack_binds_inside_one_transaction_and_keeps_commit_visibi
             .any(|event| event.starts_with("query ") && event.contains("0x10"))
     );
     assert_eq!(events.iter().filter(|event| *event == "commit").count(), 1);
+}
+
+#[test]
+fn nominal_iid_authoring_preserves_literal_and_input_plan_bytes() {
+    for input in [false, true] {
+        let iid = crate::Iid::new("0xAb").unwrap();
+        let mut typed = Plan::<PlanAnswer, Shop>::builder();
+        let mut original = Plan::<PlanAnswer, Shop>::builder();
+        if input {
+            let column = typed.input::<crate::Iid>("iid");
+            let thing = typed.by_iid_input::<Item>(column);
+            typed.row([column.value(iid)]).returning([thing]);
+            let column = original.input::<String>("iid");
+            let thing = original.subtypes::<Item>();
+            original.core.by_iid_input(thing.binding, column.column);
+            original
+                .row([column.value("0xAb".into())])
+                .returning([thing]);
+        } else {
+            let thing = typed.by_iid::<Item>(&iid);
+            typed.returning([thing]);
+            let thing = original.subtypes::<Item>();
+            original.core.by_iid(thing.binding, "0xAb");
+            original.returning([thing]);
+        }
+        assert_eq!(
+            typed.build(&package()).unwrap().canonical_bytes().unwrap(),
+            original
+                .build(&package())
+                .unwrap()
+                .canonical_bytes()
+                .unwrap()
+        );
+    }
 }
