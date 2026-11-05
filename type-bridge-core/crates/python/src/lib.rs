@@ -19,6 +19,7 @@
 pub mod ast;
 #[cfg(not(feature = "perf-stages"))]
 mod debug;
+mod iid;
 pub mod match_runtime;
 mod migration_catalog_runtime;
 pub mod migration_runtime;
@@ -853,6 +854,7 @@ fn run_v2_cli(py: Python<'_>, arguments: Vec<String>) -> i32 {
 fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(not(feature = "perf-stages"))]
     debug::install();
+    m.add_class::<iid::PyIid>()?;
     m.add_class::<ValidationEngine>()?;
     m.add_class::<QueryCompiler>()?;
     m.add_class::<TypeSchema>()?;

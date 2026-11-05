@@ -1,6 +1,7 @@
 /** Generated-only package root for @type-bridge/node. */
 
 export {
+  Iid,
   setDebugListener,
   type DebugEvent,
   MigrationApprovalBuilder,

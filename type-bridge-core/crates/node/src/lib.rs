@@ -11,6 +11,8 @@
 mod contract_test_adapter;
 mod debug;
 pub use debug::set_debug_listener;
+mod iid;
+pub use iid::validate_iid;
 pub mod limits;
 mod match_runtime;
 mod migration_catalog_runtime;

@@ -6,6 +6,7 @@ const packageJson = require("../package.json");
 const typeBridge = require("../");
 
 const retainedFunctions = [
+  "Iid",
   "PlanAuthority",
   "PlanError",
   "Database",

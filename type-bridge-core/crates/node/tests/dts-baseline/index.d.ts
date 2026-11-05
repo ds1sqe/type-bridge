@@ -278,6 +278,15 @@ export interface NativeRuntime {
 }
 /** Package-private native contract used by retained runtime entry points. */
 export interface NativeModule extends NativeRuntime, NativePlanAuthorityRuntime {
+    validateIid(value: string): string;
+}
+/** A validated provider Thing IID; a plain string is not an Iid. */
+export declare class Iid {
+    #private;
+    constructor(value: string);
+    toString(): string;
+    toJSON(): string;
+    equals(other: unknown): boolean;
 }
 export interface DatabaseConnectOptions {
     username?: string | null;

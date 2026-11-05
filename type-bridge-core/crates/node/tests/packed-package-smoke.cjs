@@ -28,6 +28,7 @@ function verifyInstalledPackage(installedRoot) {
   );
   const typeBridge = requirePackage("@type-bridge/node");
   for (const name of [
+    "Iid",
     "PlanAuthority",
     "Database",
     "TransactionContext",

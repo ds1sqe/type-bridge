@@ -81,6 +81,7 @@ pub use session::{
 pub use transaction::{
     ReadTransaction, TransactionEntityManager, TransactionRelationManager, WriteTransaction,
 };
+pub use type_bridge_contract::id::Iid;
 pub use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 #[cfg(feature = "typedb")]
 pub use type_bridge_orm::DirectConnectionPolicy;

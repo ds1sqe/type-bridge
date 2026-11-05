@@ -131,6 +131,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Added
 
+- Python, Node, and Rust expose a nominal `Iid` value validated by the shared
+  engine. Construction rejects malformed provider identifiers before I/O and
+  preserves the exact accepted hexadecimal spelling.
+
 - V3 `DocumentScalar` fetch fields accept bound entities and relations and
   return their canonical IID. Optional thing bindings omit the field when
   absent, preserving source identity evidence across key-changing writes.

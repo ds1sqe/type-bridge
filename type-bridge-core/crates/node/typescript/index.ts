@@ -426,7 +426,25 @@ export interface NativeRuntime {
 /** Package-private native contract used by retained runtime entry points. */
 export interface NativeModule
   extends NativeRuntime,
-    NativePlanAuthorityRuntime {}
+    NativePlanAuthorityRuntime {
+  validateIid(value: string): string;
+}
+
+/** A validated provider Thing IID; a plain string is not an Iid. */
+export class Iid {
+  readonly #value: string;
+
+  constructor(value: string) {
+    this.#value = planNativeCall(() => loadNative().validateIid(value));
+    Object.freeze(this);
+  }
+
+  toString(): string { return this.#value; }
+  toJSON(): string { return this.#value; }
+  equals(other: unknown): boolean {
+    return other instanceof Iid && this.#value === other.#value;
+  }
+}
 
 export interface DatabaseConnectOptions {
   username?: string | null;
