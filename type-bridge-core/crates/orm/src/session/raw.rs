@@ -76,7 +76,7 @@ pub type RawExchangeFn =
     Arc<dyn Fn(Vec<u8>) -> BoxFuture<'static, Result<Vec<u8>, RawQueryError>> + Send + Sync>;
 
 enum Route {
-    Direct(Box<dyn TransactionOps>),
+    Direct(Option<Box<dyn TransactionOps>>),
     Proxy {
         exchange: RawExchangeFn,
         used: bool,
@@ -105,7 +105,7 @@ pub struct RawTransaction {
 impl RawTransaction {
     pub(super) fn direct(transaction: Box<dyn TransactionOps>, kind: TxType) -> Self {
         Self {
-            route: Route::Direct(transaction),
+            route: Route::Direct(Some(transaction)),
             kind,
             state: State::Open,
         }
@@ -150,7 +150,13 @@ impl RawTransaction {
         }
         self.require_open()?;
         match &mut self.route {
-            Route::Direct(transaction) => transaction.query_raw(query).await,
+            Route::Direct(transaction) => {
+                transaction
+                    .as_mut()
+                    .expect("open raw transaction retains its provider")
+                    .query_raw(query)
+                    .await
+            }
             Route::Proxy {
                 exchange,
                 used,
@@ -209,6 +215,9 @@ impl RawTransaction {
         self.require_open()?;
         match &mut self.route {
             Route::Direct(transaction) => {
+                let mut transaction = transaction
+                    .take()
+                    .expect("open raw transaction retains its provider");
                 // Cancellation after sending commit cannot prove an abort.
                 self.state = if self.kind == TxType::Read {
                     State::Failed
@@ -257,14 +266,16 @@ impl RawTransaction {
 
     /// Release this context without committing pending direct writes.
     pub async fn close(&mut self) -> Result<(), RawQueryError> {
-        let result = match &mut self.route {
-            Route::Direct(transaction) => transaction.close_raw().await,
-            Route::Proxy { .. } => Ok(()),
-        };
         if !matches!(self.state, State::Committed | State::Unknown) {
             self.state = State::Closed;
         }
-        result
+        match &mut self.route {
+            Route::Direct(transaction) => match transaction.take() {
+                Some(mut transaction) => transaction.close_raw().await,
+                None => Ok(()),
+            },
+            Route::Proxy { .. } => Ok(()),
+        }
     }
 
     fn require_open(&self) -> Result<(), RawQueryError> {
@@ -376,6 +387,12 @@ mod tests {
     struct Direct {
         events: Arc<Mutex<Vec<String>>>,
         unknown_commit: bool,
+        pending_close: bool,
+    }
+    impl Drop for Direct {
+        fn drop(&mut self) {
+            self.events.lock().unwrap().push("drop".into());
+        }
     }
     impl TransactionOps for Direct {
         fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
@@ -409,8 +426,37 @@ mod tests {
         }
         fn close_raw(&mut self) -> BoxFuture<'_, Result<(), RawQueryError>> {
             self.events.lock().unwrap().push("close".into());
-            Box::pin(async { Ok(()) })
+            Box::pin(async move {
+                if self.pending_close {
+                    std::future::pending::<()>().await;
+                }
+                Ok(())
+            })
         }
+    }
+
+    #[tokio::test]
+    async fn cancelled_close_releases_provider_and_leaves_context_closed() {
+        let events = Arc::new(Mutex::new(vec![]));
+        let mut transaction = RawTransaction::direct(
+            Box::new(Direct {
+                events: events.clone(),
+                unknown_commit: false,
+                pending_close: true,
+            }),
+            TxType::Write,
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), transaction.close())
+                .await
+                .is_err()
+        );
+        assert_eq!(events.lock().unwrap().as_slice(), ["close", "drop"]);
+        assert_eq!(
+            transaction.execute_query("again").await.unwrap_err().code,
+            "raw_transaction_closed"
+        );
+        transaction.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -421,6 +467,7 @@ mod tests {
                 Box::new(Direct {
                     events: events.clone(),
                     unknown_commit: false,
+                    pending_close: false,
                 }),
                 kind,
             );
@@ -434,7 +481,12 @@ mod tests {
             transaction.rollback().await.unwrap();
             assert_eq!(
                 events.lock().unwrap().as_slice(),
-                ["  insert $x isa raw;  ", "define entity raw;", "close"]
+                [
+                    "  insert $x isa raw;  ",
+                    "define entity raw;",
+                    "close",
+                    "drop"
+                ]
             );
             assert_eq!(
                 transaction.execute_query("again").await.unwrap_err().code,
@@ -451,13 +503,14 @@ mod tests {
                 Box::new(Direct {
                     events: events.clone(),
                     unknown_commit: true,
+                    pending_close: false,
                 }),
                 kind,
             );
             let result = transaction.commit().await;
             if kind == TxType::Read {
                 result.unwrap();
-                assert_eq!(events.lock().unwrap().as_slice(), ["close"]);
+                assert_eq!(events.lock().unwrap().as_slice(), ["close", "drop"]);
             } else {
                 let error = result.unwrap_err();
                 assert_eq!(error.code, "commit_outcome_unknown");
@@ -468,7 +521,7 @@ mod tests {
                     transaction.rollback().await.unwrap_err().code,
                     "commit_outcome_unknown"
                 );
-                assert_eq!(events.lock().unwrap().as_slice(), ["commit"]);
+                assert_eq!(events.lock().unwrap().as_slice(), ["commit", "drop"]);
             }
         }
     }
