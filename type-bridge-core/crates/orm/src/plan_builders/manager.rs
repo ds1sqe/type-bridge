@@ -37,6 +37,13 @@ pub(crate) struct ManagerPlans {
     authority: Option<Arc<PlanAuthority>>,
 }
 
+/// Explicit match source shared by reads and mutations.
+#[derive(Clone, Copy)]
+pub(crate) enum ManagerSelection<'a> {
+    Iid(&'a str),
+    Filter(&'a [DynamicExpr]),
+}
+
 pub(crate) fn invalid(code: &'static str, message: &'static str) -> OrmError {
     MatchError::new(MatchErrorCategory::InvalidPlan, code, message).into()
 }
@@ -401,6 +408,40 @@ impl ManagerPlans {
         })
     }
 
+    fn select(
+        &self,
+        draft: &mut PlanDraft,
+        root: BindingId,
+        type_id: &TypeId,
+        selection: ManagerSelection<'_>,
+        include_subtypes: bool,
+        patterns: &mut Vec<Pattern>,
+    ) -> Result<()> {
+        match selection {
+            ManagerSelection::Iid(iid) => patterns.push(Pattern::Iid {
+                binding: root,
+                iid: iid.into(),
+            }),
+            ManagerSelection::Filter(expressions) => {
+                for expression in expressions {
+                    if let DynamicExpr::Iid { iid } = expression {
+                        patterns.push(Pattern::Iid {
+                            binding: root,
+                            iid: iid.clone(),
+                        });
+                    } else {
+                        patterns.extend(
+                            self.expression(draft, root, type_id, expression, include_subtypes)?
+                                .into_iter()
+                                .map(Pattern::Read),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn read(
         &self,
@@ -421,20 +462,14 @@ impl ManagerPlans {
             type_id: type_id.clone(),
             include_subtypes: !exact,
         })];
-        for expression in expressions {
-            if let DynamicExpr::Iid { iid } = expression {
-                patterns.push(Pattern::Iid {
-                    binding: root,
-                    iid: iid.clone(),
-                });
-            } else {
-                patterns.extend(
-                    self.expression(&mut draft, root, &type_id, expression, !exact)?
-                        .into_iter()
-                        .map(Pattern::Read),
-                );
-            }
-        }
+        self.select(
+            &mut draft,
+            root,
+            &type_id,
+            ManagerSelection::Filter(expressions),
+            !exact,
+            &mut patterns,
+        )?;
         for (role, player) in
             self.player_bindings(&mut draft, &type_id, role_filters, !exact, &mut patterns)?
         {
@@ -1099,6 +1134,26 @@ impl ManagerPlans {
         exact: bool,
         returning: bool,
     ) -> Result<Option<BuiltPlan>> {
+        self.update_matching(
+            name,
+            iid.map(ManagerSelection::Iid),
+            attributes,
+            players,
+            exact,
+            returning,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn update_matching(
+        &self,
+        name: &str,
+        selection: Option<ManagerSelection<'_>>,
+        attributes: &DynamicAttributeMap,
+        players: &[DynamicRolePlayerInput],
+        exact: bool,
+        returning: bool,
+    ) -> Result<Option<BuiltPlan>> {
         let type_id = self.type_id(name)?;
         let mut draft = self.authority()?.draft(self.transport);
         let root = draft.bind("root").map_err(diagnostic)?;
@@ -1111,12 +1166,10 @@ impl ManagerPlans {
             }
             .into(),
         ];
-        if let Some(iid) = iid {
-            patterns.push(Pattern::Iid {
-                binding: root,
-                iid: iid.into(),
-            });
-        } else if type_id.kind() == TypeKind::Entity || players.is_empty() {
+        if let Some(selection) = selection {
+            self.select(&mut draft, root, &type_id, selection, !exact, &mut patterns)?;
+        }
+        if selection.is_none() && (type_id.kind() == TypeKind::Entity || players.is_empty()) {
             let mut keys = 0;
             for attribute in self
                 .attributes(&type_id)?
@@ -1203,7 +1256,7 @@ impl ManagerPlans {
                         role: role.clone(),
                         player: *binding,
                     });
-                } else if iid.is_none() {
+                } else if selection.is_none() {
                     patterns.push(
                         self.links(
                             root,
@@ -1228,7 +1281,7 @@ impl ManagerPlans {
             && attached.is_empty()
             && players.is_empty()
             && !returning
-            && (iid.is_none() || type_id.kind() != TypeKind::Relation)
+            && (selection.is_none() || type_id.kind() != TypeKind::Relation)
         {
             return Ok(None);
         }
@@ -1286,23 +1339,29 @@ impl ManagerPlans {
         exact: bool,
         returning: bool,
     ) -> Result<BuiltPlan> {
+        self.delete_matching(name, ManagerSelection::Iid(iid), exact, returning)
+    }
+
+    pub(crate) fn delete_matching(
+        &self,
+        name: &str,
+        selection: ManagerSelection<'_>,
+        exact: bool,
+        returning: bool,
+    ) -> Result<BuiltPlan> {
         let type_id = self.type_id(name)?;
         let mut draft = self.authority()?.draft(self.transport);
         let root = draft.bind("root").map_err(diagnostic)?;
-        let mut pipeline = vec![Stage::Match {
-            patterns: vec![
-                QueryPattern::Isa {
-                    binding: root,
-                    type_id: type_id.clone(),
-                    include_subtypes: !exact,
-                }
-                .into(),
-                Pattern::Iid {
-                    binding: root,
-                    iid: iid.into(),
-                },
-            ],
-        }];
+        let mut patterns = vec![
+            QueryPattern::Isa {
+                binding: root,
+                type_id: type_id.clone(),
+                include_subtypes: !exact,
+            }
+            .into(),
+        ];
+        self.select(&mut draft, root, &type_id, selection, !exact, &mut patterns)?;
+        let mut pipeline = vec![Stage::Match { patterns }];
         if returning {
             pipeline.push(Stage::Fetch(ThingDocument::new(
                 root,
@@ -1918,6 +1977,63 @@ mod tests {
         )
         .unwrap();
         let plans = ManagerPlans::new(installed.manager_registry().unwrap());
+        let expressions = [
+            DynamicExpr::Or {
+                exprs: vec![
+                    DynamicExpr::Iid { iid: "0x10".into() },
+                    DynamicExpr::Iid { iid: "0x20".into() },
+                ],
+            },
+            DynamicExpr::Compare {
+                attr_name: "note".into(),
+                operator: DynamicComparisonOp::Eq,
+                value: crate::AttributeValue::String("before".into()),
+            },
+        ];
+        for exact in [false, true] {
+            for name in ["person", "membership"] {
+                let selection = ManagerSelection::Filter(&expressions);
+                let update = plans
+                    .update_matching(
+                        name,
+                        Some(selection),
+                        &vec![("note".into(), crate::AttributeValue::String("after".into()))],
+                        &[],
+                        exact,
+                        false,
+                    )
+                    .unwrap()
+                    .unwrap();
+                let delete = plans
+                    .delete_matching(name, selection, exact, false)
+                    .unwrap();
+                for plan in [update, delete] {
+                    let Stage::Match { patterns } = &plan.local().pipeline()[0] else {
+                        panic!("match prefix")
+                    };
+                    assert!(
+                        matches!(&patterns[0], Pattern::Read(QueryPattern::Isa { include_subtypes, .. }) if *include_subtypes != exact)
+                    );
+                    assert!(
+                        matches!(&patterns[1], Pattern::Read(QueryPattern::Or { branches }) if branches.len() == 2)
+                    );
+                    assert!(
+                        patterns.iter().any(|pattern| matches!(
+                            pattern,
+                            Pattern::Read(QueryPattern::Has { .. })
+                        ))
+                    );
+                    assert!(
+                        !plan
+                            .local()
+                            .pipeline()
+                            .iter()
+                            .any(|stage| matches!(stage, Stage::Limit { .. })),
+                        "filtered mutations affect every match"
+                    );
+                }
+            }
+        }
         let mut digests = Vec::new();
         for name in ["person", "membership"] {
             for attributes in [
@@ -1928,6 +2044,41 @@ mod tests {
                     .update_with_output(name, Some("0x10"), &attributes, &[], true, false)
                     .unwrap()
                     .unwrap();
+                let expressions = [DynamicExpr::Iid { iid: "0x10".into() }];
+                for returning in [false, true] {
+                    let filtered = plans
+                        .update_matching(
+                            name,
+                            Some(ManagerSelection::Filter(&expressions)),
+                            &attributes,
+                            &[],
+                            true,
+                            returning,
+                        )
+                        .unwrap()
+                        .unwrap();
+                    let original = plans
+                        .update_with_output(name, Some("0x10"), &attributes, &[], true, returning)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        filtered.local().canonical_bytes().unwrap(),
+                        original.local().canonical_bytes().unwrap()
+                    );
+                    let filtered = plans
+                        .delete_matching(
+                            name,
+                            ManagerSelection::Filter(&expressions),
+                            true,
+                            returning,
+                        )
+                        .unwrap();
+                    let original = plans.delete(name, "0x10", true, returning).unwrap();
+                    assert_eq!(
+                        filtered.local().canonical_bytes().unwrap(),
+                        original.local().canonical_bytes().unwrap()
+                    );
+                }
                 let stages = plan.local().pipeline();
                 let returning = plans
                     .update_with_output(name, Some("0x10"), &attributes, &[], true, true)
