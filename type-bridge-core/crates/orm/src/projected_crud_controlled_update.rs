@@ -15,14 +15,14 @@ pub enum WriteTarget<'a> {
     Transaction(&'a TransactionContext),
 }
 
-enum WriteModel {
+pub(crate) enum WriteModel {
     Entity(PreparedEntityCreate),
     Relation(PreparedRelationCreate),
 }
 
-struct SingleWrite {
+pub(crate) struct SingleWrite {
     model: WriteModel,
-    plan: BuiltPlan,
+    pub(crate) plan: BuiltPlan,
 }
 
 impl ProjectedCrudExecutor<'_> {
@@ -117,7 +117,7 @@ impl ProjectedCrudExecutor<'_> {
             .row_at(0)
             .expect("one checked single write row")])?;
         let identity = proxy.execution_identity();
-        let model = self.prepare_controlled_model(batch, replacement, identity)?;
+        let model = self.prepare_write_model(batch.model(), replacement, identity)?;
         let query_limits = proxy
             .manager_write_query_limits(prepared.deadline(), prepared.cancellation())
             .await?;
@@ -418,25 +418,65 @@ impl ProjectedCrudExecutor<'_> {
             .installed
             .plan_authority_with_query_limits(query_limits)
             .map_err(|error| plan_build_failure(&error, batch.model()))?;
-        let model = self.prepare_controlled_model(batch, replacement, identity)?;
+        let model = self.prepare_write_model(batch.model(), replacement, identity)?;
         self.compile_controlled_write(batch, replacement, model, &authority)
     }
 
-    fn prepare_controlled_model(
+    pub(crate) fn prepare_write_model(
         &self,
-        batch: &ProjectedBatch,
+        model: &TypeId,
         replacement: &ProjectedCreate,
         identity: &DatabaseExecutionIdentity,
     ) -> Result<WriteModel, SdkExecutionDiagnostic> {
-        match batch.model().kind() {
+        match model.kind() {
             TypeKind::Entity => Ok(WriteModel::Entity(self.prepare_entity_create(replacement)?)),
             TypeKind::Relation => {
                 let prepared = self.prepare_relation_create(replacement)?;
                 require_role_player_database_identity(&prepared, identity)?;
                 Ok(WriteModel::Relation(prepared))
             }
-            _ => Err(single_batch_result_invalid(batch.model())),
+            _ => Err(single_batch_result_invalid(model)),
         }
+    }
+
+    pub(crate) fn prepare_filtered_update(
+        &self,
+        filter: &crate::ProjectedManagerFilter,
+        model: WriteModel,
+        authority: &PlanAuthority,
+    ) -> Result<SingleWrite, SdkExecutionDiagnostic> {
+        let (write, players, roles) = match &model {
+            WriteModel::Entity(prepared) => (&prepared.plan_write, Vec::new(), Vec::new()),
+            WriteModel::Relation(prepared) => (
+                &prepared.plan_write,
+                plan_references(prepared)?,
+                self.document_roles(prepared)?,
+            ),
+        };
+        let plan = update(
+            authority,
+            ValueTransport::Given,
+            ThingUpdate {
+                type_id: filter.model(),
+                selection: UpdateSelection::Filter(filter),
+                cleared_fields: &write.cleared_fields,
+                fields: &write.fields,
+                cleared_roles: &write.cleared_roles,
+                players: &players,
+                document_roles: roles,
+            },
+        )
+        .map_err(|error| plan_build_failure(&error, filter.model()))?;
+        Ok(SingleWrite { model, plan })
+    }
+
+    pub(crate) fn hydrate_filtered_update(
+        &self,
+        single: &SingleWrite,
+        identity: &DatabaseExecutionIdentity,
+        documents: &[serde_json::Value],
+    ) -> Result<WriteResult<ProjectedThing>, SdkExecutionDiagnostic> {
+        self.hydrate_write_documents(identity, single, documents, ExecutionMode::default())
     }
 
     fn compile_controlled_write(
@@ -462,12 +502,12 @@ impl ProjectedCrudExecutor<'_> {
             None
         };
         let plan = if let Some((_, ProjectedBatchRow::Update { iid, .. })) = batch.row_at(0) {
-            update_by_iid(
+            update(
                 authority,
                 ValueTransport::Given,
                 ThingUpdate {
                     type_id: batch.model(),
-                    iid,
+                    selection: UpdateSelection::Iid(iid),
                     cleared_fields: &write.cleared_fields,
                     fields: &write.fields,
                     cleared_roles: &write.cleared_roles,
@@ -531,10 +571,9 @@ impl ProjectedCrudExecutor<'_> {
         Ok(Some(SingleWrite { model, plan }))
     }
 
-    fn hydrate_controlled_documents(
+    fn hydrate_write_documents(
         &self,
         identity: &DatabaseExecutionIdentity,
-        batch: &ProjectedBatch,
         single: &SingleWrite,
         documents: &[serde_json::Value],
         mode: ExecutionMode<'_>,
@@ -555,6 +594,18 @@ impl ProjectedCrudExecutor<'_> {
                 mode,
             )?,
         };
+        Ok(thing)
+    }
+
+    fn hydrate_controlled_documents(
+        &self,
+        identity: &DatabaseExecutionIdentity,
+        batch: &ProjectedBatch,
+        single: &SingleWrite,
+        documents: &[serde_json::Value],
+        mode: ExecutionMode<'_>,
+    ) -> Result<WriteResult<ProjectedThing>, SdkExecutionDiagnostic> {
+        let thing = self.hydrate_write_documents(identity, single, documents, mode)?;
         if let Some((_, ProjectedBatchRow::Update { iid, .. })) = batch.row_at(0) {
             for item in thing.items() {
                 require_update_iid(item.iid(), iid, batch.model())?;
@@ -1892,6 +1943,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn field_filter_update_hydrates_every_match_in_one_staged_write() {
+        use crate::{
+            ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
+            ProjectedManagerFilterInvocationControl,
+        };
+        use type_bridge_contract::projection::ProjectedTokenIdentity;
+        for (kind, label) in [
+            (TypeKind::Entity, "wide-item"),
+            (TypeKind::Relation, "wide-edge"),
+        ] {
+            for roots in [0, 1, 3] {
+                let model = TypeId::new(kind, label).unwrap();
+                let (installed, proxy, transport) = single_proxy_fixture(model.clone(), roots, 2);
+                let replacement = proxy_single_input(&installed, &model, 2);
+                let field =
+                    OwnsFactId::new(model.clone(), AttributeId::new("item-tag").unwrap()).unwrap();
+                let token = ProjectedTokenIdentity::Field {
+                    owner: model.clone(),
+                    field,
+                };
+                let value = ProjectedAttributeValue::try_new(
+                    &installed,
+                    TypeId::new(TypeKind::Attribute, "item-tag").unwrap(),
+                    CanonicalValue::String(CanonicalString::new("before").unwrap()),
+                )
+                .unwrap();
+                let filter = ProjectedManagerFilter::try_new(&installed, model)
+                    .unwrap()
+                    .try_and(&installed, &token, ProjectedManagerComparison::Eq, &value)
+                    .unwrap();
+                let result = ProjectedManagerFilterExecutor::new(&installed)
+                    .update_on_target(
+                        crate::QueryTarget::Proxy(&proxy),
+                        &filter,
+                        &replacement,
+                        ProjectedManagerFilterInvocationControl::capture(
+                            Default::default(),
+                            Default::default(),
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(result.count(), roots);
+                let seen = transport.seen.lock().unwrap();
+                assert_eq!(seen.len(), 1);
+                assert_eq!(seen[0].plans().len(), 1);
+                assert_eq!(
+                    transport
+                        .dispatched_writes
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    1
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn field_filter_delete_uses_one_staged_write_for_every_match() {
         use crate::{
             ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
@@ -2581,12 +2689,12 @@ mod tests {
                 .expect("ordinary input stays one plan");
             let write = executor.lower_plan_write(&input).unwrap();
             let authority = installed.plan_authority().unwrap();
-            let expected = update_by_iid(
+            let expected = update(
                 &authority,
                 ValueTransport::Given,
                 ThingUpdate {
                     type_id: &model,
-                    iid: "0x10",
+                    selection: UpdateSelection::Iid("0x10"),
                     cleared_fields: &write.cleared_fields,
                     fields: &write.fields,
                     cleared_roles: &write.cleared_roles,
@@ -2603,6 +2711,30 @@ mod tests {
                 },
             )
             .unwrap();
+            let iid_filter = crate::ProjectedManagerFilter::try_new(&installed, model.clone())
+                .unwrap()
+                .try_and_iids(
+                    &installed,
+                    &[type_bridge_contract::id::Iid::new("0x10").unwrap()],
+                )
+                .unwrap();
+            let filtered = executor
+                .prepare_filtered_update(
+                    &iid_filter,
+                    executor
+                        .prepare_write_model(
+                            &model,
+                            &input,
+                            &DatabaseExecutionIdentity::isolated("single-update"),
+                        )
+                        .unwrap(),
+                    &authority,
+                )
+                .unwrap();
+            assert_eq!(
+                filtered.plan.local().canonical_bytes().unwrap(),
+                actual.plan.local().canonical_bytes().unwrap()
+            );
             let bytes = actual.plan.local().canonical_bytes().unwrap();
             assert_eq!(bytes, expected.local().canonical_bytes().unwrap());
             assert_eq!(

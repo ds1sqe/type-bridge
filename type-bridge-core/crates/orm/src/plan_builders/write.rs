@@ -58,12 +58,17 @@ pub(crate) fn entity_insert(
     )
 }
 
-/// One update of the thing of exactly `type_id` at `iid`: every listed
+pub(crate) enum UpdateSelection<'a> {
+    Iid(&'a str),
+    Filter(&'a crate::ProjectedManagerFilter),
+}
+
+/// Replace every selected thing of exactly `type_id`: every listed
 /// ownership and role is cleared, then the given values and players are
 /// attached. This is the helpers' complete replacement.
 pub(crate) struct ThingUpdate<'a> {
     pub(crate) type_id: &'a TypeId,
-    pub(crate) iid: &'a str,
+    pub(crate) selection: UpdateSelection<'a>,
     pub(crate) cleared_fields: &'a [OwnsFactId],
     pub(crate) fields: &'a [(OwnsFactId, CanonicalValue)],
     pub(crate) cleared_roles: &'a [RoleId],
@@ -73,7 +78,7 @@ pub(crate) struct ThingUpdate<'a> {
 
 /// Build the update. Zero documents mean the thing (or a reference) did not
 /// match, and nothing was written.
-pub(crate) fn update_by_iid(
+pub(crate) fn update(
     authority: &PlanAuthority,
     transport: ValueTransport,
     update: ThingUpdate<'_>,
@@ -98,10 +103,15 @@ pub(crate) fn update_by_iid(
             player,
         });
     }
-    patterns.push(Pattern::Iid {
-        binding: thing,
-        iid: update.iid.to_owned(),
-    });
+    match update.selection {
+        UpdateSelection::Iid(iid) => patterns.push(Pattern::Iid {
+            binding: thing,
+            iid: iid.to_owned(),
+        }),
+        UpdateSelection::Filter(filter) => {
+            filter.append_write_predicates(&mut draft, thing, &mut patterns)?
+        }
+    }
     let mut attached = update
         .fields
         .iter()

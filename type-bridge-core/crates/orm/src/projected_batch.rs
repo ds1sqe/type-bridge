@@ -806,6 +806,20 @@ impl ProjectedBatchInvocationControl {
         }
     }
 
+    pub(crate) fn from_parts(
+        limits: QueryExecutionResourceLimits,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Self {
+        Self {
+            limits,
+            deadline,
+            cancellation,
+            #[cfg(test)]
+            reference_checks_until_cancel: AtomicUsize::new(usize::MAX),
+        }
+    }
+
     /// Return the absolute deadline captured at terminal entry.
     #[must_use]
     pub const fn deadline(&self) -> QueryExecutionDeadline {
@@ -949,6 +963,90 @@ impl<'batch> PreparedProjectedBatchInvocation<'batch> {
     }
 }
 
+fn charge_create(
+    model: &ModelProjection,
+    measure: &mut ProjectedBatchResourceMeasure,
+    create: &ProjectedCreate,
+    ordinal: usize,
+    control: Option<&ProjectedBatchInvocationControl>,
+) -> Result<(), SdkExecutionDiagnostic> {
+    measure.bytes = add(
+        measure.bytes,
+        usize_u64(create.resource_measure().bytes(), "bytes", ordinal)?,
+        "bytes",
+        ordinal,
+    )?;
+    for field in model.create().fields() {
+        if let Some(control) = control {
+            control.check()?;
+        }
+        let values = &create.fields()[field.token()];
+        let count = usize_u64(values.len(), "attribute_values", ordinal)?;
+        measure.attribute_values =
+            add(measure.attribute_values, count, "attribute_values", ordinal)?;
+        measure.collection_members = add(
+            measure.collection_members,
+            count,
+            "collection_members",
+            ordinal,
+        )?;
+    }
+    for role_id in model.create().roles().keys() {
+        if let Some(control) = control {
+            control.check()?;
+        }
+        let references = &create.roles()[role_id];
+        let count = usize_u64(references.len(), "role_players", ordinal)?;
+        measure.graph_nodes = add(measure.graph_nodes, count, "graph_nodes", ordinal)?;
+        measure.role_players = add(measure.role_players, count, "role_players", ordinal)?;
+        measure.collection_members = add(
+            measure.collection_members,
+            count,
+            "collection_members",
+            ordinal,
+        )?;
+        for reference in references {
+            if let Some(control) = control {
+                control.check_reference()?;
+            }
+            let key_count = usize_u64(reference.keys().len(), "attribute_values", ordinal)?;
+            measure.attribute_values = add(
+                measure.attribute_values,
+                key_count,
+                "attribute_values",
+                ordinal,
+            )?;
+            measure.collection_members = add(
+                measure.collection_members,
+                key_count,
+                "collection_members",
+                ordinal,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_filtered_replacement(
+    installed: &InstalledRuntimeProjection,
+    model: &TypeId,
+    create: &ProjectedCreate,
+    control: &ProjectedBatchInvocationControl,
+) -> Result<(), SdkExecutionDiagnostic> {
+    control.check()?;
+    let projected = require_batch_model(installed, model, ProjectedBatchOperation::Update, true)?;
+    validate_create_input(installed, model, ProjectedBatchOperation::Update, 0, create)?;
+    let mut measure = ProjectedBatchResourceMeasure {
+        items: 1,
+        graph_nodes: 1,
+        statements: 1,
+        ..Default::default()
+    };
+    charge_create(projected, &mut measure, create, 0, Some(control))?;
+    validate_limits(measure, control.limits)?;
+    control.check()
+}
+
 fn require_batch_model<'a>(
     installed: &'a InstalledRuntimeProjection,
     type_id: &TypeId,
@@ -1028,32 +1126,7 @@ fn validate_row(
         ));
     }
     if let Some(create) = row_create(row) {
-        create
-            .validate_for(installed)
-            .map_err(|error| prefix_row(error, ordinal))?;
-        if create.type_id() != model {
-            return Err(invalid(
-                "batch_row_model_mismatch",
-                "The batch row belongs to a different exact model",
-                {
-                    let mut path = row_path(ordinal);
-                    path.push(SdkDiagnosticPathSegment::Type(create.type_id().clone()));
-                    path
-                },
-            ));
-        }
-        if model.kind() == TypeKind::Relation
-            && !matches!(operation, ProjectedBatchOperation::Delete)
-            && create.roles().values().all(Vec::is_empty)
-        {
-            let mut path = row_path(ordinal);
-            path.push(SdkDiagnosticPathSegment::Type(model.clone()));
-            return Err(invalid(
-                "relation_requires_role_player",
-                "Projected relation writes require at least one final role player",
-                path,
-            ));
-        }
+        validate_create_input(installed, model, operation, ordinal, create)?;
     }
     if let Some(iid) = row_iid(row)
         && !is_canonical_thing_iid(iid)
@@ -1062,6 +1135,42 @@ fn validate_row(
             "noncanonical_iid",
             "The batch target IID is not canonical TypeDB identity text",
             iid_path(ordinal),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_create_input(
+    installed: &InstalledRuntimeProjection,
+    model: &TypeId,
+    operation: ProjectedBatchOperation,
+    ordinal: usize,
+    create: &ProjectedCreate,
+) -> Result<(), SdkExecutionDiagnostic> {
+    create
+        .validate_for(installed)
+        .map_err(|error| prefix_row(error, ordinal))?;
+    if create.type_id() != model {
+        return Err(invalid(
+            "batch_row_model_mismatch",
+            "The batch row belongs to a different exact model",
+            {
+                let mut path = row_path(ordinal);
+                path.push(SdkDiagnosticPathSegment::Type(create.type_id().clone()));
+                path
+            },
+        ));
+    }
+    if model.kind() == TypeKind::Relation
+        && !matches!(operation, ProjectedBatchOperation::Delete)
+        && create.roles().values().all(Vec::is_empty)
+    {
+        let mut path = row_path(ordinal);
+        path.push(SdkDiagnosticPathSegment::Type(model.clone()));
+        return Err(invalid(
+            "relation_requires_role_player",
+            "Projected relation writes require at least one final role player",
+            path,
         ));
     }
     Ok(())
@@ -1076,60 +1185,7 @@ fn charge_row(
 ) -> Result<(), SdkExecutionDiagnostic> {
     measure.graph_nodes = add(measure.graph_nodes, 1, "graph_nodes", ordinal)?;
     if let Some(create) = row_create(row) {
-        measure.bytes = add(
-            measure.bytes,
-            usize_u64(create.resource_measure().bytes(), "bytes", ordinal)?,
-            "bytes",
-            ordinal,
-        )?;
-        for field in model.create().fields() {
-            if let Some(control) = control {
-                control.check()?;
-            }
-            let values = &create.fields()[field.token()];
-            let count = usize_u64(values.len(), "attribute_values", ordinal)?;
-            measure.attribute_values =
-                add(measure.attribute_values, count, "attribute_values", ordinal)?;
-            measure.collection_members = add(
-                measure.collection_members,
-                count,
-                "collection_members",
-                ordinal,
-            )?;
-        }
-        for role_id in model.create().roles().keys() {
-            if let Some(control) = control {
-                control.check()?;
-            }
-            let references = &create.roles()[role_id];
-            let count = usize_u64(references.len(), "role_players", ordinal)?;
-            measure.graph_nodes = add(measure.graph_nodes, count, "graph_nodes", ordinal)?;
-            measure.role_players = add(measure.role_players, count, "role_players", ordinal)?;
-            measure.collection_members = add(
-                measure.collection_members,
-                count,
-                "collection_members",
-                ordinal,
-            )?;
-            for reference in references {
-                if let Some(control) = control {
-                    control.check_reference()?;
-                }
-                let key_count = usize_u64(reference.keys().len(), "attribute_values", ordinal)?;
-                measure.attribute_values = add(
-                    measure.attribute_values,
-                    key_count,
-                    "attribute_values",
-                    ordinal,
-                )?;
-                measure.collection_members = add(
-                    measure.collection_members,
-                    key_count,
-                    "collection_members",
-                    ordinal,
-                )?;
-            }
-        }
+        charge_create(model, measure, create, ordinal, control)?;
     }
     if let Some(iid) = row_iid(row) {
         measure.bytes = add(

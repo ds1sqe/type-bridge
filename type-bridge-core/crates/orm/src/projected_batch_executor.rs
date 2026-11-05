@@ -2597,9 +2597,39 @@ pub(crate) fn validate_provider_write_inputs(
         let Some(create) = row_create(row) else {
             continue;
         };
-        create.validate_native_write()?;
-        for (field, values) in create.fields() {
-            for value in values {
+        validate_provider_create_input(create, *ordinal)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_provider_create_input(
+    create: &ProjectedCreate,
+    ordinal: usize,
+) -> std::result::Result<(), SdkExecutionDiagnostic> {
+    create.validate_native_write()?;
+    for (field, values) in create.fields() {
+        for value in values {
+            if let Err(error) = type_bridge_schema::validate_provider_temporal_value(value.value())
+            {
+                return Err(append_path(
+                    SdkExecutionDiagnostic::invalid_input(
+                        code(error.code().as_str()),
+                        message(
+                            "Projected temporal scalar is outside the exact provider transport domain",
+                        ),
+                    ),
+                    [
+                        SdkDiagnosticPathSegment::Argument(name("rows")),
+                        SdkDiagnosticPathSegment::Index(u64::try_from(ordinal).unwrap_or(u64::MAX)),
+                        SdkDiagnosticPathSegment::Field(field.clone()),
+                    ],
+                ));
+            }
+        }
+    }
+    for (role, references) in create.roles() {
+        for (reference_index, reference) in references.iter().enumerate() {
+            for (field, value) in reference.keys() {
                 if let Err(error) =
                     type_bridge_schema::validate_provider_temporal_value(value.value())
                 {
@@ -2613,41 +2643,16 @@ pub(crate) fn validate_provider_write_inputs(
                         [
                             SdkDiagnosticPathSegment::Argument(name("rows")),
                             SdkDiagnosticPathSegment::Index(
-                                u64::try_from(*ordinal).unwrap_or(u64::MAX),
+                                u64::try_from(ordinal).unwrap_or(u64::MAX),
                             ),
+                            SdkDiagnosticPathSegment::Role(role.clone()),
+                            SdkDiagnosticPathSegment::Index(
+                                u64::try_from(reference_index).unwrap_or(u64::MAX),
+                            ),
+                            SdkDiagnosticPathSegment::Type(reference.type_id().clone()),
                             SdkDiagnosticPathSegment::Field(field.clone()),
                         ],
                     ));
-                }
-            }
-        }
-        for (role, references) in create.roles() {
-            for (reference_index, reference) in references.iter().enumerate() {
-                for (field, value) in reference.keys() {
-                    if let Err(error) =
-                        type_bridge_schema::validate_provider_temporal_value(value.value())
-                    {
-                        return Err(append_path(
-                            SdkExecutionDiagnostic::invalid_input(
-                                code(error.code().as_str()),
-                                message(
-                                    "Projected temporal scalar is outside the exact provider transport domain",
-                                ),
-                            ),
-                            [
-                                SdkDiagnosticPathSegment::Argument(name("rows")),
-                                SdkDiagnosticPathSegment::Index(
-                                    u64::try_from(*ordinal).unwrap_or(u64::MAX),
-                                ),
-                                SdkDiagnosticPathSegment::Role(role.clone()),
-                                SdkDiagnosticPathSegment::Index(
-                                    u64::try_from(reference_index).unwrap_or(u64::MAX),
-                                ),
-                                SdkDiagnosticPathSegment::Type(reference.type_id().clone()),
-                                SdkDiagnosticPathSegment::Field(field.clone()),
-                            ],
-                        ));
-                    }
                 }
             }
         }

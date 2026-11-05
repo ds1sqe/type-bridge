@@ -10,6 +10,61 @@ use crate::session::staged::bounded;
 use crate::{QueryTarget, QueryTargetError, TxType};
 
 impl ProjectedManagerFilter {
+    pub(crate) fn append_write_predicates(
+        &self,
+        draft: &mut crate::plan_builders::PlanDraft,
+        root: type_bridge_contract::migration_assertion::BindingId,
+        patterns: &mut Vec<type_bridge_contract::query_plan::v3::Pattern>,
+    ) -> Result<(), type_bridge_contract::diagnostic::Diagnostic> {
+        use type_bridge_contract::migration_assertion::ValueComparator;
+        use type_bridge_contract::query_plan::v3::Pattern;
+        use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
+        for predicate in self.predicates.iter() {
+            match predicate {
+                ProjectedManagerPredicate::Iids(iids) => {
+                    if let [iid] = iids.as_ref() {
+                        patterns.push(Pattern::Iid {
+                            binding: root,
+                            iid: iid.as_str().to_owned(),
+                        });
+                    } else {
+                        patterns.push(QueryPattern::Or { branches: iids.iter().map(|iid| Ok(vec![QueryPattern::Iid {
+                            binding: root,
+                            iid: QueryOperand::Literal { value: CanonicalValue::String(type_bridge_contract::value::CanonicalString::new(iid.as_str())?) },
+                        }])).collect::<Result<_, type_bridge_contract::diagnostic::Diagnostic>>()? }.into());
+                    }
+                }
+                ProjectedManagerPredicate::Field(field) => {
+                    let attribute = draft.bind("field")?;
+                    patterns.push(
+                        QueryPattern::Has {
+                            owner: root,
+                            attribute,
+                            attribute_id: field.field.attribute().clone(),
+                        }
+                        .into(),
+                    );
+                    patterns.push(
+                        QueryPattern::Value {
+                            comparator: match field.comparison {
+                                ProjectedManagerComparison::Eq => ValueComparator::Equal,
+                                ProjectedManagerComparison::Ne => ValueComparator::NotEqual,
+                                ProjectedManagerComparison::Lt => ValueComparator::Less,
+                                ProjectedManagerComparison::Lte => ValueComparator::LessOrEqual,
+                                ProjectedManagerComparison::Gt => ValueComparator::Greater,
+                                ProjectedManagerComparison::Gte => ValueComparator::GreaterOrEqual,
+                            },
+                            left: QueryOperand::Binding { binding: attribute },
+                            right: draft.value(field.value.value().clone())?,
+                        }
+                        .into(),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn mutation_expressions(&self) -> Vec<DynamicExpr> {
         self.predicates
             .iter()
@@ -67,10 +122,113 @@ impl ProjectedManagerFilterExecutor<'_> {
             true,
             false,
         )?;
-        self.execute_mutation(target, filter, &plan, &control, |answer| match answer {
-            PlanAnswer::Matched(_) => Ok(()),
-            _ => Err(SdkExecutionDiagnostic::internal_failure()),
-        })
+        self.execute_mutation(
+            target,
+            filter,
+            &plan,
+            &control,
+            filter.resource_measure().bytes() as u64,
+            |answer, _ledger| match answer {
+                PlanAnswer::Matched(_) => Ok(()),
+                _ => Err(SdkExecutionDiagnostic::internal_failure()),
+            },
+        )
+        .await
+    }
+
+    /// Replace every exact model matched by this filter and return its new snapshot.
+    /// Direct targets hydrate before commit or releasing the borrowed mutation lease.
+    #[doc(hidden)]
+    pub async fn update_on_target(
+        &self,
+        target: QueryTarget<'_>,
+        filter: &ProjectedManagerFilter,
+        replacement: &crate::ProjectedCreate,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<crate::WriteResult<crate::ProjectedThing>, QueryTargetError> {
+        self.update_on_target_mapped(target, filter, replacement, control, Ok)
+            .await
+    }
+
+    /// Materialize binding results before direct commit or releasing the write lease.
+    /// A mapper failure after proxy commit retains the remote commit outcome.
+    #[doc(hidden)]
+    pub async fn update_on_target_mapped<T, F>(
+        &self,
+        target: QueryTarget<'_>,
+        filter: &ProjectedManagerFilter,
+        replacement: &crate::ProjectedCreate,
+        control: ProjectedManagerFilterInvocationControl,
+        mapper: F,
+    ) -> Result<T, QueryTargetError>
+    where
+        F: FnOnce(crate::WriteResult<crate::ProjectedThing>) -> Result<T, SdkExecutionDiagnostic>,
+    {
+        let control = control.constrained_by(target.answer_limits());
+        self.preflight(filter, &control, false)?;
+        let input_control = crate::ProjectedBatchInvocationControl::from_parts(
+            control.limits,
+            control.deadline,
+            control.cancellation.clone(),
+        );
+        crate::projected_batch::validate_filtered_replacement(
+            self.installed,
+            filter.model(),
+            replacement,
+            &input_control,
+        )?;
+        let input_bytes = (filter.resource_measure().bytes() as u64)
+            .saturating_add(replacement.resource_measure().bytes() as u64);
+        let mut ledger = ExecutionLedger::new(control.limits, input_bytes);
+        ledger.charge_preflight(0, 1)?;
+        let identity = match target {
+            QueryTarget::Database(database) => database.execution_identity(),
+            QueryTarget::Transaction(transaction) => transaction.execution_identity().clone(),
+            QueryTarget::Proxy(proxy) => proxy.execution_identity().clone(),
+        };
+        crate::projected_batch_executor::validate_provider_create_input(replacement, 0)?;
+        let executor = crate::ProjectedCrudExecutor::new(self.installed);
+        let model = executor.prepare_write_model(filter.model(), replacement, &identity)?;
+        let query_limits = target
+            .manager_query_limits(control.deadline, &control.cancellation)
+            .await?;
+        let authority = self
+            .installed
+            .plan_authority_with_query_limits(query_limits.as_ref())
+            .map_err(crate::plan_builders::manager::diagnostic)?;
+        let prepared = executor.prepare_filtered_update(filter, model, &authority)?;
+        self.execute_mutation(
+            target,
+            filter,
+            &prepared.plan,
+            &control,
+            input_bytes,
+            |answer, ledger| {
+                let PlanAnswer::Documents(documents) = answer else {
+                    return Err(SdkExecutionDiagnostic::internal_failure());
+                };
+                let result = executor.hydrate_filtered_update(&prepared, &identity, &documents)?;
+                for predicate in filter.predicates.iter() {
+                    if let ProjectedManagerPredicate::Iids(iids) = predicate {
+                        for item in result.items() {
+                            if !iids
+                                .iter()
+                                .any(|iid| item.iid().eq_ignore_ascii_case(iid.as_str()))
+                            {
+                                return Err(crate::projected_batch_executor::integrity_at_row(
+                                    "projected_batch_update_identity_changed",
+                                    "A projected update returned a different exact target IID",
+                                    filter.model(),
+                                    0,
+                                ));
+                            }
+                        }
+                    }
+                }
+                ledger.charge_projected(result.items())?;
+                mapper(result)
+            },
+        )
         .await
     }
 
@@ -80,14 +238,17 @@ impl ProjectedManagerFilterExecutor<'_> {
         filter: &ProjectedManagerFilter,
         plan: &crate::plan_builders::BuiltPlan,
         control: &ProjectedManagerFilterInvocationControl,
+        input_bytes: u64,
         mapper: F,
     ) -> Result<T, QueryTargetError>
     where
-        F: FnOnce(PlanAnswer) -> Result<T, SdkExecutionDiagnostic>,
+        F: FnOnce(PlanAnswer, &mut ExecutionLedger) -> Result<T, SdkExecutionDiagnostic>,
     {
         control.checkpoint(filter.model())?;
         match target {
             QueryTarget::Proxy(proxy) => {
+                let mut ledger = ExecutionLedger::new(control.limits, input_bytes);
+                ledger.charge_preflight(0, 1)?;
                 let authority = self
                     .installed
                     .plan_authority()
@@ -109,7 +270,10 @@ impl ProjectedManagerFilterExecutor<'_> {
                             if answers.len() != 1 {
                                 return Err(SdkExecutionDiagnostic::internal_failure());
                             }
-                            mapper(answers.pop().expect("one checked mutation answer"))
+                            mapper(
+                                answers.pop().expect("one checked mutation answer"),
+                                &mut ledger,
+                            )
                         },
                     )
                     .await
@@ -123,7 +287,9 @@ impl ProjectedManagerFilterExecutor<'_> {
                 )?;
                 let transaction =
                     bounded(&limits.answer, database.transaction_context(TxType::Write)).await?;
-                let result = Self::run_mutation(&transaction, filter, plan, control, mapper).await;
+                let result =
+                    Self::run_mutation(&transaction, filter, plan, control, input_bytes, mapper)
+                        .await;
                 match result {
                     Ok(value) => {
                         transaction.commit_sdk().await?;
@@ -136,7 +302,7 @@ impl ProjectedManagerFilterExecutor<'_> {
                 }
             }
             QueryTarget::Transaction(transaction) => {
-                Self::run_mutation(transaction, filter, plan, control, mapper).await
+                Self::run_mutation(transaction, filter, plan, control, input_bytes, mapper).await
             }
         }
     }
@@ -146,10 +312,11 @@ impl ProjectedManagerFilterExecutor<'_> {
         filter: &ProjectedManagerFilter,
         plan: &crate::plan_builders::BuiltPlan,
         control: &ProjectedManagerFilterInvocationControl,
+        input_bytes: u64,
         mapper: F,
     ) -> Result<T, QueryTargetError>
     where
-        F: FnOnce(PlanAnswer) -> Result<T, SdkExecutionDiagnostic>,
+        F: FnOnce(PlanAnswer, &mut ExecutionLedger) -> Result<T, SdkExecutionDiagnostic>,
     {
         if transaction.tx_type() != TxType::Write {
             return Err(invalid_input(
@@ -166,8 +333,7 @@ impl ProjectedManagerFilterExecutor<'_> {
         )?;
         let mut lease = bounded(&limits.answer, transaction.acquire_mutation_lease()).await?;
         let query = lease.prepare_plan(plan.local())?;
-        let mut ledger =
-            ExecutionLedger::new(control.limits, filter.resource_measure().bytes() as u64);
+        let mut ledger = ExecutionLedger::new(control.limits, input_bytes);
         ledger.charge_preflight(query.typeql.len() as u64, 1)?;
         let mut policy = control.limits;
         policy.bytes = ledger.remaining_bytes();
@@ -185,7 +351,7 @@ impl ProjectedManagerFilterExecutor<'_> {
             ledger.record_reply(stats)?;
             let answer = TransactionContext::resolve_plan(plan.local(), answer)
                 .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?;
-            let value = mapper(answer)?;
+            let value = mapper(answer, &mut ledger)?;
             control.checkpoint(filter.model())?;
             Ok::<_, SdkExecutionDiagnostic>(value)
         }

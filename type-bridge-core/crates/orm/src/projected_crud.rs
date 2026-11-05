@@ -35,7 +35,7 @@ use crate::plan_builders::manager::{ManagerPlans, ManagerRead, ReadTerminal};
 use crate::plan_builders::put::{KeyedPut, RelationPut, keyed_entity_put, keyed_relation_put};
 use crate::plan_builders::reference::{Reference, ReferenceIdentity};
 use crate::plan_builders::write::{
-    ThingUpdate, delete_by_iid, delete_by_iid_returning, entity_insert, update_by_iid,
+    ThingUpdate, UpdateSelection, delete_by_iid, delete_by_iid_returning, entity_insert, update,
 };
 use crate::projected_batch::{
     ProjectedBatch, ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchRow,
@@ -4076,12 +4076,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .plan_authority_with_query_limits(transaction.shared_query_limits())
             .map_err(|error| plan_build_failure(&error, type_id))?;
         let transport = plan_transport(transaction, type_id, mode).await?;
-        let plan = update_by_iid(
+        let plan = update(
             &authority,
             transport,
             ThingUpdate {
                 type_id,
-                iid,
+                selection: UpdateSelection::Iid(iid),
                 cleared_fields: &write.cleared_fields,
                 fields: &write.fields,
                 cleared_roles: &[],
@@ -4403,12 +4403,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let type_id = &prepared.type_id;
         let transport = plan_transport(transaction, type_id, mode).await?;
         let players = plan_references(prepared)?;
-        let plan = update_by_iid(
+        let plan = update(
             authority,
             transport,
             ThingUpdate {
                 type_id,
-                iid,
+                selection: UpdateSelection::Iid(iid),
                 cleared_fields: &write.cleared_fields,
                 fields: &write.fields,
                 cleared_roles: &write.cleared_roles,
@@ -5479,7 +5479,7 @@ struct PreparedEntityIdentity {
     iid: String,
 }
 
-struct PreparedEntityCreate {
+pub(crate) struct PreparedEntityCreate {
     type_id: TypeId,
     descriptor: Arc<EntityDescriptor>,
     /// The create as a keyed put plan input, when one can express it.
@@ -5518,7 +5518,7 @@ struct PreparedRelationIdentity {
     iid: String,
 }
 
-struct PreparedRelationCreate {
+pub(crate) struct PreparedRelationCreate {
     type_id: TypeId,
     descriptor: Arc<RelationDescriptor>,
     /// The create as an update plan input.

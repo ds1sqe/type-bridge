@@ -628,3 +628,138 @@ async fn filtered_delete_dispatches_once_and_keeps_borrowed_failures_rollback_on
     assert_eq!(error.code().as_str(), "transaction_rollback_only");
     transaction.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn filtered_update_hydrates_all_matches_and_refuses_input_limits_before_io() {
+    use type_bridge_orm::session::backend::QueryResult;
+    use type_bridge_orm::{
+        ProjectedCreate, ProjectedManagerFilterInvocationControl, QueryTarget, TxType,
+    };
+    let installed = installed(BindingTarget::Rust);
+    let person = type_id(TypeKind::Entity, "person");
+    let filter = ProjectedManagerFilter::try_new(&installed, person.clone())
+        .unwrap()
+        .try_and(
+            &installed,
+            &token(&person, "age"),
+            ProjectedManagerComparison::Gte,
+            &long_value(&installed, "age", 18),
+        )
+        .unwrap();
+    let replacement = ProjectedCreate::try_new(
+        &installed,
+        person.clone(),
+        vec![
+            (
+                field(&person, "identifier"),
+                vec![string_value(&installed, "identifier", "unused-key")],
+            ),
+            (
+                field(&person, "age"),
+                vec![long_value(&installed, "age", 40)],
+            ),
+        ],
+        vec![],
+    )
+    .unwrap();
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    let documents = vec![
+        serde_json::json!({"_iid":"0x10", "_type":"person", "attributes":{"identifier":"Ada", "age":[40]}}),
+        serde_json::json!({"_iid":"0x20", "_type":"person", "attributes":{"identifier":"Bob", "age":[40]}}),
+    ];
+    let backend = MockBackend::new(vec![QueryResult::Documents(documents.clone())]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "filtered-update");
+    let result = ProjectedManagerFilterExecutor::new(&installed)
+        .update_on_target(QueryTarget::Database(&db), &filter, &replacement, control())
+        .await
+        .unwrap();
+    assert_eq!(result.count(), 2);
+    assert_eq!(queries.lock().unwrap().len(), 1);
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .update_on_target(
+            QueryTarget::Database(&db),
+            &filter,
+            &replacement,
+            ProjectedManagerFilterInvocationControl::capture(
+                QueryExecutionResourceLimits {
+                    attribute_values: 1,
+                    ..Default::default()
+                },
+                Default::default(),
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+            .category(),
+        SdkDiagnosticCategory::ResourceLimit
+    );
+    assert_eq!(queries.lock().unwrap().len(), 1);
+    let backend = MockBackend::new(vec![QueryResult::Documents(documents)]);
+    let db = Database::with_backend(Box::new(backend), "filtered-update-identity");
+    let transaction = db.transaction_context(TxType::Write).await.unwrap();
+    let iid_filter = ProjectedManagerFilter::try_new(&installed, person)
+        .unwrap()
+        .try_and_iids(
+            &installed,
+            &[type_bridge_contract::id::Iid::new("0x10").unwrap()],
+        )
+        .unwrap();
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .update_on_target(
+            QueryTarget::Transaction(&transaction),
+            &iid_filter,
+            &replacement,
+            control(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+            .code()
+            .as_str(),
+        "projected_batch_update_identity_changed"
+    );
+    assert_eq!(
+        transaction.commit_sdk().await.unwrap_err().code().as_str(),
+        "transaction_rollback_only"
+    );
+    transaction.rollback().await.unwrap();
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![
+        serde_json::json!({"_iid":"0x10", "_type":"person", "attributes":{"identifier":"Ada", "age":[40]}}),
+    ])]);
+    let db = Database::with_backend(Box::new(backend), "filtered-update-mapper");
+    let transaction = db.transaction_context(TxType::Write).await.unwrap();
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .update_on_target_mapped(
+            QueryTarget::Transaction(&transaction),
+            &filter,
+            &replacement,
+            control(),
+            |_| {
+                Err::<(), _>(
+                    type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure(
+                    ),
+                )
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+            .code()
+            .as_str(),
+        "internal_failure"
+    );
+    assert_eq!(
+        transaction.commit_sdk().await.unwrap_err().code().as_str(),
+        "transaction_rollback_only"
+    );
+    transaction.rollback().await.unwrap();
+}
