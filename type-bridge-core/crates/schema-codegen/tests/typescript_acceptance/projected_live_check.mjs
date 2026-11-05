@@ -1266,18 +1266,7 @@ export async function runOwnedDatabase({
         "isolated database was not created",
       );
     }
-    const transaction = database.transaction("schema");
-    try {
-      transaction.query(providerSchema);
-      transaction.commit();
-    } catch (error) {
-      try {
-        transaction.close();
-      } catch {
-        // Database deletion below is the authoritative schema-failure teardown.
-      }
-      throw error;
-    }
+    await database.executeQuery(providerSchema, "schema");
     observations = journeyRunner(
       package_,
       database,

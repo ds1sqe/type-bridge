@@ -914,21 +914,6 @@ async function runManagerJourney(package_, database) {
   }
 }
 
-function installSchema(database, providerSchema) {
-  const transaction = database.transaction("schema");
-  try {
-    transaction.query(providerSchema);
-    transaction.commit();
-  } catch (error) {
-    try {
-      transaction.close();
-    } catch {
-      // Database deletion is the authoritative schema-failure cleanup.
-    }
-    throw error;
-  }
-}
-
 async function runOwnedDatabase({
   local,
   foreign,
@@ -964,7 +949,7 @@ async function runOwnedDatabase({
     );
     bootstrap.createDatabase();
     ownsDatabase = true;
-    installSchema(bootstrap, providerSchema);
+    await bootstrap.executeQuery(providerSchema, "schema");
     bootstrap.close();
     if (tlsRootCa !== undefined) {
       let untrusted;
