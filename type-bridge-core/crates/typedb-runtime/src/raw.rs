@@ -124,6 +124,32 @@ impl TypeDBRuntime {
             .await
     }
 
+    /// Open an eager unchecked transaction, preserving TypeDB error details.
+    /// The caller may execute multiple raw queries before committing or closing.
+    /// No client deadline, schema gate or query limit is added.
+    pub async fn open_raw_transaction(
+        &self,
+        database: &str,
+        kind: TxType,
+    ) -> Result<RuntimeTransaction, RawQueryError> {
+        self.open_raw_with_options(database, kind, &crate::TransactionOptions::new())
+            .await
+    }
+
+    async fn open_raw_with_options(
+        &self,
+        database: &str,
+        kind: TxType,
+        options: &crate::TransactionOptions,
+    ) -> Result<RuntimeTransaction, RawQueryError> {
+        self.open_transaction_preserving_error(database, kind, options)
+            .await
+            .map_err(|error| match error {
+                crate::TransactionOpenError::Runtime(error) => RawQueryError::runtime(error),
+                crate::TransactionOpenError::Driver(error) => RawQueryError::driver(error),
+            })
+    }
+
     /// Execute unchecked TypeQL with host deadline and answer-byte bounds.
     /// Open/query timeouts and oversized answers close without committing.
     /// No deadline can cancel a commit already sent to the provider.
@@ -144,14 +170,7 @@ impl TypeDBRuntime {
             transaction_timeout: timeout,
             schema_lock_acquire_timeout: timeout,
         };
-        let open = async {
-            self.open_transaction_preserving_error(database, kind, &transaction_options)
-                .await
-                .map_err(|error| match error {
-                    crate::TransactionOpenError::Runtime(error) => RawQueryError::runtime(error),
-                    crate::TransactionOpenError::Driver(error) => RawQueryError::driver(error),
-                })
-        };
+        let open = self.open_raw_with_options(database, kind, &transaction_options);
         let mut transaction = before_deadline(options.deadline, open).await?;
         let result = async {
             let answer = before_deadline(
@@ -205,7 +224,8 @@ impl RuntimeTransaction {
         http_answer_bytes(answer, maximum).await
     }
 
-    async fn close_raw(&mut self) -> Result<(), RawQueryError> {
+    /// Close without committing, preserving the provider error. Repeated close is harmless.
+    pub async fn close_raw(&mut self) -> Result<(), RawQueryError> {
         let RuntimeTransactionInner::B9(transaction) = &mut self.inner;
         let Some(transaction) = transaction.take() else {
             return Ok(());
@@ -217,7 +237,8 @@ impl RuntimeTransaction {
         transaction.close().await.map_err(RawQueryError::driver)
     }
 
-    async fn commit_raw(&mut self) -> Result<(), RawQueryError> {
+    /// Commit unchecked writes, preserving provider details and durability certainty.
+    pub async fn commit_raw(&mut self) -> Result<(), RawQueryError> {
         self.ensure_driver_open().map_err(RawQueryError::runtime)?;
         let RuntimeTransactionInner::B9(transaction) = &mut self.inner;
         let transaction = transaction.take().ok_or_else(|| RawQueryError {

@@ -113,6 +113,15 @@ impl From<TlsConfigurationError> for ProxyHttpError {
     }
 }
 
+/// Exact HTTP status and body from the opt-in raw route.
+#[derive(Debug)]
+pub struct RawHttpResponse {
+    /// HTTP response status, including refusals and provider errors.
+    pub status: u16,
+    /// Unmodified response bytes.
+    pub body: Vec<u8>,
+}
+
 /// One validated proxy endpoint with its trust and request headers.
 pub struct ProxyHttpClient {
     agent: ureq::Agent,
@@ -201,6 +210,32 @@ impl ProxyHttpClient {
             .request("POST", ROUTE, timeout)
             .set("content-type", "application/json");
         read_response(ROUTE, call.send_bytes(request), max_bytes)
+    }
+
+    /// Post unchecked TypeQL to `/v3/raw`, retaining error bodies and status.
+    /// No execution timeout or answer-byte ceiling is added by the client.
+    /// Endpoint trust, headers and redirect refusal are shared with staged calls.
+    ///
+    /// # Errors
+    /// Returns connection, TLS or body-read failures.
+    pub fn exchange_raw(&self, request: &[u8]) -> Result<RawHttpResponse, ProxyHttpError> {
+        let response = match self
+            .request("POST", "/v3/raw", None)
+            .set("content-type", "application/json")
+            .send_bytes(request)
+        {
+            Ok(response) | Err(ureq::Error::Status(_, response)) => response,
+            Err(ureq::Error::Transport(error)) => {
+                return Err(ProxyHttpError::Transport(error.to_string()));
+            }
+        };
+        let status = response.status();
+        let mut body = Vec::new();
+        response
+            .into_reader()
+            .read_to_end(&mut body)
+            .map_err(|error| ProxyHttpError::Transport(error.to_string()))?;
+        Ok(RawHttpResponse { status, body })
     }
 
     fn request(&self, method: &str, route: &str, timeout: Option<Duration>) -> ureq::Request {
@@ -441,6 +476,27 @@ mod tests {
         assert!(head.contains("authorization: bearer token\r\n"));
         assert!(head.contains("content-type: application/json\r\n"));
         assert_eq!(body, b"{\"a\":1}");
+    }
+
+    #[test]
+    fn raw_exchange_retains_success_refusal_and_redirect_without_rewriting() {
+        for (response, status, body) in [
+            (&b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nreply"[..], 200, &b"reply"[..]),
+            (&b"HTTP/1.1 403 Forbidden\r\ncontent-length: 24\r\n\r\n{\"error\":\"raw_disabled\"}"[..], 403, &b"{\"error\":\"raw_disabled\"}"[..]),
+            (&b"HTTP/1.1 302 Found\r\nlocation: http://elsewhere/\r\ncontent-length: 0\r\n\r\n"[..], 302, &b""[..]),
+        ] {
+            let (endpoint, server) = serve_once(response);
+            let client = ProxyHttpClient::new(
+                &endpoint, &ProxyTrust::Plaintext, &[header("Authorization", "Bearer raw")],
+            ).unwrap();
+            let reply = client.exchange_raw(b"{\"query\":\"define entity raw;\"}").unwrap();
+            assert_eq!(reply.status, status);
+            assert_eq!(reply.body, body);
+            let (head, request) = server.join().unwrap();
+            assert!(head.starts_with("POST /v3/raw HTTP/1.1\r\n"));
+            assert!(head.to_ascii_lowercase().contains("authorization: bearer raw\r\n"));
+            assert_eq!(request, b"{\"query\":\"define entity raw;\"}");
+        }
     }
 
     #[test]
