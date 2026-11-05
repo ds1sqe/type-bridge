@@ -1236,6 +1236,7 @@ fn validate_stages(
                 spec.bindings.len(),
                 limits.structural,
                 &scalar_types,
+                false,
             )?;
             types.retain(|binding, _| mandatory.contains(binding) || optional.contains(binding));
             scalar_types
@@ -1288,6 +1289,7 @@ fn validate_stages(
                         spec.bindings.len(),
                         limits.structural,
                         &scalar_types,
+                        false,
                     )?;
                     if reduced {
                         reduced_dropped.extend(
@@ -1798,6 +1800,7 @@ fn validate_stages(
         spec.bindings.len(),
         limits.structural,
         &scalar_types,
+        spec.operation == Operation::Rows,
     )?;
     for stage in &read_tail {
         if let ReadStage::Reduce { assignments, .. } = stage {
@@ -1878,6 +1881,7 @@ fn validate_stages(
     Ok((None, scalar_types))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_v3_read_tail(
     read_tail: &[ReadStage],
     mandatory: BTreeSet<BindingId>,
@@ -1886,6 +1890,7 @@ fn validate_v3_read_tail(
     binding_count: usize,
     limits: StructuralLimits,
     scalar_types: &BTreeMap<BindingId, ValueTypeTag>,
+    allow_single_witness: bool,
 ) -> Result<(BTreeSet<BindingId>, BTreeSet<BindingId>), Diagnostic> {
     let (mandatory, optional, has_sort) = validate_read_stages(
         read_tail,
@@ -1907,7 +1912,13 @@ fn validate_v3_read_tail(
             ));
         }
     }
+    let single_witness = allow_single_witness
+        && matches!(
+            read_tail,
+            [ReadStage::Select { .. }, ReadStage::Limit { rows: 1 }]
+        );
     if !has_sort
+        && !single_witness
         && read_tail
             .iter()
             .any(|stage| matches!(stage, ReadStage::Offset { .. } | ReadStage::Limit { .. }))

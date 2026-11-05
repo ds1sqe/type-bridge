@@ -683,3 +683,94 @@ fn sorted_bounded_attach_and_delete_keep_the_matching_binding_types() {
         );
     }
 }
+
+#[test]
+fn unordered_single_witness_requires_terminal_select_limit_one_and_read_only_rows() {
+    use type_bridge_contract::query_plan::v3::{AttachItem, Operation};
+    let matched = || Stage::Match {
+        patterns: vec![isa(0, entity("account")).into()],
+    };
+    let selected = || Stage::Select {
+        bindings: vec![id(0)],
+    };
+    let plan = QueryPlanV3::new(
+        spec(
+            vec![matched(), selected(), Stage::Limit { rows: 1 }],
+            vec![0],
+        ),
+        &schema(),
+    )
+    .unwrap();
+    assert_eq!(plan.statement_counts(), (1, 0));
+    assert_eq!(
+        decode_query_plan_v3(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
+        plan
+    );
+    for (tail, expected) in [
+        (
+            vec![selected(), Stage::Limit { rows: 2 }],
+            "query_plan_unordered_truncation",
+        ),
+        (
+            vec![
+                selected(),
+                Stage::Offset { rows: 0 },
+                Stage::Limit { rows: 1 },
+            ],
+            "query_plan_unordered_truncation",
+        ),
+        (
+            vec![Stage::Limit { rows: 1 }],
+            "query_plan_unordered_truncation",
+        ),
+        (
+            vec![Stage::Limit { rows: 1 }, selected()],
+            "query_plan_stage_order",
+        ),
+    ] {
+        let mut pipeline = vec![matched()];
+        pipeline.extend(tail);
+        assert_eq!(
+            QueryPlanV3::new(spec(pipeline, vec![0]), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            expected
+        );
+    }
+    for operation in [Operation::Count, Operation::Exists] {
+        let mut specification = spec(
+            vec![matched(), selected(), Stage::Limit { rows: 1 }],
+            vec![],
+        );
+        specification.operation = operation;
+        assert_eq!(
+            QueryPlanV3::new(specification, &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_unordered_truncation"
+        );
+    }
+    let write = Stage::Attach {
+        items: vec![AttachItem::Has {
+            optional: false,
+            owner: id(0),
+            field: field("score"),
+            operand: literal(1),
+        }],
+    };
+    assert_eq!(
+        QueryPlanV3::new(
+            spec(
+                vec![matched(), write, selected(), Stage::Limit { rows: 1 }],
+                vec![0]
+            ),
+            &schema()
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "query_plan_unordered_truncation"
+    );
+}
