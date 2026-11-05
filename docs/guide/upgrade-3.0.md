@@ -98,3 +98,10 @@ Replace `type_bridge.proxy.ProxyDatabase` with your generated package's
 `ProxyTransactionContext` are removed with the legacy module. The public
 `Connection` alias describes direct facade connections; generated proxy
 connections retain their own native type.
+
+## Rust proxy names
+
+Replace `RemoteDatabase`, `RemoteQueryTransport`, `RemoteConnectionOptions`,
+and `RemoteQueryLimits` with `ProxyDatabase`, `ProxyExchange`,
+`ProxyConnectionPolicy`, and `QueryExecutionResourceLimits`. Caller-owned
+transports implement `ProxyExchange` directly.

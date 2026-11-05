@@ -200,6 +200,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Remove Rust `RemoteDatabase`, `RemoteQueryTransport`,
+  `RemoteConnectionOptions`, and `RemoteQueryLimits`. Use `ProxyDatabase`,
+  `ProxyExchange`, `ProxyConnectionPolicy`, and `QueryExecutionResourceLimits`.
+
 - Remove Python `type_bridge.proxy`, `ProxyDatabase`, `ProxyError`,
   `ProxyTransaction`, and `ProxyTransactionContext`. Use the generated package's
   `connect_proxy(...)`, its transaction API, and `type_bridge.Failure`.

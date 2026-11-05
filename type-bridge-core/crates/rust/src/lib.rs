@@ -72,10 +72,6 @@ pub use query::{
 };
 pub use relation_manager::{RelationManager, RelationSubtypeManager};
 pub use remote::{ProxyConnectionPolicy, ProxyDatabase, ProxyExchange};
-#[allow(deprecated)]
-pub use remote::{
-    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,
-};
 pub use schema::{Schema, SchemaPackage, Unbound};
 pub use session::{ConnectionOptions, Database, DatabaseCreateOutcome, DatabaseDeleteOutcome};
 #[cfg(feature = "typedb")]
