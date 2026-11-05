@@ -270,6 +270,7 @@ pub(crate) mod tests {
         let (_, base) = crate::copy_plan::tests::fixture();
         for field in ["forward", "reverse", "filter"] {
             let mut wire = serde_json::to_value(&base).unwrap();
+            wire.as_object_mut().unwrap().remove("mode");
             if field == "forward" {
                 wire["forward"] =
                     serde_json::json!("  match $x isa person; insert $x has new-name 'custom';\n");
@@ -277,7 +278,6 @@ pub(crate) mod tests {
                     " match $x isa person, has new-name $v; delete has $v of $x; "
                 );
                 wire["owner"] = serde_json::Value::Null;
-                wire["mode"] = serde_json::Value::Null;
             } else if field == "reverse" {
                 wire["reverse"] = serde_json::json!(
                     " match $x isa person, has new-name $v; delete has $v of $x; "

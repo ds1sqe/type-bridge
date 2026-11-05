@@ -249,7 +249,8 @@ pub enum OperationSpec {
         /// Destination attribute label (structured portable form).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dest: Option<String>,
-        /// Required explicit attribute matching form: isa or isa!.
+        /// Required for native structured copies: isa or isa!.
+        /// Historical raw specs without this field retain their isa semantics.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
         /// Optional extra match constraint line (structured portable form).
@@ -302,7 +303,12 @@ pub fn copy_attribute_typeql(op: &OperationSpec) -> crate::Result<(String, Optio
         });
     };
     let mode = type_bridge_contract::query_plan::TypeMatchMode::from_typeql(
-        mode.as_deref().unwrap_or(""),
+        mode.as_deref()
+            .unwrap_or(if filter.is_some() || reverse.is_some() {
+                "isa"
+            } else {
+                ""
+            }),
     )?;
     use type_bridge_core_lib::__internal as tql;
     let mut patterns = vec![
