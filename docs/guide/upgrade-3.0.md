@@ -44,6 +44,11 @@ terminal. Manager `get_by_iid`, IID `delete`, and `filter(iid=...)`/`filter(iid_
 also require nominal identifiers. Passing a malformed string to `get_by_iid`
 now raises a type error instead of returning `None`.
 
+Python IID `delete(iid)` and the native IID-list delete permanently redirect to
+`filter(iid=iid).delete()` and `filter(iid__in=iids).delete()`. Instance
+`delete` and `delete_many` retain their pre/post callbacks around those native
+terminals. Returning deletes keep their stored-snapshot batch semantics.
+
 Python IID lists are consumed once. `filter(iid__in=[])` returns no matches
 without a provider request, including when combined with other read lookups.
 For canonical mutations, use `filter(iid=target).delete()` or

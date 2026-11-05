@@ -3255,6 +3255,8 @@ def test_generated_iid_keyword_selection_live(
         borrowed.filter(iid__in=[excluded.iid]).delete()
     assert people.filter(iid=selected.iid).first().score.value == 11
     assert people.filter(iid=excluded.iid).first() is None
+    people.delete(selected.iid)
+    assert people.get_by_iid(selected.iid) is None
 
 
 def test_generated_keyword_then_canonical_filter_preserves_scope_live(

@@ -47,7 +47,9 @@ use type_bridge_orm::_dynamic::{DynamicAttributeMap, DynamicComparisonOp, Dynami
 use type_bridge_orm::_dynamic::{DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer};
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
-use type_bridge_orm::session::{Database, TransactionContext, TransactionContextState};
+#[cfg(test)]
+use type_bridge_orm::session::TransactionContext;
+use type_bridge_orm::session::{Database, TransactionContextState};
 use type_bridge_orm::value::AttributeValue;
 use type_bridge_orm::{
     AnswerCancellation, HydratedAttribute, HydratedRolePlayer, HydratedThing, ManagerLookup,
@@ -3039,7 +3041,7 @@ impl PyProjectedModelManager {
             instance,
             input,
             ProjectedBatchOperation::Update,
-            Some(iid),
+            Some(copy_projected_iid(&iid.get().inner)?),
         )
     }
 
@@ -3052,15 +3054,14 @@ impl PyProjectedModelManager {
         )
     }
 
-    /// Delete one exact generated model by its instance or canonical TypeDB IID.
+    /// Delete an instance or redirect an IID to `filter(iid=iid).delete()`.
     fn delete(&self, py: Python<'_>, instance_or_iid: Bound<'_, PyAny>) -> PyResult<()> {
-        let iid = if let Ok(iid) = instance_or_iid.cast::<PyIid>() {
-            copy_projected_iid(&iid.get().inner)?
-        } else {
-            self.ensure_instance(py, &instance_or_iid)?;
-            required_projected_iid(&instance_or_iid)?
-        };
-        self.delete_projected(py, &iid)
+        if let Ok(iid) = instance_or_iid.cast::<PyIid>() {
+            return self.filter_iid(&iid.get().inner)?.delete(py);
+        }
+        self.ensure_instance(py, &instance_or_iid)?;
+        self.filter_iid(&required_projected_iid(&instance_or_iid)?.get().inner)?
+            .delete(py)
     }
 
     /// Delete one exact model and return its stored pre-delete snapshot.
@@ -3074,12 +3075,19 @@ impl PyProjectedModelManager {
 
     /// Delete exact models and return existing snapshots in input order.
     fn delete_many_returning(&self, py: Python<'_>, iids: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        self.delete_many_returning_projected(py, bounded_projected_iids(&iids)?, false)
+        self.delete_many_returning_projected(
+            py,
+            bounded_projected_iids(&iids)?
+                .into_iter()
+                .map(Iid::into_string)
+                .collect(),
+            false,
+        )
     }
 
-    /// Delete exact generated models atomically by canonical IID.
+    /// Permanent redirect to `filter(iid__in=iids).delete()`.
     fn delete_many(&self, py: Python<'_>, iids: Bound<'_, PyAny>) -> PyResult<()> {
-        self.delete_many_projected(py, bounded_projected_iids(&iids)?)
+        self.filter_iids(bounded_projected_iids(&iids)?)?.delete(py)
     }
 
     /// Return a new exact generated-model manager narrowed by keyword filters.
@@ -3256,6 +3264,16 @@ impl PyProjectedModelManager {
         Ok(selected)
     }
 
+    fn filter_iids(&self, iids: Vec<Iid>) -> PyResult<PyProjectedManagerFilter> {
+        let mut selected = self.canonical_filter()?;
+        selected.filter = selected
+            .filter
+            .try_and_owned_iids(&self.package.projection, iids)
+            .map_err(py_sdk_diagnostic)?;
+        Ok(selected)
+    }
+
+    #[cfg(test)]
     #[inline]
     fn transaction(&self) -> Option<&TransactionContext> {
         self.target.as_ref().and_then(OwnedQueryTarget::transaction)
@@ -3468,6 +3486,7 @@ impl PyProjectedModelManager {
 
     /// Delete one thing through the projected executor, which runs it as a
     /// delete plan when the projection carries plan authority.
+    #[cfg(test)]
     fn delete_projected(&self, py: Python<'_>, iid: &str) -> PyResult<()> {
         let control =
             ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
@@ -3769,11 +3788,13 @@ impl PyProjectedModelManager {
         })
     }
 
+    #[cfg(test)]
     fn delete_many_projected(&self, py: Python<'_>, iids: Vec<String>) -> PyResult<()> {
         let (batch, control) = self.prepare_delete_batch(iids)?;
         self.execute_projected_delete(py, batch, control)
     }
 
+    #[cfg(test)]
     fn execute_projected_delete(
         &self,
         py: Python<'_>,
@@ -3827,6 +3848,7 @@ impl PyProjectedModelManager {
         .map_err(py_sdk_diagnostic)
     }
 
+    #[cfg(test)]
     fn execute_projected_batch<T, F>(
         &self,
         py: Python<'_>,
@@ -3942,7 +3964,7 @@ fn bounded_projected_facades(values: &Bound<'_, PyAny>) -> PyResult<Vec<Py<PyAny
     Ok(facades)
 }
 
-fn bounded_projected_iids(values: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+fn bounded_projected_iids(values: &Bound<'_, PyAny>) -> PyResult<Vec<Iid>> {
     if !supports_python_iteration(values) {
         return Err(py_sdk_diagnostic(batch_input_shape_diagnostic(
             "batch_rows_not_iterable",
@@ -3964,7 +3986,7 @@ fn bounded_projected_iids(values: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
                 &path,
             ))
         })?;
-        let iid = copy_projected_iid(&value.get().inner)?;
+        let iid = value.get().inner.clone();
         iids.try_reserve(1)
             .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
         iids.push(iid);
@@ -7188,10 +7210,15 @@ fn copy_projected_iid(iid: &Iid) -> PyResult<String> {
     Ok(retained)
 }
 
-fn required_projected_iid(value: &Bound<'_, PyAny>) -> PyResult<String> {
-    projected_iid(value)?.ok_or_else(|| {
-        py_value_error("generated manager update and delete require an attached TypeDB IID")
-    })
+fn required_projected_iid<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyIid>> {
+    let iid = value.getattr("iid")?;
+    if iid.is_none() {
+        return Err(py_value_error(
+            "generated manager update and delete require an attached TypeDB IID",
+        ));
+    }
+    iid.cast_into::<PyIid>()
+        .map_err(|_| py_type_error("generated manager IID lookup requires Iid values"))
 }
 
 /// Unpack one generated create member of `id` for lowering into a provider
@@ -11394,7 +11421,9 @@ class StructBase:
                 assert!(result.is_err());
             }
             assert!(state.lock().unwrap().calls.is_empty());
-            selected.canonical_filter().unwrap().delete(py).unwrap();
+            manager
+                .delete_many(py, kwargs.get_item("iid__in").unwrap().unwrap())
+                .unwrap();
             let actual = state.lock().unwrap().calls.clone();
             assert_eq!(actual.len(), 1);
             let (database, old_state) =
