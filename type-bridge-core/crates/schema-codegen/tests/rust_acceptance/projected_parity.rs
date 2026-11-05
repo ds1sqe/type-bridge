@@ -577,7 +577,7 @@ fn constructed_observations() -> Result<Constructed, ValidationError> {
         person_ref("data-ada")?,
         vec![person_ref("data-ada")?, person_ref("data-dana")?],
     )?;
-    let container = ContainerCreate::new(vec![EventRef::from_iid("0x01")?])?;
+    let container = ContainerCreate::new(vec![EventRef::from_iid(type_bridge::Iid::new("0x01").unwrap())?])?;
     Ok(Constructed {
         ada,
         dana,
@@ -1195,7 +1195,7 @@ fn constraint_observation(
             ContainerType::item.role_id_json(),
             ["0x01", "0x02", "0x03"]
                 .into_iter()
-                .map(|iid| EventRef::from_iid(iid).and_then(|value| value.into_encoded_reference()))
+                .map(|iid| EventRef::from_iid(type_bridge::Iid::new(iid).unwrap()).and_then(|value| value.into_encoded_reference()))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
         &["role_cardinality_violation"],
@@ -1505,10 +1505,10 @@ fn build_report(
     assert!(hydrated.interaction_absent.actor().is_none());
 
     let relation_player_constructed =
-        constructed.container.item().first().and_then(EventRef::iid) == Some("0x01");
+        constructed.container.item().first().and_then(EventRef::iid).map(type_bridge::Iid::as_str) == Some("0x01");
     let relation_player_hydrated = matches!(
         hydrated.container.item().first(),
-        Some(ContainerItemPlayer::Event(reference)) if reference.iid() == Some("0x01")
+        Some(ContainerItemPlayer::Event(reference)) if reference.iid().map(type_bridge::Iid::as_str) == Some("0x01")
     );
     assert!(relation_player_constructed && relation_player_hydrated);
 

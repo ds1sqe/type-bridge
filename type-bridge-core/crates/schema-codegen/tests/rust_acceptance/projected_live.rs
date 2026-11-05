@@ -691,16 +691,16 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
     )?)?;
 
     Ok(Created {
-        ada: ada.iid().to_owned(),
-        dana: dana.iid().to_owned(),
-        positive_robot: positive_robot.iid().to_owned(),
-        negative_robot: negative_robot.iid().to_owned(),
-        interaction_robot: interaction_robot.iid().to_owned(),
-        interaction_absent: interaction_absent.iid().to_owned(),
-        interaction_person: interaction_person.iid().to_owned(),
-        plain_activity: plain_activity.iid().to_owned(),
-        event: event.iid().to_owned(),
-        container: container.iid().to_owned(),
+        ada: ada.iid().to_string(),
+        dana: dana.iid().to_string(),
+        positive_robot: positive_robot.iid().to_string(),
+        negative_robot: negative_robot.iid().to_string(),
+        interaction_robot: interaction_robot.iid().to_string(),
+        interaction_absent: interaction_absent.iid().to_string(),
+        interaction_person: interaction_person.iid().to_string(),
+        plain_activity: plain_activity.iid().to_string(),
+        event: event.iid().to_string(),
+        container: container.iid().to_string(),
     })
 }
 
@@ -850,7 +850,7 @@ async fn observe_live_records(
             "container did not hydrate exactly one Event player",
         ));
     };
-    if item.iid() != Some(created.event.as_str()) {
+    if item.iid().map(type_bridge::Iid::as_str) != Some(created.event.as_str()) {
         return Err(ProducerError::new(
             "unexpected_live_value",
             "container Event player lost its relation identity",

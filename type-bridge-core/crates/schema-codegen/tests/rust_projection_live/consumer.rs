@@ -2602,7 +2602,7 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
     assert_eq!(people.len(), 2);
     sdk_queries_assert_person(&people[0], &people_records[0]);
     sdk_queries_assert_person(&people[1], &people_records[1]);
-    let person_iids = [people[0].iid().to_owned(), people[1].iid().to_owned()];
+    let person_iids = [people[0].iid().as_str().to_owned(), people[1].iid().as_str().to_owned()];
     let read_after_create = db
         .entities::<Person>()
         .get_by_iid(&person_iids[0])
@@ -2626,7 +2626,7 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
             .await
             .expect("queries employee insert"),
     );
-    let employee_iid = employee.iid().to_owned();
+    let employee_iid = employee.iid().as_str().to_owned();
     let manager = one_written(
         db.entities::<Manager>()
             .insert(
@@ -2645,7 +2645,7 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
             .await
             .expect("queries manager insert"),
     );
-    let manager_iid = manager.iid().to_owned();
+    let manager_iid = manager.iid().as_str().to_owned();
     let membership = one_written(
         db.relations::<Membership>()
             .insert(
@@ -2655,7 +2655,7 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
             .await
             .expect("queries membership insert"),
     );
-    let membership_iid = membership.iid().to_owned();
+    let membership_iid = membership.iid().as_str().to_owned();
     let membership_read_after_create = db
         .relations::<Membership>()
         .get_by_iid(&membership_iid)
@@ -2681,7 +2681,7 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
             .await
             .expect("queries network insert"),
     );
-    let network_iid = network.iid().to_owned();
+    let network_iid = network.iid().as_str().to_owned();
     let keyed_create_order = [
         people[0].identifier().value().clone(),
         people[1].identifier().value().clone(),
@@ -3304,7 +3304,7 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
             .one()
             .await
             .expect("scalar-domain person result");
-        assert_eq!(queried.iid(), person.iid());
+        assert_eq!(queried.iid().as_str(), person.iid().as_str());
     }
     let assert_person = |value: &Person,
                          identifier: &str,
@@ -3340,7 +3340,7 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
         assert_eq!(value.val_datetime_tz().value().as_str(), datetime_tz);
         assert_eq!(value.val_duration().value().as_str(), duration);
     };
-    assert!(!person.iid().is_empty());
+    assert!(!person.iid().as_str().is_empty());
     assert_eq!(person.identifier().value(), "p-100");
     assert_person(
         &person,
@@ -3375,14 +3375,14 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
     );
     assert_eq!(person.val_duration().value().as_str(), "P1D");
     assert_eq!(person.nickname().map(|v| v.value()), Some(&"al".to_owned()));
-    let iid = person.iid().to_owned();
+    let iid = person.iid().as_str().to_owned();
     let fetched = db
         .entities::<Person>()
         .get_by_iid(&iid)
         .await
         .expect("exact person lookup")
         .expect("person exists");
-    assert_eq!(fetched.iid(), iid);
+    assert_eq!(fetched.iid().as_str(), iid);
     assert_eq!(fetched.identifier().value(), "p-100");
     assert_person(
         &fetched,
@@ -3415,8 +3415,8 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
             .iter()
             .find(|row| row.identifier().value() == "p-100")
             .unwrap()
-            .iid(),
-        person.iid()
+            .iid().as_str(),
+        person.iid().as_str()
     );
 
     let replaced = PersonCreate::try_new(
@@ -3438,7 +3438,7 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
     )
     .expect("replacement");
     let put = one_written(db.entities::<Person>().put(replaced).await.expect("put"));
-    assert_eq!(put.iid(), iid);
+    assert_eq!(put.iid().as_str(), iid);
     assert_person(
         &put,
         "p-100",
@@ -3511,9 +3511,9 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
     assert_eq!(batch_people.len(), 2);
     assert_eq!(batch_people[0].identifier().value(), "p-101");
     assert_eq!(batch_people[1].identifier().value(), "p-102");
-    assert!(!batch_people[0].iid().is_empty());
-    assert!(!batch_people[1].iid().is_empty());
-    assert_ne!(batch_people[0].iid(), batch_people[1].iid());
+    assert!(!batch_people[0].iid().as_str().is_empty());
+    assert!(!batch_people[1].iid().as_str().is_empty());
+    assert_ne!(batch_people[0].iid().as_str(), batch_people[1].iid().as_str());
     assert_eq!(
         db.entities::<Person>()
             .count()
@@ -3564,7 +3564,7 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
             .await
             .expect("update"),
     );
-    assert_eq!(updated.iid(), iid);
+    assert_eq!(updated.iid().as_str(), iid);
     assert_person(
         &updated,
         "p-100",
@@ -3586,7 +3586,7 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
         .await
         .expect("updated exact read")
         .expect("updated person exists");
-    assert_eq!(updated_read.iid(), iid);
+    assert_eq!(updated_read.iid().as_str(), iid);
     assert_person(
         &updated_read,
         "p-100",
@@ -3635,11 +3635,11 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
     );
     db.entities::<Person>().delete(&iid).await.expect("delete");
     db.entities::<Person>()
-        .delete(batch_people[0].iid())
+        .delete(batch_people[0].iid().as_str())
         .await
         .expect("batch delete one");
     db.entities::<Person>()
-        .delete(batch_people[1].iid())
+        .delete(batch_people[1].iid().as_str())
         .await
         .expect("batch delete two");
     assert_eq!(
@@ -3688,7 +3688,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
             .await
             .expect("employee insert"),
     );
-    let employee_iid = employee.iid().to_owned();
+    let employee_iid = employee.iid().as_str().to_owned();
     assert!(!employee_iid.is_empty());
     assert_eq!(employee.identifier().value(), "emp-1");
     assert_eq!(employee.party_name().value(), "employee");
@@ -3706,7 +3706,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
             .await
             .expect("employee put"),
     );
-    assert_eq!(employee_put.iid(), employee_iid);
+    assert_eq!(employee_put.iid().as_str(), employee_iid);
     assert_eq!(employee_put.identifier().value(), "emp-1");
     assert_eq!(employee_put.party_name().value(), "employee-put");
     assert_eq!(employee_put.rank().value(), &3);
@@ -3730,11 +3730,11 @@ async fn generated_inheritance_exact_and_subtype_reads() {
         .expect("employee put_many")
         .into_items();
     assert_eq!(put_many.len(), 2);
-    assert_eq!(put_many[0].iid(), employee_iid);
+    assert_eq!(put_many[0].iid().as_str(), employee_iid);
     assert_eq!(put_many[0].rank().value(), &4);
     assert_eq!(put_many[0].identifier().value(), "emp-1");
     assert_eq!(put_many[0].party_name().value(), "employee-batch-existing");
-    let new_employee_iid = put_many[1].iid().to_owned();
+    let new_employee_iid = put_many[1].iid().as_str().to_owned();
     assert_eq!(put_many[1].identifier().value(), "emp-2");
     assert_eq!(put_many[1].party_name().value(), "employee-batch-new");
     assert_eq!(put_many[1].rank().value(), &5);
@@ -3753,7 +3753,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
             .await
             .expect("employee update"),
     );
-    assert_eq!(employee_updated.iid(), employee_iid);
+    assert_eq!(employee_updated.iid().as_str(), employee_iid);
     assert_eq!(employee_updated.rank().value(), &6);
     assert_eq!(employee_updated.identifier().value(), "emp-1");
     assert_eq!(employee_updated.party_name().value(), "employee-updated");
@@ -3763,7 +3763,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
         .await
         .expect("employee exact get")
         .expect("employee exists");
-    assert_eq!(exact_employee.iid(), employee_iid);
+    assert_eq!(exact_employee.iid().as_str(), employee_iid);
     assert_eq!(exact_employee.identifier().value(), "emp-1");
     assert_eq!(exact_employee.party_name().value(), "employee-updated");
     assert_eq!(exact_employee.rank().value(), &6);
@@ -3790,7 +3790,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     assert!(
         exact_employee_all
             .iter()
-            .any(|value| value.iid() == employee_iid)
+            .any(|value| value.iid().as_str() == employee_iid)
     );
     let manager = one_written(
         db.entities::<Manager>()
@@ -3806,7 +3806,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
             .await
             .expect("manager insert"),
     );
-    assert!(!manager.iid().is_empty());
+    assert!(!manager.iid().as_str().is_empty());
     let contractor = one_written(
         db.entities::<Contractor>()
             .insert(
@@ -3820,7 +3820,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
             .await
             .expect("contractor insert"),
     );
-    assert!(!contractor.iid().is_empty());
+    assert!(!contractor.iid().as_str().is_empty());
     let exact_employees = db
         .entities::<Employee>()
         .all()
@@ -3830,7 +3830,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     assert!(
         exact_employees
             .iter()
-            .any(|value| value.iid() == employee_iid)
+            .any(|value| value.iid().as_str() == employee_iid)
     );
     assert_eq!(
         db.entities::<Employee>()
@@ -3842,44 +3842,44 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     assert!(
         exact_employees
             .iter()
-            .all(|value| value.iid() != manager.iid())
+            .all(|value| value.iid().as_str() != manager.iid().as_str())
     );
     assert!(
         db.entities::<Employee>()
-            .get_by_iid(manager.iid())
+            .get_by_iid(manager.iid().as_str())
             .await
             .expect("exact employee lookup")
             .is_none()
     );
     db.entities::<Employee>()
-        .delete(manager.iid())
+        .delete(manager.iid().as_str())
         .await
         .expect("exact employee delete manager iid");
     assert!(
         db.entities::<Manager>()
-            .get_by_iid(manager.iid())
+            .get_by_iid(manager.iid().as_str())
             .await
             .expect("manager remains")
             .is_some()
     );
     let manager_exact = db
         .entities::<Manager>()
-        .get_by_iid(manager.iid())
+        .get_by_iid(manager.iid().as_str())
         .await
         .expect("manager exact rehydrate")
         .expect("manager exact row");
-    assert_eq!(manager_exact.iid(), manager.iid());
+    assert_eq!(manager_exact.iid().as_str(), manager.iid().as_str());
     assert_eq!(manager_exact.identifier().value(), "mgr-1");
     assert_eq!(manager_exact.party_name().value(), "manager");
     assert_eq!(manager_exact.rank().value(), &2);
     assert_eq!(manager_exact.manager_note().value(), "lead");
     let contractor_exact = db
         .entities::<Contractor>()
-        .get_by_iid(contractor.iid())
+        .get_by_iid(contractor.iid().as_str())
         .await
         .expect("contractor exact rehydrate")
         .expect("contractor exact row");
-    assert_eq!(contractor_exact.iid(), contractor.iid());
+    assert_eq!(contractor_exact.iid().as_str(), contractor.iid().as_str());
     assert_eq!(contractor_exact.identifier().value(), "ctr-1");
     assert_eq!(contractor_exact.party_name().value(), "contractor");
     assert_eq!(contractor_exact.contractor_code().value(), "ctr-1");
@@ -3916,13 +3916,13 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     let manager_variant = db
         .entities::<Employee>()
         .subtypes()
-        .get_by_iid(manager.iid())
+        .get_by_iid(manager.iid().as_str())
         .await
         .expect("manager subtype get")
         .expect("manager variant");
     match manager_variant {
         EmployeeFamily::Manager(value) => {
-            assert_eq!(value.iid(), manager.iid());
+            assert_eq!(value.iid().as_str(), manager.iid().as_str());
             assert_eq!(value.manager_note().value(), "lead");
         }
         EmployeeFamily::Employee(_) => panic!("manager must dispatch as Manager"),
@@ -3930,20 +3930,20 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     let contractor_variant = db
         .entities::<Party>()
         .subtypes()
-        .get_by_iid(contractor.iid())
+        .get_by_iid(contractor.iid().as_str())
         .await
         .expect("contractor subtype get")
         .expect("contractor variant");
     match contractor_variant {
         PartyFamily::Contractor(value) => {
-            assert_eq!(value.iid(), contractor.iid());
+            assert_eq!(value.iid().as_str(), contractor.iid().as_str());
             assert_eq!(value.contractor_code().value(), "ctr-1");
         }
         _ => panic!("contractor must dispatch as Contractor"),
     }
-    assert!(party_family.iter().any(|v| v.iid() == employee.iid()));
-    assert!(party_family.iter().any(|v| v.iid() == manager.iid()));
-    assert!(party_family.iter().any(|v| v.iid() == contractor.iid()));
+    assert!(party_family.iter().any(|v| v.iid().as_str() == employee.iid().as_str()));
+    assert!(party_family.iter().any(|v| v.iid().as_str() == manager.iid().as_str()));
+    assert!(party_family.iter().any(|v| v.iid().as_str() == contractor.iid().as_str()));
     let mut employee_common = employee_family
         .iter()
         .map(|family| {
@@ -3982,12 +3982,12 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     for family in employee_family {
         match family {
             EmployeeFamily::Employee(value) => {
-                assert_eq!(value.iid(), employee_iid);
+                assert_eq!(value.iid().as_str(), employee_iid);
                 assert_eq!(value.rank().value(), &6);
                 assert_eq!(value.party_name().value(), "employee-updated");
             }
             EmployeeFamily::Manager(value) => {
-                assert_eq!(value.iid(), manager.iid());
+                assert_eq!(value.iid().as_str(), manager.iid().as_str());
                 assert_eq!(value.manager_note().value(), "lead");
             }
         }
@@ -3995,16 +3995,16 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     for family in party_family {
         match family {
             PartyFamily::Employee(value) => {
-                assert_eq!(value.iid(), employee_iid);
+                assert_eq!(value.iid().as_str(), employee_iid);
                 assert_eq!(value.party_name().value(), "employee-updated");
                 assert_eq!(value.rank().value(), &6);
             }
             PartyFamily::Manager(value) => {
-                assert_eq!(value.iid(), manager.iid());
+                assert_eq!(value.iid().as_str(), manager.iid().as_str());
                 assert_eq!(value.manager_note().value(), "lead");
             }
             PartyFamily::Contractor(value) => {
-                assert_eq!(value.iid(), contractor.iid());
+                assert_eq!(value.iid().as_str(), contractor.iid().as_str());
                 assert_eq!(value.contractor_code().value(), "ctr-1");
             }
         }
@@ -4070,38 +4070,38 @@ async fn generated_inheritance_exact_and_subtype_reads() {
             .one()
             .await
             .expect("exact employee result");
-        assert_eq!(exact_employee.iid(), employee_iid);
+        assert_eq!(exact_employee.iid().as_str(), employee_iid);
     }
 
     db.entities::<Manager>()
-        .delete(manager.iid())
+        .delete(manager.iid().as_str())
         .await
         .expect("manager delete");
     db.entities::<Employee>()
-        .delete(employee.iid())
+        .delete(employee.iid().as_str())
         .await
         .expect("employee delete");
     db.entities::<Contractor>()
-        .delete(contractor.iid())
+        .delete(contractor.iid().as_str())
         .await
         .expect("contractor delete");
     assert!(
         db.entities::<Manager>()
-            .get_by_iid(manager.iid())
+            .get_by_iid(manager.iid().as_str())
             .await
             .expect("manager cleanup get")
             .is_none()
     );
     assert!(
         db.entities::<Employee>()
-            .get_by_iid(employee.iid())
+            .get_by_iid(employee.iid().as_str())
             .await
             .expect("employee cleanup get")
             .is_none()
     );
     assert!(
         db.entities::<Contractor>()
-            .get_by_iid(contractor.iid())
+            .get_by_iid(contractor.iid().as_str())
             .await
             .expect("contractor cleanup get")
             .is_none()
@@ -4241,7 +4241,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .await
             .expect("keyed network insert"),
     );
-    let keyed_link_iid = keyed_link.iid().to_owned();
+    let keyed_link_iid = keyed_link.iid().as_str().to_owned();
     assert_eq!(keyed_link.identifier().value(), "link-keyed");
     assert_eq!(
         keyed_link.nickname().expect("initial nickname").value(),
@@ -4264,7 +4264,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .await
             .expect("keyed network put hit"),
     );
-    assert_eq!(keyed_put.iid(), keyed_link_iid);
+    assert_eq!(keyed_put.iid().as_str(), keyed_link_iid);
     assert_eq!(
         keyed_put.nickname().expect("put nickname").value(),
         "put-replaced"
@@ -4289,7 +4289,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .await
             .expect("keyed network put miss"),
     );
-    let put_new_iid = put_new.iid().to_owned();
+    let put_new_iid = put_new.iid().as_str().to_owned();
     assert_ne!(put_new_iid, keyed_link_iid);
     let updated_new = one_written(
         db.relations::<NetworkLink>()
@@ -4307,7 +4307,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .await
             .expect("network update replaces attributes and roles"),
     );
-    assert_eq!(updated_new.iid(), put_new_iid);
+    assert_eq!(updated_new.iid().as_str(), put_new_iid);
     assert!(updated_new.nickname().is_none());
     assert_eq!(updated_new.origin().identifier().value(), "p-202");
     assert_eq!(updated_new.destination().identifier().value(), "p-203");
@@ -4342,8 +4342,8 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .expect("network relation put_many")
         .into_items();
     assert_eq!(keyed_batch.len(), 2);
-    assert_eq!(keyed_batch[0].iid(), keyed_link_iid);
-    let batch_link_iid = keyed_batch[1].iid().to_owned();
+    assert_eq!(keyed_batch[0].iid().as_str(), keyed_link_iid);
+    let batch_link_iid = keyed_batch[1].iid().as_str().to_owned();
     assert_ne!(batch_link_iid, keyed_link_iid);
     assert_ne!(batch_link_iid, put_new_iid);
     assert_eq!(
@@ -4386,7 +4386,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
                 .await
                 .expect("graph link insert"),
         );
-        graph_link_iids.push(link.iid().to_owned());
+        graph_link_iids.push(link.iid().as_str().to_owned());
     }
     // Keep query scopes in separate polling frames in this large fixture.
     Box::pin(async {
@@ -4484,7 +4484,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .await
             .expect("employment insert by IID reference"),
     );
-    let employment_one_iid = employment_one.iid().to_owned();
+    let employment_one_iid = employment_one.iid().as_str().to_owned();
     assert!(!employment_one_iid.is_empty());
     let employment_read = db
         .relations::<Employment>()
@@ -4492,7 +4492,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .await
         .expect("employment exact read")
         .expect("employment exists");
-    assert_eq!(employment_read.iid(), employment_one_iid);
+    assert_eq!(employment_read.iid().as_str(), employment_one_iid);
     assert_eq!(
         db.relations::<Employment>()
             .count()
@@ -4513,7 +4513,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .expect("employment insert_many by typed key reference")
         .into_items();
     assert_eq!(employment_batch.len(), 1);
-    let employment_two_iid = employment_batch[0].iid().to_owned();
+    let employment_two_iid = employment_batch[0].iid().as_str().to_owned();
     assert_ne!(employment_two_iid, employment_one_iid);
 
     let employment_updated = one_written(
@@ -4525,7 +4525,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .await
             .expect("employment update replaces the active player set"),
     );
-    assert_eq!(employment_updated.iid(), employment_one_iid);
+    assert_eq!(employment_updated.iid().as_str(), employment_one_iid);
 
     let employment_put = one_written(
         db.relations::<Employment>()
@@ -4533,7 +4533,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .await
             .expect("employment put without a usable key inserts"),
     );
-    let employment_three_iid = employment_put.iid().to_owned();
+    let employment_three_iid = employment_put.iid().as_str().to_owned();
     assert_ne!(employment_three_iid, employment_one_iid);
     assert_ne!(employment_three_iid, employment_two_iid);
     assert_eq!(
@@ -4552,7 +4552,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
     assert!(
         employment_all
             .iter()
-            .any(|value| value.iid() == employment_one_iid)
+            .any(|value| value.iid().as_str() == employment_one_iid)
     );
 
     // F3-06B: reusable generated queries, all reducers, and role-grouped
@@ -4611,22 +4611,22 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .one()
             .await
             .expect("single worker result");
-        assert_eq!(worker_a_query.iid(), worker_a.iid());
+        assert_eq!(worker_a_query.iid().as_str(), worker_a.iid().as_str());
         let worker_a_by_iid = session
             .query(person_binding)
             .expect("single worker IID query")
             .where_(
-                person_binding.iid(worker_a.iid()) & aliases.is_present() & nickname.is_missing(),
+                person_binding.iid(worker_a.iid().as_str()) & aliases.is_present() & nickname.is_missing(),
             )
             .expect("single worker IID and presence predicates")
             .one()
             .await
             .expect("single worker IID result");
-        assert_eq!(worker_a_by_iid.iid(), worker_a.iid());
+        assert_eq!(worker_a_by_iid.iid().as_str(), worker_a.iid().as_str());
         let workers_by_iid = session
             .query(person_binding)
             .expect("worker IID set query")
-            .where_(person_binding.iid_in([worker_a.iid(), worker_b.iid()]))
+            .where_(person_binding.iid_in([worker_a.iid().as_str(), worker_b.iid().as_str()]))
             .expect("worker IID set predicate")
             .rows(RowsOptions::new(10).order_by(identifier.asc()))
             .await
@@ -4634,9 +4634,9 @@ async fn generated_relation_query_and_remote_lifecycle() {
         assert_eq!(
             workers_by_iid
                 .iter()
-                .map(|value| value.iid())
+                .map(|value| value.iid().as_str())
                 .collect::<Vec<_>>(),
-            vec![worker_a.iid(), worker_b.iid()]
+            vec![worker_a.iid().as_str(), worker_b.iid().as_str()]
         );
         let network_by_iid = session
             .query(network_binding)
@@ -4654,7 +4654,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .one()
             .await
             .expect("network IID result");
-        assert_eq!(network_by_iid.iid(), graph_link_iids[0]);
+        assert_eq!(network_by_iid.iid().as_str(), graph_link_iids[0]);
 
         let stats: (
             u64,
@@ -4751,8 +4751,8 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .one()
             .await
             .expect("cross query result");
-        assert_eq!(cross_pair.0.iid(), worker_a.iid());
-        assert_eq!(cross_pair.1.iid(), worker_b.iid());
+        assert_eq!(cross_pair.0.iid().as_str(), worker_a.iid().as_str());
+        assert_eq!(cross_pair.1.iid().as_str(), worker_b.iid().as_str());
     })
     .await;
     println!("F3 public generated query lifecycle: passed");
@@ -4973,7 +4973,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .query(person_binding)
         .expect("F4 remote worker IID query")
         .where_(
-            person_binding.iid(worker_a.iid())
+            person_binding.iid(worker_a.iid().as_str())
                 & person_binding.field(PersonType::aliases).is_present()
                 & person_binding.field(PersonType::nickname).is_missing(),
         )
@@ -4981,11 +4981,11 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .one()
         .await
         .expect("F4 remote worker IID result");
-    assert_eq!(remote_worker_by_iid.iid(), worker_a.iid());
+    assert_eq!(remote_worker_by_iid.iid().as_str(), worker_a.iid().as_str());
     let remote_workers_by_iid = session
         .query(person_binding)
         .expect("F4 remote worker IID set query")
-        .where_(person_binding.iid_in([worker_a.iid(), worker_b.iid()]))
+        .where_(person_binding.iid_in([worker_a.iid().as_str(), worker_b.iid().as_str()]))
         .expect("F4 remote worker IID set predicate")
         .rows(RowsOptions::new(10).order_by(identifier.asc()))
         .await
@@ -4993,9 +4993,9 @@ async fn generated_relation_query_and_remote_lifecycle() {
     assert_eq!(
         remote_workers_by_iid
             .iter()
-            .map(|value| value.iid())
+            .map(|value| value.iid().as_str())
             .collect::<Vec<_>>(),
-        vec![worker_a.iid(), worker_b.iid()]
+        vec![worker_a.iid().as_str(), worker_b.iid().as_str()]
     );
     let remote_network = session
         .exact::<NetworkLink>()
@@ -5014,7 +5014,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .one()
         .await
         .expect("F4 remote network IID result");
-    assert_eq!(remote_network_by_iid.iid(), graph_link_iids[0]);
+    assert_eq!(remote_network_by_iid.iid().as_str(), graph_link_iids[0]);
     let remote_cross_left = session
         .exact::<Person>()
         .expect("F4 remote cross left binding");
@@ -5038,8 +5038,8 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .one()
         .await
         .expect("F4 remote cross result");
-    assert_eq!(remote_cross_pair.0.iid(), worker_a.iid());
-    assert_eq!(remote_cross_pair.1.iid(), worker_b.iid());
+    assert_eq!(remote_cross_pair.0.iid().as_str(), worker_a.iid().as_str());
+    assert_eq!(remote_cross_pair.1.iid().as_str(), worker_b.iid().as_str());
     println!("F4 public selected/read/remote lifecycle: passed");
 
     for iid in &graph_link_iids {
@@ -5080,7 +5080,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .expect("membership family get")
         .expect("membership family member");
     match membership_variant {
-        MembershipFamily::Employment(value) => assert_eq!(value.iid(), employment_one_iid),
+        MembershipFamily::Employment(value) => assert_eq!(value.iid().as_str(), employment_one_iid),
         MembershipFamily::Membership(_) => {
             panic!("employment must dispatch as the Employment variant")
         }
@@ -5102,21 +5102,21 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .await
             .expect("event insert"),
     );
-    let event_iid = event.iid().to_owned();
+    let event_iid = event.iid().as_str().to_owned();
     let container = one_written(
         db.relations::<Container>()
             .insert(ContainerCreate::new(vec![event.reference()]).expect("container create"))
             .await
             .expect("container insert with a relation player"),
     );
-    let container_iid = container.iid().to_owned();
+    let container_iid = container.iid().as_str().to_owned();
     let container_read = db
         .relations::<Container>()
         .get_by_iid(&container_iid)
         .await
         .expect("container exact read")
         .expect("container exists");
-    assert_eq!(container_read.iid(), container_iid);
+    assert_eq!(container_read.iid().as_str(), container_iid);
     assert_eq!(
         db.relations::<Container>()
             .count()
@@ -5174,7 +5174,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
     );
     for value in [worker_a, worker_b, worker_c, worker_d] {
         db.entities::<Person>()
-            .delete(value.iid())
+            .delete(value.iid().as_str())
             .await
             .expect("relation worker cleanup");
     }
@@ -5223,7 +5223,7 @@ async fn one_program(connection: &Connection<AppSchema>) -> Value {
     let iids = |values: &[Person]| {
         values
             .iter()
-            .map(|value| value.iid().to_owned())
+            .map(|value| value.iid().as_str().to_owned())
             .collect::<Vec<_>>()
     };
     let rows = people
@@ -5265,12 +5265,12 @@ async fn one_program(connection: &Connection<AppSchema>) -> Value {
         .expect("one-program employment");
     let observed = json!({
         "rows": iids(&rows),
-        "first": first.iid(),
+        "first": first.iid().as_str(),
         "page": [iids(page.items()), page.total()],
         "count": people.count().await.expect("one-program count"),
         "exists": people.exists().await.expect("one-program exists"),
         "aggregate": [totals.0, totals.1],
-        "employment": employed.iid(),
+        "employment": employed.iid().as_str(),
     });
     drop(people);
     drop(session);
@@ -5281,7 +5281,7 @@ async fn one_program(connection: &Connection<AppSchema>) -> Value {
         .query_with_resources(zero_role_players(), AnswerCancellation::default())
         .expect("one-program limited session");
     let mut observed = observed;
-    observed["limit_refusal"] = role_player_refusal(&mut limited, employed.iid()).await;
+    observed["limit_refusal"] = role_player_refusal(&mut limited, employed.iid().as_str()).await;
     observed
 }
 
@@ -5356,7 +5356,7 @@ async fn generated_one_program_under_direct_and_proxy_connections() {
     assert!(matches!(proxy, Connection::Proxy(_)));
 
     let direct_observed = one_program(&direct).await;
-    assert_eq!(direct_observed["employment"], employment.iid());
+    assert_eq!(direct_observed["employment"], employment.iid().as_str());
     assert_eq!(direct_observed["count"], 2);
     assert_eq!(one_program(&proxy).await, direct_observed);
     // A typed terminal sees the earlier write on the same commit snapshot.
@@ -5417,7 +5417,7 @@ async fn generated_one_program_under_direct_and_proxy_connections() {
     for connection in &ceilinged {
         let mut session = connection.query().expect("ceilinged session");
         assert_eq!(
-            role_player_refusal(&mut session, employment.iid()).await,
+            role_player_refusal(&mut session, employment.iid().as_str()).await,
             direct_observed["limit_refusal"],
             "a session must not exceed its connection's answer ceiling"
         );
@@ -5425,12 +5425,12 @@ async fn generated_one_program_under_direct_and_proxy_connections() {
     drop(ceilinged);
 
     db.relations::<Employment>()
-        .delete(employment.iid())
+        .delete(employment.iid().as_str())
         .await
         .expect("one-program employment cleanup");
     for worker in &workers {
         db.entities::<Person>()
-            .delete(worker.iid())
+            .delete(worker.iid().as_str())
             .await
             .expect("one-program person cleanup");
     }
@@ -5485,43 +5485,43 @@ async fn manager_program(
             assert!(terminal!(manager.subtypes().get_by_iid("0xffff")).is_none());
 
             let inserted = one_written(terminal!(manager.insert(make("a", "insert"))));
-            let first_iid = inserted.iid().to_owned();
+            let first_iid = inserted.iid().as_str().to_owned();
             assert_eq!(observe(&inserted), "insert");
             let put = one_written(terminal!(manager.put(make("a", "put"))));
-            assert_eq!(put.iid(), first_iid);
+            assert_eq!(put.iid().as_str(), first_iid);
             assert_eq!(observe(&put), "put");
             let updated = one_written(terminal!(manager.update(&first_iid, make("a", "update"))));
-            assert_eq!(updated.iid(), first_iid);
+            assert_eq!(updated.iid().as_str(), first_iid);
             assert_eq!(observe(&updated), "update");
             terminal!(manager.delete(&first_iid));
             let many = terminal!(manager.insert_many(["b", "c", "d"].map(|key| make(key, "many-insert")).to_vec()));
             assert_eq!(many.items().len(), 3);
             let iids = many.items().iter().zip(many.input_indexes()).map(|(item, index)| {
                 assert_eq!(observe(item), "many-insert");
-                (*index, item.iid().to_owned())
+                (*index, item.iid().as_str().to_owned())
             }).collect::<BTreeMap<_, _>>();
             assert_eq!(iids.keys().copied().collect::<Vec<_>>(), [0, 1, 2]);
             let put_many = terminal!(manager.put_many(["b", "c", "d"].map(|key| make(key, "many-put")).to_vec()));
             assert_eq!(put_many.items().len(), 3);
             for (item, index) in put_many.items().iter().zip(put_many.input_indexes()) {
-                assert_eq!(item.iid(), iids[index]);
+                assert_eq!(item.iid().as_str(), iids[index]);
                 assert_eq!(observe(item), "many-put");
             }
             let update_many = terminal!(manager.update_many(["b", "c", "d"].iter().enumerate()
                 .map(|(index, key)| (iids[&index].clone(), make(key, "many-update"))).collect()));
             assert_eq!(update_many.items().len(), 3);
             for (item, index) in update_many.items().iter().zip(update_many.input_indexes()) {
-                assert_eq!(item.iid(), iids[index]);
+                assert_eq!(item.iid().as_str(), iids[index]);
                 assert_eq!(observe(item), "many-update");
             }
             terminal!(manager.delete_many(&[iids[&0].clone()]));
             let deleted = one_written(terminal!(manager.delete_returning(&iids[&1])));
-            assert_eq!(deleted.iid(), iids[&1]);
+            assert_eq!(deleted.iid().as_str(), iids[&1]);
             assert_eq!(observe(&deleted), "many-update");
             let deleted_many = terminal!(manager.delete_many_returning(&[iids[&2].clone()]));
             assert_eq!(deleted_many.items().len(), 1);
             assert_eq!(deleted_many.input_indexes(), [0]);
-            assert_eq!(deleted_many.items()[0].iid(), iids[&2]);
+            assert_eq!(deleted_many.items()[0].iid().as_str(), iids[&2]);
             assert_eq!(observe(&deleted_many.items()[0]), "many-update");
             assert_eq!(calls, 20);
             json!({"model": $label, "baseline": baseline, "subtypes": subtype_count,
@@ -5653,7 +5653,7 @@ async fn generated_managers_share_direct_and_http_proxy_terminals() {
     drop(proxy);
     drop(direct);
     for worker in workers {
-        db.entities::<Person>().delete(worker.iid()).await.unwrap();
+        db.entities::<Person>().delete(worker.iid().as_str()).await.unwrap();
     }
     println!(
         "06.6 generated managers: 20 entity and 20 relation terminals, direct/HTTP proxy, one exchange each: passed"
@@ -5874,9 +5874,9 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
             .await
             .expect("combined role rows");
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0.iid(), robot_interaction.iid());
+        assert_eq!(rows[0].0.iid().as_str(), robot_interaction.iid().as_str());
         assert_eq!(rows[0].1.robot_id().value(), &-42);
-        assert_eq!(rows[0].2.iid(), target.iid());
+        assert_eq!(rows[0].2.iid().as_str(), target.iid().as_str());
     }
 
     let filtered_interactions = {
@@ -5896,33 +5896,33 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
             .expect("filtered delete rows")
     };
     assert_eq!(filtered_interactions.len(), 1);
-    assert_eq!(filtered_interactions[0].iid(), person_interaction.iid());
+    assert_eq!(filtered_interactions[0].iid().as_str(), person_interaction.iid().as_str());
     for interaction in filtered_interactions {
         db.relations::<Interaction>()
-            .delete(interaction.iid())
+            .delete(interaction.iid().as_str())
             .await
             .expect("filtered interaction delete");
     }
 
     db.relations::<Membership>()
-        .delete(robot_membership.iid())
+        .delete(robot_membership.iid().as_str())
         .await
         .expect("robot membership cleanup before entity delete");
     db.entities::<Robot>()
-        .delete(negative_robot.iid())
+        .delete(negative_robot.iid().as_str())
         .await
         .expect("negative-key robot delete");
     let surviving = db
         .relations::<Interaction>()
-        .get_by_iid(robot_interaction.iid())
+        .get_by_iid(robot_interaction.iid().as_str())
         .await
         .expect("surviving interaction read")
         .expect("interaction survives optional actor deletion");
     assert!(surviving.actor().is_none());
-    assert_eq!(surviving.target().iid(), target.iid());
+    assert_eq!(surviving.target().iid().as_str(), target.iid().as_str());
 
     db.relations::<Interaction>()
-        .delete(surviving.iid())
+        .delete(surviving.iid().as_str())
         .await
         .expect("surviving interaction cleanup");
     for robot in robots
@@ -5930,16 +5930,16 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
         .filter(|value| value.robot_id().value() != &-42)
     {
         db.entities::<Robot>()
-            .delete(robot.iid())
+            .delete(robot.iid().as_str())
             .await
             .expect("remaining robot cleanup");
     }
     db.entities::<Person>()
-        .delete(person_actor.iid())
+        .delete(person_actor.iid().as_str())
         .await
         .expect("person actor cleanup");
     db.entities::<Person>()
-        .delete(target.iid())
+        .delete(target.iid().as_str())
         .await
         .expect("target cleanup");
 
@@ -5995,15 +5995,15 @@ async fn generated_plain_inherited_abstract_role_parity() {
             .await
             .expect("plain activity insert"),
     );
-    assert_eq!(activity.participant().iid(), person.iid());
+    assert_eq!(activity.participant().iid().as_str(), person.iid().as_str());
 
     let stored = db
         .relations::<PlainActivity>()
-        .get_by_iid(activity.iid())
+        .get_by_iid(activity.iid().as_str())
         .await
         .expect("plain activity lookup")
         .expect("plain activity exists");
-    assert_eq!(stored.participant().iid(), person.iid());
+    assert_eq!(stored.participant().iid().as_str(), person.iid().as_str());
 
     {
         let mut session = db.query().expect("plain activity query session");
@@ -6025,16 +6025,16 @@ async fn generated_plain_inherited_abstract_role_parity() {
             .one()
             .await
             .expect("plain activity row");
-        assert_eq!(queried_activity.iid(), activity.iid());
-        assert_eq!(queried_participant.iid(), person.iid());
+        assert_eq!(queried_activity.iid().as_str(), activity.iid().as_str());
+        assert_eq!(queried_participant.iid().as_str(), person.iid().as_str());
     }
 
     db.relations::<PlainActivity>()
-        .delete(activity.iid())
+        .delete(activity.iid().as_str())
         .await
         .expect("plain activity cleanup");
     db.entities::<Person>()
-        .delete(person.iid())
+        .delete(person.iid().as_str())
         .await
         .expect("plain activity participant cleanup");
     assert_eq!(
@@ -6065,16 +6065,16 @@ async fn generated_unkeyed_entity_iid_lifecycle_and_singular_query() {
             .await
             .expect("counter insert"),
     );
-    assert!(!counter.iid().is_empty());
+    assert!(!counter.iid().as_str().is_empty());
     assert_eq!(counter.counter_value().value(), &42);
 
     let stored = db
         .entities::<Counter>()
-        .get_by_iid(counter.iid())
+        .get_by_iid(counter.iid().as_str())
         .await
         .expect("counter exact read")
         .expect("counter exists");
-    assert_eq!(stored.iid(), counter.iid());
+    assert_eq!(stored.iid().as_str(), counter.iid().as_str());
     assert_eq!(stored.counter_value().value(), &42);
 
     {
@@ -6094,7 +6094,7 @@ async fn generated_unkeyed_entity_iid_lifecycle_and_singular_query() {
             .one()
             .await
             .expect("singular keyless counter result");
-        assert_eq!(queried.iid(), counter.iid());
+        assert_eq!(queried.iid().as_str(), counter.iid().as_str());
         let bounded = query
             .rows(RowsOptions::new(2))
             .await
@@ -6103,7 +6103,7 @@ async fn generated_unkeyed_entity_iid_lifecycle_and_singular_query() {
     }
 
     db.entities::<Counter>()
-        .delete(counter.iid())
+        .delete(counter.iid().as_str())
         .await
         .expect("counter cleanup");
     assert_eq!(db.entities::<Counter>().count().await.unwrap(), baseline);
@@ -6134,9 +6134,9 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
         .await
         .expect("hook parity people insert")
         .into_items();
-    let first_iid = people[0].iid().to_owned();
-    let second_iid = people[1].iid().to_owned();
-    let absent_iid = people[2].iid().to_owned();
+    let first_iid = people[0].iid().as_str().to_owned();
+    let second_iid = people[1].iid().as_str().to_owned();
+    let absent_iid = people[2].iid().as_str().to_owned();
     db.entities::<Person>()
         .delete(&absent_iid)
         .await
@@ -6227,7 +6227,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
         .expect("a missing input does not discard matched writes");
     assert_eq!(partially_matched.count(), 1);
     assert_eq!(partially_matched.input_indexes(), &[0]);
-    assert_eq!(partially_matched.items()[0].iid(), first_iid);
+    assert_eq!(partially_matched.items()[0].iid().as_str(), first_iid);
     assert_eq!(
         partially_matched.items()[0].aliases()[0].value(),
         "matched-update"
@@ -6288,8 +6288,8 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
         .await
         .expect("hook parity employment insert batch")
         .into_items();
-    let first_employment_iid = employment[0].iid().to_owned();
-    let second_employment_iid = employment[1].iid().to_owned();
+    let first_employment_iid = employment[0].iid().as_str().to_owned();
+    let second_employment_iid = employment[1].iid().as_str().to_owned();
 
     events.lock().expect("hook event lock").clear();
     let mut hooked_relations = db.relations::<Employment>();
@@ -6316,8 +6316,8 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
         .await
         .expect("relation update batch commits despite post-hook failure")
         .into_items();
-    assert_eq!(updated_relations[0].iid(), first_employment_iid);
-    assert_eq!(updated_relations[1].iid(), second_employment_iid);
+    assert_eq!(updated_relations[0].iid().as_str(), first_employment_iid);
+    assert_eq!(updated_relations[1].iid().as_str(), second_employment_iid);
     assert!(
         events
             .lock()
@@ -6388,7 +6388,7 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
     );
     assert!(
         tx.entities::<Person>()
-            .get_by_iid(committed_worker.iid())
+            .get_by_iid(committed_worker.iid().as_str())
             .await
             .expect("uncommitted read inside the open transaction")
             .is_some()
@@ -6396,14 +6396,14 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
     tx.commit().await.expect("multi-operation commit");
     assert!(
         db.entities::<Person>()
-            .get_by_iid(committed_worker.iid())
+            .get_by_iid(committed_worker.iid().as_str())
             .await
             .expect("committed person visible")
             .is_some()
     );
     assert!(
         db.relations::<Employment>()
-            .get_by_iid(committed_employment.iid())
+            .get_by_iid(committed_employment.iid().as_str())
             .await
             .expect("committed employment visible")
             .is_some()
@@ -6416,7 +6416,7 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
             .await
             .expect("rolled-back person insert"),
     );
-    let rolled_iid = rolled.iid().to_owned();
+    let rolled_iid = rolled.iid().as_str().to_owned();
     tx.rollback().await.expect("explicit rollback");
     assert!(
         db.entities::<Person>()
@@ -6433,7 +6433,7 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
             .await
             .expect("dropped-transaction person insert"),
     );
-    let dropped_iid = dropped.iid().to_owned();
+    let dropped_iid = dropped.iid().as_str().to_owned();
     drop(tx);
     assert!(
         db.entities::<Person>()
@@ -6444,11 +6444,11 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
     );
 
     db.relations::<Employment>()
-        .delete(committed_employment.iid())
+        .delete(committed_employment.iid().as_str())
         .await
         .expect("transaction employment cleanup");
     db.entities::<Person>()
-        .delete(committed_worker.iid())
+        .delete(committed_worker.iid().as_str())
         .await
         .expect("transaction person cleanup");
     assert_eq!(
@@ -6595,7 +6595,7 @@ async fn sdk_serialization_live() {
     let rebound_employment = one_written(
         db.relations::<Employment>()
             .update(
-                employment.iid(),
+                employment.iid().as_str(),
                 EmploymentCreate::new(rebound.reference()).expect("Serialization rebound input"),
             )
             .await
@@ -6616,13 +6616,13 @@ async fn sdk_serialization_live() {
         &sdk_env_path("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE"),
         evidence,
     );
-    assert_eq!(rebound_employment.iid(), employment.iid());
+    assert_eq!(rebound_employment.iid().as_str(), employment.iid().as_str());
     db.relations::<Employment>()
-        .delete(employment.iid())
+        .delete(employment.iid().as_str())
         .await
         .expect("Serialization employment cleanup");
     db.entities::<Person>()
-        .delete(person.iid())
+        .delete(person.iid().as_str())
         .await
         .expect("Serialization person cleanup");
     println!("generated Serialization Rust live evidence: passed");
@@ -6674,7 +6674,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
     assert_eq!(values.len(), 2);
     let ids = values
         .iter()
-        .map(|value| value.iid().to_owned())
+        .map(|value| value.iid().as_str().to_owned())
         .collect::<Vec<_>>();
     for (name, iid) in ["counter-left", "counter-right"].into_iter().zip(&ids) {
         model_plan_identity(name, iid);
@@ -6704,7 +6704,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
             .unwrap(),
     );
     model_plan_mark("");
-    assert_eq!(updated.iid(), ids[0]);
+    assert_eq!(updated.iid().as_str(), ids[0]);
     assert_eq!(*updated.counter_value().value(), 11);
     model_plan_mark("unkeyed_entity_iid_lifecycle.get_by_iid");
     assert_eq!(
@@ -6737,7 +6737,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
     assert_eq!(
         updated_many
             .iter()
-            .map(|value| value.iid())
+            .map(|value| value.iid().as_str())
             .collect::<Vec<_>>(),
         ids.iter().map(String::as_str).collect::<Vec<_>>()
     );
@@ -6754,10 +6754,10 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
         .unwrap()
         .into_items();
     for (name, value) in ["counter-left", "counter-right"].into_iter().zip(&returned) {
-        model_plan_identity(name, value.iid());
+        model_plan_identity(name, value.iid().as_str());
     }
     model_plan_mark("manager_returning_delete.entity");
-    let snapshot = one_written(manager.delete_returning(returned[0].iid()).await.unwrap());
+    let snapshot = one_written(manager.delete_returning(returned[0].iid().as_str()).await.unwrap());
     model_plan_mark("");
     assert_eq!(*snapshot.counter_value().value(), 1);
     model_plan_mark("manager_returning_delete.entity_many");
@@ -6765,7 +6765,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
         .delete_many_returning(
             &returned
                 .iter()
-                .map(|value| value.iid().to_owned())
+                .map(|value| value.iid().as_str().to_owned())
                 .collect::<Vec<_>>(),
         )
         .await
@@ -6805,12 +6805,12 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("ordered_distinct_collections.entity_insert");
     let ada = one_written(people.insert(person(false, "data-ada")).await.unwrap());
     model_plan_mark("");
-    model_plan_identity("data-ada", ada.iid());
+    model_plan_identity("data-ada", ada.iid().as_str());
     assert!(ada.aliases().is_empty());
     model_plan_mark("ordered_distinct_collections.entity_put");
     assert_eq!(
-        one_written(people.put(person(false, "data-ada")).await.unwrap()).iid(),
-        ada.iid()
+        one_written(people.put(person(false, "data-ada")).await.unwrap()).iid().as_str(),
+        ada.iid().as_str()
     );
     model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.entity_count");
@@ -6819,7 +6819,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("ordered_distinct_collections.entity_update");
     one_written(
         people
-            .update(ada.iid(), person(false, "data-ada"))
+            .update(ada.iid().as_str(), person(false, "data-ada"))
             .await
             .unwrap(),
     );
@@ -6827,7 +6827,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("ordered_distinct_collections.entity_read");
     assert!(
         people
-            .get_by_iid(ada.iid())
+            .get_by_iid(ada.iid().as_str())
             .await
             .unwrap()
             .unwrap()
@@ -6853,24 +6853,24 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("ordered_distinct_collections.role_insert");
     let link = one_written(links.insert(link_input(false)).await.unwrap());
     model_plan_mark("");
-    model_plan_identity("link-forward", link.iid());
+    model_plan_identity("link-forward", link.iid().as_str());
     assert!(link.participant().is_empty());
     model_plan_mark("ordered_distinct_collections.role_put");
     assert_eq!(
-        one_written(links.put(link_input(false)).await.unwrap()).iid(),
-        link.iid()
+        one_written(links.put(link_input(false)).await.unwrap()).iid().as_str(),
+        link.iid().as_str()
     );
     model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.role_count");
     assert_eq!(links.count().await.unwrap(), 1);
     model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.role_update");
-    one_written(links.update(link.iid(), link_input(false)).await.unwrap());
+    one_written(links.update(link.iid().as_str(), link_input(false)).await.unwrap());
     model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.role_read");
     assert!(
         links
-            .get_by_iid(link.iid())
+            .get_by_iid(link.iid().as_str())
             .await
             .unwrap()
             .unwrap()
@@ -6891,7 +6891,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     );
     model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.role_delete");
-    links.delete(link.iid()).await.unwrap();
+    links.delete(link.iid().as_str()).await.unwrap();
     model_plan_mark("");
     assert_eq!(links.count().await.unwrap(), 0);
     model_plan_mark("entity_batch_insert_put.put");
@@ -6901,9 +6901,9 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
         .unwrap()
         .into_items();
     model_plan_mark("");
-    assert_eq!(put_people[0].iid(), ada.iid());
-    model_plan_identity("data-dana", put_people[1].iid());
-    people.delete(put_people[1].iid()).await.unwrap();
+    assert_eq!(put_people[0].iid().as_str(), ada.iid().as_str());
+    model_plan_identity("data-dana", put_people[1].iid().as_str());
+    people.delete(put_people[1].iid().as_str()).await.unwrap();
     let batch_input = |identifier: &str| {
         NetworkLinkCreate::new(
             Identifier::new(identifier).unwrap(),
@@ -6925,13 +6925,13 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
         .into_items();
     model_plan_mark("");
     for (name, value) in ["link-forward", "link-return"].into_iter().zip(&put_links) {
-        model_plan_identity(name, value.iid());
+        model_plan_identity(name, value.iid().as_str());
     }
     links
         .delete_many(
             &put_links
                 .iter()
-                .map(|value| value.iid().to_owned())
+                .map(|value| value.iid().as_str().to_owned())
                 .collect::<Vec<_>>(),
         )
         .await
@@ -6950,26 +6950,26 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
         .into_iter()
         .zip(&batch_links)
     {
-        model_plan_identity(name, value.iid());
+        model_plan_identity(name, value.iid().as_str());
     }
     model_plan_mark("relation_batch_update_delete_atomic.update");
     let updated = links
         .update_many(vec![
             (
-                batch_links[0].iid().into(),
+                batch_links[0].iid().as_str().into(),
                 batch_input("data-link-forward"),
             ),
-            (batch_links[1].iid().into(), batch_input("data-link-return")),
+            (batch_links[1].iid().as_str().into(), batch_input("data-link-return")),
         ])
         .await
         .unwrap()
         .into_items();
     model_plan_mark("");
     assert_eq!(
-        updated.iter().map(|value| value.iid()).collect::<Vec<_>>(),
+        updated.iter().map(|value| value.iid().as_str()).collect::<Vec<_>>(),
         batch_links
             .iter()
-            .map(|value| value.iid())
+            .map(|value| value.iid().as_str())
             .collect::<Vec<_>>()
     );
     model_plan_mark("relation_batch_update_delete_atomic.delete");
@@ -6977,7 +6977,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
         .delete_many(
             &batch_links
                 .iter()
-                .map(|value| value.iid().to_owned())
+                .map(|value| value.iid().as_str().to_owned())
                 .collect::<Vec<_>>(),
         )
         .await
@@ -6992,19 +6992,19 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
         .unwrap()
         .into_items();
     for (name, value) in ["link-forward", "link-return"].into_iter().zip(&returned) {
-        model_plan_identity(name, value.iid());
+        model_plan_identity(name, value.iid().as_str());
     }
     model_plan_mark("manager_returning_delete.relation");
-    let snapshot = one_written(links.delete_returning(returned[0].iid()).await.unwrap());
+    let snapshot = one_written(links.delete_returning(returned[0].iid().as_str()).await.unwrap());
     model_plan_mark("");
     assert_eq!(snapshot.identifier().value(), "data-link-forward");
-    assert_eq!(snapshot.origin().iid(), ada.iid());
+    assert_eq!(snapshot.origin().iid().as_str(), ada.iid().as_str());
     model_plan_mark("manager_returning_delete.relation_many");
     let snapshots = links
         .delete_many_returning(
             &returned
                 .iter()
-                .map(|value| value.iid().to_owned())
+                .map(|value| value.iid().as_str().to_owned())
                 .collect::<Vec<_>>(),
         )
         .await
@@ -7013,9 +7013,9 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("");
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].identifier().value(), "data-link-return");
-    assert_eq!(snapshots[0].origin().iid(), ada.iid());
+    assert_eq!(snapshots[0].origin().iid().as_str(), ada.iid().as_str());
     model_plan_mark("ordered_distinct_collections.entity_delete");
-    people.delete(ada.iid()).await.unwrap();
+    people.delete(ada.iid().as_str()).await.unwrap();
     model_plan_mark("");
     assert_eq!(people.count().await.unwrap(), 0);
 }
@@ -7079,7 +7079,7 @@ async fn sdk_models_data_model_runtime_live() {
     );
     for person in &inserted_people {
         db.entities::<Person>()
-            .delete(person.iid())
+            .delete(person.iid().as_str())
             .await
             .expect("insert batch cleanup");
     }
@@ -7101,10 +7101,10 @@ async fn sdk_models_data_model_runtime_live() {
         .map(|person| person.identifier().value().clone())
         .collect::<Vec<_>>();
     assert_eq!(put_keys, ["data-ada", "data-dana"]);
-    assert_eq!(put_people[0].iid(), original_ada.iid());
+    assert_eq!(put_people[0].iid().as_str(), original_ada.iid().as_str());
     for person in &put_people {
         db.entities::<Person>()
-            .delete(person.iid())
+            .delete(person.iid().as_str())
             .await
             .expect("put batch cleanup");
     }
@@ -7130,7 +7130,7 @@ async fn sdk_models_data_model_runtime_live() {
         .any(|person| person.identifier().value() == "data-prefix");
     assert!(!prefix_persisted);
     db.entities::<Person>()
-        .delete(conflict.iid())
+        .delete(conflict.iid().as_str())
         .await
         .expect("late-failure seed cleanup");
     assert_eq!(
@@ -7185,8 +7185,8 @@ async fn sdk_models_data_model_runtime_live() {
         ])
         .await
         .expect("counter update batch seed").into_items();
-    let batch_left_iid = batch_counters[0].iid().to_owned();
-    let batch_right_iid = batch_counters[1].iid().to_owned();
+    let batch_left_iid = batch_counters[0].iid().as_str().to_owned();
+    let batch_right_iid = batch_counters[1].iid().as_str().to_owned();
     let updated_counters = db
         .entities::<Counter>()
         .update_many(vec![
@@ -7203,8 +7203,8 @@ async fn sdk_models_data_model_runtime_live() {
         ])
         .await
         .expect("counter update batch").into_items();
-    assert_eq!(updated_counters[0].iid(), batch_left_iid);
-    assert_eq!(updated_counters[1].iid(), batch_right_iid);
+    assert_eq!(updated_counters[0].iid().as_str(), batch_left_iid);
+    assert_eq!(updated_counters[1].iid().as_str(), batch_right_iid);
     assert_eq!(updated_counters[0].counter_value().value(), &11);
     assert_eq!(updated_counters[1].counter_value().value(), &22);
     let duplicate_target = db
@@ -7324,9 +7324,9 @@ async fn sdk_models_data_model_runtime_live() {
         .await
         .expect("Models counter batch insert").into_items();
     assert_eq!(inserted.len(), 2);
-    assert_ne!(inserted[0].iid(), inserted[1].iid());
-    let left_iid = inserted[0].iid().to_owned();
-    let right_iid = inserted[1].iid().to_owned();
+    assert_ne!(inserted[0].iid().as_str(), inserted[1].iid().as_str());
+    let left_iid = inserted[0].iid().as_str().to_owned();
+    let right_iid = inserted[1].iid().as_str().to_owned();
     let count_after_insert = db
         .entities::<Counter>()
         .count()
@@ -7348,7 +7348,7 @@ async fn sdk_models_data_model_runtime_live() {
         )
         .await
         .expect("counter update"));
-    assert_eq!(updated.iid(), left_iid);
+    assert_eq!(updated.iid().as_str(), left_iid);
     let value_after = updated.counter_value().value().to_string();
     let count_after_update = db
         .entities::<Counter>()
@@ -7403,7 +7403,7 @@ async fn sdk_models_data_model_runtime_live() {
             "ref": "counter-left",
             "value_before": "1",
             "value_after": value_after,
-            "identity_preserved": updated.iid() == left_iid,
+            "identity_preserved": updated.iid().as_str() == left_iid,
             "count_after": count_after_update - baseline,
         },
         "delete_by_identity": {
@@ -7496,7 +7496,7 @@ async fn sdk_models_data_model_runtime_live() {
     assert_eq!(duplicate_network_key.code(), Some("duplicate_batch_key"));
     for relation in &inserted_networks {
         db.relations::<NetworkLink>()
-            .delete(relation.iid())
+            .delete(relation.iid().as_str())
             .await
             .expect("network-link insert cleanup");
     }
@@ -7513,21 +7513,21 @@ async fn sdk_models_data_model_runtime_live() {
         ])
         .await
         .expect("network-link put batch").into_items();
-    assert_eq!(put_networks[0].iid(), original_forward.iid());
+    assert_eq!(put_networks[0].iid().as_str(), original_forward.iid().as_str());
     let put_network_keys = put_networks
         .iter()
         .map(|relation| relation.identifier().value().clone())
         .collect::<Vec<_>>();
     assert_eq!(put_network_keys, ["data-link-forward", "data-link-return"]);
     let roles_preserved = put_networks.iter().all(|relation| {
-        !relation.iid().is_empty()
+        !relation.iid().as_str().is_empty()
             && relation.participant().is_empty()
-            && !relation.origin().iid().is_empty()
-            && !relation.destination().iid().is_empty()
+            && !relation.origin().iid().as_str().is_empty()
+            && !relation.destination().iid().as_str().is_empty()
     });
     for relation in &put_networks {
         db.relations::<NetworkLink>()
-            .delete(relation.iid())
+            .delete(relation.iid().as_str())
             .await
             .expect("network-link put cleanup");
     }
@@ -7557,7 +7557,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("network-link late-failure existence check");
     assert!(!network_prefix_persisted);
     db.relations::<NetworkLink>()
-        .delete(network_conflict.iid())
+        .delete(network_conflict.iid().as_str())
         .await
         .expect("network-link conflict cleanup");
     assert_eq!(
@@ -7608,8 +7608,8 @@ async fn sdk_models_data_model_runtime_live() {
         ])
         .await
         .expect("Models membership insert").into_items();
-    let membership_ada_iid = memberships[0].iid().to_owned();
-    let membership_robot_iid = memberships[1].iid().to_owned();
+    let membership_ada_iid = memberships[0].iid().as_str().to_owned();
+    let membership_robot_iid = memberships[1].iid().as_str().to_owned();
     let updated_memberships = db
         .relations::<Membership>()
         .update_many(vec![
@@ -7627,8 +7627,8 @@ async fn sdk_models_data_model_runtime_live() {
         .await
         .expect("membership update batch").into_items();
     let membership_identities_preserved = [
-        updated_memberships[0].iid() == membership_ada_iid,
-        updated_memberships[1].iid() == membership_robot_iid,
+        updated_memberships[0].iid().as_str() == membership_ada_iid,
+        updated_memberships[1].iid().as_str() == membership_robot_iid,
     ];
     let membership_roles_preserved = updated_memberships
         .iter()
@@ -7735,8 +7735,8 @@ async fn sdk_models_data_model_runtime_live() {
         ])
         .await
         .expect("Models lifecycle membership insert").into_items();
-    let membership_ada_iid = memberships[0].iid().to_owned();
-    let membership_robot_iid = memberships[1].iid().to_owned();
+    let membership_ada_iid = memberships[0].iid().as_str().to_owned();
+    let membership_robot_iid = memberships[1].iid().as_str().to_owned();
     let membership_count_after_insert = db
         .relations::<Membership>()
         .count()
@@ -7800,12 +7800,12 @@ async fn sdk_models_data_model_runtime_live() {
         .await
         .expect("robot membership cleanup");
     db.entities::<Robot>()
-        .delete(robot.iid())
+        .delete(robot.iid().as_str())
         .await
         .expect("robot cleanup");
     for person in &people {
         db.entities::<Person>()
-            .delete(person.iid())
+            .delete(person.iid().as_str())
             .await
             .expect("person cleanup");
     }
@@ -7841,7 +7841,7 @@ async fn sdk_models_data_model_runtime_live() {
             "ref": "membership-ada",
             "roles_before": {"member": ["data-ada"]},
             "roles_after": {"member": [updated_role_key]},
-            "identity_preserved": updated_membership.iid() == membership_ada_iid,
+            "identity_preserved": updated_membership.iid().as_str() == membership_ada_iid,
             "count_after": membership_count_after_update - membership_baseline,
         },
         "delete_by_identity": {
@@ -7900,7 +7900,7 @@ async fn sdk_models_data_model_runtime_live() {
     assert_eq!(read_all.len(), 1);
     assert_eq!(read_count, 1);
     assert!(read_exists && sibling_filter_usable);
-    assert_eq!(read_first.iid(), transaction_seed.iid());
+    assert_eq!(read_first.iid().as_str(), transaction_seed.iid().as_str());
     drop(read_filter);
     drop(read_manager);
     read.close().await.expect("borrowed read closes");
@@ -7915,7 +7915,7 @@ async fn sdk_models_data_model_runtime_live() {
         ))
         .await
         .expect("borrowed commit insert"));
-    let committed_iid = committed.iid().to_owned();
+    let committed_iid = committed.iid().as_str().to_owned();
     let commit_same_transaction_visible = commit_transaction
         .entities::<Person>()
         .get_by_iid(&committed_iid)
@@ -7949,7 +7949,7 @@ async fn sdk_models_data_model_runtime_live() {
         ))
         .await
         .expect("borrowed rollback insert"));
-    let rolled_iid = rolled.iid().to_owned();
+    let rolled_iid = rolled.iid().as_str().to_owned();
     let rollback_same_transaction_visible = rollback_transaction
         .entities::<Person>()
         .get_by_iid(&rolled_iid)
@@ -7982,7 +7982,7 @@ async fn sdk_models_data_model_runtime_live() {
         ))
         .await
         .expect("insert after rollback"));
-    let reused_iid = reused.iid().to_owned();
+    let reused_iid = reused.iid().as_str().to_owned();
     rollback_transaction
         .commit()
         .await
@@ -8111,11 +8111,11 @@ async fn sdk_models_data_model_runtime_live() {
         .await
         .expect("committed transaction cleanup");
     db.entities::<Person>()
-        .delete(transaction_seed.iid())
+        .delete(transaction_seed.iid().as_str())
         .await
         .expect("transaction seed cleanup");
     db.entities::<Person>()
-        .delete(poison_conflict.iid())
+        .delete(poison_conflict.iid().as_str())
         .await
         .expect("poison conflict cleanup");
 
@@ -8165,7 +8165,7 @@ async fn sdk_models_data_model_runtime_live() {
         "result_survival": {
             "result_survives_filter_close": read_first.identifier().value() == "data-transaction-seed",
             "result_survives_transaction_close": read_first.identifier().value() == "data-transaction-seed",
-            "owned_thing_survives_result_close": !read_first.iid().is_empty(),
+            "owned_thing_survives_result_close": !read_first.iid().as_str().is_empty(),
         },
         "cancellation_close_idempotent": true,
         "projected_value_close_idempotent": true,

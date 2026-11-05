@@ -333,3 +333,31 @@ fn family_labels_and_dispatch_share_the_projection_type_identity() {
     }
     assert!(checked > 0);
 }
+
+#[test]
+fn nominal_iid_runtime_name_cannot_be_shadowed_by_a_model() {
+    use type_bridge_contract::id::{TypeId, TypeKind};
+    let source = "format: typebridge.schema/v2\nentities:\n  person: {}\n";
+    let authority = support::authority(source);
+    let resolved = authority.resolved_schema();
+    let emitter = RustEmitter::new();
+    let config = ProjectionConfig::rust()
+        .with_type_name_override(TypeId::new(TypeKind::Entity, "person").unwrap(), "Iid")
+        .unwrap();
+    let projection = project(
+        resolved,
+        BindingTarget::Rust,
+        &config,
+        &emitter.generator_handlers_for(resolved),
+        &emitter.code_resources_for(resolved).unwrap(),
+    )
+    .unwrap();
+    let error = emitter.emit(&projection, &authority).unwrap_err();
+    assert_eq!(error.code().as_str(), "rust_emitter_name_collision");
+    assert!(
+        error
+            .message()
+            .contains("generated Rust runtime export `Iid`")
+    );
+    assert!(error.message().contains("complete model"));
+}

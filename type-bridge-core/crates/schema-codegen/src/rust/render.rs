@@ -50,6 +50,7 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "Either",
     "Never",
     "CanonicalDouble",
+    "Iid",
     "Decimal",
     "Date",
     "DateTime",
@@ -263,7 +264,7 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
                 } else {
                     let _ = writeln!(
                         output,
-                        "impl CompleteModel for {name} {{ type Create = {create}; fn iid(&self) -> &str {{ self.iid() }} }}"
+                        "impl CompleteModel for {name} {{ type Create = {create}; fn iid(&self) -> &str {{ self.iid().as_str() }} }}"
                     );
                 }
             }
@@ -278,7 +279,7 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
                 } else {
                     let _ = writeln!(
                         output,
-                        "impl CompleteModel for {name} {{ type Create = {create}; fn iid(&self) -> &str {{ self.iid() }} }}"
+                        "impl CompleteModel for {name} {{ type Create = {create}; fn iid(&self) -> &str {{ self.iid().as_str() }} }}"
                     );
                 }
             }
@@ -304,7 +305,7 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
             );
             let _ = writeln!(
                 output,
-                "impl ReferenceModel for {reference} {{ fn iid(&self) -> Option<&str> {{ self.iid() }} }}"
+                "impl ReferenceModel for {reference} {{ fn iid(&self) -> Option<&str> {{ self.iid().map(Iid::as_str) }} }}"
             );
         }
 
@@ -324,7 +325,7 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
             );
             let _ = writeln!(
                 output,
-                "impl ModelFamily for {family_name} {{ type Root = {name}; type Schema = AppSchema; fn iid(&self) -> &str {{ self.iid() }} }}"
+                "impl ModelFamily for {family_name} {{ type Root = {name}; type Schema = AppSchema; fn iid(&self) -> &str {{ self.iid().as_str() }} }}"
             );
         }
 
@@ -825,7 +826,7 @@ fn render_read(projection: &RuntimeProjection, ordered: bool) -> Result<String, 
 
             let _ = writeln!(
                 output,
-                "impl MaterializeModel for {name} {{\n  fn materialize(__tb_row: &HydratedRow, __tb_cap: &HydrationCapability) -> Result<Self, ValidationError> {{\n    let __tb_path = ValidationPath::root();\n    __tb_row.validate_shape(Self::TYPE_ID_JSON, &[{exp_fields_str}], &[{exp_roles_str}], &__tb_path)?;\n    let __tb_iid = __tb_row.iid().to_owned();\n    if __tb_iid.trim().is_empty() {{\n      return Err(ValidationError::new(__tb_path.path(), \"empty_iid\"));\n    }}",
+                "impl MaterializeModel for {name} {{\n  fn materialize(__tb_row: &HydratedRow, __tb_cap: &HydrationCapability) -> Result<Self, ValidationError> {{\n    let __tb_path = ValidationPath::root();\n    __tb_row.validate_shape(Self::TYPE_ID_JSON, &[{exp_fields_str}], &[{exp_roles_str}], &__tb_path)?;\n    let __tb_iid = Iid::new(__tb_row.iid()).map_err(|_| ValidationError::new(__tb_path.join(\"iid\").path(), \"invalid_iid\"))?;",
             );
             for member in &members {
                 if member.name == "iid" {
@@ -991,7 +992,7 @@ fn render_read(projection: &RuntimeProjection, ordered: bool) -> Result<String, 
             let snapshot_roles = collect_optional_entries(&snapshot_roles);
             let _ = writeln!(
                 output,
-                "impl IntoHydratedSnapshot for {name} {{\n  fn into_hydrated_snapshot(self) -> Result<HydratedRow, ValidationError> {{\n    let __tb_fields = {snapshot_fields};\n    let __tb_values = {snapshot_roles};\n    Ok(HydratedRow::new(Self::TYPE_ID_JSON, self.iid().to_owned(), __tb_fields, __tb_values))\n  }}\n}}\n"
+                "impl IntoHydratedSnapshot for {name} {{\n  fn into_hydrated_snapshot(self) -> Result<HydratedRow, ValidationError> {{\n    let __tb_fields = {snapshot_fields};\n    let __tb_values = {snapshot_roles};\n    Ok(HydratedRow::new(Self::TYPE_ID_JSON, self.iid().to_string(), __tb_fields, __tb_values))\n  }}\n}}\n"
             );
 
             if let Some(reference_name) = model.reference_read().target_name() {
@@ -1059,7 +1060,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
 
         let _ = writeln!(
             output,
-            "#[derive(Clone, PartialEq)]\npub struct {name} {{\n  __tb_origin: ReferenceOrigin,\n  iid: Option<String>,"
+            "#[derive(Clone, PartialEq)]\npub struct {name} {{\n  __tb_origin: ReferenceOrigin,\n  iid: Option<Iid>,"
         );
         for member in &members {
             let _ = writeln!(output, "  {}: Option<{}>,", member.name, member.value);
@@ -1075,7 +1076,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
         }
         output.push_str("    __tb_debug.finish()\n  }\n}\n\nimpl ");
         output.push_str(name);
-        output.push_str(" {\n  #[allow(clippy::too_many_arguments)]\n  pub(crate) fn __tb_from_parts(__tb_origin: ReferenceOrigin, iid: Option<String>, ");
+        output.push_str(" {\n  #[allow(clippy::too_many_arguments)]\n  pub(crate) fn __tb_from_parts(__tb_origin: ReferenceOrigin, iid: Option<Iid>, ");
         for member in &members {
             let _ = write!(output, "{}: Option<{}>, ", member.name, member.value);
         }
@@ -1085,7 +1086,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
         }
         output.push_str("}\n  }\n\n");
 
-        output.push_str("  pub fn from_iid(iid: impl Into<String>) -> Result<Self, ValidationError> {\n    let iid = iid.into();\n    if iid.trim().is_empty() { return Err(ValidationError::new(\"iid\", \"empty_iid\")); }\n    Ok(Self { __tb_origin: ReferenceOrigin::default(), iid: Some(iid),\n");
+        output.push_str("  pub fn from_iid(iid: Iid) -> Result<Self, ValidationError> {\n    Ok(Self { __tb_origin: ReferenceOrigin::default(), iid: Some(iid),\n");
         for member in &members {
             let _ = writeln!(output, "      {}: None,", member.name);
         }
@@ -1125,7 +1126,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
 
         let _ = writeln!(
             output,
-            "  pub fn iid(&self) -> Option<&str> {{\n    self.iid.as_deref()\n  }}"
+            "  pub fn iid(&self) -> Option<&Iid> {{\n    self.iid.as_ref()\n  }}"
         );
         for member in &members {
             let mname = &member.name;
@@ -1138,7 +1139,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
 
         let _ = writeln!(
             output,
-            "  pub(crate) fn __tb_from_player(__tb_player: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    if __tb_player.type_id_json() != {read_name}::TYPE_ID_JSON {{\n      return Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_model_type\"));\n    }}\n    let __tb_iid = match __tb_player.iid() {{\n      Some(__tb_value) if __tb_value.trim().is_empty() => return Err(ValidationError::new(__tb_path.join(\"iid\").path(), \"empty_iid\")),\n      Some(__tb_value) => Some(__tb_value.to_owned()),\n      None => None,\n    }};"
+            "  pub(crate) fn __tb_from_player(__tb_player: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    if __tb_player.type_id_json() != {read_name}::TYPE_ID_JSON {{\n      return Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_model_type\"));\n    }}\n    let __tb_iid = __tb_player.iid().map(Iid::new).transpose().map_err(|_| ValidationError::new(__tb_path.join(\"iid\").path(), \"invalid_iid\"))?;"
         );
         if members.is_empty() {
             output.push_str("\n    if !__tb_player.keys().is_empty() {\n      return Err(ValidationError::new(__tb_path.join(\"keys\").join_index(0).path(), \"unexpected_reference_key\"));\n    }\n");
@@ -1195,7 +1196,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
 
         let _ = writeln!(
             output,
-            "impl IntoEncodedReference for {name} {{\n  fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {{\n    let mut __tb_keys = Vec::new();\n{enc_keys_code}    EncodedReference::try_new_with_origin({read_name}::TYPE_ID_JSON, self.iid, __tb_keys, self.__tb_origin, &ValidationPath::root())\n  }}\n}}\n"
+            "impl IntoEncodedReference for {name} {{\n  fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {{\n    let mut __tb_keys = Vec::new();\n{enc_keys_code}    EncodedReference::try_new_with_origin({read_name}::TYPE_ID_JSON, self.iid.map(|iid| iid.to_string()), __tb_keys, self.__tb_origin, &ValidationPath::root())\n  }}\n}}\n"
         );
         let _ = writeln!(
             output,
@@ -1425,7 +1426,7 @@ fn render_families(projection: &RuntimeProjection) -> Result<String, Diagnostic>
                 let _ = writeln!(output, "      Self::{variant_name}(..) => {label:?},");
             }
             output.push_str("    }\n  }\n");
-            for (getter, result) in [("iid", "&str"), ("deleted", "bool")] {
+            for (getter, result) in [("iid", "&Iid"), ("deleted", "bool")] {
                 let _ = writeln!(
                     output,
                     "  #[must_use]\n  pub fn {getter}(&self) -> {result} {{\n    match self {{"
@@ -2060,7 +2061,7 @@ impl Member {
 
     fn stored_type(&self) -> String {
         if self.name == "iid" {
-            return "String".to_owned();
+            return "Iid".to_owned();
         }
         match (self.container, self.required) {
             (ProjectedContainer::Scalar, true) => format!("Required<{}>", self.value),
@@ -2071,7 +2072,7 @@ impl Member {
 
     fn parameter_type(&self) -> String {
         if self.name == "iid" {
-            return "String".to_owned();
+            return "Iid".to_owned();
         }
         match (self.container, self.required) {
             (ProjectedContainer::Scalar, true) => self.value.clone(),
@@ -2099,7 +2100,7 @@ impl Member {
 
     fn getter_type(&self) -> String {
         if self.name == "iid" {
-            return "&str".to_owned();
+            return "&Iid".to_owned();
         }
         match (self.container, self.required) {
             (ProjectedContainer::Scalar, true) => format!("&{}", self.value),
@@ -2155,9 +2156,6 @@ fn render_record(
     }
     if fallible {
         output.push_str(") -> Result<Self, ValidationError> {\n");
-        if members.iter().any(|m| m.name == "iid") {
-            output.push_str("    if iid.trim().is_empty() { return Err(ValidationError::new(\"iid\", \"empty_iid\")); }\n");
-        }
         output.push_str(validation_checks);
         if validate_projected_create {
             output.push_str("    let __tb_value = Self {\n");
@@ -2464,7 +2462,7 @@ fn read_members(
 ) -> Result<Vec<Member>, Diagnostic> {
     let mut members = Vec::new();
     if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
-        members.push(Member::required_scalar("iid", "String".to_owned()));
+        members.push(Member::required_scalar("iid", "Iid".to_owned()));
     }
     if let Some(value_type) = model.declaration().value_type() {
         members.push(Member::required_scalar(

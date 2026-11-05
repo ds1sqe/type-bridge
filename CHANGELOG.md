@@ -207,6 +207,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Generated Rust model and family `iid()` accessors now return `&Iid`; reference
+  accessors return `Option<&Iid>`. Reference `from_iid` constructors accept an
+  owned `Iid`. Construct one with `Iid::new(...)` and use `.as_str()` when text
+  is required.
+
 - Remove Node `TypedQuery`, `TypedGroupByQuery`, `TypedQueryError`, `QueryExpr`,
   `ComparisonExpr`, `BooleanExpr`, `NotExpr`, `SortExpr`, `AggregateSpec`,
   `QueryGroupField`, and `agg`. Use generated `QuerySession` queries and their

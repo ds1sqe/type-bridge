@@ -296,64 +296,6 @@ async fn remote_generated_outputs_compile() -> type_bridge::Result<()> {
     Ok(())
 }
 
-// The 2.2.4 proxy example, unchanged, against the deprecated 2.2 names.
-struct LegacyRemoteTransport;
-
-#[allow(deprecated)]
-impl type_bridge::RemoteQueryTransport for LegacyRemoteTransport {
-    fn capabilities(
-        &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>,
-    > {
-        Box::pin(async {
-            Err(type_bridge::Error::Other {
-                message: "compile-only transport".into(),
-                source: None,
-            })
-        })
-    }
-
-    fn exchange<'a>(
-        &'a self,
-        _request: &'a [u8],
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>,
-    > {
-        Box::pin(async {
-            Err(type_bridge::Error::Other {
-                message: "compile-only transport".into(),
-                source: None,
-            })
-        })
-    }
-}
-
-#[allow(deprecated)]
-async fn remote_2_2_names_compile() -> type_bridge::Result<()> {
-    let options = type_bridge::RemoteConnectionOptions::generated(
-        type_bridge::RemoteQueryLimits::new(100, 1 << 20, 100, 1000, 1000, 1000),
-        LegacyRemoteTransport,
-    );
-    let remote: type_bridge::RemoteDatabase<AppSchema> =
-        type_bridge::RemoteDatabase::connect(options)
-            .await?
-            .with_schema(SCHEMA)?;
-    let mut session = remote.query()?;
-    let person = session.exact::<Person>()?;
-    let event = session.exact::<Event>()?;
-    let tuple = session.query((person, event))?;
-    let tuple = tuple.allow_cross_join(person, event)?;
-    let _rows: Vec<(Person, Event)> = tuple.rows(type_bridge::RowsOptions::new(10)).await?;
-    let graph = PersonGraph::select(person, event.collect())?;
-    let page: type_bridge::Page<PersonGraph> = session
-        .query(graph)?
-        .page_by(person, type_bridge::PageOptions::new(10))
-        .await?;
-    let _ = page.items();
-    Ok(())
-}
-
 fn assert_nominal_upcast<T: NominalUpcast<Membership>>() {}
 fn assert_role_upcast<T: RoleUpcast<EmploymentEmployeePlayer, MembershipMemberPlayer>>() {}
 
@@ -520,15 +462,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
         vec![],
     );
+    let invalid_iid_row = HydratedRow::new(
+        Counter::TYPE_ID_JSON, "not-an-iid".to_owned(),
+        vec![(CounterType::counter_value.owns_id_json(), vec![1i64.into_encoded_scalar()])], vec![],
+    );
+    let invalid_iid = materialize_model_for_test::<Counter>(&invalid_iid_row).unwrap_err();
+    assert_eq!((invalid_iid.code(), invalid_iid.field()), ("invalid_iid", "iid"));
     let person: Person = materialize_model_for_test(&person_row)?;
-    assert_eq!(person.iid(), "0x1");
+    let _: &type_bridge::Iid = person.iid();
+    assert!(std::ptr::eq(person.iid(), person.iid()));
+    assert_eq!(person.iid().as_str(), "0x1");
     let person_debug = format!("{person:?}");
     assert!(person_debug.starts_with("Person { iid:"));
     assert!(!person_debug.contains("__tb_origin"));
     assert!(!person_debug.contains("ReferenceOrigin"));
     let person_snapshot_bytes = SCHEMA.encode_snapshot(person.clone())?;
     let decoded_person: Person = SCHEMA.decode_snapshot(&person_snapshot_bytes)?;
-    assert_eq!(decoded_person.iid(), "0x1");
+    assert_eq!(decoded_person.iid().as_str(), "0x1");
     assert_eq!(decoded_person.identifier().value(), "person-1");
     assert!(
         SCHEMA
@@ -537,7 +487,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let person_ref = person.reference();
-    assert_eq!(person_ref.iid(), Some("0x1"));
+    assert_eq!(person_ref.iid().map(type_bridge::Iid::as_str), Some("0x1"));
     let person_ref_debug = format!("{person_ref:?}");
     assert!(person_ref_debug.starts_with("PersonRef { iid:"));
     assert!(!person_ref_debug.contains("__tb_origin"));
@@ -556,7 +506,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let event_row = HydratedRow::new(
         Event::TYPE_ID_JSON,
-        "event-iid-1".to_owned(),
+        "0xa113".to_owned(),
         vec![],
         vec![(
             EventType::subject.role_id_json(),
@@ -564,9 +514,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )],
     );
     let event: Event = materialize_model_for_test(&event_row)?;
-    assert_eq!(event.iid(), "event-iid-1");
+    assert_eq!(event.iid().as_str(), "0xa113");
 
-    let event_reference = EventRef::from_iid("event-iid")?;
+    let event_reference = EventRef::from_iid(type_bridge::Iid::new("0xa114")?)?;
     let container = ContainerCreate::new(vec![event_reference])?;
     assert_eq!(container.item().len(), 1);
 
@@ -587,7 +537,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let emp_row = HydratedRow::new(
         Employment::TYPE_ID_JSON,
-        "emp-iid-1".to_owned(),
+        "0xa115".to_owned(),
         vec![],
         vec![(
             EmploymentType::employee.role_id_json(),
@@ -596,9 +546,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let emp_read: Employment = materialize_model_for_test(&emp_row)?;
     let family = MembershipFamily::Employment(emp_read);
-    assert_eq!(family.iid(), "emp-iid-1");
+    assert_eq!(family.iid().as_str(), "0xa115");
     assert_eq!(family.exact_type(), "employment");
-    let membership_row = HydratedRow::new(Membership::TYPE_ID_JSON, "membership-iid".to_owned(), vec![], vec![(MembershipType::member.role_id_json(), emp_row.roles()[0].1.clone())]);
+    let membership_row = HydratedRow::new(Membership::TYPE_ID_JSON, "0xa116".to_owned(), vec![], vec![(MembershipType::member.role_id_json(), emp_row.roles()[0].1.clone())]);
     let membership = MembershipFamily::Membership(materialize_model_for_test(&membership_row)?);
     assert_eq!(membership.exact_type(), "membership");
     assert!(family.as_employment().is_some());

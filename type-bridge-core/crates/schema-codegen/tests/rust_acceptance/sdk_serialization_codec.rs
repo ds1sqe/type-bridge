@@ -184,7 +184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(InteractionActorRef::Robot(robot_ref)),
         PersonRef::from_key(identifier.clone())?,
     )?)?;
-    let event_ref = EventRef::from_iid("0x700")?;
+    let event_ref = EventRef::from_iid(type_bridge::Iid::new("0x700")?)?;
     let container = SCHEMA.encode_create(ContainerCreate::new(vec![event_ref.clone()])?)?;
 
     let player = HydratedPlayer::from_complete_row(person_row);

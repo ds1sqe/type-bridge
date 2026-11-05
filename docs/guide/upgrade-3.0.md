@@ -1,5 +1,13 @@
 # Upgrading to 3.0
 
+## Rust model identifiers
+
+Generated Rust models and families return `&Iid` from `iid()`; references return
+`Option<&Iid>`. Pass `Iid::new("0x1234")?` to reference `from_iid` constructors.
+Use `.as_str()` to borrow the identifier text or `.to_string()` to own it. Models
+validate the IID during hydration and retain it, so repeated getters do not
+parse or allocate.
+
 ## Single-item manager write results
 
 Single-item `insert`, `put`, `update`, and `delete_returning` calls now return
