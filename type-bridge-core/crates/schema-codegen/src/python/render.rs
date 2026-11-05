@@ -533,6 +533,9 @@ fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> Str
     if !typing.is_empty() {
         let _ = writeln!(output, "from typing import {}", typing.join(", "));
     }
+    if body.contains("iid: _Iid") {
+        output.push_str("from type_bridge_core import Iid as _Iid\n");
+    }
     let mut runtime = Vec::new();
     if body.contains("_PlanHandle[") {
         let plan = [

@@ -65,6 +65,7 @@ from generated_v2 import (
 from type_bridge_core import Pending
 from type_bridge_core import Transaction as StagedTransaction
 
+from type_bridge import Iid
 from type_bridge.session import Database
 
 
@@ -240,8 +241,8 @@ async def check_direct() -> None:
     assert_type(adult, Predicate)
     assert_type(score_field.is_present(), Predicate)
     assert_type(score_field.is_missing(), Predicate)
-    assert_type(person_var.iid("0x1"), Predicate)
-    assert_type(person_var.iid_in(("0x1", "0x2")), Predicate)
+    assert_type(person_var.iid(Iid("0x1")), Predicate)
+    assert_type(person_var.iid_in((Iid("0x1"), Iid("0x2"))), Predicate)
     people_query = query_session.query(person_var).where(
         adult,
         qualifying_predicate,

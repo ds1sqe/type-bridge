@@ -190,3 +190,6 @@ async def staged_pending_requires_resolution(tx: StagedTransaction) -> None:
     session.query(root).where(
         root.field(Person.score).eq(pending)  # E: staged_pending_is_not_scalar:reportArgumentType
     )
+
+person_var.iid("0x1")  # E: string_iid:reportArgumentType
+person_var.iid_in(["0x1"])  # E: string_iid_list:reportArgumentType

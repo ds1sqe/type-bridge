@@ -14,6 +14,12 @@ from type_bridge_core import (
     Exists as Exists,
 )
 from type_bridge_core import (
+    Iid,
+    PlanAuthority,
+    QueryLimits,
+    _Plan,
+)
+from type_bridge_core import (
     Matched as Matched,
 )
 from type_bridge_core import (
@@ -21,11 +27,6 @@ from type_bridge_core import (
 )
 from type_bridge_core import (
     PlanAnswer as PlanAnswer,
-)
-from type_bridge_core import (
-    PlanAuthority,
-    QueryLimits,
-    _Plan,
 )
 from type_bridge_core import (
     PlanError as _PlanError,
@@ -407,7 +408,7 @@ def _match[H: Handle[Any]](
     fields: Mapping[str, object],
     *,
     subtypes: bool = False,
-    iid: str | None = None,
+    iid: Iid | None = None,
 ) -> H: ...
 def _insert[M](
     model: type[M],

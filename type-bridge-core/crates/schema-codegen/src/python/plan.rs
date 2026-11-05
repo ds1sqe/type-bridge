@@ -108,12 +108,12 @@ pub(super) fn model(
     if stub {
         let _ = writeln!(
             output,
-            "    def by_iid(cls, iid: str, /) -> {name}Handle: ...{override_note}"
+            "    def by_iid(cls, iid: _Iid, /) -> {name}Handle: ...{override_note}"
         );
     } else {
         let _ = writeln!(
             output,
-            "    def by_iid(cls, iid: str, /) -> {name}Handle:{override_note}\n        return _plan_match(cls, {name}Handle, _plan_authority(), None, _PLAN_MISSING, {{}}, iid=iid)"
+            "    def by_iid(cls, iid: _Iid, /) -> {name}Handle:{override_note}\n        return _plan_match(cls, {name}Handle, _plan_authority(), None, _PLAN_MISSING, {{}}, iid=iid)"
         );
     }
     if !crate::supports_scalar_plan_writes(model) {

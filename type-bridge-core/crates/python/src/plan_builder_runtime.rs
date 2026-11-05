@@ -279,10 +279,10 @@ impl PyPlanBuilderCore {
         }
     }
 
-    /// Restrict a matched binding to a canonical IID; core validates its syntax.
-    fn by_iid(&mut self, owner: u32, iid: &str) {
+    /// Restrict a matched binding to a validated nominal IID.
+    fn by_iid(&mut self, owner: u32, iid: PyRef<'_, crate::iid::PyIid>) {
         let owner = self.binding(owner);
-        self.core.by_iid(owner, iid);
+        self.core.by_iid(owner, iid.inner.as_str());
     }
 
     /// Restrict a matched binding to an invocation IID column.

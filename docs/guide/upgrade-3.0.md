@@ -32,6 +32,12 @@ Query bindings use `binding.iid(&iid)` and `binding.iid_in([&first, &second])`.
 `Input<Iid>` accepts nominal identifier values and earlier staged IID result
 references. These authoring methods retain their existing staged plans.
 
+## Python query identifiers
+
+Pass `Iid("0x1234")` (imported from `type_bridge`) to query binding `iid`,
+`iid_in`, and generated model `by_iid` authoring. Plain strings are refused
+before execution. These methods retain their existing query and staged plans.
+
 ## Single-item manager write results
 
 Single-item `insert`, `put`, `update`, and `delete_returning` calls now return

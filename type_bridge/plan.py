@@ -36,6 +36,7 @@ from type_bridge_core import (
     Count,
     Documents,
     Exists,
+    Iid,
     Matched,
     Pending,
     PlanAnswer,
@@ -1125,7 +1126,7 @@ def _match[H: Handle[Any]](
     fields: Mapping[str, Any],
     *,
     subtypes: bool = False,
-    iid: str | None = None,
+    iid: Iid | None = None,
 ) -> H:
     context = Plan._current()
     context._use_package(authority, model.__runtime_projection__)

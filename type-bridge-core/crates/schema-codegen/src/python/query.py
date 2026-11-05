@@ -24,6 +24,7 @@ from typing import (
 
 from type_bridge_core import (
     DynamicValue,
+    Iid,
     MatchBindingHandle,
     MatchFieldHandle,
     MatchFunctionArgumentHandle,
@@ -654,10 +655,10 @@ class BoundVar(_Frozen):
             accepted,
         )
 
-    def iid(self, iid: str) -> Predicate:
+    def iid(self, iid: Iid) -> Predicate:
         return Predicate(self.__handle.iid(iid), self.__projection)
 
-    def iid_in(self, iids: Iterable[str]) -> Predicate:
+    def iid_in(self, iids: Iterable[Iid]) -> Predicate:
         return Predicate(self.__handle.iid_in(list(iids)), self.__projection)
 
     def collect(self) -> Collected:

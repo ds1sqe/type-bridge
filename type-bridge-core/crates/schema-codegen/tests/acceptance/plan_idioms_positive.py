@@ -2,6 +2,7 @@ from typing import assert_type
 
 from generated_idioms import Account, AccountHandle, Item, ItemHandle, Purchase
 
+from type_bridge import Iid
 from type_bridge.plan import Expr, Matched, Pending, Plan, Transaction, Value
 
 
@@ -25,7 +26,7 @@ def purchase(transaction: Transaction, item_id: str, account_id: str, order_id: 
         removed = Item.subtypes(item_id=item_id).delete_returning()
     assert_type(removed, Plan[list[Item]])
     with Plan() as p:
-        Item.by_iid("0x1234567890abcdef")
+        Item.by_iid(Iid("0x1234567890abcdef"))
         counted = p.count()
     assert_type(counted, Plan[int])
     with Plan():

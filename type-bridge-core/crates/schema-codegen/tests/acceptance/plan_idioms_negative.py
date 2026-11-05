@@ -18,3 +18,4 @@ with Plan():
     ManyItem.match("I3").set(tags=["a"])  # error
     Item.insert_many([Item.Values(item_id="missing-price")])  # error
     item.set(item_id="immutable-key")  # error
+    Item.by_iid("0x1234")  # error

@@ -208,6 +208,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Python query binding `iid`/`iid_in` and generated model `by_iid` authoring
+  now require `Iid` values instead of strings. Construct them with
+  `Iid("0x1234")`; query plans and staged execution are unchanged.
+
 - Rust query binding `iid`/`iid_in`, `PlanBuilder::by_iid`, and generated model
   `by_iid` authoring take typed `Iid` values. Staged IID input columns and result
   references use `Input<Iid>` instead of `Input<String>`; plan bytes and staged

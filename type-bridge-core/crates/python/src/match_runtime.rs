@@ -887,16 +887,16 @@ impl PyMatchFunctionCallHandle {
 
 #[pymethods]
 impl PyMatchBindingHandle {
-    fn iid(&self, iid: &str) -> PyResult<PyMatchPredicateHandle> {
+    fn iid(&self, iid: PyRef<'_, crate::iid::PyIid>) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .iid(iid)
+            .iid(iid.inner.as_str())
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
 
-    fn iid_in(&self, iids: Vec<String>) -> PyResult<PyMatchPredicateHandle> {
+    fn iid_in(&self, iids: Vec<PyRef<'_, crate::iid::PyIid>>) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .iid_in(iids)
+            .iid_in(iids.iter().map(|iid| iid.inner.as_str()))
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
@@ -2642,6 +2642,73 @@ mod tests {
             diagnostic_from_request(query.count_by(&person)).unwrap(),
             include_str!("../../orm/tests/fixtures/match_request/single-count.json").trim()
         );
+    }
+
+    #[test]
+    fn nominal_iid_predicates_preserve_bytes_and_refuse_strings() {
+        Python::initialize();
+        Python::attach(|py| {
+            let session = SessionHandle::new(registry());
+            let person = session.exact("person").unwrap();
+            let query = session
+                .query(session.positional([person.one()]).unwrap())
+                .unwrap();
+            let binding = Py::new(
+                py,
+                PyMatchBindingHandle {
+                    inner: person.clone(),
+                },
+            )
+            .unwrap();
+            let iid = Py::new(
+                py,
+                crate::iid::PyIid {
+                    inner: type_bridge_contract::id::Iid::new("0xAb12").unwrap(),
+                },
+            )
+            .unwrap();
+            for (method, expected) in [
+                ("iid", person.iid("0xAb12").unwrap()),
+                ("iid_in", person.iid_in(["0xAb12"]).unwrap()),
+            ] {
+                let actual = if method == "iid" {
+                    binding.bind(py).call_method1(method, (&iid,)).unwrap()
+                } else {
+                    binding
+                        .bind(py)
+                        .call_method1(method, (vec![&iid],))
+                        .unwrap()
+                };
+                let actual = actual
+                    .extract::<PyRef<'_, PyMatchPredicateHandle>>()
+                    .unwrap();
+                assert_eq!(
+                    diagnostic_from_request(
+                        query
+                            .where_predicate(actual.inner.clone())
+                            .unwrap()
+                            .count_by(&person)
+                    )
+                    .unwrap(),
+                    diagnostic_from_request(
+                        query.where_predicate(expected).unwrap().count_by(&person)
+                    )
+                    .unwrap(),
+                );
+            }
+            for error in [
+                binding
+                    .bind(py)
+                    .call_method1("iid", ("0xAb12",))
+                    .unwrap_err(),
+                binding
+                    .bind(py)
+                    .call_method1("iid_in", (vec!["0xAb12"],))
+                    .unwrap_err(),
+            ] {
+                assert!(error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+            }
+        });
     }
 
     #[test]
