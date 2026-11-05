@@ -413,6 +413,7 @@ impl MaterializeModel for ProbeAssignment {
 
 #[derive(Default)]
 struct State {
+    allow_filter_query: bool,
     opens: Vec<TxType>,
     calls: Vec<(String, GivenRowsSpec)>,
     responses: VecDeque<Response>,
@@ -472,6 +473,32 @@ struct RecordingTransaction {
 impl TransactionOps for RecordingTransaction {
     fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
         Box::pin(async { panic!("successor batch used the raw query seam") })
+    }
+
+    fn query_canonical(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+        let response = {
+            let mut state = self.state.lock().unwrap();
+            assert!(state.allow_filter_query, "batch used non-Given query seam");
+            state.calls.push((
+                typeql.to_owned(),
+                GivenRowsSpec {
+                    variables: vec![],
+                    rows: vec![],
+                },
+            ));
+            state
+                .responses
+                .pop_front()
+                .expect("unexpected filter provider call")
+        };
+        let result = match response {
+            Response::Error => Err(OrmError::QueryExecution("redacted".to_owned())),
+            Response::Documents(documents) => Ok(native_batch::result(
+                typeql,
+                QueryResult::Documents(documents),
+            )),
+        };
+        Box::pin(async move { result })
     }
 
     fn query_with_rows(
@@ -2234,4 +2261,170 @@ async fn missing_inputs_do_not_shift_later_model_materialization_failures() {
         assert_eq!(state.commits, 0);
         assert_eq!(state.rollbacks, usize::from(!borrowed));
     }
+}
+
+#[tokio::test]
+async fn filter_mutations_skip_empty_hooks_and_keep_delete_hook_identity() {
+    let (database, state) = fixture(vec![], CommitBehavior::Success);
+    let hook = Arc::new(CountingHook::default());
+    let mut manager = database.entities::<Person>();
+    manager.add_hook(hook.clone());
+    let empty = manager.filter().unwrap().iids(&[]).unwrap();
+    empty.delete().await.unwrap();
+    assert!(
+        empty
+            .update(PersonCreate::named("unused"))
+            .await
+            .unwrap()
+            .items()
+            .is_empty()
+    );
+    assert_eq!(hook.before.load(Ordering::SeqCst), 0);
+    assert_eq!(hook.after.load(Ordering::SeqCst), 0);
+    assert!(state.lock().unwrap().opens.is_empty());
+
+    for iids in [
+        None,
+        Some(vec![
+            crate::Iid::new("0x10").unwrap(),
+            crate::Iid::new("0x20").unwrap(),
+        ]),
+    ] {
+        let (database, state) = fixture(
+            responses(Kind::Entity, Operation::Delete),
+            CommitBehavior::Success,
+        );
+        state.lock().unwrap().allow_filter_query = true;
+        let hook = Arc::new(CorrelatedPostHook {
+            before: AtomicUsize::new(0),
+            seen: Mutex::new(vec![]),
+        });
+        let mut manager = database.entities::<Person>();
+        manager.add_hook(hook.clone());
+        let filter = manager.filter().unwrap();
+        let filter = match &iids {
+            Some(iids) => filter.iids(iids).unwrap(),
+            None => filter,
+        };
+        filter.delete().await.unwrap();
+        let expected = match iids {
+            Some(iids) => iids
+                .iter()
+                .enumerate()
+                .map(|(index, iid)| (index, Some(iid.to_string())))
+                .collect::<Vec<_>>(),
+            None => vec![(0, None)],
+        };
+        assert_eq!(*hook.seen.lock().unwrap(), expected);
+        let observed = state.lock().unwrap();
+        assert_eq!(observed.commits, 1);
+        assert_eq!(observed.calls.len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn scalar_filter_update_runs_hooks_after_commit_and_never_after_failure() {
+    for fail in [false, true] {
+        let responses = if fail {
+            vec![Response::Error]
+        } else {
+            vec![Response::Documents(vec![
+                json!({"_iid":"0x10", "_type":"person", "attributes":{"name":"person", "tag":["one", "two"]}}),
+            ])]
+        };
+        let (database, state) = fixture(responses, CommitBehavior::Success);
+        let hook = Arc::new(TimingHook {
+            state: Arc::clone(&state),
+            before: AtomicUsize::new(0),
+            after: AtomicUsize::new(0),
+            violation: AtomicBool::new(false),
+        });
+        let mut manager = database.entities::<Person>();
+        manager.add_hook(hook.clone());
+        let result = manager
+            .filter()
+            .unwrap()
+            .iid(&crate::Iid::new("0x10").unwrap())
+            .unwrap()
+            .update(PersonCreate::named("person"))
+            .await;
+        if fail {
+            result.unwrap_err();
+        } else {
+            assert_eq!(result.unwrap().items()[0].iid, "0x10");
+        }
+        assert_eq!(hook.before.load(Ordering::SeqCst), 1);
+        assert_eq!(hook.after.load(Ordering::SeqCst), usize::from(!fail));
+        assert!(!hook.violation.load(Ordering::SeqCst));
+    }
+}
+
+#[tokio::test]
+async fn filter_update_all_emits_one_invocation_hook_for_multiple_matches() {
+    let (database, state) = fixture(
+        vec![Response::Documents(vec![
+            json!({"_iid":"0x10", "_type":"person", "attributes":{"name":"person", "tag":["one"]}}),
+            json!({"_iid":"0x20", "_type":"person", "attributes":{"name":"person", "tag":["two"]}}),
+        ])],
+        CommitBehavior::Success,
+    );
+    state.lock().unwrap().allow_filter_query = true;
+    let hook = Arc::new(CorrelatedPostHook {
+        before: AtomicUsize::new(0),
+        seen: Mutex::new(vec![]),
+    });
+    let mut manager = database.entities::<Person>();
+    manager.add_hook(hook.clone());
+    let result = manager
+        .filter()
+        .unwrap()
+        .update(PersonCreate::named("person"))
+        .await
+        .unwrap();
+    assert_eq!(result.items().len(), 2);
+    assert_eq!(hook.before.load(Ordering::SeqCst), 1);
+    assert_eq!(*hook.seen.lock().unwrap(), vec![(0, None)]);
+    assert_eq!(state.lock().unwrap().commits, 1);
+}
+
+#[tokio::test]
+async fn filter_materialization_failure_prevents_owned_and_borrowed_commit() {
+    let response = || {
+        vec![Response::Documents(vec![json!({
+            "_iid":"0x10", "_type":"person",
+            "attributes":{"name":"reject-materialize", "tag":["one"]}
+        })])]
+    };
+    let iid = crate::Iid::new("0x10").unwrap();
+    let (database, state) = fixture(response(), CommitBehavior::Success);
+    let error = database
+        .entities::<Person>()
+        .filter()
+        .unwrap()
+        .iid(&iid)
+        .unwrap()
+        .update(PersonCreate::named("reject-materialize"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Some("rejected_materialization"));
+    assert_eq!(state.lock().unwrap().commits, 0);
+    assert_eq!(state.lock().unwrap().rollbacks, 1);
+
+    let (database, state) = fixture(response(), CommitBehavior::Success);
+    let transaction = database.write().await.unwrap();
+    let error = transaction
+        .entities::<Person>()
+        .filter()
+        .unwrap()
+        .iid(&iid)
+        .unwrap()
+        .update(PersonCreate::named("reject-materialize"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Some("rejected_materialization"));
+    assert_eq!(
+        transaction.commit().await.unwrap_err().code(),
+        Some("transaction_rollback_only")
+    );
+    assert_eq!(state.lock().unwrap().commits, 0);
 }

@@ -15,7 +15,7 @@ use crate::entity_codec::map_validation_error;
 use crate::error::{Error, ModelValidationPhase};
 use crate::projected_codec::{materialize_projected, project_create, project_encoded_create};
 
-fn map_target_execution_error(error: QueryTargetError) -> Error {
+pub(crate) fn map_target_execution_error(error: QueryTargetError) -> Error {
     match error {
         QueryTargetError::Interrupted(error) => map_execution_error(error),
         QueryTargetError::Commit(error)

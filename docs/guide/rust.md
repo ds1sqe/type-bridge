@@ -200,6 +200,18 @@ let people = db.entities::<Person>().filter()?.iids(&[
 ])?.all().await?;
 ```
 
+Filter `delete()` and `update(replacement)` act on every exact match. Updates
+return freshly hydrated models in a `WriteResult`; the replacement is the same
+complete create input accepted by the manager's update method. Both terminals
+require a writable target. Empty IID selections perform input admission but
+emit no hooks or provider requests.
+
+Filters inherit the manager's registered lifecycle hooks. Pure IID filters emit
+one event per supplied IID. Field and mixed filters emit one invocation event
+with no IID; update events carry the authored replacement. Use an IID filter or
+a prior read when a hook needs individual row identity. Post-hooks run only after
+success, after commit for owned transactions.
+
 `first` requires a singleton IID predicate or equality evidence for every
 effective reference-key field and proves that at most one exact IID matched.
 Use an explicit read transaction when several manager terminals and typed

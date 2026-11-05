@@ -191,7 +191,10 @@ where
 {
     /// Start one empty immutable canonical filter for this exact entity model.
     pub fn filter(&self) -> Result<ProjectedEntityFilter<'db, S, M>> {
-        ProjectedEntityFilter::for_target(self.context.ok_or_else(schema_not_bound)?)
+        ProjectedEntityFilter::for_target(
+            self.context.ok_or_else(schema_not_bound)?,
+            self.hooks.clone(),
+        )
     }
 
     /// Start a canonical filter with one exact generated field comparison.

@@ -240,11 +240,22 @@ impl<'t, S: Schema, M: EntityModel<Schema = S>> Clone for TransactionEntityManag
     }
 }
 
-impl<S, M> TransactionEntityManager<'_, S, M>
+impl<'t, S, M> TransactionEntityManager<'t, S, M>
 where
     S: Schema,
     M: EntityModel<Schema = S> + CompleteModel,
 {
+    /// Start an immutable exact-model filter in this open write transaction.
+    pub fn filter(&self) -> Result<crate::ProjectedEntityFilter<'t, S, M>> {
+        crate::ProjectedEntityFilter::for_target(
+            crate::manager_target::ManagerTarget {
+                installed: self.transaction.installed()?,
+                target: type_bridge_orm::QueryTarget::Transaction(&self.transaction.tx),
+            },
+            crate::hooks::HookRunner::default(),
+        )
+    }
+
     fn exact(
         &self,
     ) -> Result<(
@@ -542,11 +553,22 @@ impl<'t, S: Schema, M: RelationModel<Schema = S>> Clone for TransactionRelationM
     }
 }
 
-impl<S, M> TransactionRelationManager<'_, S, M>
+impl<'t, S, M> TransactionRelationManager<'t, S, M>
 where
     S: Schema,
     M: RelationModel<Schema = S> + CompleteModel,
 {
+    /// Start an immutable exact-model filter in this open write transaction.
+    pub fn filter(&self) -> Result<crate::ProjectedRelationFilter<'t, S, M>> {
+        crate::ProjectedRelationFilter::for_target(
+            crate::manager_target::ManagerTarget {
+                installed: self.transaction.installed()?,
+                target: type_bridge_orm::QueryTarget::Transaction(&self.transaction.tx),
+            },
+            crate::hooks::HookRunner::default(),
+        )
+    }
+
     fn exact(
         &self,
     ) -> Result<(

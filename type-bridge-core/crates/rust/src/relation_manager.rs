@@ -85,7 +85,10 @@ where
 {
     /// Start one empty immutable canonical filter for this exact relation model.
     pub fn filter(&self) -> Result<ProjectedRelationFilter<'db, S, M>> {
-        ProjectedRelationFilter::for_target(self.context.ok_or_else(schema_not_bound)?)
+        ProjectedRelationFilter::for_target(
+            self.context.ok_or_else(schema_not_bound)?,
+            self.hooks.clone(),
+        )
     }
 
     /// Start a canonical filter with one exact generated field comparison.
