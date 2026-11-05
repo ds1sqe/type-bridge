@@ -207,7 +207,9 @@ Filter `delete()` and `update(replacement)` act on every exact match. Updates
 return freshly hydrated models in a `WriteResult`; the replacement is the same
 complete create input accepted by the manager's update method. Both terminals
 require a writable target. Empty IID selections perform input admission but
-emit no hooks or provider requests.
+emit no hooks or provider requests. A pure IID-list delete keeps the existing
+batch input limits. Reads and updates that compile the list as an OR predicate
+retain the 256-term Boolean limit and refuse oversized lists before I/O.
 
 Filters inherit the manager's registered lifecycle hooks. Pure IID filters emit
 one event per supplied IID. Field and mixed filters emit one invocation event

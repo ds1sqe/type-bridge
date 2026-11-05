@@ -252,6 +252,7 @@ impl ProjectedManagerFilterExecutor<'_> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
         filter.require_exact_mutation()?;
+        filter.require_boolean_predicates()?;
         let input_control = crate::ProjectedBatchInvocationControl::from_parts(
             control.limits,
             control.deadline,

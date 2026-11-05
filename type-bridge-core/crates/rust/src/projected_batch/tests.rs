@@ -2264,6 +2264,48 @@ async fn missing_inputs_do_not_shift_later_model_materialization_failures() {
 }
 
 #[tokio::test]
+async fn pure_iid_lists_keep_batch_admission_and_refuse_oversized_boolean_plans_before_io() {
+    let (database, state) = fixture(vec![], CommitBehavior::Success);
+    let manager = database.entities::<Person>();
+    let iids = (0..257)
+        .map(|index| crate::Iid::new(format!("0x{:x}", index)).unwrap())
+        .collect::<Vec<_>>();
+    let filter = manager.filter().unwrap().iids(&iids).unwrap();
+    for error in [
+        filter.all().await.unwrap_err(),
+        filter.count().await.unwrap_err(),
+        filter.exists().await.unwrap_err(),
+        filter
+            .update(PersonCreate::named("unused"))
+            .await
+            .unwrap_err(),
+    ] {
+        assert_eq!(error.code(), Some("manager_filter_predicate_limit"));
+    }
+    assert!(state.lock().unwrap().opens.is_empty());
+    assert!(state.lock().unwrap().calls.is_empty());
+
+    let ceiling = type_bridge_orm::DEFAULT_DIRECT_QUERY_ITEMS as usize;
+    let mut iids = vec![crate::Iid::new("0x10").unwrap(); ceiling];
+    assert!(manager.filter().unwrap().iids(&iids).is_ok());
+    type_bridge_orm::ProjectedBatch::validate_binding_row_count(ceiling).unwrap();
+    iids.push(crate::Iid::new("0x11").unwrap());
+    let filtered = match manager.filter().unwrap().iids(&iids) {
+        Ok(_) => panic!("IID filter exceeded batch input ceiling"),
+        Err(error) => error,
+    };
+    let original = manager
+        .delete_many(&iids.iter().map(ToString::to_string).collect::<Vec<_>>())
+        .await
+        .unwrap_err();
+    assert_eq!(filtered.code(), Some("batch_item_limit"));
+    assert_eq!(filtered.code(), original.code());
+    assert_eq!(filtered.category(), original.category());
+    assert_eq!(filtered.diagnostic_path(), original.diagnostic_path());
+    assert!(state.lock().unwrap().opens.is_empty());
+}
+
+#[tokio::test]
 async fn filter_delete_list_admission_and_hook_failures_match_batch_delete() {
     for filtered in [false, true] {
         let (database, state) = fixture(vec![], CommitBehavior::Success);

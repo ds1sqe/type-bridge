@@ -2259,7 +2259,7 @@ mod tests {
             BindingTarget::Rust,
         ] {
             for kind in [TypeKind::Entity, TypeKind::Relation] {
-                for (single, count) in [(true, 1), (false, 1), (false, 2)] {
+                for (single, count) in [(true, 1), (false, 1), (false, 2), (false, 257)] {
                     for roots in [0, 1] {
                         let model = TypeId::new(
                             kind,
@@ -2296,10 +2296,10 @@ mod tests {
                                 &installed,
                                 model,
                                 ProjectedBatchOperation::Delete,
-                                ["0x20", "0x21", "0x22"]
-                                    .into_iter()
-                                    .take(count)
-                                    .map(|iid| ProjectedBatchRow::Delete { iid: iid.into() })
+                                (0..count)
+                                    .map(|index| ProjectedBatchRow::Delete {
+                                        iid: format!("0x{:x}", 0x20 + index),
+                                    })
                                     .collect(),
                                 &control,
                             )
@@ -2339,10 +2339,11 @@ mod tests {
                                 1
                             );
                         }
-                        let iids = ["0x20", "0x21", "0x22"]
-                            .into_iter()
-                            .take(count)
-                            .map(|iid| type_bridge_contract::id::Iid::new(iid).unwrap())
+                        let iids = (0..count)
+                            .map(|index| {
+                                type_bridge_contract::id::Iid::new(format!("0x{:x}", 0x20 + index))
+                                    .unwrap()
+                            })
                             .collect::<Vec<_>>();
                         let filter = crate::ProjectedManagerFilter::try_new(
                             &installed,

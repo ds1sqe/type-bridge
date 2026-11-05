@@ -25,8 +25,8 @@ use crate::projected_query::{
     ProjectedQueryOrigin, materialize_projected_manager_things_with_budget,
 };
 use crate::query_execution_limits::{
-    DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES, DEFAULT_PROXY_QUERY_BYTES, QueryExecutionDeadline,
-    QueryExecutionResourceLimits,
+    DEFAULT_DIRECT_QUERY_BYTES, DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES, DEFAULT_PROXY_QUERY_BYTES,
+    QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
 use crate::runtime_projection::InstalledRuntimeProjection;
 use crate::session::backend::AnswerCancellation;
@@ -383,6 +383,8 @@ impl ProjectedManagerFilter {
     }
 
     /// Append a bounded IID set; an empty set proves that no thing matches.
+    /// Pure lists admit the batch input ceiling for ordinal deletes. Read and update
+    /// terminals retain the Boolean predicate ceiling when compiling an IID disjunction.
     /// A singleton uses the same native IID predicate as an exact by-IID lookup.
     pub fn try_and_iids(
         &self,
@@ -400,22 +402,23 @@ impl ProjectedManagerFilter {
     ) -> Result<Self, SdkExecutionDiagnostic> {
         self.validate_for(installed)?;
         let next_items = self.measure.items.saturating_add(iids.len().max(1));
-        if next_items > MAX_MANAGER_FILTER_PREDICATES {
-            return Err(resource_limit(
-                "manager_filter_predicate_limit",
-                "The IID filter exceeds the canonical predicate ceiling",
-                predicate_collection_path(&self.model),
-                next_items as u64,
-                MAX_MANAGER_FILTER_PREDICATES as u64,
-                false,
-            ));
+        let pure_list = self.predicates.is_empty() && !single;
+        if pure_list {
+            crate::ProjectedBatch::validate_binding_row_count(iids.len())?;
+        } else if next_items > MAX_MANAGER_FILTER_PREDICATES {
+            return Err(self.boolean_predicate_limit(next_items));
         }
+        let byte_ceiling = if pure_list {
+            DEFAULT_DIRECT_QUERY_BYTES
+        } else {
+            DEFAULT_PROXY_QUERY_BYTES
+        };
         let bytes = iids
             .iter()
             .try_fold(self.measure.bytes, |bytes, iid| {
                 bytes.checked_add(iid.as_str().len())
             })
-            .filter(|bytes| *bytes as u64 <= DEFAULT_PROXY_QUERY_BYTES)
+            .filter(|bytes| *bytes as u64 <= byte_ceiling)
             .ok_or_else(|| {
                 resource_exhausted(
                     "manager_filter_byte_limit",
@@ -628,6 +631,24 @@ impl ProjectedManagerFilter {
                     ],
                 ));
             }
+        }
+        Ok(())
+    }
+
+    fn boolean_predicate_limit(&self, items: usize) -> SdkExecutionDiagnostic {
+        resource_limit(
+            "manager_filter_predicate_limit",
+            "The IID filter exceeds the canonical predicate ceiling",
+            predicate_collection_path(&self.model),
+            items as u64,
+            MAX_MANAGER_FILTER_PREDICATES as u64,
+            false,
+        )
+    }
+
+    fn require_boolean_predicates(&self) -> Result<(), SdkExecutionDiagnostic> {
+        if self.measure.items > MAX_MANAGER_FILTER_PREDICATES {
+            return Err(self.boolean_predicate_limit(self.measure.items));
         }
         Ok(())
     }
@@ -1202,6 +1223,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         let terminal = ManagerTerminal::all(&control, target.manager_item_limit());
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        filter.require_boolean_predicates()?;
         if filter.matches_none {
             return Ok(Vec::new());
         }
@@ -1298,6 +1320,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<Option<Arc<ProjectedThing>>, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, true)?;
+        filter.require_boolean_predicates()?;
         if filter.matches_none {
             return Ok(None);
         }
@@ -1424,6 +1447,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<u64, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        filter.require_boolean_predicates()?;
         if filter.matches_none {
             return Ok(0);
         }
@@ -1518,6 +1542,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<bool, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        filter.require_boolean_predicates()?;
         if filter.matches_none {
             return Ok(false);
         }
@@ -2257,6 +2282,8 @@ mod target_tests {
         assert_eq!(
             empty
                 .try_and_iids(&installed, &vec![iid; MAX_MANAGER_FILTER_PREDICATES + 1])
+                .unwrap()
+                .require_boolean_predicates()
                 .unwrap_err()
                 .code()
                 .as_str(),
