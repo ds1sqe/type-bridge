@@ -3183,6 +3183,40 @@ def test_sdk_serialization_live(
     person_manager.delete(person)
 
 
+def test_generated_keyword_then_canonical_filter_preserves_scope_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    matching = _make_generated_person(generated, "chain-matching", 10, nickname="selected")
+    keyword_excluded = _make_generated_person(
+        generated, "chain-keyword-excluded", 20, nickname="selected"
+    )
+    canonical_excluded = _make_generated_person(
+        generated, "chain-canonical-excluded", 10, nickname="other"
+    )
+    people.insert_many([matching, keyword_excluded, canonical_excluded])
+    selection = people.filter(score=generated.Score(10)).where(
+        generated.Person.nickname,
+        generated.ProjectedManagerComparison.EQ,
+        generated.Nickname("selected"),
+    )
+    assert selection.count() == 1
+    assert [value.iid for value in selection.all()] == [matching.iid]
+    selection.delete()
+    assert selection.count() == 0
+    assert people.get_by_iid(matching.iid) is None
+    survivors = {value.identifier.value: value for value in people.all()}
+    assert set(survivors) == {"chain-keyword-excluded", "chain-canonical-excluded"}
+    assert survivors["chain-keyword-excluded"].score.value == 20
+    assert survivors["chain-keyword-excluded"].nickname.value == "selected"
+    assert survivors["chain-canonical-excluded"].score.value == 10
+    assert survivors["chain-canonical-excluded"].nickname.value == "other"
+
+
 def test_generated_delete_returning_preserves_stored_values_and_players_live(
     clean_db: Database,
     generated_package: ModuleType,

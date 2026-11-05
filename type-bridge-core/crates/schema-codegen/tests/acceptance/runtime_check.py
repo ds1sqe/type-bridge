@@ -161,6 +161,7 @@ class FakeCanonicalFilterNative:
     ) -> None:
         self.calls = calls
         self.rejected = rejected
+        self.deletes = 0
 
     def where_field(
         self,
@@ -176,6 +177,9 @@ class FakeCanonicalFilterNative:
 
     def reject_unissued_field(self) -> "FakeCanonicalFilterNative":
         return FakeCanonicalFilterNative(self.calls, rejected=True)
+
+    def delete(self) -> None:
+        self.deletes += 1
 
     def all(self) -> list[object]:
         return []
@@ -211,6 +215,10 @@ canonical_filter = canonical_manager.where(
 assert isinstance(canonical_filter, ProjectedModelFilter)
 assert canonical_filter._native.calls[0][0:2] == (Person, "foo__bar")
 assert canonical_filter._native.calls[0][3] == "gte"
+canonical_manager._hooks.append(object())  # Any instance-hook dispatch would fail.
+canonical_filter.delete()
+assert canonical_filter._native.deletes == 1
+canonical_manager._hooks.clear()
 assert (
     canonical_filter.where(
         Person.identifier,

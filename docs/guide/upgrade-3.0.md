@@ -43,7 +43,6 @@ Manager `get_by_iid`, IID `delete`, and `filter(iid=...)`/`filter(iid__in=...)`
 also require nominal identifiers. Passing a malformed string to `get_by_iid`
 now raises a type error instead of returning `None`.
 
-
 Pass `Iid("0x1234")` (imported from `type_bridge`) to query binding `iid`,
 `iid_in`, and generated model `by_iid` authoring. Plain strings are refused
 before execution. These methods retain their existing query and staged plans.
@@ -167,3 +166,17 @@ ordering, grouping, and reduction methods instead of `ComparisonExpr`,
 `BooleanExpr`, `NotExpr`, `SortExpr`, `AggregateSpec`, and `QueryGroupField`.
 Read the generated query error’s structured diagnostics instead of catching
 the removed `TypedQueryError`.
+
+## Python canonical filter deletion
+
+Use `manager.where(field, ProjectedManagerComparison.EQ, value).delete()`
+to delete every matching model in one native mutation. Filter deletion runs
+no instance CRUD hooks. For hooks, read the instances explicitly and call
+`manager.delete_many(instances)`.
+
+Chaining `where()` after a keyword filter preserves its supported scalar
+predicates. Wider keyword lookups refuse the canonical path with
+`unsupported_manager_filter`; use `instances = manager.filter(...).all()`
+and then instance operations. Borrowed write transactions may construct
+filters and delete through them; canonical read terminals still require a
+borrowed read transaction.

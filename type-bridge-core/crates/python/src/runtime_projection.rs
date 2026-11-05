@@ -33,7 +33,6 @@ use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticMessage, SdkDiagnosticName,
     SdkDiagnosticPathSegment, SdkExecutionDiagnostic, SdkProjectionEvidenceSlotPresence,
-    SdkQueryDiagnosticPathKind,
 };
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration, CanonicalTime,
@@ -2733,6 +2732,7 @@ pub struct PyProjectedModelManager {
 pub struct PyProjectedManagerFilter {
     package: Arc<InstalledPackage>,
     target: Option<OwnedQueryTarget>,
+    successor_batch_marker: Option<Arc<AtomicBool>>,
     runtime: Arc<ProviderRuntimeOwner>,
     filter: ProjectedManagerFilter,
 }
@@ -2793,6 +2793,7 @@ impl PyProjectedManagerFilter {
         Ok(Self {
             package: Arc::clone(&self.package),
             target: self.target.clone(),
+            successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filter,
         })
@@ -2803,6 +2804,38 @@ impl PyProjectedManagerFilter {
         Err(py_sdk_diagnostic(
             SdkExecutionDiagnostic::generated_token_package_mismatch(),
         ))
+    }
+
+    /// Delete all matches without running generated instance CRUD hooks.
+    fn delete(&self, py: Python<'_>) -> PyResult<()> {
+        let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
+        provider_block_on(py, self.runtime.as_ref(), async {
+            let target = self.target()?;
+            let transaction = self.target.as_ref().and_then(OwnedQueryTarget::transaction);
+            let prior_state = match transaction {
+                Some(transaction) => Some(transaction.lifecycle_state().await),
+                None => None,
+            };
+            let result = executor
+                .delete_on_target(target, &self.filter, self.control())
+                .await;
+            if let (Some(transaction), Some(marker)) = (transaction, &self.successor_batch_marker)
+                && !self.filter.matches_none()
+                && matches!(
+                    prior_state,
+                    Some(TransactionContextState::Active | TransactionContextState::RolledBack)
+                )
+                && (result.is_ok()
+                    || transaction.lifecycle_state().await == TransactionContextState::RollbackOnly)
+            {
+                marker.store(true, Ordering::Release);
+            }
+            result.map_err(|error| {
+                py_sdk_diagnostic(error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                ))
+            })
+        })
     }
 
     /// Hydrate every distinct exact-model match.
@@ -2891,30 +2924,25 @@ impl PyProjectedManagerFilter {
 impl PyProjectedModelManager {
     /// Start a distinct persistent canonical filter for this exact model.
     fn canonical_filter(&self) -> PyResult<PyProjectedManagerFilter> {
-        if self
-            .transaction()
-            .is_some_and(|transaction| transaction.tx_type() != type_bridge_orm::TxType::Read)
-        {
-            let diagnostic = SdkExecutionDiagnostic::invalid_input(
-                SdkDiagnosticCode::new("borrowed_target_not_read_only")
-                    .expect("the static borrowed-target code is canonical"),
-                SdkDiagnosticMessage::new(
-                    "Canonical manager filters require a borrowed read transaction",
-                )
-                .expect("the static borrowed-target message is canonical"),
-            )
-            .try_at(SdkDiagnosticPathSegment::Query(
-                SdkQueryDiagnosticPathKind::Operation,
-            ))
-            .expect("the fixed borrowed-target path fits the SDK diagnostic contract");
-            return Err(py_sdk_diagnostic(diagnostic));
-        }
-        let filter =
+        let filter = if self.filters.is_empty() {
             ProjectedManagerFilter::try_new(&self.package.projection, self.type_id.clone())
-                .map_err(py_sdk_diagnostic)?;
+                .map_err(py_sdk_diagnostic)?
+        } else {
+            self.compatibility_filter.clone().ok_or_else(|| {
+                py_sdk_diagnostic(SdkExecutionDiagnostic::invalid_input(
+                    SdkDiagnosticCode::new("unsupported_manager_filter")
+                        .expect("the static filter code is canonical"),
+                    SdkDiagnosticMessage::new(
+                        "This keyword filter cannot enter the canonical filter path; use instances = manager.filter(...).all() then manager.delete_many(instances) or per-instance update",
+                    )
+                    .expect("the static filter message is canonical"),
+                ))
+            })?
+        };
         Ok(PyProjectedManagerFilter {
             package: Arc::clone(&self.package),
             target: self.target.clone(),
+            successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filter,
         })
@@ -3185,6 +3213,7 @@ impl PyProjectedModelManager {
         PyProjectedManagerFilter {
             package: Arc::clone(&self.package),
             target: self.target.clone(),
+            successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filter,
         }
@@ -11070,6 +11099,91 @@ class StructBase:
     }
 
     #[test]
+    fn canonical_filter_delete_retains_scope_and_transaction_ownership() {
+        Python::initialize();
+        Python::attach(|py| {
+            for borrowed in [false, true] {
+                let (_, package) = install_batch(py);
+                let model = package
+                    .type_by_label("person", TypeKind::Entity)
+                    .unwrap()
+                    .clone();
+                let (backend, state) =
+                    OriginRecordingBackend::new(vec![QueryResult::Documents(vec![])]);
+                let database = Arc::new(Database::with_backend(Box::new(backend), "filter-delete"));
+                let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                let transaction = borrowed.then(|| {
+                    runtime
+                        .block_on(database.transaction_context(TxType::Write))
+                        .unwrap()
+                });
+                let mut manager = origin_manager(
+                    Arc::clone(&package),
+                    model.clone(),
+                    (!borrowed).then(|| Arc::clone(&database)),
+                    transaction.clone(),
+                    Arc::clone(&runtime),
+                );
+                manager.compatibility_filter =
+                    initial_compatibility_filter(&package, &model).unwrap();
+                let identifier = package
+                    .class(
+                        package
+                            .type_by_label("identifier", TypeKind::Attribute)
+                            .unwrap(),
+                        ProjectedModelForm::Complete,
+                    )
+                    .unwrap()
+                    .bind(py)
+                    .call1(("only-this-person",))
+                    .unwrap();
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("identifier", identifier).unwrap();
+                manager
+                    .filter(py, Some(&kwargs))
+                    .unwrap()
+                    .canonical_filter()
+                    .unwrap()
+                    .delete(py)
+                    .unwrap();
+                {
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.opens, [TxType::Write]);
+                    assert_eq!(state.queries.len(), 1);
+                    assert!(state.queries[0].contains("only-this-person"));
+                    assert!(state.queries[0].contains("delete"));
+                    assert_eq!(state.commits, usize::from(!borrowed));
+                    assert_eq!(state.rollbacks, 0);
+                }
+                if let Some(marker) = &manager.successor_batch_marker {
+                    assert!(marker.load(Ordering::Acquire));
+                }
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("identifier__contains", "person").unwrap();
+                let error = manager
+                    .filter(py, Some(&kwargs))
+                    .unwrap()
+                    .canonical_filter()
+                    .err()
+                    .unwrap();
+                assert_eq!(
+                    error
+                        .value(py)
+                        .getattr("code")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "unsupported_manager_filter"
+                );
+                assert_eq!(state.lock().unwrap().queries.len(), 1);
+                if let Some(transaction) = transaction {
+                    runtime.block_on(transaction.close()).unwrap();
+                }
+            }
+        });
+    }
+
+    #[test]
     fn canonical_manager_filter_fences_tokens_domains_and_persists() {
         Python::initialize();
         Python::attach(|py| {
@@ -11170,6 +11284,7 @@ class StructBase:
             let switch_filter = PyProjectedManagerFilter {
                 package: Arc::clone(&package),
                 target: None,
+                successor_batch_marker: None,
                 runtime: Arc::new(ProviderRuntimeOwner::new().unwrap()),
                 filter: switch_filter,
             };
@@ -11241,7 +11356,7 @@ class StructBase:
     }
 
     #[test]
-    fn write_transaction_manager_preserves_legacy_reads_and_rejects_canonical_filter_pre_io() {
+    fn write_transaction_manager_preserves_legacy_reads_and_refuses_canonical_reads_pre_io() {
         Python::initialize();
         Python::attach(|py| {
             let (_, package) = install_batch(py);
@@ -11278,8 +11393,9 @@ class StructBase:
             assert!(manager.compatibility_filter.is_none());
             let error = manager
                 .canonical_filter()
-                .err()
-                .expect("canonical filters require a borrowed read transaction");
+                .expect("canonical filters may construct in a borrowed write transaction")
+                .all(py)
+                .expect_err("canonical read terminals require a borrowed read transaction");
             let diagnostic = error.value(py);
             assert_eq!(
                 diagnostic

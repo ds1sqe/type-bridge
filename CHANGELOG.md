@@ -6,6 +6,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Added
 
+- Python canonical manager filters expose `delete()` for all matches through
+  the shared native mutation path. This terminal runs no instance CRUD hooks;
+  use an explicit read followed by instance operations when hooks are needed.
+
 - Read-only V3 plans may match after a validated reduction, retaining typed
   group bindings and Long count outputs. Bindings dropped by the reduction
   cannot be reused; write plans retain their existing stage restrictions.
@@ -29,6 +33,13 @@ All notable changes to TypeBridge will be documented in this file.
 - `TransactionContext::execute_plans`, `OwnedTransaction::execute_plans` and
   `EagerTransaction::execute_plans` accept write plans in caller-owned Write
   and Schema transactions, sharing answer budgets and rollback-only latches.
+
+### Fixed
+
+- Python generated `manager.filter(...).where(...)` now retains the keyword
+  predicates. In 2.3.3, this chain discarded those predicates and could read
+  extra rows. Unsupported wider lookups refuse the canonical path; use the
+  keyword filter's read terminal and explicit instance operations instead.
 
 ### Changed
 
