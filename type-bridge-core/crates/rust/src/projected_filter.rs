@@ -74,6 +74,17 @@ impl<'target> ProjectedFilterCore<'target> {
         })
     }
 
+    fn try_and_iid(&self, iid: &Iid) -> Result<Self> {
+        Ok(Self {
+            installed: self.installed,
+            target: self.target,
+            filter: self
+                .filter
+                .try_and_iid(self.installed, iid)
+                .map_err(manager_filter_error)?,
+        })
+    }
+
     fn try_and_iids(&self, iids: &[Iid]) -> Result<Self> {
         Ok(Self {
             installed: self.installed,
@@ -176,10 +187,13 @@ where
 
     /// Match one typed IID; combine with `where_` to constrain it further.
     pub fn iid(&self, iid: &Iid) -> Result<Self> {
-        self.iids(std::slice::from_ref(iid))
+        Ok(Self {
+            core: self.core.try_and_iid(iid)?,
+            marker: PhantomData,
+        })
     }
 
-    /// Match any IID in this nonempty set, retaining existing predicates.
+    /// Match any IID in this set; an empty set matches nothing.
     pub fn iids(&self, iids: &[Iid]) -> Result<Self> {
         Ok(Self {
             core: self.core.try_and_iids(iids)?,
@@ -259,10 +273,13 @@ where
 
     /// Match one typed IID; combine with `where_` to constrain it further.
     pub fn iid(&self, iid: &Iid) -> Result<Self> {
-        self.iids(std::slice::from_ref(iid))
+        Ok(Self {
+            core: self.core.try_and_iid(iid)?,
+            marker: PhantomData,
+        })
     }
 
-    /// Match any IID in this nonempty set, retaining existing predicates.
+    /// Match any IID in this set; an empty set matches nothing.
     pub fn iids(&self, iids: &[Iid]) -> Result<Self> {
         Ok(Self {
             core: self.core.try_and_iids(iids)?,

@@ -186,7 +186,8 @@ let ada = db.entities::<Person>().where_(
 
 `where_`, `iid`, and `iids` return sibling filters. `where_` accepts the six
 canonical scalar comparisons. IID predicates accept validated `Iid` values;
-`iids` requires a nonempty set and can be combined with field comparisons.
+`iids` can be combined with field comparisons. An empty IID set matches nothing
+and completes without a provider request.
 
 ```rust
 use type_bridge::Iid;

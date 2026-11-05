@@ -133,6 +133,7 @@ impl ProjectedManagerFilterResourceMeasure {
 #[derive(Clone, Debug)]
 enum ProjectedManagerPredicate {
     Field(ProjectedManagerFieldPredicate),
+    Iid(Iid),
     Iids(Arc<[Iid]>),
 }
 
@@ -154,6 +155,7 @@ pub struct ProjectedManagerFilter {
     brand: ProjectionBrand,
     model: TypeId,
     predicates: Arc<[ProjectedManagerPredicate]>,
+    matches_none: bool,
     measure: ProjectedManagerFilterResourceMeasure,
 }
 
@@ -173,6 +175,7 @@ impl ProjectedManagerFilter {
             },
             model,
             predicates: Arc::from([]),
+            matches_none: false,
         })
     }
 
@@ -332,6 +335,7 @@ impl ProjectedManagerFilter {
             brand: self.brand.clone(),
             model: self.model.clone(),
             predicates: Arc::from(predicates),
+            matches_none: self.matches_none,
             measure: ProjectedManagerFilterResourceMeasure {
                 items: self.measure.items.saturating_add(1),
                 bytes: next_bytes,
@@ -340,22 +344,43 @@ impl ProjectedManagerFilter {
         })
     }
 
-    /// Append a non-empty, bounded IID set without changing existing predicates.
+    /// Append one IID while retaining the single-write plan form.
+    pub fn try_and_iid(
+        &self,
+        installed: &InstalledRuntimeProjection,
+        iid: &Iid,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        self.try_and_iid_selection(installed, std::slice::from_ref(iid), true)
+    }
+
+    /// Pure IID selection in authored order, for per-input lifecycle events.
+    #[doc(hidden)]
+    pub fn exact_iids(&self) -> Option<&[Iid]> {
+        match self.predicates.as_ref() {
+            [ProjectedManagerPredicate::Iid(iid)] => Some(std::slice::from_ref(iid)),
+            [ProjectedManagerPredicate::Iids(iids)] => Some(iids),
+            _ => None,
+        }
+    }
+
+    /// Append a bounded IID set; an empty set proves that no thing matches.
     /// A singleton uses the same native IID predicate as an exact by-IID lookup.
     pub fn try_and_iids(
         &self,
         installed: &InstalledRuntimeProjection,
         iids: &[Iid],
     ) -> Result<Self, SdkExecutionDiagnostic> {
+        self.try_and_iid_selection(installed, iids, false)
+    }
+
+    fn try_and_iid_selection(
+        &self,
+        installed: &InstalledRuntimeProjection,
+        iids: &[Iid],
+        single: bool,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
         self.validate_for(installed)?;
-        if iids.is_empty() {
-            return Err(invalid_input(
-                "empty_iid_set",
-                "An IID filter requires at least one IID",
-                predicate_collection_path(&self.model),
-            ));
-        }
-        let next_items = self.measure.items.saturating_add(iids.len());
+        let next_items = self.measure.items.saturating_add(iids.len().max(1));
         if next_items > MAX_MANAGER_FILTER_PREDICATES {
             return Err(resource_limit(
                 "manager_filter_predicate_limit",
@@ -390,17 +415,28 @@ impl ProjectedManagerFilter {
                 )
             })?;
         predicates.extend(self.predicates.iter().cloned());
-        predicates.push(ProjectedManagerPredicate::Iids(Arc::from(iids)));
+        predicates.push(if single {
+            ProjectedManagerPredicate::Iid(iids[0].clone())
+        } else {
+            ProjectedManagerPredicate::Iids(Arc::from(iids))
+        });
         Ok(Self {
             brand: self.brand.clone(),
             model: self.model.clone(),
             predicates: Arc::from(predicates),
+            matches_none: self.matches_none || iids.is_empty(),
             measure: ProjectedManagerFilterResourceMeasure {
                 items: next_items,
                 bytes,
                 attribute_values: self.measure.attribute_values,
             },
         })
+    }
+
+    /// Whether an authored empty IID set proves that no thing can match.
+    #[doc(hidden)]
+    pub const fn matches_none(&self) -> bool {
+        self.matches_none
     }
 
     /// Return the exact model selected by this filter.
@@ -520,9 +556,10 @@ impl ProjectedManagerFilter {
         &self,
         installed: &InstalledRuntimeProjection,
     ) -> Result<(), SdkExecutionDiagnostic> {
-        if self.predicates.iter().any(|predicate| {
-            matches!(predicate,
-            ProjectedManagerPredicate::Iids(iids) if iids.len() == 1)
+        if self.predicates.iter().any(|predicate| match predicate {
+            ProjectedManagerPredicate::Iid(_) => true,
+            ProjectedManagerPredicate::Iids(iids) => iids.len() == 1,
+            _ => false,
         }) {
             return Ok(());
         }
@@ -654,7 +691,7 @@ fn append_validated_manager_expression(
         }
         MatchExpr::BindingIid { binding, iid } if *binding == root => {
             let iid = Iid::new(iid.clone()).map_err(|_| manager_query_shape_invalid())?;
-            *filter = filter.try_and_iids(installed, &[iid])?;
+            *filter = filter.try_and_iid(installed, &iid)?;
             Ok(())
         }
         MatchExpr::FieldValue {
@@ -1145,6 +1182,9 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         let terminal = ManagerTerminal::all(&control, target.manager_item_limit());
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        if filter.matches_none {
+            return Ok(Vec::new());
+        }
         let (registry, request) = self.build_request(filter, terminal)?;
         let (request, result) = target
             .execute(
@@ -1238,6 +1278,33 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<Option<Arc<ProjectedThing>>, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, true)?;
+        if filter.matches_none {
+            return Ok(None);
+        }
+        if let [ProjectedManagerPredicate::Iid(iid)] = filter.predicates.as_ref() {
+            let expressions = [crate::_dynamic::DynamicExpr::Iid {
+                iid: iid.as_str().to_owned(),
+            }];
+            let mut values = self
+                .compatibility_fetch_on_target(
+                    target,
+                    filter.model(),
+                    &expressions,
+                    MatchMode::Exact,
+                    None,
+                    control,
+                )
+                .await?;
+            if values.len() > 1 {
+                return Err(integrity(
+                    "manager_iid_cardinality_invalid",
+                    "A manager IID lookup returned multiple roots",
+                    type_path(filter.model()),
+                )
+                .into());
+            }
+            return Ok(values.pop());
+        }
         let (registry, request) = self.build_request(filter, ManagerTerminal::first())?;
         let (request, result) = target
             .execute(
@@ -1337,6 +1404,9 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<u64, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        if filter.matches_none {
+            return Ok(0);
+        }
         let (registry, request) = self.build_request(filter, ManagerTerminal::Count)?;
         let (request, result) = target
             .execute(
@@ -1428,6 +1498,9 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<bool, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        if filter.matches_none {
+            return Ok(false);
+        }
         let (registry, request) = self.build_request(filter, ManagerTerminal::Exists)?;
         let (request, result) = target
             .execute(
@@ -1489,7 +1562,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         control.checkpoint(filter.model())?;
         filter.validate_for(self.installed)?;
         filter.check_terminal_resources(control.limits)?;
-        if first {
+        if first && !filter.matches_none {
             filter.require_first_identity(self.installed)?;
         }
         control.checkpoint(filter.model())
@@ -1583,6 +1656,12 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
             })?;
         for predicate in filter.predicates.iter() {
             let predicate = match predicate {
+                ProjectedManagerPredicate::Iid(iid) => {
+                    predicates.push(root.iid(iid.as_str()).map_err(|error| {
+                        lower_execution_error(error, SdkProviderOperation::Read)
+                    })?);
+                    continue;
+                }
                 ProjectedManagerPredicate::Iids(iids) => {
                     let predicate = if let [iid] = iids.as_ref() {
                         root.iid(iid.as_str())
@@ -2123,13 +2202,21 @@ mod target_tests {
                 .as_str(),
             "manager_first_requires_identity"
         );
+        let no_matches = empty.try_and_iids(&installed, &[]).unwrap();
+        assert!(no_matches.matches_none());
+        assert_eq!(no_matches.resource_measure().items(), 1);
+        assert!(!empty.matches_none());
+        let mut bounded_empty = empty.clone();
+        for _ in 0..MAX_MANAGER_FILTER_PREDICATES {
+            bounded_empty = bounded_empty.try_and_iids(&installed, &[]).unwrap();
+        }
         assert_eq!(
-            empty
+            bounded_empty
                 .try_and_iids(&installed, &[])
                 .unwrap_err()
                 .code()
                 .as_str(),
-            "empty_iid_set"
+            "manager_filter_predicate_limit"
         );
         assert_eq!(
             empty

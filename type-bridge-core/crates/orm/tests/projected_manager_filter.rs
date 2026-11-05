@@ -672,7 +672,12 @@ async fn filtered_update_hydrates_all_matches_and_refuses_input_limits_before_io
     let queries = backend.queries.clone();
     let db = Database::with_backend(Box::new(backend), "filtered-update");
     let result = ProjectedManagerFilterExecutor::new(&installed)
-        .update_on_target(QueryTarget::Database(&db), &filter, &replacement, control())
+        .update_on_target(
+            QueryTarget::Database(&db),
+            &filter,
+            replacement.clone(),
+            control(),
+        )
         .await
         .unwrap();
     assert_eq!(result.count(), 2);
@@ -681,7 +686,7 @@ async fn filtered_update_hydrates_all_matches_and_refuses_input_limits_before_io
         .update_on_target(
             QueryTarget::Database(&db),
             &filter,
-            &replacement,
+            replacement.clone(),
             ProjectedManagerFilterInvocationControl::capture(
                 QueryExecutionResourceLimits {
                     attribute_values: 1,
@@ -713,7 +718,7 @@ async fn filtered_update_hydrates_all_matches_and_refuses_input_limits_before_io
         .update_on_target(
             QueryTarget::Transaction(&transaction),
             &iid_filter,
-            &replacement,
+            replacement.clone(),
             control(),
         )
         .await
@@ -739,7 +744,7 @@ async fn filtered_update_hydrates_all_matches_and_refuses_input_limits_before_io
         .update_on_target_mapped(
             QueryTarget::Transaction(&transaction),
             &filter,
-            &replacement,
+            replacement.clone(),
             control(),
             |_| {
                 Err::<(), _>(
@@ -762,4 +767,95 @@ async fn filtered_update_hydrates_all_matches_and_refuses_input_limits_before_io
         "transaction_rollback_only"
     );
     transaction.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn empty_iid_sets_are_match_none_without_opening_a_provider_transaction() {
+    use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps};
+    use type_bridge_orm::{
+        OrmError, ProjectedCreate, ProjectedManagerFilterInvocationControl, QueryTarget, TxType,
+    };
+    struct NeverOpen;
+    impl DriverBackend for NeverOpen {
+        fn open_transaction(
+            &self,
+            _: &str,
+            _: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            panic!("empty IID filters must not open a provider transaction");
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+    let installed = installed(BindingTarget::Rust);
+    let person = type_id(TypeKind::Entity, "person");
+    let empty = ProjectedManagerFilter::try_new(&installed, person.clone())
+        .unwrap()
+        .try_and_iids(&installed, &[])
+        .unwrap();
+    let mixed = empty
+        .try_and(
+            &installed,
+            &token(&person, "age"),
+            ProjectedManagerComparison::Gte,
+            &long_value(&installed, "age", 18),
+        )
+        .unwrap();
+    let replacement = ProjectedCreate::try_new(
+        &installed,
+        person.clone(),
+        vec![(
+            field(&person, "identifier"),
+            vec![string_value(&installed, "identifier", "unused")],
+        )],
+        vec![],
+    )
+    .unwrap();
+    let db = Database::with_backend(Box::new(NeverOpen), "match-none");
+    let target = QueryTarget::Database(&db);
+    let executor = ProjectedManagerFilterExecutor::new(&installed);
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    for filter in [&empty, &mixed] {
+        assert!(
+            executor
+                .all_on_target(target, filter, control())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            executor
+                .first_on_target(target, filter, control())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            executor
+                .count_on_target(target, filter, control())
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(
+            !executor
+                .exists_on_target(target, filter, control())
+                .await
+                .unwrap()
+        );
+        executor
+            .delete_on_target(target, filter, control())
+            .await
+            .unwrap();
+        assert_eq!(
+            executor
+                .update_on_target(target, filter, replacement.clone(), control())
+                .await
+                .unwrap()
+                .count(),
+            0
+        );
+    }
 }

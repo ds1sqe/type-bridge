@@ -21,6 +21,10 @@ impl ProjectedManagerFilter {
         use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
         for predicate in self.predicates.iter() {
             match predicate {
+                ProjectedManagerPredicate::Iid(iid) => patterns.push(Pattern::Iid {
+                    binding: root,
+                    iid: iid.as_str().to_owned(),
+                }),
                 ProjectedManagerPredicate::Iids(iids) => {
                     if let [iid] = iids.as_ref() {
                         patterns.push(Pattern::Iid {
@@ -81,6 +85,9 @@ impl ProjectedManagerFilter {
                     },
                     value: field.value.to_attribute_value(),
                 },
+                ProjectedManagerPredicate::Iid(iid) => DynamicExpr::Iid {
+                    iid: iid.as_str().to_owned(),
+                },
                 ProjectedManagerPredicate::Iids(iids) => {
                     let iid = |iid: &Iid| DynamicExpr::Iid {
                         iid: iid.as_str().to_owned(),
@@ -110,6 +117,51 @@ impl ProjectedManagerFilterExecutor<'_> {
     ) -> Result<(), QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        if let Some(iids) = filter
+            .exact_iids()
+            .or_else(|| filter.matches_none.then_some(&[]))
+        {
+            let input_control = crate::ProjectedBatchInvocationControl::from_parts(
+                control.limits,
+                control.deadline,
+                control.cancellation.clone(),
+            );
+            let batch = if matches!(
+                filter.predicates.as_ref(),
+                [ProjectedManagerPredicate::Iid(_)]
+            ) {
+                crate::ProjectedBatch::try_single_delete(
+                    self.installed,
+                    filter.model().clone(),
+                    iids[0].as_str().to_owned(),
+                    &input_control,
+                )?
+            } else {
+                crate::ProjectedBatch::try_new_for_invocation(
+                    self.installed,
+                    filter.model().clone(),
+                    crate::ProjectedBatchOperation::Delete,
+                    iids.iter()
+                        .map(|iid| crate::ProjectedBatchRow::Delete {
+                            iid: iid.as_str().to_owned(),
+                        })
+                        .collect(),
+                    &input_control,
+                )?
+            };
+            return crate::ProjectedBatchExecutor::new(self.installed)
+                .execute_on_target_mapped(
+                    target,
+                    &batch,
+                    input_control,
+                    (),
+                    |result| match result {
+                        crate::ProjectedBatchResult::Deleted => Ok(()),
+                        _ => Err(SdkExecutionDiagnostic::internal_failure()),
+                    },
+                )
+                .await;
+        }
         let query_limits = target
             .manager_query_limits(control.deadline, &control.cancellation)
             .await?;
@@ -143,7 +195,7 @@ impl ProjectedManagerFilterExecutor<'_> {
         &self,
         target: QueryTarget<'_>,
         filter: &ProjectedManagerFilter,
-        replacement: &crate::ProjectedCreate,
+        replacement: crate::ProjectedCreate,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<crate::WriteResult<crate::ProjectedThing>, QueryTargetError> {
         self.update_on_target_mapped(target, filter, replacement, control, Ok)
@@ -157,7 +209,7 @@ impl ProjectedManagerFilterExecutor<'_> {
         &self,
         target: QueryTarget<'_>,
         filter: &ProjectedManagerFilter,
-        replacement: &crate::ProjectedCreate,
+        replacement: crate::ProjectedCreate,
         control: ProjectedManagerFilterInvocationControl,
         mapper: F,
     ) -> Result<T, QueryTargetError>
@@ -171,10 +223,25 @@ impl ProjectedManagerFilterExecutor<'_> {
             control.deadline,
             control.cancellation.clone(),
         );
+        if let [ProjectedManagerPredicate::Iid(iid)] = filter.predicates.as_ref() {
+            let executor = crate::ProjectedCrudExecutor::new(self.installed);
+            let batch = executor.single_controlled_write_batch(
+                filter.model(),
+                crate::ProjectedBatchOperation::Update,
+                crate::ProjectedBatchRow::Update {
+                    iid: iid.as_str().to_owned(),
+                    replacement,
+                },
+                &input_control,
+            )?;
+            return executor
+                .execute_single_write_on_target(target, &batch, input_control, mapper)
+                .await;
+        }
         crate::projected_batch::validate_filtered_replacement(
             self.installed,
             filter.model(),
-            replacement,
+            &replacement,
             &input_control,
         )?;
         let input_bytes = (filter.resource_measure().bytes() as u64)
@@ -186,9 +253,12 @@ impl ProjectedManagerFilterExecutor<'_> {
             QueryTarget::Transaction(transaction) => transaction.execution_identity().clone(),
             QueryTarget::Proxy(proxy) => proxy.execution_identity().clone(),
         };
-        crate::projected_batch_executor::validate_provider_create_input(replacement, 0)?;
+        crate::projected_batch_executor::validate_provider_create_input(&replacement, 0)?;
         let executor = crate::ProjectedCrudExecutor::new(self.installed);
-        let model = executor.prepare_write_model(filter.model(), replacement, &identity)?;
+        let model = executor.prepare_write_model(filter.model(), &replacement, &identity)?;
+        if filter.matches_none {
+            return mapper(crate::WriteResult::new(Vec::new())).map_err(Into::into);
+        }
         let query_limits = target
             .manager_query_limits(control.deadline, &control.cancellation)
             .await?;
@@ -209,7 +279,12 @@ impl ProjectedManagerFilterExecutor<'_> {
                 };
                 let result = executor.hydrate_filtered_update(&prepared, &identity, &documents)?;
                 for predicate in filter.predicates.iter() {
-                    if let ProjectedManagerPredicate::Iids(iids) = predicate {
+                    let iids = match predicate {
+                        ProjectedManagerPredicate::Iid(iid) => std::slice::from_ref(iid),
+                        ProjectedManagerPredicate::Iids(iids) => iids,
+                        _ => continue,
+                    };
+                    {
                         for item in result.items() {
                             if !iids
                                 .iter()

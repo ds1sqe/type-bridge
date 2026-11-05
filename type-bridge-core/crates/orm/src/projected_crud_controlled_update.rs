@@ -1977,7 +1977,7 @@ mod tests {
                     .update_on_target(
                         crate::QueryTarget::Proxy(&proxy),
                         &filter,
-                        &replacement,
+                        replacement.clone(),
                         ProjectedManagerFilterInvocationControl::capture(
                             Default::default(),
                             Default::default(),
@@ -2071,6 +2071,158 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scalar_iid_filter_first_keeps_exact_lookup_plan_bytes() {
+        use crate::{
+            ProjectedManagerFilter, ProjectedManagerFilterExecutor,
+            ProjectedManagerFilterInvocationControl,
+        };
+        for target in [
+            BindingTarget::Python,
+            BindingTarget::TypeScript,
+            BindingTarget::Rust,
+        ] {
+            for (kind, label) in [
+                (TypeKind::Entity, "wide-item"),
+                (TypeKind::Relation, "wide-edge"),
+            ] {
+                let model = TypeId::new(kind, label).unwrap();
+                let (installed, proxy, transport) = single_proxy_fixture_with_projection(
+                    model.clone(),
+                    1,
+                    1,
+                    type_bridge_contract::limits::QueryLimits::V3,
+                    wide_single_projection_for_target(false, target),
+                );
+                let original = ProjectedCrudExecutor::new(&installed)
+                    .get_by_iid_on_target(crate::QueryTarget::Proxy(&proxy), &model, "0x20", None)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let filter = ProjectedManagerFilter::try_new(&installed, model)
+                    .unwrap()
+                    .try_and_iid(
+                        &installed,
+                        &type_bridge_contract::id::Iid::new("0x20").unwrap(),
+                    )
+                    .unwrap();
+                let filtered = ProjectedManagerFilterExecutor::new(&installed)
+                    .first_on_target(
+                        crate::QueryTarget::Proxy(&proxy),
+                        &filter,
+                        ProjectedManagerFilterInvocationControl::capture(
+                            Default::default(),
+                            Default::default(),
+                        ),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(original.iid(), filtered.iid());
+                let seen = transport.seen.lock().unwrap();
+                assert_eq!(seen.len(), 2);
+                assert_eq!(seen[0].plans().len(), seen[1].plans().len());
+                for (left, right) in seen[0].plans().iter().zip(seen[1].plans()) {
+                    assert_eq!(
+                        left.plan().canonical_bytes().unwrap(),
+                        right.plan().canonical_bytes().unwrap()
+                    );
+                    assert_eq!(left.rows(), right.rows());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn scalar_iid_filter_update_keeps_inline_and_wide_write_stack_bytes() {
+        use crate::{
+            ProjectedManagerFilter, ProjectedManagerFilterExecutor,
+            ProjectedManagerFilterInvocationControl,
+        };
+        for target in [
+            BindingTarget::Python,
+            BindingTarget::TypeScript,
+            BindingTarget::Rust,
+        ] {
+            for (kind, label) in [
+                (TypeKind::Entity, "wide-item"),
+                (TypeKind::Relation, "wide-edge"),
+            ] {
+                for tags in [1, 300] {
+                    let model = TypeId::new(kind, label).unwrap();
+                    let (installed, proxy, transport) = single_proxy_fixture_with_projection(
+                        model.clone(),
+                        1,
+                        tags,
+                        type_bridge_contract::limits::QueryLimits::V3,
+                        wide_single_projection_for_target(false, target),
+                    );
+                    let input = proxy_single_input(&installed, &model, tags);
+                    let executor = ProjectedCrudExecutor::new(&installed);
+                    let control = ProjectedBatchInvocationControl::capture(
+                        Default::default(),
+                        Default::default(),
+                    );
+                    let batch = executor
+                        .single_controlled_write_batch(
+                            &model,
+                            ProjectedBatchOperation::Update,
+                            ProjectedBatchRow::Update {
+                                iid: "0x20".into(),
+                                replacement: input.clone(),
+                            },
+                            &control,
+                        )
+                        .unwrap();
+                    let original = executor
+                        .execute_single_write_on_target(
+                            crate::QueryTarget::Proxy(&proxy),
+                            &batch,
+                            control,
+                            Ok,
+                        )
+                        .await
+                        .unwrap();
+                    let filter = ProjectedManagerFilter::try_new(&installed, model)
+                        .unwrap()
+                        .try_and_iid(
+                            &installed,
+                            &type_bridge_contract::id::Iid::new("0x20").unwrap(),
+                        )
+                        .unwrap();
+                    let filtered = ProjectedManagerFilterExecutor::new(&installed)
+                        .update_on_target(
+                            crate::QueryTarget::Proxy(&proxy),
+                            &filter,
+                            input,
+                            ProjectedManagerFilterInvocationControl::capture(
+                                Default::default(),
+                                Default::default(),
+                            ),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(original.count(), filtered.count());
+                    let seen = transport.seen.lock().unwrap();
+                    assert_eq!(seen.len(), 2);
+                    let original_wire: serde_json::Value =
+                        serde_json::from_slice(&seen[0].encode().unwrap()).unwrap();
+                    let filtered_wire: serde_json::Value =
+                        serde_json::from_slice(&seen[1].encode().unwrap()).unwrap();
+                    assert!(original_wire["plans"].is_array());
+                    assert!(filtered_wire["plans"].is_array());
+                    assert_eq!(
+                        type_bridge_contract::codec::to_canonical_json(&original_wire["plans"])
+                            .unwrap(),
+                        type_bridge_contract::codec::to_canonical_json(&filtered_wire["plans"])
+                            .unwrap()
+                    );
+                    assert_eq!(seen[0].plans().len() == 1, tags == 1);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn ordered_proxy_single_and_many_deletes_preserve_call_plan_and_one_exchange() {
         for target in [
             BindingTarget::Python,
@@ -2143,16 +2295,51 @@ mod tests {
                             .await
                             .unwrap();
                         assert!(matches!(output, Some(ProjectedBatchResult::Deleted)));
+                        {
+                            let seen = transport.seen.lock().unwrap();
+                            assert_eq!(seen.len(), 1);
+                            assert_eq!(seen[0].plans().len(), 1);
+                            assert_eq!(
+                                seen[0].plans()[0].plan().canonical_bytes().unwrap(),
+                                direct
+                            );
+                            assert_eq!(
+                                transport
+                                    .dispatched_writes
+                                    .load(std::sync::atomic::Ordering::Relaxed),
+                                1
+                            );
+                        }
+                        let iids = ["0x20", "0x21", "0x22"]
+                            .into_iter()
+                            .take(count)
+                            .map(|iid| type_bridge_contract::id::Iid::new(iid).unwrap())
+                            .collect::<Vec<_>>();
+                        let filter = crate::ProjectedManagerFilter::try_new(
+                            &installed,
+                            batch.model().clone(),
+                        )
+                        .unwrap();
+                        let filter = if single {
+                            filter.try_and_iid(&installed, &iids[0])
+                        } else {
+                            filter.try_and_iids(&installed, &iids)
+                        }
+                        .unwrap();
+                        crate::ProjectedManagerFilterExecutor::new(&installed)
+                            .delete_on_target(
+                                crate::QueryTarget::Proxy(&proxy),
+                                &filter,
+                                crate::ProjectedManagerFilterInvocationControl::capture(
+                                    Default::default(),
+                                    Default::default(),
+                                ),
+                            )
+                            .await
+                            .unwrap();
                         let seen = transport.seen.lock().unwrap();
-                        assert_eq!(seen.len(), 1);
-                        assert_eq!(seen[0].plans().len(), 1);
-                        assert_eq!(seen[0].plans()[0].plan().canonical_bytes().unwrap(), direct);
-                        assert_eq!(
-                            transport
-                                .dispatched_writes
-                                .load(std::sync::atomic::Ordering::Relaxed),
-                            1
-                        );
+                        assert_eq!(seen.len(), 2);
+                        assert_eq!(seen[1].plans()[0].plan().canonical_bytes().unwrap(), direct);
                     }
                 }
             }
