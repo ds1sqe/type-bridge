@@ -17,13 +17,14 @@ use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
 #[cfg(test)]
 use type_bridge_contract::migration_backfill::COPY_ATTRIBUTE_BACKFILL_CAPABILITY;
+use type_bridge_contract::query_plan::v3::QueryPlanV3;
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId, ManagedSchemaState};
 use type_bridge_core_lib::version::{GeneratedPackageRelease, Version};
 use type_bridge_orm::migration_assertion::{
     MigrationAssertionExecutionContext, MigrationAssertionExecutionError,
     execute_migration_assertion,
 };
-use type_bridge_orm::session::backend::QueryResult;
+use type_bridge_orm::session::staged::PlanAnswer;
 use type_bridge_orm::{
     ClassifiedCommitError, CommitFailureCertainty, Database, OrmError,
     OwnedTransaction as Transaction,
@@ -38,7 +39,7 @@ use type_bridge_schema_migration::{
     VerifiedMigrationApplyPlan, migration_runtime_capability_vocabulary,
 };
 
-use crate::backfill::LoweredBackfill;
+use crate::backfill::NativeBackfill;
 use crate::observation::{
     ManagedObservationAuthority, observe_managed_state_from_export_with_authority,
 };
@@ -217,6 +218,33 @@ impl TypeDbMigrationProvider {
         require_managed_state_execution_context(state, context, state_role)
     }
 
+    fn backfill_authority(
+        &self,
+        plan: &AttributeBackfillPlan,
+    ) -> Result<&DeclaredSchema, Diagnostic> {
+        let profile = plan.managed_semantics().as_fingerprint().semantic_profile();
+        let context = match &self.profile_bridge_source {
+            Some(source) if profile == Some(source.semantic_profile()) => source,
+            _ => &self.binding.context,
+        };
+        self.schema_authorities
+            .iter()
+            .find(|schema| {
+                type_bridge_schema::managed_schema_state(schema, context)
+                    .ok()
+                    .is_some_and(|state| {
+                        state.managed_semantic_schema() == plan.managed_semantics()
+                    })
+            })
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_typedb_backfill_declared_authority_missing",
+                    "native backfill requires matching planning schema authority",
+                )
+            })
+    }
+
     /// Bind the runner-validated legacy pair state into every managed SCHEMA
     /// transaction opened by this provider.
     pub(crate) fn new_with_legacy_binding(
@@ -287,7 +315,7 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
             self.binding.require_lease(lease)?;
             plan.required_capabilities()
                 .ensure_supported_by(self.available_capabilities())?;
-            let lowered = LoweredBackfill::new(plan, direction);
+            let lowered = NativeBackfill::new(plan, direction, self.backfill_authority(plan)?)?;
             let mut transaction = self
                 .binding
                 .managed_database
@@ -297,13 +325,7 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
             let observed = async {
                 require_active_managed_fence(&mut transaction, lease).await?;
                 require_no_backfill_conflict(&mut transaction, &lowered).await?;
-                let incomplete = query_has_answers(
-                    &mut transaction,
-                    &lowered
-                        .incomplete_witness()
-                        .map_err(backfill_lowering_error)?,
-                )
-                .await?;
+                let incomplete = query_has_answers(&mut transaction, &lowered.incomplete).await?;
                 require_active_managed_fence(&mut transaction, lease).await?;
                 if incomplete {
                     Ok(BackfillRecoveryObservation::Incomplete)
@@ -337,7 +359,12 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
                 .ensure_supported_by(self.available_capabilities())
                 .map_err(definitely_aborted)?;
             let plan_fingerprint = plan.fingerprint().map_err(definitely_aborted)?;
-            let lowered = LoweredBackfill::new(plan, direction);
+            let lowered = NativeBackfill::new(
+                plan,
+                direction,
+                self.backfill_authority(plan).map_err(definitely_aborted)?,
+            )
+            .map_err(definitely_aborted)?;
             let mut changed = 0_u64;
             let mut transaction_groups = 0_u32;
             loop {
@@ -354,11 +381,7 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
                 let mutation = async {
                     require_active_managed_fence(&mut transaction, lease).await?;
                     require_no_backfill_conflict(&mut transaction, &lowered).await?;
-                    let affected = query_answer_count(
-                        &mut transaction,
-                        &lowered.mutation_group().map_err(backfill_lowering_error)?,
-                    )
-                    .await?;
+                    let affected = query_answer_count(&mut transaction, &lowered.mutation).await?;
                     if affected > u64::from(plan.partition().batch_rows()) {
                         return Err(failure(
                             DiagnosticCategory::Integrity,
@@ -644,25 +667,14 @@ pub fn execution_capability_vocabulary() -> Result<CapabilitySet, Diagnostic> {
     migration_runtime_capability_vocabulary()
 }
 
-fn backfill_lowering_error(_: type_bridge_core_lib::__internal::TqlError) -> Diagnostic {
-    failure(
-        DiagnosticCategory::InvalidContract,
-        "migration_typedb_backfill_typeql_shape",
-        "validated backfill cannot be lowered to TypeQL",
-    )
-}
-
 async fn require_no_backfill_conflict(
     transaction: &mut Transaction,
-    lowered: &LoweredBackfill<'_>,
+    lowered: &NativeBackfill,
 ) -> Result<(), Diagnostic> {
-    let Some(query) = lowered
-        .conflict_witness()
-        .map_err(backfill_lowering_error)?
-    else {
+    let Some(query) = &lowered.conflict else {
         return Ok(());
     };
-    if query_has_answers(transaction, &query).await? {
+    if query_has_answers(transaction, query).await? {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
             "migration_typedb_backfill_destination_conflict",
@@ -672,15 +684,47 @@ async fn require_no_backfill_conflict(
     Ok(())
 }
 
-async fn query_has_answers(transaction: &mut Transaction, query: &str) -> Result<bool, Diagnostic> {
+async fn query_has_answers(
+    transaction: &mut Transaction,
+    query: &QueryPlanV3,
+) -> Result<bool, Diagnostic> {
     Ok(query_answer_count(transaction, query).await? != 0)
 }
 
-async fn query_answer_count(transaction: &mut Transaction, query: &str) -> Result<u64, Diagnostic> {
-    let count = match transaction.query(query).await.map_err(map_orm_error)? {
-        QueryResult::Ok => 0,
-        QueryResult::Rows(rows) => rows.len(),
-        QueryResult::Documents(documents) => documents.len(),
+async fn query_answer_count(
+    transaction: &mut Transaction,
+    query: &QueryPlanV3,
+) -> Result<u64, Diagnostic> {
+    // Preserve the previous executor policy; the plan bounds witnesses and batches.
+    let limits = type_bridge_orm::QueryExecutionResourceLimits {
+        collect_phase_timestamps: false,
+        timeout_milliseconds: type_bridge_orm::QueryTimeout::NONE,
+        items: u64::MAX,
+        bytes: u64::MAX,
+        graph_nodes: u64::MAX,
+        attribute_values: u64::MAX,
+        collection_members: u64::MAX,
+        role_players: u64::MAX,
+        statements: Some(1),
+    };
+    let mut answers = transaction
+        .execute_plans(
+            std::slice::from_ref(query),
+            &limits,
+            &type_bridge_orm::AnswerCancellation::default(),
+            type_bridge_orm::QueryExecutionDeadline::for_limits(limits),
+        )
+        .await
+        .map_err(map_orm_error)?;
+    let count = match answers.pop() {
+        Some(PlanAnswer::Rows(rows)) if answers.is_empty() => rows.len(),
+        _ => {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_typedb_backfill_answer_shape",
+                "native backfill must return exactly one row answer",
+            ));
+        }
     };
     u64::try_from(count).map_err(|_| {
         failure(

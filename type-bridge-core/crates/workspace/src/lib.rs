@@ -41,7 +41,8 @@ mod workspace_yaml;
 
 pub use authority::{WorkspaceDirectoryAuthority, WorkspaceOutputDirectory};
 pub use backfill_intent::{
-    MAX_BACKFILL_INTENT_BYTES, TYPEBRIDGE_BACKFILL_INTENT_V1, parse_backfill_intent,
+    MAX_BACKFILL_INTENT_BYTES, TYPEBRIDGE_BACKFILL_INTENT_V1, TYPEBRIDGE_BACKFILL_INTENT_V2,
+    parse_backfill_intent,
 };
 pub use bundle::{
     BundleProjectionContext, BundleVerificationContext, MAX_SCHEMA_BUNDLE_BYTES,

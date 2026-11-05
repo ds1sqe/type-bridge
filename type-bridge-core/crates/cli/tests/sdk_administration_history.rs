@@ -268,28 +268,11 @@ fn native_profile_copies_keep_four_reversible_migrations() {
         }
         assert_eq!(
             history["fingerprint"]["digest"],
-            support::sdk_profile_matrix::select_from(
-                &support::sdk_profile_matrix::repository_root(),
-                "administration",
-                profile
-            )
-            .expected_history_fingerprint
-            .expect("profile history digest")
+            support::format2_history_fingerprint(profile)
         );
-        if profile == "typedb-3.12.1/v1" {
-            for name in [
-                "0001_initial",
-                "0002_expand-display-name",
-                "0003_backfill-display-name",
-                "0004_contract-legacy-name",
-            ] {
-                let relative = format!("migrations/v2/{name}.tbmigration.json");
-                assert_eq!(
-                    fs::read(temporary.path().join(&relative)).unwrap(),
-                    fs::read(fixture().join(relative)).unwrap()
-                );
-            }
-        }
+        let backfill = &entries[2]["manifest"]["steps"][0]["plan"];
+        assert_eq!(backfill["mode"], "isa");
+        assert_eq!(backfill["format"], 2);
     }
     assert_eq!(
         fs::read(fixture().join("typebridge.yaml")).unwrap(),

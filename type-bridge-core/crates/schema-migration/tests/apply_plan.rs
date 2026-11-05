@@ -250,6 +250,7 @@ fn backfill_apply_evidence_retains_exact_manifest_position_and_requires_approval
         TypeId::new(TypeKind::Entity, "person").unwrap(),
         AttributeId::new("legacy-name").unwrap(),
         AttributeId::new("display-name").unwrap(),
+        type_bridge_contract::query_plan::TypeMatchMode::Isa,
         BackfillPartition::new(128, AttributeId::new("person-id").unwrap()).unwrap(),
         semantics,
         Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
@@ -1313,4 +1314,119 @@ fn apply_and_rollback_retain_each_intermediate_declared_schema_in_one_manifest()
             );
         }
     }
+}
+
+#[test]
+fn historical_backfill_requires_a_persisted_open_plan_but_can_resume() {
+    use type_bridge_schema_migration::{
+        MigrationExecutionJournal, MigrationLeaseStore, PlanRecord, decode_verified_manifest,
+    };
+    let mut capabilities = context().available_capabilities().clone();
+    capabilities.insert(CapabilityId::new(COPY_ATTRIBUTE_BACKFILL_CAPABILITY).unwrap());
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("administration").unwrap(),
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        capabilities,
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../tests/contracts/sdk_conformance/administration/workspace/migrations/v2");
+    let mut source =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), std::iter::empty())
+            .unwrap();
+    let mut manifests = Vec::new();
+    for name in [
+        "0001_initial",
+        "0002_expand-display-name",
+        "0003_backfill-display-name",
+    ] {
+        let bytes = std::fs::read(root.join(format!("{name}.tbmigration.json"))).unwrap();
+        let manifest = decode_verified_manifest(&bytes, (&source, &context)).unwrap();
+        source = manifest.target_schema().clone();
+        manifests.push(manifest);
+    }
+    let applied = BTreeSet::from([manifests[0].id().clone(), manifests[1].id().clone()]);
+    let approval = MigrationApplyApproval::for_manifest(&manifests[2]).unwrap();
+    let prefix_target = MigrationApplyTarget::Explicit(BTreeSet::from([manifests[1].id().clone()]));
+    let graph = MigrationHistoryGraph::from_verified(manifests).unwrap();
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let prefix = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &prefix_target,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+    )
+    .unwrap();
+    let plan = build_verified_migration_apply_plan(
+        &graph,
+        &applied,
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[approval],
+    )
+    .unwrap();
+    let store = CoordinatorStore::default();
+    let provider = CoordinatorProvider {
+        available: context.available_capabilities().clone(),
+        calls: Mutex::new(Vec::new()),
+        observed: Mutex::new(prefix.source_state().unwrap().clone()),
+    };
+    block_on(execute_verified_migration_apply_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("prefix").unwrap(),
+        &prefix,
+    ))
+    .unwrap();
+    provider.calls.lock().unwrap().clear();
+    let sequence = store.state.lock().unwrap().next_sequence;
+    let error = block_on(execute_verified_migration_apply_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("new-history-apply").unwrap(),
+        &plan,
+    ))
+    .unwrap_err();
+    assert_eq!(
+        error.code().as_str(),
+        "migration_backfill_historical_execution_requires_open_plan"
+    );
+    assert!(provider.calls.lock().unwrap().is_empty());
+    assert_eq!(store.state.lock().unwrap().next_sequence, sequence);
+    assert!(store.state.lock().unwrap().open.is_none());
+    // Model the exact persisted plan left by a 2.x execution before interruption.
+    let lease = block_on(store.acquire(
+        &ExecutionScope::new(context.scope_id().clone()),
+        &LeaseHolderId::new("historical-start").unwrap(),
+    ))
+    .unwrap();
+    let record = PlanRecord::from_verified_plan(
+        &lease,
+        &plan,
+        &applied.iter().cloned().collect::<Vec<_>>(),
+        plan.source_state().unwrap(),
+    )
+    .unwrap();
+    block_on(store.begin_plan(&lease, record)).unwrap();
+    block_on(store.release(&lease)).unwrap();
+    let resumed = block_on(execute_verified_migration_apply_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("historical-resume").unwrap(),
+        &plan,
+    ))
+    .unwrap();
+    assert!(matches!(resumed, MigrationExecutionOutcome::Applied { .. }));
+    assert!(
+        provider
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"execute-backfill-forward")
+    );
+    assert!(store.state.lock().unwrap().open.is_none());
 }

@@ -285,7 +285,7 @@ fn workspace_authors_backfill_intent_under_one_directory_lock() {
     workspace.write_generated_migration(&initial).unwrap();
     directory.write(
         "migrations/v2/copy-name.backfill.yaml",
-        "format: typebridge.migration-backfill-intent/v1\ncopy-attribute:\n  owner-kind: entity\n  owner: person\n  source: legacy-name\n  destination: display-name\n  partition-key: person-id\n  batch-rows: 128\n  reverse: remove-equal-copied-destination\n",
+        "format: typebridge.migration-backfill-intent/v2\ncopy-attribute:\n  mode: isa\n  owner-kind: entity\n  owner: person\n  source: legacy-name\n  destination: display-name\n  partition-key: person-id\n  batch-rows: 128\n  reverse: remove-equal-copied-destination\n",
     );
     let authority = workspace.open_migration_directory().unwrap();
     let generated = workspace

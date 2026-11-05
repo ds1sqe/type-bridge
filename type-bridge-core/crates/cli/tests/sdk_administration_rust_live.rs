@@ -210,9 +210,9 @@ fn generated_rust_observes_administration_administration_controls_and_lifecycle(
     assert_eq!(report["results"][3]["observation"]["catalog_entries"], 4);
     assert_eq!(
         report["results"][3]["observation"]["catalog_fingerprint"],
-        support::sdk_profile_matrix::requested("administration")
-            .expected_history_fingerprint
-            .expect("matrix history fingerprint")
+        support::format2_history_fingerprint(
+            &support::sdk_profile_matrix::requested("administration").semantic_profile
+        )
     );
     let report_path = temporary.path().join("rust-administration-report.json");
     fs::write(

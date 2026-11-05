@@ -242,3 +242,31 @@ Recovery uses the same persisted native program or raw bytes as initial
 execution. A step proven committed is skipped; an indeterminate commit is not
 assumed safe to replay. The raw escape hatch does not change that recovery
 contract.
+
+Canonical copy-attribute authoring uses format 2 and an explicit TypeQL mode:
+
+```yaml
+format: typebridge.migration-backfill-intent/v2
+copy-attribute:
+  mode: isa
+  owner-kind: entity
+  owner: person
+  source: legacy-name
+  destination: display-name
+  partition-key: person-id
+  batch-rows: 128
+  reverse: remove-equal-copied-destination
+```
+
+Use `mode: isa!` to match only the exact concrete attribute types. `mode: isa`
+includes attribute subtypes and supports abstract source labels. Reverse
+execution retains the forward plan's mode and removes only destination
+ownerships whose values equal their source values.
+
+Format-1 backfill records keep their original bytes, fingerprints, and historical
+`isa` behavior for applied-history validation, recovery, and rollback. New
+YAML intents and manifests must use format 2. An unapplied format-1 backfill can
+execute only when it matches an existing persisted open plan from an interrupted
+execution; otherwise regenerate it with an explicit mode. The refusal is
+`migration_backfill_historical_execution_requires_open_plan` and occurs before
+saving a new plan or mutating provider data.

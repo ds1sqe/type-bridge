@@ -200,6 +200,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- New canonical backfill plans and YAML intents use format 2 and require an
+  explicit `isa` or `isa!` mode. Format 1 remains readable for historical
+  validation, interrupted recovery and rollback; new application requires
+  regeneration. `AttributeBackfillPlan::new` takes the mode explicitly.
+
 - Structured migration `CopyAttribute` now requires `mode: "isa"` or
   `mode: "isa!"`. The explicit choice controls source and destination attribute
   subtype matching; abstract attribute labels require `isa`.

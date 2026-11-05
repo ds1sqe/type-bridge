@@ -392,6 +392,18 @@ pub fn build_verified_manifest(
     draft: SchemaMigrationDraft,
     context: (&DeclaredSchema, &ManagedDeltaContext),
 ) -> Result<VerifiedSchemaMigrationManifest, Diagnostic> {
+    for step in &draft.steps {
+        if let Some((_, plan)) = step.as_backfill() {
+            plan.require_new_authoring()?;
+        }
+    }
+    rebuild_verified_manifest(draft, context)
+}
+
+fn rebuild_verified_manifest(
+    draft: SchemaMigrationDraft,
+    context: (&DeclaredSchema, &ManagedDeltaContext),
+) -> Result<VerifiedSchemaMigrationManifest, Diagnostic> {
     let (source_schema, delta_context) = context;
     let source_state =
         managed_schema_state(source_schema, delta_context).map_err(delta_diagnostic)?;
@@ -710,7 +722,41 @@ fn validate_backfill_historical_schema(
         ("destination", plan.destination()),
         ("partition", plan.partition().stable_attribute()),
     ] {
-        if !owner.owns().contains_key(attribute) {
+        let attribute_type = type_bridge_contract::id::TypeId::new(
+            type_bridge_contract::id::TypeKind::Attribute,
+            attribute.label().as_str(),
+        )?;
+        let resolved_attribute = resolved.types().get(&attribute_type);
+        if role != "partition"
+            && plan.mode() == type_bridge_contract::query_plan::TypeMatchMode::IsaExact
+            && resolved_attribute.is_some_and(|attribute| attribute.is_abstract())
+        {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_abstract_exact_ownership",
+                "abstract ownership labels require isa, not isa!",
+            ));
+        }
+        let source_owned = role == "source"
+            && resolved_attribute.is_some_and(|attribute_type| {
+                std::iter::once(plan.owner())
+                    .chain(owner.subtypes())
+                    .any(|candidate| {
+                        resolved.types().get(candidate).is_some_and(|candidate| {
+                            candidate.is_constructible()
+                                && candidate.owns().keys().any(|owned| {
+                                    owned == attribute
+                                        || (plan.mode()
+                                            == type_bridge_contract::query_plan::TypeMatchMode::Isa
+                                            && attribute_type
+                                                .subtypes()
+                                                .iter()
+                                                .any(|subtype| subtype.label() == owned.label()))
+                                })
+                        })
+                    })
+            });
+        if !source_owned && !owner.owns().contains_key(attribute) {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "migration_manifest_backfill_attribute_not_owned",
@@ -741,7 +787,7 @@ pub fn decode_verified_manifest(
     let candidate = from_canonical_json::<ManifestCandidate>(bytes)?;
     candidate.validate_header()?;
     let draft = candidate.to_draft()?;
-    let verified = build_verified_manifest(draft, context)?;
+    let verified = rebuild_verified_manifest(draft, context)?;
     if encode_verified_manifest(&verified)? != bytes {
         return Err(failure(
             DiagnosticCategory::Integrity,

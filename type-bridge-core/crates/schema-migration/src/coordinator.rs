@@ -623,6 +623,22 @@ where
     let mut backfill_observations = Vec::new();
 
     if open.is_none() {
+        if plan
+            .migrations()
+            .iter()
+            .flat_map(|migration| migration.steps())
+            .any(|step| {
+                step.step()
+                    .as_backfill()
+                    .is_some_and(|(_, backfill)| backfill.format().get() == 1)
+            })
+        {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_backfill_historical_execution_requires_open_plan",
+                "format-1 backfill execution requires an exact interrupted open plan; regenerate new work with explicit isa or isa! mode (format 2)",
+            ));
+        }
         let source = plan
             .source_state()
             .expect("non-empty plan has source state");

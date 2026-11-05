@@ -235,6 +235,7 @@ pub fn generate_backfill_migration(
     graph: &MigrationHistoryGraph,
     request: &BackfillMigrationGenerationRequest<'_>,
 ) -> Result<GeneratedMigration, Diagnostic> {
+    request.plan.require_new_authoring()?;
     for (id, _) in graph.manifests() {
         if id.app_label().as_str() != request.app_label {
             return Err(failure(

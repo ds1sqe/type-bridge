@@ -2480,7 +2480,7 @@ mod migration_command_tests {
         run(&initial).expect("initial migration");
         fs::write(
             directory.path().join("migrations/v2/copy-name.backfill.yaml"),
-            "format: typebridge.migration-backfill-intent/v1\ncopy-attribute:\n  owner-kind: entity\n  owner: person\n  source: legacy-name\n  destination: display-name\n  partition-key: person-id\n  batch-rows: 128\n  reverse: remove-equal-copied-destination\n",
+            "format: typebridge.migration-backfill-intent/v2\ncopy-attribute:\n  mode: isa\n  owner-kind: entity\n  owner: person\n  source: legacy-name\n  destination: display-name\n  partition-key: person-id\n  batch-rows: 128\n  reverse: remove-equal-copied-destination\n",
         )
         .expect("backfill intent writes");
 

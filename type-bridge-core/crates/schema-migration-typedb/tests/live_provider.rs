@@ -18,10 +18,8 @@ use type_bridge_contract::migration_backfill::{
 };
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
-    DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
 };
-use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_orm::{ConnectOptions, Database};
 use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
@@ -124,40 +122,8 @@ fn declared_facts(facts: Vec<SchemaFact>) -> DeclaredSchema {
 }
 
 fn sdk_backfill_schema() -> DeclaredSchema {
-    let owner = TypeId::new(TypeKind::Entity, "person").expect("person type");
-    let person_id = AttributeId::new("person-id").expect("person ID attribute");
-    let legacy_name = AttributeId::new("legacy-name").expect("legacy name attribute");
-    let display_name = AttributeId::new("display-name").expect("display name attribute");
-    let mut facts = vec![type_fact("person")];
-    for attribute in [&person_id, &legacy_name, &display_name] {
-        facts.push(SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, attribute.label().as_str())
-                    .expect("attribute type"),
-            )
-            .expect("attribute type fact"),
-        ));
-        facts.push(SchemaFact::Value(ValueFact::new(
-            ValueFactId::new(attribute.clone()),
-            ValueTypeTag::String,
-        )));
-        facts.push(SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(owner.clone(), attribute.clone()).expect("ownership"),
-        )));
-    }
-    facts.push(SchemaFact::Annotation(
-        AnnotationFact::new(
-            AnnotationFactId::new(
-                AnnotationSubjectId::Owns(
-                    OwnsFactId::new(owner, person_id).expect("key ownership"),
-                ),
-                AnnotationKindId::Key,
-            ),
-            SchemaAnnotationValue::Presence,
-        )
-        .expect("key annotation"),
-    ));
-    declared_facts(facts)
+    type_bridge_schema_compat::typeql_to_declared(DocumentId::new("native-backfill-live.typeql").unwrap(),
+        "define attribute person-id, value string; attribute legacy-name @abstract, value string; attribute specialised-name, sub legacy-name; attribute display-name, value string; entity person, owns person-id @key, owns display-name @card(0..); entity employee, sub person, owns specialised-name;").unwrap()
 }
 
 async fn query_document_count(database: &Database, query: &str) -> usize {
@@ -264,12 +230,23 @@ fn additive_manifest(
     target: &DeclaredSchema,
     context: &ManagedDeltaContext,
 ) -> VerifiedSchemaMigrationManifest {
+    schema_manifest(name, parents, source, target, context, true)
+}
+
+fn schema_manifest(
+    name: &str,
+    parents: Vec<MigrationId>,
+    source: &DeclaredSchema,
+    target: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+    reversible: bool,
+) -> VerifiedSchemaMigrationManifest {
     let delta = diff_managed(source, target, context).expect("delta");
-    let reverse = inverse_delta(&delta).expect("inverse");
+    let reverse = reversible.then(|| inverse_delta(&delta).expect("inverse"));
     let step = SchemaDeltaStep::new(
         MigrationStepId::new(format!("step-{name}")).expect("step id"),
         delta,
-        Some(reverse),
+        reverse,
     )
     .expect("schema step");
     let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step]).expect("draft");
@@ -427,12 +404,13 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
     let context = context();
     let genesis = declared_facts(Vec::new());
     let expanded = sdk_backfill_schema();
-    let expand = additive_manifest(
+    let expand = schema_manifest(
         "0001_expand_names",
         Vec::new(),
         &genesis,
         &expanded,
         &context,
+        false,
     );
     let graph = MigrationHistoryGraph::from_verified([expand.clone()]).expect("expand history");
     let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
@@ -473,7 +451,7 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         .await
         .expect("open seed transaction");
     seed.query(
-        "insert\n  $first isa person, has person-id \"p1\", has legacy-name \"Ada\";\n  $second isa person, has person-id \"p2\", has legacy-name \"Bob\", has display-name \"conflict\";",
+        "insert\n  $first isa employee, has person-id \"p1\", has specialised-name \"Ada\";\n  $second isa employee, has person-id \"p2\", has specialised-name \"Bob\", has display-name \"conflict\";",
     )
     .await
     .expect("seed source and conflicting destination rows");
@@ -487,6 +465,7 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         TypeId::new(TypeKind::Entity, "person").expect("owner"),
         AttributeId::new("legacy-name").expect("source"),
         AttributeId::new("display-name").expect("destination"),
+        type_bridge_contract::query_plan::TypeMatchMode::Isa,
         BackfillPartition::new(1, AttributeId::new("person-id").expect("partition key"))
             .expect("single-row deterministic groups"),
         semantics,
@@ -573,6 +552,10 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         .expect("idempotent retry");
     assert_eq!(retried.counts().changed(), 0);
 
+    let mut unrelated = managed.write_transaction().await.unwrap();
+    unrelated.query("match $person isa person, has person-id \"p1\"; insert $person has display-name \"keep\";").await.unwrap();
+    unrelated.commit().await.unwrap();
+
     let reversed = provider
         .execute_backfill(
             &lease,
@@ -589,7 +572,8 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
             "match $person isa person, has display-name $name; fetch { \"name\": $name };",
         )
         .await,
-        0,
+        1,
+        "reverse keeps the unrelated destination value on the matched owner",
     );
     assert_eq!(
         query_document_count(
