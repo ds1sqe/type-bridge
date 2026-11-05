@@ -5579,3 +5579,150 @@ def test_generated_direct_terminals_run_under_the_connection_answer_ceiling(
         session_refusal.value.category,
         session_refusal.value.code,
     )
+
+
+def test_generated_raw_pair_live(
+    clean_db: Database, generated_package: ModuleType, tmp_path: Path
+) -> None:
+    from typedb.driver import TransactionType as DriverTransactionType
+
+    from type_bridge import RawQueryError
+
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(), "schema")
+    answer = clean_db.execute_query("define entity raw-atomic; entity raw-oracle;", "schema")
+    assert answer["answerType"] == "ok"
+    assert answer["queryType"] == "schema"
+
+    def driver_documents(query: str, kind: DriverTransactionType) -> list[dict[str, Any]]:
+        tx = clean_db.driver.transaction(clean_db.database_name, kind)
+        try:
+            documents = list(tx.query(query).resolve().as_concept_documents())
+            if kind == DriverTransactionType.WRITE:
+                tx.commit()
+            return documents
+        finally:
+            tx.close()
+
+    insert = "insert $x isa raw-oracle; fetch { 'value': 7 };"
+    driver_insert = driver_documents(insert, DriverTransactionType.WRITE)
+    assert clean_db.execute_query(insert, "write")["answers"] == driver_insert
+    fetch = "match $x isa raw-oracle; fetch { 'value': 7 };"
+    driver_fetch = driver_documents(fetch, DriverTransactionType.READ)
+    assert clean_db.execute_query(fetch)["answers"] == driver_fetch
+    fetch_atomic = "match $x isa raw-atomic; fetch { 'value': 1 };"
+    with clean_db.raw_transaction("write") as tx:
+        tx.execute_query("insert $x isa raw-atomic;")
+        tx.execute_query("insert $x isa raw-atomic;")
+        assert len(tx.execute_query(fetch_atomic)["answers"]) == 2
+        tx.rollback()
+    assert clean_db.execute_query(fetch_atomic)["answers"] == []
+    with pytest.raises(RuntimeError, match="rollback context"):
+        with clean_db.raw_transaction("write") as tx:
+            tx.execute_query("insert $x isa raw-atomic;")
+            raise RuntimeError("rollback context")
+    assert clean_db.execute_query(fetch_atomic)["answers"] == []
+    with clean_db.raw_transaction("write", commit_on_exit=False) as tx:
+        tx.execute_query("insert $x isa raw-atomic;")
+    assert clean_db.execute_query(fetch_atomic)["answers"] == []
+
+    assert generated.__file__ is not None
+    authority = (
+        Path(generated.__file__)
+        .resolve()
+        .parent.parent.joinpath("schema-authority.json")
+        .read_bytes()
+    )
+    supplied_server = os.environ.get("TYPE_BRIDGE_V2_SMOKE_SERVER")
+    command = (
+        [supplied_server]
+        if supplied_server
+        else [
+            "cargo",
+            "run",
+            "--quiet",
+            "-p",
+            "type-bridge-server",
+            "--example",
+            "staged_smoke_server",
+        ]
+    )
+    port = _free_port()
+    for enabled in (True, False):
+        trace = tmp_path / f"raw-{enabled}.jsonl"
+        with (tmp_path / f"raw-{enabled}.log").open("w+") as log:
+            server = subprocess.Popen(
+                command,
+                cwd=ROOT if supplied_server else CORE,
+                env={
+                    **os.environ,
+                    "SMOKE_TYPEDB_ADDRESS": clean_db.address,
+                    "SMOKE_TYPEDB_USERNAME": clean_db.username or "admin",
+                    "SMOKE_TYPEDB_PASSWORD": clean_db.password or "password",
+                    "SMOKE_TYPEDB_HTTP_PORT": str(clean_db.http_port),
+                    "SMOKE_DATABASE": clean_db.database_name,
+                    "SMOKE_AUTHORITY_B64": base64.b64encode(authority).decode(),
+                    "SMOKE_PORT": str(port),
+                    "SMOKE_ALLOW_STAGED_WRITES": "true",
+                    "SMOKE_ALLOW_RAW": str(enabled).lower(),
+                    "SMOKE_TRACE_FILE": str(trace),
+                },
+                stdout=log,
+                stderr=log,
+            )
+            try:
+                _wait_for_port(port, server, 300)
+                proxy = generated.connect_proxy(f"http://127.0.0.1:{port}")
+                if not enabled:
+                    for kind in ("read", "write", "schema"):
+                        with pytest.raises(RawQueryError) as refused:
+                            proxy.execute_query("unchecked text", kind)
+                        assert refused.value.code == "raw_disabled"
+                        with proxy.raw_transaction(kind) as tx:
+                            with pytest.raises(RawQueryError) as refused:
+                                tx.execute_query("unchecked text")
+                            assert refused.value.code == "raw_disabled"
+                            tx.close()
+                    continue
+                assert proxy.execute_query(fetch)["answers"] == driver_fetch
+                assert proxy.execute_query(insert, "write")["answers"] == driver_insert
+                assert (
+                    proxy.execute_query("define entity raw-schema-proxy;", "schema")["queryType"]
+                    == "schema"
+                )
+
+                def requests() -> int:
+                    return sum(
+                        json.loads(line)["event"] == "raw_request"
+                        for line in trace.read_text().splitlines()
+                    )
+
+                before = requests()
+                with proxy.raw_transaction("write") as tx:
+                    tx.execute_query("insert $x isa raw-atomic;")
+                    assert requests() == before + 1
+                    with pytest.raises(RawQueryError) as refused:
+                        tx.execute_query("insert $x isa raw-atomic;")
+                    assert refused.value.code == "raw_transaction_single_query"
+                    tx.commit()
+                    with pytest.raises(RawQueryError) as refused:
+                        tx.rollback()
+                    assert refused.value.code == "raw_transaction_already_committed"
+                assert requests() == before + 1
+                assert len(clean_db.execute_query(fetch_atomic)["answers"]) == 1
+                with proxy.raw_transaction("read") as tx:
+                    tx.execute_query(fetch_atomic)
+                    tx.commit()
+                    tx.rollback()
+            except BaseException:
+                log.seek(0)
+                print(log.read())
+                raise
+            finally:
+                server.terminate()
+                try:
+                    server.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    server.kill()
+                    server.wait(timeout=10)

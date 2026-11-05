@@ -620,6 +620,32 @@ fn py_administration_error(error: type_bridge_contract::diagnostic::Diagnostic) 
 
 #[pymethods]
 impl PyDatabase {
+    /// Open an explicit raw context; clean context-manager exit commits by default.
+    #[pyo3(signature = (kind="read", *, commit_on_exit=true))]
+    fn raw_transaction(
+        &self,
+        py: Python<'_>,
+        kind: &str,
+        commit_on_exit: bool,
+    ) -> PyResult<crate::raw_runtime::PyRawTransaction> {
+        crate::raw_runtime::PyRawTransaction::direct(py, self, kind, commit_on_exit)
+    }
+
+    /// Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+    /// to TypeDB as written, and TypeDB's output comes back as it
+    /// answered, in this SDK's native data types. TypeBridge adds no
+    /// validation, rewriting, hydration, hooks, limits or extra
+    /// queries. It runs in read, write and schema transactions and
+    /// accepts any TypeQL, schema-breaking changes included. The caller
+    /// owns its correctness; TypeBridge makes no promise about its
+    /// effects. On a proxy connection it posts to the server's opt-in
+    /// `/v3/raw` endpoint, which is off by default.
+
+    #[pyo3(signature = (query, kind="read"))]
+    fn execute_query(&self, py: Python<'_>, query: &str, kind: &str) -> PyResult<Py<PyAny>> {
+        self.raw_transaction(py, kind, true)?.execute_one(py, query)
+    }
+
     /// Connect to TypeDB using the shared Rust ORM session layer.
     #[staticmethod]
     #[pyo3(signature = (address, database, username=None, password=None, http_port=core_version::DEFAULT_HTTP_PORT, server_version=None, tls=None, tls_root_ca=None, query_limits=None))]

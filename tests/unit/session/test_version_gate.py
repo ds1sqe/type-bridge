@@ -1002,18 +1002,16 @@ class TestSchemaAnnotationGate:
             db.check_schema_annotation_support('define\nentity person @doc("A person.");')
         stub.check_schema_annotation_support.assert_called_once()
 
-    def test_execute_query_gates_schema_annotations_before_transaction(self, monkeypatch):
+    def test_execute_query_sends_raw_schema_without_annotation_gate(self, monkeypatch):
         stub = MagicMock()
-        stub.check_schema_annotation_support.side_effect = type_bridge_core.VersionError(
-            "schema annotations (@doc/@meta) require TypeDB 3.12 or newer"
-        )
+        stub.check_schema_annotation_support.side_effect = AssertionError("raw query was gated")
+        stub.execute_query.return_value = {"answerType": "ok", "queryType": "schema"}
         db = self._database_with_rust_stub(monkeypatch, stub)
-        query = 'define\nentity gate-person @doc("Gated.");'
+        query = 'define\nentity gate-person @doc("Unchecked.");'
 
-        with pytest.raises(type_bridge_core.VersionError, match="3.12 or newer"):
-            db.execute_query(query, "schema")
-
-        stub.check_schema_annotation_support.assert_called_once_with(query)
+        assert db.execute_query(query, "schema") == stub.execute_query.return_value
+        stub.execute_query.assert_called_once_with(query, "schema")
+        stub.check_schema_annotation_support.assert_not_called()
         stub.transaction.assert_not_called()
 
 

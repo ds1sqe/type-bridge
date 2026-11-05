@@ -50,6 +50,33 @@ impl PyProxyConnection {
 
 #[pymethods]
 impl PyProxyConnection {
+    /// Open an explicit raw context; clean context-manager exit commits by default.
+    #[pyo3(signature = (kind="read", *, commit_on_exit=true))]
+    fn raw_transaction(
+        &self,
+        py: Python<'_>,
+        kind: &str,
+        commit_on_exit: bool,
+    ) -> PyResult<crate::raw_runtime::PyRawTransaction> {
+        let _ = py;
+        crate::raw_runtime::PyRawTransaction::proxy(self, kind, commit_on_exit)
+    }
+
+    /// Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+    /// to TypeDB as written, and TypeDB's output comes back as it
+    /// answered, in this SDK's native data types. TypeBridge adds no
+    /// validation, rewriting, hydration, hooks, limits or extra
+    /// queries. It runs in read, write and schema transactions and
+    /// accepts any TypeQL, schema-breaking changes included. The caller
+    /// owns its correctness; TypeBridge makes no promise about its
+    /// effects. On a proxy connection it posts to the server's opt-in
+    /// `/v3/raw` endpoint, which is off by default.
+
+    #[pyo3(signature = (query, kind="read"))]
+    fn execute_query(&self, py: Python<'_>, query: &str, kind: &str) -> PyResult<Py<PyAny>> {
+        self.raw_transaction(py, kind, true)?.execute_one(py, query)
+    }
+
     /// Open `endpoint` and fetch its capability advertisement, or validate
     /// the pinned `advertisement` without fetching; `staged_advertisement`
     /// likewise pins the `/v3/capabilities` body. `connection_limits`

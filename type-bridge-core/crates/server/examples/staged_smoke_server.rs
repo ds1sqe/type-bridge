@@ -9,6 +9,7 @@
 //! - `SMOKE_TYPEDB_USERNAME` / `SMOKE_TYPEDB_PASSWORD`
 //! - `SMOKE_DATABASE` — existing database name
 //! - `SMOKE_AUTHORITY_B64` — base64 canonical schema-authority bytes
+//! - `SMOKE_ALLOW_RAW` — exact `true` enables the unchecked raw endpoint
 //! - `SMOKE_ALLOW_STAGED_WRITES` — exact `true` enables fixture writes
 //! - `SMOKE_PORT` — listen port on 127.0.0.1
 //! - `SMOKE_TYPEDB_HTTP_PORT` — TypeDB HTTP discovery port (default 8000)
@@ -72,13 +73,17 @@ impl Interceptor for SmokeTrace {
         ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async move {
-            if ctx
+            let event = match ctx
                 .metadata
                 .get("v3_endpoint")
                 .and_then(serde_json::Value::as_str)
-                == Some("staged")
             {
-                self.record(serde_json::json!({"event":"request", "id":ctx.request_id}))?;
+                Some("staged") => Some("request"),
+                Some("raw") => Some("raw_request"),
+                _ => None,
+            };
+            if let Some(event) = event {
+                self.record(serde_json::json!({"event":event, "id":ctx.request_id}))?;
             }
             Ok(())
         })
@@ -277,6 +282,14 @@ async fn main() {
     .with_unauthenticated_staged_writes(
         std::env::var("SMOKE_ALLOW_STAGED_WRITES").as_deref() == Ok("true"),
     );
+    if std::env::var("SMOKE_ALLOW_RAW").as_deref() == Ok("true") {
+        state = state.with_raw_executor(
+            prepared_connection
+                .connect_raw_runtime()
+                .await
+                .expect("raw runtime connects"),
+        );
+    }
     if let Ok(encoded) = std::env::var("SMOKE_QUERY_LIMITS") {
         let overrides: std::collections::BTreeMap<String, u64> =
             serde_json::from_str(&encoded).expect("SMOKE_QUERY_LIMITS is a named limit object");

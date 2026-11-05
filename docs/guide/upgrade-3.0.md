@@ -253,3 +253,12 @@ Rust raw TypeQL uses `db.execute_query(text, kind)` or
 Typed staged `Transaction::query()` stays unchanged. Proxy raw contexts accept
 one query and commit writes on the host; use a typed staged transaction when
 several operations must commit together through a proxy.
+
+Python `Database.execute_query(text, transaction_type)` now returns the complete
+TypeDB HTTP query-answer dictionary, including `answerType`, `queryType` and
+`answers`, instead of flattening answers into a list. It sends schema text
+without the old annotation gate. For multiple direct raw statements use
+`with db.raw_transaction("write") as tx: ...` and `tx.execute_query(text)`;
+clean exit commits, exceptions close without committing, and explicit rollback
+prevents an automatic commit. `commit_on_exit=False` leaves completion explicit.
+Proxy raw contexts accept one query and cannot roll back a committed write.

@@ -15,8 +15,8 @@ filters are combined with AND. See [CRUD](crud.md#filters) for double-underscore
 field names and the explicit `__eq` escape.
 
 For the binding-neutral exact subset, build a canonical manager filter with an
-issued field token and exact projected value. It is immutable and exposes only
-`all`, identity-strict `first`, `count`, and `exists`; joins, roles, ordering,
+issued field token and exact projected value. It is immutable and exposes
+`all`, identity-strict `first`, `count`, `exists`, `update`, and `delete`; joins, roles, ordering,
 pagination, and rich string predicates remain on the typed-query surface below.
 
 ## Owner-aware fields
@@ -103,3 +103,33 @@ direct or a proxy connection alike (see
 Use generated typed queries and `PlanBuilder` for plan execution. For raw
 TypeQL text, call `Database.execute_query`; the former `Query` and
 `QueryBuilder` compatibility builders are removed in 3.0.
+
+Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+to TypeDB as written, and TypeDB's output comes back as it
+answered, in this SDK's native data types. TypeBridge adds no
+validation, rewriting, hydration, hooks, limits or extra
+queries. It runs in read, write and schema transactions and
+accepts any TypeQL, schema-breaking changes included. The caller
+owns its correctness; TypeBridge makes no promise about its
+effects. On a proxy connection it posts to the server's opt-in
+`/v3/raw` endpoint, which is off by default.
+
+The result is the complete HTTP query-answer dictionary; `answers` contains
+its rows or documents. Python integers preserve the provider's full precision.
+Use an explicit raw context to group direct statements:
+
+```python
+with db.raw_transaction("write") as tx:
+    tx.execute_query('insert $p isa person, has name "Ada";')
+    tx.execute_query('insert $p isa person, has name "Grace";')
+    tx.rollback()
+```
+
+Clean exit commits unless `commit_on_exit=False` or the caller already completed
+the context. An exception closes without committing. On a proxy connection a raw
+transaction holds one query, because `/v3/raw` runs each request as its own
+transaction. A second query raises `RawQueryError` with code
+`raw_transaction_single_query`; rollback after a proxy write raises
+`raw_transaction_already_committed`. A disabled host raises `raw_disabled`.
+Provider errors retain `code`, `message`, `status`, `provider_code` and
+`commit_outcome`; `commit_outcome_unknown` means durability must be checked.

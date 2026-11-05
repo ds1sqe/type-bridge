@@ -20,7 +20,7 @@ from type_bridge.typedb_driver import (
 )
 
 if TYPE_CHECKING:
-    from type_bridge_core import QueryLimits
+    from type_bridge_core import QueryLimits, RawTransaction
     from type_bridge_core import Transaction as StagedTransaction
     from typedb.driver import Driver
 
@@ -706,30 +706,38 @@ class Database:
             collect_phase_timestamps=collect_phase_timestamps,
         )
 
-    def execute_query(self, query: str, transaction_type: str = "read") -> list[dict[str, Any]]:
-        """Execute a query and return results.
+    def raw_transaction(
+        self,
+        kind: Literal["read", "write", "schema"] = "read",
+        *,
+        commit_on_exit: bool = True,
+    ) -> RawTransaction:
+        """Open an eager raw context; clean context-manager exit commits by default."""
+        from type_bridge._native import core_database_for
 
-        Args:
-            query: TypeQL query string
-            transaction_type: Type of transaction ("read", "write", or "schema")
+        return core_database_for(self).raw_transaction(kind, commit_on_exit=commit_on_exit)
 
-        Returns:
-            List of result dictionaries
+    def execute_query(
+        self, query: str, transaction_type: str | TransactionType = "read"
+    ) -> dict[str, Any]:
+        """Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+        to TypeDB as written, and TypeDB's output comes back as it
+        answered, in this SDK's native data types. TypeBridge adds no
+        validation, rewriting, hydration, hooks, limits or extra
+        queries. It runs in read, write and schema transactions and
+        accepts any TypeQL, schema-breaking changes included. The caller
+        owns its correctness; TypeBridge makes no promise about its
+        effects. On a proxy connection it posts to the server's opt-in
+        `/v3/raw` endpoint, which is off by default.
         """
-        logger.debug(f"Executing query (type={transaction_type}, {len(query)} chars)")
-        logger.debug(f"Query: {query}")
-        if transaction_type in ("schema", TransactionType.SCHEMA):
-            self.check_schema_annotation_support(query)
-        with self.transaction(transaction_type) as tx:
-            results = tx.execute(query)
-            if isinstance(transaction_type, str):
-                needs_commit = transaction_type in ("write", "schema")
-            else:
-                needs_commit = transaction_type in (TransactionType.WRITE, TransactionType.SCHEMA)
-            if needs_commit:
-                tx.commit()
-            logger.debug(f"Query returned {len(results)} results")
-            return results
+        from type_bridge._native import core_database_for
+
+        kind = (
+            transaction_type
+            if isinstance(transaction_type, str)
+            else _tx_type_wire_name(transaction_type)
+        )
+        return core_database_for(self).execute_query(query, kind)
 
     def detected_server_version(self) -> str | None:
         """The server version detected by the connect-time version gate.

@@ -220,7 +220,12 @@ class _CustomRootCaSnapshot:
 
 class PyDatabase:
     """Rust-backed TypeDB database connection."""
-
+    def raw_transaction(
+        self, kind: Literal["read", "write", "schema"] = "read", *, commit_on_exit: bool = True
+    ) -> RawTransaction: ...
+    def execute_query(
+        self, query: str, kind: str = "read"
+    ) -> dict[str, Any]: ...
     @staticmethod
     def connect(
         address: str,
@@ -1007,6 +1012,12 @@ class PyRuntimeProjection:
 
 @final
 class ProxyConnection:
+    def raw_transaction(
+        self, kind: Literal["read", "write", "schema"] = "read", *, commit_on_exit: bool = True
+    ) -> RawTransaction: ...
+    def execute_query(
+        self, query: str, kind: Literal["read", "write", "schema"] = "read"
+    ) -> dict[str, Any]: ...
     def __new__(cls) -> Never: ...
     @staticmethod
     def connect(
@@ -1540,3 +1551,21 @@ class DynamicExpr:
     def not_(expression: DynamicExpr) -> DynamicExpr: ...
     @staticmethod
     def role_player(role_name: str, expression: DynamicExpr) -> DynamicExpr: ...
+
+class RawQueryError(RuntimeError):
+    code: str
+    message: str
+    status: int
+    provider_code: str | None
+    commit_outcome: Literal["definitely_aborted", "unknown"] | None
+
+@final
+class RawTransaction:
+    """Unchecked direct transaction or single-query proxy context."""
+    def __new__(cls) -> Never: ...
+    def execute_query(self, query: str) -> dict[str, Any]: ...
+    def commit(self) -> None: ...
+    def rollback(self) -> None: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> RawTransaction: ...
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool: ...

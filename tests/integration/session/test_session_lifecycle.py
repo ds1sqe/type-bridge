@@ -257,7 +257,7 @@ class TestExecuteQuery:
         results = clean_db.execute_query(
             "match $p isa session_test_person; fetch { $p.* };", transaction_type="read"
         )
-        assert results == []
+        assert results["answers"] == []
 
     def test_execute_query_write_commits(self, clean_db):
         """execute_query with write type should commit changes."""
@@ -271,7 +271,7 @@ class TestExecuteQuery:
         results = clean_db.execute_query(
             "match $p isa session_test_person; fetch { $p.* };", transaction_type="read"
         )
-        assert len(results) == 1
+        assert len(results["answers"]) == 1
 
     def test_execute_query_schema_commits(self, clean_db):
         """execute_query with schema type should commit changes."""

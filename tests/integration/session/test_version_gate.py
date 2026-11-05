@@ -373,7 +373,7 @@ class TestGivenStageLive:
                 "match $p isa vg-given-person, has vg-given-name $n; select $n;",
                 transaction_type="read",
             )
-            assert {row["n"]["value"] for row in fetched} == {"alice", "bob", "carol"}
+            assert {row["data"]["n"]["value"] for row in fetched["answers"]} == {"alice", "bob", "carol"}
         elif not self._live_server_supports_given_syntax():
             with pytest.raises(type_bridge_core.VersionError) as exc_info:
                 clean_db.execute_with_rows(

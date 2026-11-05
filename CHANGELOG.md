@@ -5,6 +5,10 @@ All notable changes to TypeBridge will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Python `raw_transaction(kind)` and `RawTransaction.execute_query` share the
+  unchecked core with database-level `execute_query`, including proxy contexts
+  and `RawQueryError` provider details/commit certainty. Python integers retain
+  full provider precision; context-manager exit supports explicit rollback.
 - Rust SDK unchecked TypeQL pair: `Database::execute_query` and
   `RawTransaction::execute_query`, also on proxy/configured connections.
   Direct raw contexts retain atomic multi-query transactions; proxy contexts
@@ -248,6 +252,12 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+- Python `Database.execute_query` returns the complete TypeDB HTTP query-answer
+  dictionary instead of a flattened list; use its `answers` member. Raw schema
+  text bypasses the annotation gate. Proxy raw contexts refuse a second query
+  with `raw_transaction_single_query`, and rollback after a committed write with
+  `raw_transaction_already_committed`; use typed staged plans for multi-operation
+  proxy atomicity.
 
 - Generated Node model and reference `.iid` properties return retained `Iid`
   objects. Reference constructors, manager IID arguments and filters, query

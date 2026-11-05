@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from type_bridge_core import Iid
+from type_bridge_core import Iid, RawQueryError, RawTransaction
 
 from type_bridge.failure import CommitConflict, CommitOutcomeUnknown, CommitRejected, Failure
 from type_bridge.plan import Plan, PlanBuilder, PlanExplanation, StagedPlan, StagedResultRef
@@ -19,6 +19,8 @@ __version__ = "2.3.2"
 
 __all__ = [
     "Iid",
+    "RawQueryError",
+    "RawTransaction",
     "BatchWriteResult",
     "WriteResult",
     "Failure",
