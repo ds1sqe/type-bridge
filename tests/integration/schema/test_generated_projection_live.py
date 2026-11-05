@@ -1165,7 +1165,7 @@ def _run_sdk_queries_journey(
             for name, value in zip(
                 record_names, [*people, employee, manager, membership, network], strict=True
             ):
-                plan_capture.record(name, value.iid)
+                plan_capture.record(name, str(value.iid))
             setattr(remote_exchange, "_plan_witness", plan_capture)
 
         def mark_plan(name: str) -> None:
