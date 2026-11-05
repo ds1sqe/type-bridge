@@ -141,7 +141,9 @@ no matches without a provider request, including with wider keyword lookups.
 
 Delete all selected rows with `manager.filter({ iid }).delete()` or
 `manager.where(Person.fields.age, "gte", Age.create(18n)).delete()`.
-`delete(iid)` permanently redirects to the same IID filter terminal. A direct
+`delete(iid)` permanently redirects to the same IID filter terminal.
+`deleteMany(iids)` redirects to `filter({ iid__in: iids }).delete()` and retains
+ordinal batch limits, including singleton lists. A direct
 zero-argument manager `delete()` refuses; use an explicit `filter({})` or `where()`
 when deleting every row is intended. Empty IID lists send no deletion request.
 

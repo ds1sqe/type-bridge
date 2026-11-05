@@ -93,6 +93,10 @@ redirect to that filter terminal and retains any existing predicates. A direct
 unfiltered `manager.delete()` refuses: select all explicitly with `filter({})`
 or `where()`. Wider keyword filters require an explicit read followed by instance
 or IID batch operations. Node has no public CRUD hook API.
+`deleteMany(iids)` redirects to `filter({ iid__in: iids }).delete()`. Pure IID-list
+deletes retain batch input limits and ordinal plans, including singleton lists;
+reads and updates keep the 256-term Boolean limit. Returning deletes retain their
+ordinal stored-snapshot batches.
 
 Node `getByIid(iid)` permanently redirects to `filter({ iid }).first()`,
 retaining existing canonical keyword selection.

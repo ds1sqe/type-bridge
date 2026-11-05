@@ -4307,6 +4307,7 @@ export interface OrderedProjectedModelManager<
   updateMany(
     updates: readonly ProjectedBatchUpdate<Complete>[],
   ): BatchWriteResult<Complete>;
+  /** Permanent redirect to `filter({ iid__in: iids }).delete()`. */
   deleteMany(iids: readonly Iid[]): void;
   filter(
     filters: ProjectedManagerKeywords,

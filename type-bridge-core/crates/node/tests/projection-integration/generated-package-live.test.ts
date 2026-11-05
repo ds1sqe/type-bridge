@@ -2378,6 +2378,14 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     personManager.filter({ iid__in: [] }).delete();
     personManager.filter({ iid: deleteProbe.iid }).where(Person.score, "eq", Score.create(99n)).delete();
     assert.equal(personManager.getByIid(deleteProbe.iid), null);
+    const listDeleteProbes = personManager.insertMany([
+      generatedPerson("list-delete-left", 96n), generatedPerson("list-delete-right", 97n),
+    ]).items;
+    const deleteIids = listDeleteProbes.map((person: any) => person.iid);
+    personManager.filter({ identifier: Identifier.create("absent") }).deleteMany(deleteIids);
+    assert.equal(personManager.filter({ iid__in: deleteIids }).count(), 2n);
+    personManager.deleteMany(deleteIids);
+    assert.equal(personManager.filter({ iid__in: deleteIids }).count(), 0n);
     const keywordDeleteProbe = oneWritten(personManager.insert(generatedPerson("keyword-delete-probe", 98n)));
     personManager.filter({ identifier: Identifier.create("keyword-delete-probe") }).delete();
     assert.equal(personManager.getByIid(keywordDeleteProbe.iid), null);
