@@ -257,6 +257,12 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+- Removed Python `Database.execute_with_rows`, `TransactionContext.execute`,
+  `TransactionContext.execute_with_rows`, and its transaction view's `execute`;
+  removed Node `TransactionContext.query` and native `queryJson`. Use the
+  database raw pair or an explicit `raw_transaction` / `rawTransaction` context
+  and its `execute_query` / `executeQuery`. Generated bulk managers retain
+  typed row transport; raw queries accept only TypeQL text.
 - Python `Database.execute_query` returns the complete TypeDB HTTP query-answer
   dictionary instead of a flattened list; use its `answers` member. Raw schema
   text bypasses the annotation gate. Proxy raw contexts refuse a second query

@@ -1,18 +1,17 @@
-"""Live ordinary-commit failure projection through the Python native SDK."""
+"""Live raw provider failures and commit certainty through the Python SDK."""
 
 import json
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from dataclasses import FrozenInstanceError
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from type_bridge_core import PyDatabase
 
-from type_bridge.failure import CommitConflict, CommitOutcomeUnknown, CommitRejected, Failure
+from type_bridge import RawQueryError
 
 pytestmark = pytest.mark.integration
 
@@ -31,68 +30,81 @@ def test_python_typed_provider_failure(case: str) -> None:
     db = PyDatabase.connect(
         address, f"tb_failure_python_{uuid4().hex}", http_port=int(os.environ["TYPEDB_HTTP_PORT"])
     )
-    contexts = []
     db.create_database()
     try:
-        schema = db.transaction("schema")
+        _raw_provider_failure(db, case, container)
+    finally:
+        db.delete_database()
+        db.close()
+
+
+@pytest.mark.parametrize("case", ["stc2", "cnt5", "cnt9"])
+def test_python_raw_provider_failure_without_pause(clean_db, case: str) -> None:
+    _raw_provider_failure(clean_db, case, None)
+
+
+def _raw_provider_failure(db, case: str, container: str | None) -> None:
+    contexts = []
+    try:
+        schema = db.raw_transaction("schema")
         contexts.append(schema)
-        schema.execute(FIXTURE["schema"])
+        schema.execute_query(FIXTURE["schema"])
         schema.commit()
-        seed = db.transaction("write")
+        seed = db.raw_transaction("write")
         contexts.append(seed)
-        seed.execute(FIXTURE["seed"])
+        seed.execute_query(FIXTURE["seed"])
         seed.commit()
-        tx = db.transaction("write")
+        tx = db.raw_transaction("write")
         contexts.append(tx)
         if case == "stc2":
-            other = db.transaction("write")
+            other = db.raw_transaction("write")
             contexts.append(other)
-            tx.execute(FIXTURE["purchase"])
-            other.execute(FIXTURE["purchase"])
+            tx.execute_query(FIXTURE["purchase"])
+            other.execute_query(FIXTURE["purchase"])
             with ThreadPoolExecutor(max_workers=2) as pool:
                 futures = [pool.submit(context.commit) for context in [tx, other]]
                 errors = [future.exception() for future in futures]
             assert sum(error is None for error in errors) == 1
             error = next(error for error in errors if error is not None)
-            assert isinstance(error, CommitConflict)
-            read = db.transaction("read")
+            assert isinstance(error, RawQueryError)
+            read = db.raw_transaction("read")
             contexts.append(read)
-            assert read.execute(FIXTURE["stock_read"]) == [{"stock": 0}]
+            assert read.execute_query(FIXTURE["stock_read"])["answers"] == [{"stock": 0}]
         elif case == "cnt5":
-            tx.execute(FIXTURE["cnt5"])
-            with pytest.raises(CommitRejected) as caught:
+            tx.execute_query(FIXTURE["cnt5"])
+            with pytest.raises(RawQueryError) as caught:
                 tx.commit()
             error = caught.value
         elif case == "cnt9":
-            with pytest.raises(RuntimeError) as caught:
-                tx.execute(FIXTURE["cnt9"])
+            with pytest.raises(RawQueryError) as caught:
+                tx.execute_query(FIXTURE["cnt9"])
             error = caught.value
         else:
-            tx.execute(FIXTURE["paused"])
+            tx.execute_query(FIXTURE["paused"])
+            assert container is not None
             subprocess.run(["docker", "pause", container], check=True)
             try:
-                with pytest.raises(CommitOutcomeUnknown) as caught:
+                with pytest.raises(RawQueryError) as caught:
                     tx.commit()
                 error = caught.value
             finally:
                 subprocess.run(["docker", "unpause", container], check=True)
-        failure: Failure = getattr(error, "failure")
-        assert isinstance(failure, Failure)
-        assert failure.retry_safe == (case != "paused")
-        assert failure.phase == ("query" if case == "cnt9" else "commit")
+        assert isinstance(error, RawQueryError)
         assert (
-            failure.reason
-            == {"stc2": "conflict", "cnt5": "cardinality", "cnt9": "unique", "paused": None}[case]
+            error.code
+            == {"stc2": "STC2", "cnt5": "CNT5", "cnt9": "CNT9", "paused": "commit_outcome_unknown"}[
+                case
+            ]
         )
-        if case == "stc2":
-            assert failure.lock_kind == "exclusive"
-        assert "SECRET_SENTINEL" not in f"{error!s} {error!r} {failure!r}"
-        with pytest.raises(FrozenInstanceError):
-            setattr(failure, "retry_safe", False)
-        print(case, failure)
+        assert error.commit_outcome == (
+            "unknown" if case == "paused" else None if case == "cnt9" else "definitely_aborted"
+        )
+        if case == "paused":
+            assert error.provider_code
+        else:
+            assert error.provider_code is None
+        print(case, error.code, error.provider_code, error.commit_outcome)
     finally:
         for context in contexts:
             with suppress(RuntimeError):
                 context.close()
-        db.delete_database()
-        db.close()

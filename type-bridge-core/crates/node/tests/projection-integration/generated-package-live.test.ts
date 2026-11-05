@@ -2104,7 +2104,7 @@ test("generated managers share direct and HTTP proxy terminals", { timeout: 360_
     requireProfileServerVersion(REMOTE_PROFILE, await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT));
     database = connectIntegration();
     database.resetDatabase();
-    defineSchema(database, await readFile(PROVIDER_SCHEMA, "utf8"));
+    await defineSchema(database, await readFile(PROVIDER_SCHEMA, "utf8"));
     generated.Person.manager(database).insertMany([0, 1].map((index) =>
       managerPersonInput(generated, `manager-seed-${index}`, "seed")));
     const players = [0, 1].map((index) => managerPersonInput(generated, `manager-seed-${index}`, "seed"));
@@ -2282,7 +2282,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     }
     database = connectIntegration();
     database.resetDatabase();
-    defineSchema(database, await readFile(PROVIDER_SCHEMA, "utf8"));
+    await defineSchema(database, await readFile(PROVIDER_SCHEMA, "utf8"));
 
     const personManager = Person.manager(database);
     const generatedPerson = (identifierValue: string, scoreValue: bigint) => Person.create({
@@ -3642,7 +3642,7 @@ test(
 
       database = connectIntegration();
       database.resetDatabase();
-      defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
+      await defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
       await sdkModelsCounterPlanLifecycle(generated, database);
       sdkModelsEmptyOrderedLifecycle(generated, database);
 
@@ -4024,7 +4024,7 @@ test(
         sdkReportIdentity("serialization"),
         await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
       );
-      defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
+      await defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
       const personManager = Person.manager(database);
       const employmentManager = Employment.manager(database);
       const person = oneWritten(personManager.insert(Person.create({
@@ -4237,7 +4237,7 @@ print(json.dumps(normalize(docs)))`;
     const generated = await import(pathToFileURL(resolve(generatedDirectory, "dist/index.js")).href);
     database = connectIntegration();
     database.resetDatabase();
-    defineSchema(database, await readFile(PROVIDER_SCHEMA, "utf8"));
+    await defineSchema(database, await readFile(PROVIDER_SCHEMA, "utf8"));
     const schema: any = await database.executeQuery("define entity raw-oracle; entity raw-atomic;", "schema");
     assert.equal(schema.queryType, "schema");
     const fields = "'min': -9223372036854775808, 'max': 9223372036854775807, 'unsafe': 9007199254740993, 'safe': 7, 'double': 1.25, '__proto__': 1";

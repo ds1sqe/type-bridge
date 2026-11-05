@@ -270,3 +270,13 @@ safe range as `bigint`; safe integers and doubles remain `number`. Direct raw
 transactions support multiple queries and atomic rollback. Proxy contexts
 accept one query, commit writes on the host, and refuse a second query or
 rollback of a committed write. Close raw contexts in `finally` blocks.
+
+Python `Database.execute_with_rows`, `TransactionContext.execute`,
+`TransactionContext.execute_with_rows`, and `context.transaction.execute` are
+removed. Use `Database.execute_query` or an explicit `raw_transaction` context
+with `execute_query`; the answer is the complete provider dictionary. For
+parameterized batches, use generated manager bulk operations.
+
+Node `TransactionContext.query` (native `queryJson`) is removed. Use
+`Database.executeQuery` or `rawTransaction` and its `executeQuery`. Existing
+manager transaction contexts and typed staged queries keep their typed APIs.

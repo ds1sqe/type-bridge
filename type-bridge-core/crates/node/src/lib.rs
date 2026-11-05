@@ -84,6 +84,7 @@ use type_bridge_core_lib::version as core_version;
 use type_bridge_orm::_descriptor::{EntityDescriptor, RelationDescriptor};
 #[cfg(test)]
 use type_bridge_orm::_registry::DescriptorRegistry;
+#[cfg(test)]
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, OrmError, ProviderRuntimeOwner, TransactionContext, TxType, ValueType,
@@ -561,15 +562,6 @@ impl NodeRustTransactionContext {
 
 #[napi]
 impl NodeRustTransactionContext {
-    #[napi(js_name = "queryJson")]
-    pub fn query_json(&self, query: String) -> Result<String> {
-        let result = self
-            .runtime
-            .block_on(self.context.query(&query))
-            .map_err(napi_orm_error)?;
-        query_result_to_json(result)
-    }
-
     #[napi(js_name = "commit")]
     pub fn commit(&self) -> Result<()> {
         if self.successor_batch_invoked.load(Ordering::Acquire) {
@@ -791,16 +783,9 @@ fn invalid_json_error(kind: &'static str) -> impl Fn(serde_json::Error) -> napi:
     move |error| Error::from_reason(format!("Invalid {kind} descriptor JSON: {error}"))
 }
 
+#[cfg(test)]
 fn json_serialize_error(error: serde_json::Error) -> napi::Error {
     Error::from_reason(format!("Failed to serialize Node runtime JSON: {error}"))
-}
-
-fn query_result_to_json(result: QueryResult) -> Result<String> {
-    let values = match result {
-        QueryResult::Ok => Vec::new(),
-        QueryResult::Documents(values) | QueryResult::Rows(values) => values,
-    };
-    serde_json::to_string(&values).map_err(json_serialize_error)
 }
 
 fn napi_secure_connect_options(
@@ -947,9 +932,15 @@ mod tests {
             managed_scope_id: None,
         };
         let transaction = database.transaction(Some("write".into())).unwrap();
-        transaction.query_json("before".into()).unwrap();
+        transaction
+            .runtime
+            .block_on(transaction.context.query("before"))
+            .unwrap();
         transaction.rollback().unwrap();
-        transaction.query_json("after".into()).unwrap();
+        transaction
+            .runtime
+            .block_on(transaction.context.query("after"))
+            .unwrap();
         transaction.commit().unwrap();
         assert_eq!(
             *events.lock().unwrap(),

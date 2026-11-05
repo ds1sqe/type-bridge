@@ -1019,9 +1019,7 @@ class TestGivenStageSurface:
     """The given-stage parameterized-query surface (TypeDB 3.12+).
 
     `Database.supports_given_stage()` reports the feature check on the
-    detected server version; `execute_with_rows()` runs one compiled pipeline
-    over out-of-band input rows; `TransactionContext.execute_with_rows()`
-    requires an open Rust transaction.
+    detected server version for generated bulk operations.
     """
 
     def _database_with_rust_stub(self, monkeypatch, stub):
@@ -1038,63 +1036,3 @@ class TestGivenStageSurface:
 
         assert db.supports_given_stage() is True
         stub.supports_given_stage.assert_called_once()
-
-    def test_execute_with_rows_forwards_full_argument_contract(self, monkeypatch):
-        stub = MagicMock()
-        stub.execute_with_rows.return_value = [{"iid": "0x1e"}]
-        db = self._database_with_rust_stub(monkeypatch, stub)
-
-        query = "given $n: string; insert $p isa person, has name == $n;"
-        result = db.execute_with_rows(query, "write", ["n"], ["string"], [["alice"]])
-
-        assert result == [{"iid": "0x1e"}]
-        stub.execute_with_rows.assert_called_once_with(
-            query, "write", ["n"], ["string"], [["alice"]]
-        )
-
-    def test_execute_with_rows_propagates_versioned_error(self, monkeypatch):
-        stub = MagicMock()
-        stub.execute_with_rows.side_effect = type_bridge_core.VersionError(
-            "given-stage parameterized queries require TypeDB 3.12 or newer; detected server below the admission floor"
-        )
-        db = self._database_with_rust_stub(monkeypatch, stub)
-
-        with pytest.raises(type_bridge_core.VersionError, match="3.12 or newer"):
-            db.execute_with_rows(
-                "given $n: string; insert $p isa person, has name == $n;",
-                "write",
-                ["n"],
-                ["string"],
-                [["alice"]],
-            )
-
-    def test_transaction_context_execute_with_rows_requires_native_transaction(self):
-        from type_bridge import session as session_mod
-
-        db = session_mod.Database(address="localhost:1729", database="given_unit")
-        context = session_mod.TransactionContext(db, session_mod.TransactionType.WRITE)
-
-        with pytest.raises(
-            RuntimeError, match="execute_with_rows requires an open native transaction"
-        ):
-            context.execute_with_rows(
-                "given $n: string; insert $p isa person, has name == $n;",
-                ["n"],
-                ["string"],
-                [["alice"]],
-            )
-
-    def test_transaction_context_execute_with_rows_forwards_to_native_tx(self):
-        from type_bridge import session as session_mod
-
-        db = session_mod.Database(address="localhost:1729", database="given_unit")
-        context = session_mod.TransactionContext(db, session_mod.TransactionType.WRITE)
-        rust_tx = MagicMock()
-        rust_tx.execute_with_rows.return_value = [{"iid": "0x1e"}]
-        context._native_tx = rust_tx
-
-        query = "given $n: string; insert $p isa person, has name == $n;"
-        result = context.execute_with_rows(query, ["n"], ["string"], [["alice"]])
-
-        assert result == [{"iid": "0x1e"}]
-        rust_tx.execute_with_rows.assert_called_once_with(query, ["n"], ["string"], [["alice"]])

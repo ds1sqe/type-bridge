@@ -36,3 +36,10 @@ test("raw facade preserves native answers and delegates explicit completion", as
   await transaction.close();
   assert.deepEqual(calls, ["  exact TypeQL;\n", "commit", "rollback", "close"]);
 });
+
+
+test("legacy manager transaction exposes no raw query method", async () => {
+  const { TransactionContext } = await import("../../typescript/index.js");
+  assert.equal("query" in TransactionContext.prototype, false);
+  assert.equal(typeof RawTransaction.prototype.executeQuery, "function");
+});

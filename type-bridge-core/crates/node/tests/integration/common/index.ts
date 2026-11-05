@@ -8,7 +8,7 @@ const packageFacade = requirePackage(packageRoot) as typeof import(
   "../../../typescript/public.js"
 );
 
-export const { PlanAuthority, PlanError, Database, ensureDatabase } = packageFacade;
+export const { PlanAuthority, PlanError, RawQueryError, Database, ensureDatabase } = packageFacade;
 
 export const TYPEDB_ADDRESS =
   process.env.TYPEDB_ADDRESS ?? "localhost:1730";
@@ -38,16 +38,9 @@ export function connectIntegration() {
   return Database.connect(TYPEDB_ADDRESS, INTG_DATABASE, options);
 }
 
-export function defineSchema(
+export async function defineSchema(
   database: ReturnType<typeof connectIntegration>,
   typeql: string,
-): void {
-  const transaction = database.transaction("schema");
-  try {
-    transaction.query(typeql);
-    transaction.commit();
-  } catch (error) {
-    transaction.close();
-    throw error;
-  }
+): Promise<void> {
+  await database.executeQuery(typeql, "schema");
 }

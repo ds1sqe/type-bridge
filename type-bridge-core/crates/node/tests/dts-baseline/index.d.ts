@@ -263,7 +263,6 @@ export interface MigrationBackfillObservation {
     readonly transactionGroups: number;
 }
 export interface NativeRustTransactionContext {
-    queryJson(query: string): string;
     commit(): void;
     rollback(): void;
     close(): void;
@@ -441,7 +440,6 @@ export declare function createRustDatabaseFromNative(native: NativeRustDatabase)
 export declare class TransactionContext {
     #private;
     private constructor();
-    query(query: string): unknown[];
     commit(): void;
     /** Roll back writes and keep this transaction usable. */
     rollback(): void;

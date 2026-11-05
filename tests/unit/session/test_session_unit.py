@@ -544,15 +544,26 @@ class TestDriverInjection:
         assert db.delete_database_outcome() == "deleted"
 
 
-def test_rust_context_rollback_remains_open_for_work_and_commit() -> None:
+def test_rust_context_rollback_remains_open_for_commit() -> None:
     context = TransactionContext(Database(), TransactionType.WRITE)
     native = MagicMock()
     context._native_tx = native
     context.rollback()
     assert context.transaction.is_open
-    context.execute("insert $x isa marker;")
     context.commit()
     native.rollback.assert_called_once()
-    native.execute.assert_called_once_with("insert $x isa marker;")
     native.commit.assert_called_once()
     assert not context.transaction.is_open
+
+
+def test_raw_query_surface_has_only_the_explicit_pair() -> None:
+    import type_bridge_core
+
+    assert not hasattr(Database, "execute_with_rows")
+    assert not hasattr(TransactionContext, "execute")
+    assert not hasattr(TransactionContext, "execute_with_rows")
+    assert not hasattr(type_bridge_core.PyDatabase, "execute_with_rows")
+    assert not hasattr(type_bridge_core.PyTransactionContext, "execute")
+    assert not hasattr(type_bridge_core.PyTransactionContext, "execute_with_rows")
+    assert hasattr(Database, "execute_query")
+    assert hasattr(type_bridge_core.RawTransaction, "execute_query")

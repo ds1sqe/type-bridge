@@ -375,7 +375,6 @@ export interface MigrationBackfillObservation {
 }
 
 export interface NativeRustTransactionContext {
-  queryJson(query: string): string;
   commit(): void;
   rollback(): void;
   close(): void;
@@ -921,10 +920,6 @@ export class TransactionContext {
     }
     this.#native = native;
     registerRustTransactionHandle(this, native);
-  }
-
-  query(query: string): unknown[] {
-    return planNativeCall(() => parseJson(this.#native.queryJson(query)));
   }
 
   commit(): void {

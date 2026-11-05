@@ -321,22 +321,8 @@ class TestSchemaAnnotationGateLive:
 class TestGivenStageLive:
     """given-stage parameterized queries against the live server.
 
-    Version-adaptive: on a 3.12+ leg one compiled pipeline runs over the
-    input rows through the driver API; on a pre-3.12 leg the raw surface
-    raises the versioned error and bulk operations fall back to per-row
-    queries with identical results.
+    Generated bulk operations require both syntax and row transport support.
     """
-
-    GIVEN_DDL = (
-        "define entity vg-given-person, owns vg-given-name @key, owns vg-given-age;"
-        " attribute vg-given-name, value string;"
-        " attribute vg-given-age, value integer;"
-    )
-    GIVEN_PIPELINE = (
-        "given $n: string, $a: integer;\n"
-        "insert $p isa vg-given-person, has vg-given-name == $n, has vg-given-age == $a;\n"
-        'fetch { "iid": iid($p), "name": $n };'
-    )
 
     @staticmethod
     def _live_server_supports_given_syntax() -> bool:
@@ -355,77 +341,3 @@ class TestGivenStageLive:
             )
         else:
             assert not clean_db.supports_given_stage()
-
-    def test_execute_with_rows_is_version_adaptive(self, clean_db: Database):
-        """3.12+ legs run the pipeline; pre-3.12 legs get the versioned error."""
-        import type_bridge_core
-
-        rows = [["alice", 28], ["bob", 26], ["carol", 31]]
-        if clean_db.supports_given_stage():
-            clean_db.execute_query(self.GIVEN_DDL, transaction_type="schema")
-            docs = clean_db.execute_with_rows(
-                self.GIVEN_PIPELINE, "write", ["n", "a"], ["string", "integer"], rows
-            )
-            assert len(docs) == len(rows)
-            assert {doc["name"] for doc in docs} == {"alice", "bob", "carol"}
-            assert all(doc["iid"] for doc in docs)
-            fetched = clean_db.execute_query(
-                "match $p isa vg-given-person, has vg-given-name $n; select $n;",
-                transaction_type="read",
-            )
-            assert {row["data"]["n"]["value"] for row in fetched["answers"]} == {"alice", "bob", "carol"}
-        elif not self._live_server_supports_given_syntax():
-            with pytest.raises(type_bridge_core.VersionError) as exc_info:
-                clean_db.execute_with_rows(
-                    self.GIVEN_PIPELINE, "write", ["n", "a"], ["string", "integer"], rows
-                )
-            message = str(exc_info.value)
-            assert "3.12" in message
-            assert "given-stage" in message
-        else:
-            with pytest.raises(RuntimeError, match="active band-9 provider"):
-                clean_db.execute_with_rows(
-                    self.GIVEN_PIPELINE, "write", ["n", "a"], ["string", "integer"], rows
-                )
-
-    @pytest.mark.parametrize(
-        ("column_type", "value", "expected"),
-        [
-            ("integer", True, "exact Python int"),
-            ("boolean", 1, "exact Python bool"),
-            ("double", 1, "exact Python float"),
-            ("string", b"alice", "exact Python str"),
-        ],
-    )
-    def test_execute_with_rows_rejects_primitive_coercions_before_dispatch(
-        self,
-        clean_db: Database,
-        column_type: str,
-        value: object,
-        expected: str,
-    ) -> None:
-        """Given cells have exact public types; Python coercions never reach TypeDB."""
-        with pytest.raises(TypeError, match=expected):
-            clean_db.execute_with_rows(
-                "not dispatched",
-                "read",
-                ["value"],
-                [column_type],
-                [[value]],
-            )
-
-    def test_execute_with_rows_rejects_malformed_temporal_before_wire_io(
-        self, clean_db: Database
-    ) -> None:
-        """The band-9 adapter validates temporal strings before sending a query."""
-        if not clean_db.supports_given_stage():
-            pytest.skip("requires the TypeDB 3.12 band-9 integration leg")
-
-        with pytest.raises(RuntimeError, match="Invalid given date"):
-            clean_db.execute_with_rows(
-                self.GIVEN_PIPELINE,
-                "write",
-                ["n", "a"],
-                ["date", "integer"],
-                [["not-a-date", 1]],
-            )

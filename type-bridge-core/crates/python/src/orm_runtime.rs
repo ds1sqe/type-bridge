@@ -16,16 +16,15 @@ use crate::match_runtime::{PyQueryLimits, py_sdk_diagnostic};
 use crate::migration_catalog_runtime::PyMigrationCancellation;
 use crate::version::VersionError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
+use pyo3::types::{PyBool, PyDict, PyList};
 use pythonize::{depythonize, pythonize};
 use type_bridge_core_lib::version as core_version;
 use type_bridge_orm::_descriptor::{EntityDescriptor, RelationDescriptor};
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::_schema::{SchemaInfo, SchemaManager};
-use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
-    AttributeValue, DynamicComparisonOp, DynamicExpr, GivenColumnType, GivenRowsSpec, GivenValue,
-    OrmError, ProviderRuntimeOwner, TransactionContext, TxType,
+    AttributeValue, DynamicComparisonOp, DynamicExpr, OrmError, ProviderRuntimeOwner,
+    TransactionContext, TxType,
 };
 
 fn drive_provider_future<F>(runtime: &ProviderRuntimeOwner, future: F) -> F::Output
@@ -755,36 +754,6 @@ impl PyDatabase {
         self.db.supports_given_stage()
     }
 
-    /// Execute a `given`-stage TypeQL query over input rows, auto-managing
-    /// the transaction lifecycle.
-    ///
-    /// `variables` are the given variable names without the `$` sigil;
-    /// `column_types` are TypeQL value type names (`string`, `integer`,
-    /// `double`, `boolean`, `date`, `datetime`, `datetime-tz`) aligned with
-    /// `variables`; `rows` is a list of rows, each a list of primitives in
-    /// column order (temporal values as ISO-8601 strings).
-    #[pyo3(signature = (query, transaction_type, variables, column_types, rows))]
-    fn execute_with_rows(
-        &self,
-        py: Python<'_>,
-        query: &str,
-        transaction_type: &str,
-        variables: Vec<String>,
-        column_types: Vec<String>,
-        rows: Bound<'_, PyAny>,
-    ) -> PyResult<Py<PyAny>> {
-        let tx_type = crate::match_runtime::parse_enum::<TxType>(transaction_type)?;
-        let spec = given_rows_from_py(variables, &column_types, &rows)?;
-        let query = query.to_owned();
-        let result = provider_block_on(
-            py,
-            self.runtime.as_ref(),
-            self.db.execute_with_rows(&query, tx_type, spec),
-        )
-        .map_err(py_orm_error)?;
-        query_result_to_py(py, result)
-    }
-
     /// Return whether the configured database exists.
     fn database_exists(&self, py: Python<'_>) -> PyResult<bool> {
         provider_block_on(py, self.runtime.as_ref(), self.db.database_exists())
@@ -1055,37 +1024,6 @@ impl PyTransactionContext {
 
 #[pymethods]
 impl PyTransactionContext {
-    /// Execute a raw TypeQL query in this Rust transaction.
-    fn execute(&self, py: Python<'_>, query: &str) -> PyResult<Py<PyAny>> {
-        let query = query.to_owned();
-        let result = provider_block_on(py, self.runtime.as_ref(), self.context.query(&query))
-            .map_err(py_orm_error)?;
-        query_result_to_py(py, result)
-    }
-
-    /// Execute a `given`-stage TypeQL query with input rows in this Rust
-    /// transaction. See `PyDatabase.execute_with_rows` for the argument
-    /// contract; requires a band-9 (TypeDB 3.12+) connection.
-    #[pyo3(signature = (query, variables, column_types, rows))]
-    fn execute_with_rows(
-        &self,
-        py: Python<'_>,
-        query: &str,
-        variables: Vec<String>,
-        column_types: Vec<String>,
-        rows: Bound<'_, PyAny>,
-    ) -> PyResult<Py<PyAny>> {
-        let spec = given_rows_from_py(variables, &column_types, &rows)?;
-        let query = query.to_owned();
-        let result = provider_block_on(
-            py,
-            self.runtime.as_ref(),
-            self.context.query_with_rows(&query, spec),
-        )
-        .map_err(py_orm_error)?;
-        query_result_to_py(py, result)
-    }
-
     /// Commit this Rust transaction.
     fn commit(&self, py: Python<'_>) -> PyResult<()> {
         if self.successor_batch_invoked.load(Ordering::Acquire) {
@@ -1122,109 +1060,6 @@ fn dynamic_exprs_from_list(expressions: &Bound<'_, PyList>) -> PyResult<Vec<Dyna
             Ok(expression.expr.clone())
         })
         .collect()
-}
-
-fn query_result_to_py(py: Python<'_>, result: QueryResult) -> PyResult<Py<PyAny>> {
-    let values = match result {
-        QueryResult::Ok => Vec::new(),
-        QueryResult::Documents(values) | QueryResult::Rows(values) => values,
-    };
-    pythonize(py, &values)
-        .map(|obj| obj.unbind())
-        .map_err(|error| py_value_error(error.to_string()))
-}
-
-/// Marshal Python given rows into the ORM's [`GivenRowsSpec`].
-///
-/// `column_types` drives exact per-cell extraction so Python's numeric subtype
-/// coercions cannot silently change a TypeQL value category.
-fn given_rows_from_py(
-    variables: Vec<String>,
-    column_types: &[String],
-    rows: &Bound<'_, PyAny>,
-) -> PyResult<GivenRowsSpec> {
-    if variables.len() != column_types.len() {
-        return Err(py_value_error(format!(
-            "variables ({}) and column_types ({}) must have the same length",
-            variables.len(),
-            column_types.len()
-        )));
-    }
-    // Parsed once, before any cell, so an unknown spelling surfaces as the
-    // core's `UnknownEnumValueError` rather than a per-row marshalling error.
-    let column_types = column_types
-        .iter()
-        .map(|column_type| crate::match_runtime::parse_enum::<GivenColumnType>(column_type))
-        .collect::<PyResult<Vec<_>>>()?;
-    let rows: Vec<Vec<Bound<'_, PyAny>>> = rows
-        .extract()
-        .map_err(|error| py_value_error(format!("rows must be a sequence of rows: {error}")))?;
-    let mut spec_rows = Vec::with_capacity(rows.len());
-    for (row_index, row) in rows.iter().enumerate() {
-        if row.len() != column_types.len() {
-            return Err(py_value_error(format!(
-                "row {row_index} has {} cells; expected {} (one per variable)",
-                row.len(),
-                column_types.len()
-            )));
-        }
-        let mut cells = Vec::with_capacity(row.len());
-        for (cell, column_type) in row.iter().zip(&column_types) {
-            cells.push(given_value_from_py(cell, *column_type).map_err(|error| {
-                let message = format!("row {row_index}: {error}");
-                if error.is_instance_of::<pyo3::exceptions::PyTypeError>(cell.py()) {
-                    py_type_error(message)
-                } else {
-                    py_value_error(message)
-                }
-            })?);
-        }
-        spec_rows.push(cells);
-    }
-    Ok(GivenRowsSpec {
-        variables,
-        rows: spec_rows,
-    })
-}
-
-/// Extract one given cell as the exact Python type of its column.
-fn given_value_from_py(
-    cell: &Bound<'_, PyAny>,
-    column_type: GivenColumnType,
-) -> PyResult<GivenValue> {
-    Ok(match column_type {
-        GivenColumnType::Boolean => GivenValue::Boolean(
-            cell.cast_exact::<PyBool>()
-                .map_err(|_| py_type_error("given boolean cells require an exact Python bool"))?
-                .extract()?,
-        ),
-        GivenColumnType::Integer => GivenValue::Integer(
-            cell.cast_exact::<PyInt>()
-                .map_err(|_| py_type_error("given integer cells require an exact Python int"))?
-                .extract()?,
-        ),
-        GivenColumnType::Double => GivenValue::Double(
-            cell.cast_exact::<PyFloat>()
-                .map_err(|_| py_type_error("given double cells require an exact Python float"))?
-                .extract()?,
-        ),
-        GivenColumnType::String => GivenValue::String(exact_given_string(cell, "string")?),
-        GivenColumnType::Date => GivenValue::Date(exact_given_string(cell, "date")?),
-        GivenColumnType::Datetime => GivenValue::Datetime(exact_given_string(cell, "datetime")?),
-        GivenColumnType::DatetimeTz => {
-            GivenValue::DatetimeTz(exact_given_string(cell, "datetime-tz")?)
-        }
-    })
-}
-
-fn exact_given_string(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<String> {
-    cell.cast_exact::<PyString>()
-        .map_err(|_| {
-            py_type_error(format!(
-                "given {column_type} cells require an exact Python str"
-            ))
-        })?
-        .extract()
 }
 
 pub(crate) fn py_orm_error(error: OrmError) -> PyErr {
@@ -1655,128 +1490,6 @@ mod administration_tests {
             assert_eq!(plan.execute(py).unwrap(), "deleted_standalone_managed");
         });
         assert!(databases.lock().unwrap().is_empty());
-    }
-}
-
-#[cfg(test)]
-mod given_rows_tests {
-    use pyo3::ffi;
-
-    use super::*;
-
-    #[test]
-    fn given_cell_marshalling_requires_exact_python_primitive_types() {
-        Python::initialize();
-        Python::attach(|py| {
-            let valid = [
-                ("True", "boolean", GivenValue::Boolean(true)),
-                ("42", "integer", GivenValue::Integer(42)),
-                ("1.5", "double", GivenValue::Double(1.5)),
-                ("'hello'", "string", GivenValue::String("hello".into())),
-                (
-                    "'2026-07-13'",
-                    "date",
-                    GivenValue::Date("2026-07-13".into()),
-                ),
-                (
-                    "'2026-07-13T10:30:00'",
-                    "datetime",
-                    GivenValue::Datetime("2026-07-13T10:30:00".into()),
-                ),
-                (
-                    "'2026-07-13T10:30:00+09:00'",
-                    "datetime-tz",
-                    GivenValue::DatetimeTz("2026-07-13T10:30:00+09:00".into()),
-                ),
-            ];
-            for (source, column_type, expected) in valid {
-                let source = std::ffi::CString::new(source).unwrap();
-                let value = py.eval(source.as_c_str(), None, None).unwrap();
-                let column_type = column_type.parse().unwrap();
-                assert_eq!(given_value_from_py(&value, column_type).unwrap(), expected);
-            }
-
-            for (source, column_type) in [
-                ("True", "integer"),
-                ("1", "boolean"),
-                ("1", "double"),
-                ("1.0", "integer"),
-                ("b'bytes'", "string"),
-                ("object()", "date"),
-            ] {
-                let source = std::ffi::CString::new(source).unwrap();
-                let value = py.eval(source.as_c_str(), None, None).unwrap();
-                assert!(
-                    given_value_from_py(&value, column_type.parse().unwrap()).is_err(),
-                    "{source:?} must not coerce into {column_type}"
-                );
-            }
-
-            let rows = py.eval(ffi::c_str!("[['value']]"), None, None).unwrap();
-            let unsupported =
-                given_rows_from_py(vec!["value".into()], &["decimal".into()], &rows).unwrap_err();
-            assert!(
-                unsupported
-                    .get_type(py)
-                    .name()
-                    .unwrap()
-                    .to_string()
-                    .contains("UnknownEnumValueError"),
-                "{unsupported}"
-            );
-        });
-    }
-
-    #[test]
-    fn given_rows_marshalling_validates_headers_width_and_row_types() {
-        Python::initialize();
-        Python::attach(|py| {
-            let rows = py
-                .eval(ffi::c_str!("[['Alice', 30], ['Bob', 25]]"), None, None)
-                .unwrap();
-            let spec = given_rows_from_py(
-                vec!["name".into(), "age".into()],
-                &["string".into(), "integer".into()],
-                &rows,
-            )
-            .unwrap();
-            assert_eq!(spec.variables, vec!["name", "age"]);
-            assert_eq!(spec.rows.len(), 2);
-
-            let header_error = given_rows_from_py(
-                vec!["name".into()],
-                &["string".into(), "integer".into()],
-                &rows,
-            )
-            .unwrap_err();
-            assert!(header_error.to_string().contains("same length"));
-
-            let short = py.eval(ffi::c_str!("[['Alice']]"), None, None).unwrap();
-            let width_error = given_rows_from_py(
-                vec!["name".into(), "age".into()],
-                &["string".into(), "integer".into()],
-                &short,
-            )
-            .unwrap_err();
-            assert!(
-                width_error
-                    .to_string()
-                    .contains("row 0 has 1 cells; expected 2")
-            );
-
-            let wrong = py
-                .eval(ffi::c_str!("[['Alice', True]]"), None, None)
-                .unwrap();
-            let type_error = given_rows_from_py(
-                vec!["name".into(), "age".into()],
-                &["string".into(), "integer".into()],
-                &wrong,
-            )
-            .unwrap_err();
-            assert!(type_error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
-            assert!(type_error.to_string().contains("row 0"));
-            assert!(type_error.to_string().contains("exact Python int"));
-        });
     }
 }
 

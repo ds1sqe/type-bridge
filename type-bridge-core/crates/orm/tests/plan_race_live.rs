@@ -388,7 +388,9 @@ impl Live {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let name = format!("tb_race_{recipe}_{}_{nonce}", std::process::id());
+        let prefix =
+            std::env::var("TYPE_BRIDGE_RACE_DATABASE_PREFIX").unwrap_or_else(|_| "tb_race".into());
+        let name = format!("{prefix}_{recipe}_{}_{nonce}", std::process::id());
         let plain = Database::with_backend(Box::new(self.backend.clone()), &name);
         plain.create_database().await.unwrap();
         plain
