@@ -1151,7 +1151,11 @@ import * as Runtime from "./generated/dist/runtime.js";
 import * as ForeignRuntime from "./foreign/dist/runtime.js";
 
 const require = createRequire(import.meta.url);
-const { PlanError } = require("@type-bridge/node");
+const { Iid, PlanError } = require("@type-bridge/node");
+const iidValue = (value) => {
+  assert.ok(value instanceof Iid);
+  return value.toString();
+};
 const Native = require("./node_modules/@type-bridge/node/type_bridge_node.node");
 const Handles = require("./node_modules/@type-bridge/node/dist/runtime-handles.js");
 
@@ -1292,29 +1296,31 @@ rejects(
 
 const group = hydrate(Local.Group, "0xa3", { tag: [Local.Tag.create("group")] });
 const membership = hydrate(Local.Membership, "0xb1", { participant: [person, group] });
-assert.deepEqual(membership.participant.map((value) => value.iid), ["0xa1", "0xa3"]);
-assert.equal(group.iid, "0xa3");
+assert.deepEqual(membership.participant.map((value) => iidValue(value.iid)), ["0xa1", "0xa3"]);
+assert.equal(iidValue(group.iid), "0xa3");
 rejects(
   () => hydrate(Local.Membership, "0xb2", { participant: [person, person] }),
   "ordered_distinct_duplicate",
   "role",
 );
-rejects(
+assert.throws(
   () => hydrate(Local.Person, "person-a5", { tag: [] }),
-  "noncanonical_hydrated_iid",
-  "argument",
+  (error) => {
+    assert.ok(error instanceof PlanError);
+    assert.equal(error.code, "invalid_iid");
+    assert.equal(error.sdkCategory, "invalid_contract");
+    assert.deepEqual(error.path, []);
+    return true;
+  },
 );
 
 const link = hydrate(Local.ActivityLink, "0xc1", {
-  subject: [Local.Membership.reference("0xb1", {})],
+  subject: [Local.Membership.reference(new Iid("0xb1"), {})],
 });
-assert.equal(link.subject[0].iid, "0xb1");
-rejects(
-  () => hydrate(Local.ActivityLink, "0xc2", {
-    subject: [Local.Membership.reference("membership-bad", {})],
-  }),
-  "noncanonical_iid",
-  "role",
+assert.equal(iidValue(link.subject[0].iid), "0xb1");
+assert.throws(
+  () => Local.Membership.reference("membership-bad", {}),
+  { name: "TypeError", message: "Membership.reference iid must be an Iid" },
 );
 
 const foreignPerson = hydrate(Foreign.Person, "0xf1", {
@@ -1357,7 +1363,7 @@ for (const operation of ["insert", "put", "update"]) {
     });
     const input = Local.Record.create({ identifier: Local.Identifier.create("single-input"), tag: [] });
     const manager = Local.Record.manager(single.connection);
-    const result = operation === "update" ? manager.update("0xd5", input) : manager[operation](input);
+    const result = operation === "update" ? manager.update(new Iid("0xd5"), input) : manager[operation](input);
     assert.equal(result.count, count);
     assert.equal(result.items.length, count);
     assert.equal(result.item, count === 1 ? result.items[0] : null);
@@ -1394,10 +1400,10 @@ const deletedBatch = fixture([
   documents(recordDocument("0xda", "deleted-first", []), recordDocument("0xdc", "deleted-last", [])),
   { Rows: [{}, {}] },
 ]);
-const deletedResult = Local.Record.manager(deletedBatch.connection).deleteManyReturning(["0xda", "0xdb", "0xdc"]);
+const deletedResult = Local.Record.manager(deletedBatch.connection).deleteManyReturning(["0xda", "0xdb", "0xdc"].map((value) => new Iid(value)));
 assert.equal(deletedResult.count, 2);
 assert.deepEqual(deletedResult.inputIndexes, [0, 2]);
-assert.deepEqual(deletedResult.items.map((value) => value.iid), ["0xda", "0xdc"]);
+assert.deepEqual(deletedResult.items.map((value) => iidValue(value.iid)), ["0xda", "0xdc"]);
 assert.ok(deletedResult.items.every((value) => value.deleted));
 assert.equal(Object.isFrozen(deletedResult), true);
 assert.equal(Object.isFrozen(deletedResult.items), true);
@@ -1412,7 +1418,7 @@ for (const value of deletedResult.items) {
 }
 for (const present of [false, true]) {
   const returning = fixture(present ? [documents(recordDocument("0xdd", "deleted-single", [])), { Rows: [{}] }] : [documents(), { Rows: [] }]);
-  const result = Local.Record.manager(returning.connection).deleteReturning("0xdd");
+  const result = Local.Record.manager(returning.connection).deleteReturning(new Iid("0xdd"));
   assert.equal(result.count, present ? 1 : 0);
   assert.equal(result.item, present ? result.items[0] : null);
   if (present) assert.equal(result.item.deleted, true);
@@ -1435,7 +1441,7 @@ const mixedBatch = fixture(mixedBatchResponses());
 const mixedResult = Local.Record.manager(mixedBatch.connection).insertMany(recordBatchInputs());
 assert.equal(mixedResult.count, 3);
 assert.deepEqual(mixedResult.inputIndexes, [1, 1, 2]);
-assert.deepEqual(mixedResult.items.map((value) => value.iid), ["0xd1", "0xd2", "0xd3"]);
+assert.deepEqual(mixedResult.items.map((value) => iidValue(value.iid)), ["0xd1", "0xd2", "0xd3"]);
 assert.equal(Object.isFrozen(mixedResult), true);
 assert.equal(Object.isFrozen(mixedResult.items), true);
 assert.equal(Object.isFrozen(mixedResult.inputIndexes), true);
@@ -1585,7 +1591,7 @@ const insertedRecord = recordManager.insert(Local.Record.create({
   identifier: Local.Identifier.create("client-insert"),
   tag: [Local.Tag.create("client")],
 })).item;
-assert.equal(insertedRecord.iid, "0xd1");
+assert.equal(iidValue(insertedRecord.iid), "0xd1");
 assert.equal(insertedRecord.identifier.value, "provider-insert");
 assert.deepEqual(insertedRecord.tag.map((value) => value.value), ["inserted", "normalized"]);
 const putRecord = recordManager.put(Local.Record.create({
@@ -1593,12 +1599,12 @@ const putRecord = recordManager.put(Local.Record.create({
   tag: [Local.Tag.create("client")],
 })).item;
 assert.equal(putRecord.identifier.value, "provider-put");
-const updatedRecord = recordManager.update("0xd2", Local.Record.create({
+const updatedRecord = recordManager.update(new Iid("0xd2"), Local.Record.create({
   identifier: Local.Identifier.create("client-update"),
   tag: [Local.Tag.create("client")],
 })).item;
 assert.equal(updatedRecord.identifier.value, "provider-update");
-const readRecord = recordManager.getByIid("0xd2");
+const readRecord = recordManager.getByIid(new Iid("0xd2"));
 assert.equal(readRecord.identifier.value, "provider-get");
 assert.deepEqual(readRecord.tag.map((value) => value.value), ["normalized", "read"]);
 assert.deepEqual(counters(nativeRoundTrip), {
@@ -1641,7 +1647,7 @@ for (const targetKind of ["owned", "read", "write"]) {
   assert.equal(all.length, 1);
   const first = manager.first();
   for (const value of [all[0], first]) {
-    assert.equal(value.iid, "0xdc");
+    assert.equal(iidValue(value.iid), "0xdc");
     assert.equal(value.identifier.value, "keyword");
     assert.deepEqual(value.tag.map((tag) => tag.value), ["read"]);
     assert.notEqual(Runtime.__testOrderedFacadeProof(value), null);
@@ -1659,15 +1665,15 @@ for (const targetKind of ["owned", "read", "write"]) {
 
 const sharedAuthority = Native.__newProjectionRecordingAuthority();
 const source = fixture([documents(personDocument("0xa7"))], sharedAuthority);
-const exactPerson = Local.Person.manager(source.connection).getByIid("0xa7");
-assert.equal(exactPerson.iid, "0xa7");
+const exactPerson = Local.Person.manager(source.connection).getByIid(new Iid("0xa7"));
+assert.equal(iidValue(exactPerson.iid), "0xa7");
 const exactPersonProof = Runtime.__testOrderedFacadeProof(exactPerson);
 assert.notEqual(exactPersonProof, null);
 
 const detachedPerson = Local.Person.decodeSnapshot(
   Local.Person.encodeSnapshot(exactPerson),
 );
-assert.equal(detachedPerson.iid, "0xa7");
+assert.equal(iidValue(detachedPerson.iid), "0xa7");
 assert.notEqual(Runtime.__testOrderedFacadeProof(detachedPerson), null);
 const detachedTarget = fixture([]);
 assert.throws(() => Local.Membership.manager(detachedTarget.connection).insert(
@@ -1689,7 +1695,7 @@ const sameEntity = fixture([
 const sameMembership = Local.Membership.manager(sameEntity.connection).insert(
   Local.Membership.create({ participant: [exactPerson] }),
 ).item;
-assert.equal(sameMembership.participant[0].iid, "0xa7");
+assert.equal(iidValue(sameMembership.participant[0].iid), "0xa7");
 assert.equal(counters(sameEntity).commits, 1);
 assert.equal(counters(sameEntity).queries.length, 1);
 
@@ -1702,15 +1708,15 @@ assert.deepEqual(counters(foreignEntity), zeroCounters);
 const membershipSource = fixture([
   documents(membershipDocument("0xb8", "0xa7")),
 ], sharedAuthority);
-const exactMembership = Local.Membership.manager(membershipSource.connection).getByIid("0xb8");
-assert.equal(exactMembership.iid, "0xb8");
+const exactMembership = Local.Membership.manager(membershipSource.connection).getByIid(new Iid("0xb8"));
+assert.equal(iidValue(exactMembership.iid), "0xb8");
 const sameRelation = fixture([
   documents(nativeRoleDocument("0xc8", "activity-link", "0xb8", "membership")),
 ], sharedAuthority);
 const sameLink = Local.ActivityLink.manager(sameRelation.connection).insert(
   Local.ActivityLink.create({ subject: [exactMembership] }),
 ).item;
-assert.equal(sameLink.subject[0].iid, "0xb8");
+assert.equal(iidValue(sameLink.subject[0].iid), "0xb8");
 assert.equal(counters(sameRelation).queries.length, 1);
 const foreignRelation = fixture([]);
 assert.throws(() => Local.ActivityLink.manager(foreignRelation.connection).insert(
@@ -1851,7 +1857,7 @@ for (const unboundPlayer of [exactPersonProxy, exactPersonCopy]) {
   const created = Local.Membership.manager(unboundTarget.connection).insert(
     Local.Membership.create({ participant: [unboundPlayer] }),
   ).item;
-  assert.equal(created.iid, "0xbe");
+  assert.equal(iidValue(created.iid), "0xbe");
   assert.equal(counters(unboundTarget).queries.length, 1);
   assert.equal(counters(unboundTarget).commits, 1);
 }
@@ -2153,7 +2159,7 @@ assert.deepEqual(temporalBatchValues.inputIndexes, [0]);
 assert.equal(Object.isFrozen(temporalBatchValues.items), true);
 assert.equal(Object.isFrozen(temporalBatchValues.inputIndexes), true);
 const activeTemporalRecord = temporalBatchValues.items[0];
-assert.equal(activeTemporalRecord.iid, "0xde");
+assert.equal(iidValue(activeTemporalRecord.iid), "0xde");
 assert.equal(
   activeTemporalRecord.occurredOn.value.toISOString(),
   "+010000-01-02T00:00:00.000Z",
@@ -2167,8 +2173,8 @@ const temporalLinkTarget = fixture([
 const [activeTemporalLink] = Local.TemporalLink.manager(
   temporalLinkTarget.connection,
 ).insertMany([Local.TemporalLink.create({ subject: activeTemporalRecord })]).items;
-assert.equal(activeTemporalLink.iid, "0xdf");
-assert.equal(activeTemporalLink.subject.iid, "0xde");
+assert.equal(iidValue(activeTemporalLink.iid), "0xdf");
+assert.equal(iidValue(activeTemporalLink.subject.iid), "0xde");
 assert.equal(
   activeTemporalLink.subject.occurredOn.value.toISOString(),
   "+010000-01-02T00:00:00.000Z",
