@@ -280,25 +280,26 @@ pub(crate) fn delete_kinds(
         &[(kind_field, "kind")],
         false,
     )?;
-    builder.stages.push(Stage::Match {
-        patterns: vec![
-            QueryPattern::Or {
-                branches: kinds
-                    .iter()
-                    .map(|kind| {
-                        Ok(vec![QueryPattern::Value {
-                            comparator: ValueComparator::Equal,
-                            left: QueryOperand::Binding {
-                                binding: columns[0],
-                            },
-                            right: literal(kind)?,
-                        }])
-                    })
-                    .collect::<Result<_, Diagnostic>>()?,
-            }
-            .into(),
-        ],
-    });
+    let Stage::Match { patterns } = &mut builder.stages[0] else {
+        unreachable!("matched creates the initial match stage");
+    };
+    patterns.push(
+        QueryPattern::Or {
+            branches: kinds
+                .iter()
+                .map(|kind| {
+                    Ok(vec![QueryPattern::Value {
+                        comparator: ValueComparator::Equal,
+                        left: QueryOperand::Binding {
+                            binding: columns[0],
+                        },
+                        right: literal(kind)?,
+                    }])
+                })
+                .collect::<Result<_, Diagnostic>>()?,
+        }
+        .into(),
+    );
     builder.stages.push(Stage::Delete {
         items: vec![DeleteItem::Thing { binding: root }],
     });
@@ -332,4 +333,27 @@ pub(crate) fn replace_and_insert(
         },
         vec![],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control_schema::{CONTROL_SCOPE, JOURNAL_ENTITY, RECORD_KIND};
+
+    #[test]
+    fn checkpoint_cleanup_conjoins_record_kinds_in_one_match() {
+        let plan = delete_kinds(
+            JOURNAL_ENTITY,
+            CONTROL_SCOPE,
+            "managed",
+            RECORD_KIND,
+            &["plan", "event", "backfill"],
+        )
+        .unwrap();
+        assert_eq!(plan.statement_counts(), (0, 1));
+        assert!(
+            matches!(plan.pipeline(), [Stage::Match { patterns }, Stage::Delete { .. }]
+            if matches!(patterns.last(), Some(Pattern::Read(QueryPattern::Or { branches })) if branches.len() == 3))
+        );
+    }
 }
