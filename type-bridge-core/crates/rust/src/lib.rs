@@ -61,7 +61,8 @@ pub use migration::{
     MigrationPlan, MigrationPreview, MigrationPreviewEntry,
 };
 pub use projected_filter::{
-    ProjectedEntityFilter, ProjectedRelationFilter, ReadEntityManager, ReadRelationManager,
+    ProjectedEntityFilter, ProjectedRelationFilter, ProjectedSubtypeFilter, ReadEntityManager,
+    ReadRelationManager,
 };
 pub use query::{
     Binding, BoundField, BoundRole, Collected, Exact, FieldGroupedQuery, FunctionArgument,

@@ -1202,35 +1202,50 @@ async fn public_relation_subtypes_all_fetches_complete_children_in_one_plan() {
 #[tokio::test]
 async fn public_relation_subtypes_get_by_iid_zero_and_one() {
     for present in [false, true] {
-        let rows = if present {
-            vec![fetch_doc("0x1", "captain", "0x9", "alice")]
-        } else {
-            vec![]
-        };
-        let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(rows))]);
-        let value = db
-            .relations::<Engagement>()
-            .subtypes()
-            .get_by_iid("0x1")
-            .await
-            .unwrap();
-        if present {
-            let Some(EngagementFamily::Assignment(assignment)) = value else {
-                panic!("expected child");
+        let mut expected_query = None;
+        for filtered in [false, true] {
+            let rows = if present {
+                vec![fetch_doc("0x1", "captain", "0x9", "alice")]
+            } else {
+                vec![]
             };
-            assert_assignment(&assignment, "0x1", "captain", "0x9");
-            assert!(assignment.origin.projected().is_some());
-        } else {
-            assert!(value.is_none());
+            let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(rows))]);
+            let manager = db.relations::<Engagement>().subtypes();
+            let value = if filtered {
+                manager
+                    .filter()
+                    .unwrap()
+                    .iid(&crate::Iid::new("0x1").unwrap())
+                    .unwrap()
+                    .first()
+                    .await
+                    .unwrap()
+            } else {
+                manager.get_by_iid("0x1").await.unwrap()
+            };
+            if present {
+                let Some(EngagementFamily::Assignment(assignment)) = value else {
+                    panic!("expected child");
+                };
+                assert_assignment(&assignment, "0x1", "captain", "0x9");
+                assert!(assignment.origin.projected().is_some());
+            } else {
+                assert!(value.is_none());
+            }
+            let guard = state.lock().unwrap();
+            let [Event::Open(TxType::Read), Event::Query(query), Event::Close] =
+                guard.events.as_slice()
+            else {
+                panic!("unexpected events: {:?}", guard.events);
+            };
+            assert_subtype_fetch_query(query);
+            assert!(query.contains("iid 0x1"));
+            if let Some(expected) = &expected_query {
+                assert_eq!(query, expected);
+            } else {
+                expected_query = Some(query.clone());
+            }
         }
-        let guard = state.lock().unwrap();
-        let [Event::Open(TxType::Read), Event::Query(query), Event::Close] =
-            guard.events.as_slice()
-        else {
-            panic!("unexpected events: {:?}", guard.events);
-        };
-        assert_subtype_fetch_query(query);
-        assert!(query.contains("iid 0x1"));
     }
 }
 

@@ -136,7 +136,8 @@ All notable changes to TypeBridge will be documented in this file.
   preserves the exact accepted hexadecimal spelling. Rust entity and relation
   filters expose `delete()` and `update(replacement)` terminals and accept
   `iid(&Iid)` and `iids(&[Iid])` predicates; an empty IID set matches nothing
-  without a provider request.
+  without a provider request. Rust subtype managers expose the same read filter
+  terminals and retain their concrete leaf or family result types.
 
 - V3 `DocumentScalar` fetch fields accept bound entities and relations and
   return their canonical IID. Optional thing bindings omit the field when

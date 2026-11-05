@@ -1,4 +1,4 @@
-//! Canonical generated manager filters over exact projected models.
+//! Canonical generated manager filters over projected models.
 
 use std::marker::PhantomData;
 
@@ -448,6 +448,125 @@ where
     }
 
     /// Return whether at least one exact relation IID matches.
+    pub async fn exists(&self) -> Result<bool> {
+        self.core.exists().await
+    }
+}
+
+/// Immutable read filter over a generated root and its concrete descendants.
+/// Results preserve the generated subtype association; writes require an exact manager.
+pub struct ProjectedSubtypeFilter<
+    'target,
+    S: Schema,
+    M: crate::__codegen::SubtypeRootModel<Schema = S>,
+> {
+    core: ProjectedFilterCore<'target>,
+    marker: PhantomData<fn() -> (S, M)>,
+}
+
+impl<'target, S, M> ProjectedSubtypeFilter<'target, S, M>
+where
+    S: Schema,
+    M: crate::__codegen::SubtypeRootModel<Schema = S>,
+{
+    pub(crate) fn for_target(context: ManagerTarget<'target>) -> Result<Self> {
+        let ManagerTarget { installed, target } = context;
+        let model = match M::thing_kind() {
+            crate::__codegen::ThingKind::Entity => {
+                resolve_entity_authority(
+                    M::TYPE_ID_JSON,
+                    installed,
+                    ModelValidationPhase::Input,
+                    false,
+                )?
+                .0
+            }
+            crate::__codegen::ThingKind::Relation => {
+                resolve_relation_authority(
+                    M::TYPE_ID_JSON,
+                    installed,
+                    ModelValidationPhase::Input,
+                    false,
+                )?
+                .0
+            }
+        };
+        let mut core = ProjectedFilterCore::try_new(installed, target, model)?;
+        core.filter = core.filter.including_subtypes();
+        Ok(Self {
+            core,
+            marker: PhantomData,
+        })
+    }
+
+    /// Append one generated root-field comparison to a reusable sibling filter.
+    pub fn where_<V>(
+        &self,
+        field: FieldToken<M, V>,
+        operator: ProjectedManagerComparison,
+        value: &V,
+    ) -> Result<Self>
+    where
+        V: Model<Schema = S> + QueryValued,
+    {
+        Ok(Self {
+            core: self.core.try_and::<S, M, V>(field, operator, value)?,
+            marker: PhantomData,
+        })
+    }
+
+    /// Match one typed IID across the root and its concrete descendants.
+    pub fn iid(&self, iid: &Iid) -> Result<Self> {
+        Ok(Self {
+            core: self.core.try_and_iid(iid)?,
+            marker: PhantomData,
+        })
+    }
+
+    /// Match any supplied IID; an empty set matches nothing.
+    pub fn iids(&self, iids: &[Iid]) -> Result<Self> {
+        Ok(Self {
+            core: self.core.try_and_iids(iids)?,
+            marker: PhantomData,
+        })
+    }
+
+    fn materialize(&self, thing: &type_bridge_orm::ProjectedThing) -> Result<M::Subtypes> {
+        let row = crate::projected_codec::projected_to_hydrated_row(thing, self.core.installed)?;
+        M::__tb_dispatch_subtype(&row, &crate::__codegen::HydrationCapability::new()).map_err(
+            |error| {
+                crate::entity_codec::map_validation_error(error, ModelValidationPhase::Hydration)
+            },
+        )
+    }
+
+    /// Return every matching root or concrete descendant in application result order.
+    pub async fn all(&self) -> Result<Vec<M::Subtypes>> {
+        ProjectedManagerFilterExecutor::new(self.core.installed)
+            .all_on_target(self.core.target, &self.core.filter, self.core.control())
+            .await
+            .map_err(filter_target_error)?
+            .iter()
+            .map(|thing| self.materialize(thing))
+            .collect()
+    }
+
+    /// Return an identity-proven optional root or concrete descendant.
+    pub async fn first(&self) -> Result<Option<M::Subtypes>> {
+        ProjectedManagerFilterExecutor::new(self.core.installed)
+            .first_on_target(self.core.target, &self.core.filter, self.core.control())
+            .await
+            .map_err(filter_target_error)?
+            .map(|thing| self.materialize(&thing))
+            .transpose()
+    }
+
+    /// Count distinct matching IIDs, including concrete descendants.
+    pub async fn count(&self) -> Result<u64> {
+        self.core.count().await
+    }
+
+    /// Return whether any root or concrete descendant matches.
     pub async fn exists(&self) -> Result<bool> {
         self.core.exists().await
     }

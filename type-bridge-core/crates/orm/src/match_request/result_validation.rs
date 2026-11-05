@@ -1242,8 +1242,8 @@ pub(crate) fn exactly_one_cardinality_error(actual: usize) -> Option<MatchError>
 /// Check the roots of a generated-manager result against its filter.
 ///
 /// A manager filter is a conjunction of literal comparisons on fields of one
-/// exact root. The compiler binds one variable per [`BoundFieldId`], so every
-/// comparison on a multivalue field must hold for one shared member. Row
+/// exact or subtype-inclusive root. The compiler binds one variable per
+/// [`BoundFieldId`], so every comparison on a multivalue field must hold for one shared member. Row
 /// validation accepts each comparison independently; this is the stricter
 /// rule a manager result has to meet.
 pub(crate) fn validate_manager_roots(
@@ -1259,10 +1259,10 @@ pub(crate) fn validate_manager_roots(
         )
         .at(MatchErrorPathSegment::Plan));
     };
-    if binding.id != root || binding.match_mode != MatchMode::Exact {
+    if binding.id != root {
         return Err(result_error(
             "manager_filter_query_shape_invalid",
-            "generated-manager evidence requires one exact root",
+            "generated-manager evidence requires one selected root",
         )
         .at(MatchErrorPathSegment::Plan));
     }
@@ -2917,7 +2917,7 @@ mod tests {
         let registry = registry();
         let root = BindingId::new(0);
         let notes = BoundFieldId::new(root, field(&registry, "employee", "notes"));
-        let request = |upper: &str| {
+        let request = |upper: &str, match_mode| {
             validate_match_request(
                 &registry,
                 MatchRequest::v1(
@@ -2927,7 +2927,7 @@ mod tests {
                             0,
                             "employee",
                             ThingKind::Entity,
-                            MatchMode::Exact,
+                            match_mode,
                         )],
                         predicate: Some(MatchExpr::And {
                             expressions: vec![
@@ -2982,12 +2982,14 @@ mod tests {
             vec![],
         );
 
-        let impossible = request("b");
-        let error = validate_manager_roots(&impossible, root, &[&hydrated]).unwrap_err();
-        assert_eq!(error_code(&error), "predicate_evidence_mismatch");
+        for mode in [MatchMode::Exact, MatchMode::Subtypes] {
+            let impossible = request("b", mode);
+            let error = validate_manager_roots(&impossible, root, &[&hydrated]).unwrap_err();
+            assert_eq!(error_code(&error), "predicate_evidence_mismatch");
 
-        let witnessed = request("d");
-        validate_manager_roots(&witnessed, root, &[&hydrated]).unwrap();
+            let witnessed = request("d", mode);
+            validate_manager_roots(&witnessed, root, &[&hydrated]).unwrap();
+        }
     }
 
     #[test]

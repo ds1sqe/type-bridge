@@ -10,6 +10,17 @@ use crate::session::staged::bounded;
 use crate::{QueryTarget, QueryTargetError, TxType};
 
 impl ProjectedManagerFilter {
+    fn require_exact_mutation(&self) -> Result<(), SdkExecutionDiagnostic> {
+        if self.match_mode != MatchMode::Exact {
+            return Err(invalid_input(
+                "manager_filter_write_requires_exact_model",
+                "Filtered mutations require an exact model scope",
+                type_path(self.model()),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn append_write_predicates(
         &self,
         draft: &mut crate::plan_builders::PlanDraft,
@@ -117,6 +128,7 @@ impl ProjectedManagerFilterExecutor<'_> {
     ) -> Result<(), QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        filter.require_exact_mutation()?;
         if let Some(iids) = filter
             .exact_iids()
             .or_else(|| filter.matches_none.then_some(&[]))
@@ -218,6 +230,7 @@ impl ProjectedManagerFilterExecutor<'_> {
     {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        filter.require_exact_mutation()?;
         let input_control = crate::ProjectedBatchInvocationControl::from_parts(
             control.limits,
             control.deadline,

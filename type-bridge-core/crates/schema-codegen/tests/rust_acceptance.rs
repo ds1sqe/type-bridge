@@ -341,7 +341,16 @@ fn generated_manager_filter_compile_boundaries_fail_independently() {
     let generated = stage.path().join("generated");
     write_package(&emit(), &generated);
 
-    let cases: [(&str, &str, &[&str]); 7] = [
+    let cases: [(&str, &str, &[&str]); 8] = [
+        (
+            "subtype-filter-rejects-mutations",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().subtypes().filter().unwrap().delete();
+}
+fn main() {}"#,
+            &["no method named `delete`", "ProjectedSubtypeFilter"],
+        ),
         (
             "manager-filter-rejects-string-iid",
             r#"use generated::{AppSchema, Person};

@@ -1,4 +1,4 @@
-//! Immutable exact-model filters and bounded generated-manager terminals.
+//! Immutable projected-model filters and bounded generated-manager terminals.
 
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -144,7 +144,7 @@ struct ProjectedManagerFieldPredicate {
     value: ProjectedAttributeValue,
 }
 
-/// One persistent, exact-model, generated-field filter.
+/// One persistent generated-field filter, exact by default.
 ///
 /// Every transition returns a new value. Field-token provenance is nominally
 /// fenced by generated facades before they pass the resolved
@@ -156,6 +156,7 @@ pub struct ProjectedManagerFilter {
     model: TypeId,
     predicates: Arc<[ProjectedManagerPredicate]>,
     matches_none: bool,
+    match_mode: MatchMode,
     measure: ProjectedManagerFilterResourceMeasure,
 }
 
@@ -176,7 +177,15 @@ impl ProjectedManagerFilter {
             model,
             predicates: Arc::from([]),
             matches_none: false,
+            match_mode: MatchMode::Exact,
         })
+    }
+
+    /// Include concrete descendants in read terminals. Mutations require exact scope.
+    #[must_use]
+    pub fn including_subtypes(mut self) -> Self {
+        self.match_mode = MatchMode::Subtypes;
+        self
     }
 
     /// Append one exact generated-field comparison without mutating this filter.
@@ -336,6 +345,7 @@ impl ProjectedManagerFilter {
             model: self.model.clone(),
             predicates: Arc::from(predicates),
             matches_none: self.matches_none,
+            match_mode: self.match_mode,
             measure: ProjectedManagerFilterResourceMeasure {
                 items: self.measure.items.saturating_add(1),
                 bytes: next_bytes,
@@ -425,6 +435,7 @@ impl ProjectedManagerFilter {
             model: self.model.clone(),
             predicates: Arc::from(predicates),
             matches_none: self.matches_none || iids.is_empty(),
+            match_mode: self.match_mode,
             measure: ProjectedManagerFilterResourceMeasure {
                 items: next_items,
                 bytes,
@@ -1290,7 +1301,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                     target,
                     filter.model(),
                     &expressions,
-                    MatchMode::Exact,
+                    filter.match_mode,
                     None,
                     control,
                 )
@@ -1585,9 +1596,11 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?,
         );
         let session = SessionHandle::new(Arc::clone(&registry));
-        let root = session
-            .exact(filter.model.label().as_str())
-            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
+        let root = match filter.match_mode {
+            MatchMode::Exact => session.exact(filter.model.label().as_str()),
+            MatchMode::Subtypes => session.subtypes(filter.model.label().as_str()),
+        }
+        .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
         let shape = session
             .positional([root.one()])
             .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
@@ -1621,16 +1634,30 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         roots: &[&HydratedThing],
         control: &ProjectedManagerFilterInvocationControl,
     ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
-        materialize_projected_manager_things_with_budget(
-            self.installed,
-            registry,
-            origin,
-            filter.model(),
-            roots,
-            control.limits.projected(),
-            &control.cancellation,
-            Some(control.deadline),
-        )
+        match filter.match_mode {
+            MatchMode::Exact => materialize_projected_manager_things_with_budget(
+                self.installed,
+                registry,
+                origin,
+                filter.model(),
+                roots,
+                control.limits.projected(),
+                &control.cancellation,
+                Some(control.deadline),
+            ),
+            MatchMode::Subtypes => {
+                crate::projected_query::materialize_projected_manager_subtypes_with_budget(
+                    self.installed,
+                    registry,
+                    origin,
+                    filter.model(),
+                    roots,
+                    control.limits.projected(),
+                    &control.cancellation,
+                    Some(control.deadline),
+                )
+            }
+        }
     }
 
     fn build_predicates(
@@ -2251,34 +2278,41 @@ mod target_tests {
                 .build_request(&restored, ManagerTerminal::Count)
                 .unwrap();
             assert_eq!(count.request(), rebuilt.request());
-            for terminal in [
-                ManagerTerminal::all(&control, None),
-                ManagerTerminal::first(),
-                ManagerTerminal::Count,
-                ManagerTerminal::Exists,
-            ] {
-                let (registry, request) = executor.build_request(filter, terminal).unwrap();
-                let direct =
-                    crate::match_request::plan_adapter::adapt_match_request(&registry, &request)
-                        .unwrap();
-                let pending = proxy
-                    .prepare(
-                        &registry,
-                        request,
-                        policy,
-                        &control.cancellation,
-                        control.deadline,
+            for scoped in [filter.clone(), filter.clone().including_subtypes()] {
+                for terminal in [
+                    ManagerTerminal::all(&control, None),
+                    ManagerTerminal::first(),
+                    ManagerTerminal::Count,
+                    ManagerTerminal::Exists,
+                ] {
+                    let (registry, request) = executor.build_request(&scoped, terminal).unwrap();
+                    assert_eq!(
+                        request.request().plan.bindings[0].match_mode,
+                        scoped.match_mode
+                    );
+                    let direct = crate::match_request::plan_adapter::adapt_match_request(
+                        &registry, &request,
                     )
                     .unwrap();
-                let staged =
-                    StagedRequestV3::decode(pending.request_bytes(), &declared, &advertisement)
+                    let pending = proxy
+                        .prepare(
+                            &registry,
+                            request,
+                            policy,
+                            &control.cancellation,
+                            control.deadline,
+                        )
                         .unwrap();
-                assert_eq!(staged.plans().len(), 1);
-                assert_eq!(direct.plans.len(), 1);
-                assert_eq!(
-                    staged.plans()[0].plan().canonical_bytes().unwrap(),
-                    direct.plans[0].canonical_bytes().unwrap()
-                );
+                    let staged =
+                        StagedRequestV3::decode(pending.request_bytes(), &declared, &advertisement)
+                            .unwrap();
+                    assert_eq!(staged.plans().len(), 1);
+                    assert_eq!(direct.plans.len(), 1);
+                    assert_eq!(
+                        staged.plans()[0].plan().canonical_bytes().unwrap(),
+                        direct.plans[0].canonical_bytes().unwrap()
+                    );
+                }
             }
         }
         // A binding's implicit proxy execution default must not author a

@@ -2071,7 +2071,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scalar_iid_filter_first_keeps_exact_lookup_plan_bytes() {
+    async fn scalar_iid_filter_first_keeps_lookup_plan_bytes() {
         use crate::{
             ProjectedManagerFilter, ProjectedManagerFilterExecutor,
             ProjectedManagerFilterInvocationControl,
@@ -2085,48 +2085,77 @@ mod tests {
                 (TypeKind::Entity, "wide-item"),
                 (TypeKind::Relation, "wide-edge"),
             ] {
-                let model = TypeId::new(kind, label).unwrap();
-                let (installed, proxy, transport) = single_proxy_fixture_with_projection(
-                    model.clone(),
-                    1,
-                    1,
-                    type_bridge_contract::limits::QueryLimits::V3,
-                    wide_single_projection_for_target(false, target),
-                );
-                let original = ProjectedCrudExecutor::new(&installed)
-                    .get_by_iid_on_target(crate::QueryTarget::Proxy(&proxy), &model, "0x20", None)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                let filter = ProjectedManagerFilter::try_new(&installed, model)
-                    .unwrap()
-                    .try_and_iid(
-                        &installed,
-                        &type_bridge_contract::id::Iid::new("0x20").unwrap(),
-                    )
-                    .unwrap();
-                let filtered = ProjectedManagerFilterExecutor::new(&installed)
-                    .first_on_target(
-                        crate::QueryTarget::Proxy(&proxy),
-                        &filter,
-                        ProjectedManagerFilterInvocationControl::capture(
-                            Default::default(),
-                            Default::default(),
-                        ),
-                    )
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(original.iid(), filtered.iid());
-                let seen = transport.seen.lock().unwrap();
-                assert_eq!(seen.len(), 2);
-                assert_eq!(seen[0].plans().len(), seen[1].plans().len());
-                for (left, right) in seen[0].plans().iter().zip(seen[1].plans()) {
-                    assert_eq!(
-                        left.plan().canonical_bytes().unwrap(),
-                        right.plan().canonical_bytes().unwrap()
+                for subtypes in [false, true] {
+                    let model = TypeId::new(kind, label).unwrap();
+                    let (installed, proxy, transport) = single_proxy_fixture_with_projection(
+                        model.clone(),
+                        1,
+                        1,
+                        type_bridge_contract::limits::QueryLimits::V3,
+                        wide_single_projection_for_target(false, target),
                     );
-                    assert_eq!(left.rows(), right.rows());
+                    let original = if subtypes {
+                        ProjectedManagerFilterExecutor::new(&installed)
+                            .get_by_iid_including_subtypes_on_target(
+                                crate::QueryTarget::Proxy(&proxy),
+                                &model,
+                                "0x20",
+                                ProjectedManagerFilterInvocationControl::capture(
+                                    Default::default(),
+                                    Default::default(),
+                                ),
+                            )
+                            .await
+                            .unwrap()
+                            .unwrap()
+                    } else {
+                        ProjectedCrudExecutor::new(&installed)
+                            .get_by_iid_on_target(
+                                crate::QueryTarget::Proxy(&proxy),
+                                &model,
+                                "0x20",
+                                None,
+                            )
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .into()
+                    };
+                    let filter = ProjectedManagerFilter::try_new(&installed, model)
+                        .unwrap()
+                        .try_and_iid(
+                            &installed,
+                            &type_bridge_contract::id::Iid::new("0x20").unwrap(),
+                        )
+                        .unwrap();
+                    let filter = if subtypes {
+                        filter.including_subtypes()
+                    } else {
+                        filter
+                    };
+                    let filtered = ProjectedManagerFilterExecutor::new(&installed)
+                        .first_on_target(
+                            crate::QueryTarget::Proxy(&proxy),
+                            &filter,
+                            ProjectedManagerFilterInvocationControl::capture(
+                                Default::default(),
+                                Default::default(),
+                            ),
+                        )
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(original.iid(), filtered.iid());
+                    let seen = transport.seen.lock().unwrap();
+                    assert_eq!(seen.len(), 2);
+                    assert_eq!(seen[0].plans().len(), seen[1].plans().len());
+                    for (left, right) in seen[0].plans().iter().zip(seen[1].plans()) {
+                        assert_eq!(
+                            left.plan().canonical_bytes().unwrap(),
+                            right.plan().canonical_bytes().unwrap()
+                        );
+                        assert_eq!(left.rows(), right.rows());
+                    }
                 }
             }
         }

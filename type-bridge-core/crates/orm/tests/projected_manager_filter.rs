@@ -43,6 +43,7 @@ entities:
       zoned-at: { card: { min: 0 } }
       amount: { card: { min: 0 } }
       elapsed: { card: { min: 0 } }
+  employee: { sub: person }
   membership:
     owns:
       tenant: { key: true }
@@ -858,4 +859,95 @@ async fn empty_iid_sets_are_match_none_without_opening_a_provider_transaction() 
             0
         );
     }
+}
+
+#[tokio::test]
+async fn subtype_iid_filter_preserves_lookup_bytes_and_concrete_identity() {
+    use type_bridge_contract::id::Iid;
+    use type_bridge_orm::session::backend::QueryResult;
+    use type_bridge_orm::{ProjectedManagerFilterInvocationControl, QueryTarget};
+    let installed = installed(BindingTarget::Rust);
+    let person = type_id(TypeKind::Entity, "person");
+    let document =
+        serde_json::json!({"_iid":"0x10", "_type":"employee", "attributes":{"identifier":"Ada"}});
+    let backend = MockBackend::new(vec![
+        QueryResult::Documents(vec![document.clone()]),
+        QueryResult::Documents(vec![document]),
+    ]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "subtype-filter");
+    let target = QueryTarget::Database(&db);
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    let executor = ProjectedManagerFilterExecutor::new(&installed);
+    let original = executor
+        .get_by_iid_including_subtypes_on_target(target, &person, "0x10", control())
+        .await
+        .unwrap()
+        .unwrap();
+    let filter = ProjectedManagerFilter::try_new(&installed, person)
+        .unwrap()
+        .including_subtypes()
+        .try_and_iid(&installed, &Iid::new("0x10").unwrap())
+        .unwrap();
+    let filtered = executor
+        .first_on_target(target, &filter, control())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(filtered.type_id(), &type_id(TypeKind::Entity, "employee"));
+    assert_eq!(original.type_id(), filtered.type_id());
+    assert_eq!(original.iid(), filtered.iid());
+    let observed = queries.lock().unwrap();
+    assert_eq!(observed.len(), 2);
+    assert_eq!(observed[0], observed[1]);
+    assert!(observed[0].contains(" isa person"));
+    assert!(!observed[0].contains(" isa! person"));
+}
+
+#[tokio::test]
+async fn subtype_filters_refuse_mutations_without_provider_calls() {
+    use type_bridge_orm::{ProjectedCreate, ProjectedManagerFilterInvocationControl, QueryTarget};
+    let installed = installed(BindingTarget::Rust);
+    let person = type_id(TypeKind::Entity, "person");
+    let filter = ProjectedManagerFilter::try_new(&installed, person.clone())
+        .unwrap()
+        .including_subtypes();
+    let backend = MockBackend::new(vec![]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "subtype-filter-refusal");
+    let target = QueryTarget::Database(&db);
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    let executor = ProjectedManagerFilterExecutor::new(&installed);
+    let replacement = ProjectedCreate::try_new(
+        &installed,
+        person.clone(),
+        vec![(
+            field(&person, "identifier"),
+            vec![string_value(&installed, "identifier", "unused")],
+        )],
+        vec![],
+    )
+    .unwrap();
+    let errors = [
+        executor
+            .delete_on_target(target, &filter, control())
+            .await
+            .unwrap_err(),
+        executor
+            .update_on_target(target, &filter, replacement, control())
+            .await
+            .unwrap_err(),
+    ];
+    for error in errors {
+        assert_eq!(
+            error
+                .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+                .code()
+                .as_str(),
+            "manager_filter_write_requires_exact_model"
+        );
+    }
+    assert!(queries.lock().unwrap().is_empty());
 }

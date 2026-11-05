@@ -83,6 +83,14 @@ async fn generated_manager_mutation_parity_compiles(
         .await
 }
 
+async fn subtype_filters_compile(
+    database: &type_bridge::Database<AppSchema>, iid: &type_bridge::Iid,
+) -> type_bridge::Result<()> {
+    let _: Option<Person> = database.entities::<Person>().subtypes().filter()?.iid(iid)?.first().await?;
+    let _: Option<MembershipFamily> = database.relations::<Membership>().subtypes().filter()?.iid(iid)?.first().await?;
+    Ok(())
+}
+
 fn selected_shapes_compile(
     session: &type_bridge::QuerySession<'_, AppSchema>,
     person: type_bridge::Binding<AppSchema, Person>,

@@ -213,6 +213,11 @@ with no IID; update events carry the authored replacement. Use an IID filter or
 a prior read when a hook needs individual row identity. Post-hooks run only after
 success, after commit for owned transactions.
 
+Use `manager.subtypes().filter()` to read a root and its concrete descendants.
+It accepts the same `where_`, `iid`, and `iids` predicates and exposes `all`,
+`first`, `count`, and `exists`. Results retain the generated concrete leaf or
+family type. Subtype filters are read-only; use an exact manager for mutations.
+
 `first` requires a singleton IID predicate or equality evidence for every
 effective reference-key field and proves that at most one exact IID matched.
 Use an explicit read transaction when several manager terminals and typed

@@ -75,6 +75,13 @@ fn minimal_fixture() -> type_bridge_orm::InstalledRuntimeProjection {
 }
 
 fn fixture_with_ordered_text(ordered: bool) -> type_bridge_orm::InstalledRuntimeProjection {
+    fixture_with_authority(ordered, false)
+}
+
+fn fixture_with_authority(
+    ordered: bool,
+    with_authority: bool,
+) -> type_bridge_orm::InstalledRuntimeProjection {
     let docs = SchemaDocumentSet::parse([(
         DocumentId::new("e01.yaml").unwrap(),
         r#"format: typebridge.schema/v2
@@ -104,8 +111,9 @@ entities:
         .as_str(),
     )])
     .unwrap();
+    let declared = normalize_documents(&docs).unwrap();
     let resolved = resolve(
-        &normalize_documents(&docs).unwrap(),
+        &declared,
         &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
     )
     .unwrap();
@@ -118,7 +126,22 @@ entities:
         &emitter.code_resources().unwrap(),
     )
     .unwrap();
-    type_bridge_orm::InstalledRuntimeProjection::try_new(projection).unwrap()
+    let installed = type_bridge_orm::InstalledRuntimeProjection::try_new(projection).unwrap();
+    if !with_authority {
+        return installed;
+    }
+    let context = type_bridge_schema::ManagedDeltaContext::new(
+        type_bridge_contract::managed_scope::ManagedScopeId::new("entity-tests").unwrap(),
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        type_bridge_schema::schema_authority_capability_vocabulary(),
+    );
+    let authority = type_bridge_schema::build_schema_authority(
+        &declared,
+        declared.required_capabilities(),
+        &context,
+    )
+    .unwrap();
+    installed.with_schema_authority(&authority)
 }
 impl sealed::Sealed for Record {}
 impl Model for Record {
@@ -961,38 +984,53 @@ async fn public_subtypes_all_fetches_concrete_children_in_one_plan() {
 #[tokio::test]
 async fn public_subtypes_get_by_iid_fetches_or_omits_in_one_plan() {
     for present in [false, true] {
-        let documents = if present {
-            vec![subtype_document("0x1", "n1", "child")]
-        } else {
-            vec![]
-        };
-        let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(documents))]);
-        let result = db
-            .entities::<Base>()
-            .subtypes()
-            .get_by_iid("0x1")
-            .await
-            .unwrap();
-        if present {
-            let Some(BaseFamily::Record(row)) = result else {
-                panic!("expected child");
+        let mut expected_query = None;
+        for filtered in [false, true] {
+            let documents = if present {
+                vec![subtype_document("0x1", "n1", "child")]
+            } else {
+                vec![]
             };
-            assert!(row.origin.projected().is_some());
-            assert_eq!(
-                (row.iid.as_str(), row.name.as_str(), row.value.as_str()),
-                ("0x1", "n1", "child")
-            );
-        } else {
-            assert!(result.is_none());
+            let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(documents))]);
+            let manager = db.entities::<Base>().subtypes();
+            let result = if filtered {
+                manager
+                    .filter()
+                    .unwrap()
+                    .iid(&crate::Iid::new("0x1").unwrap())
+                    .unwrap()
+                    .first()
+                    .await
+                    .unwrap()
+            } else {
+                manager.get_by_iid("0x1").await.unwrap()
+            };
+            if present {
+                let Some(BaseFamily::Record(row)) = result else {
+                    panic!("expected child");
+                };
+                assert!(row.origin.projected().is_some());
+                assert_eq!(
+                    (row.iid.as_str(), row.name.as_str(), row.value.as_str()),
+                    ("0x1", "n1", "child")
+                );
+            } else {
+                assert!(result.is_none());
+            }
+            let guard = state.lock().unwrap();
+            let [Event::Open(TxType::Read), Event::Query(query), Event::Close] =
+                guard.events.as_slice()
+            else {
+                panic!("unexpected events: {:?}", guard.events);
+            };
+            assert_subtype_fetch_query(query);
+            assert!(query.contains("iid 0x1"));
+            if let Some(expected) = &expected_query {
+                assert_eq!(query, expected);
+            } else {
+                expected_query = Some(query.clone());
+            }
         }
-        let guard = state.lock().unwrap();
-        let [Event::Open(TxType::Read), Event::Query(query), Event::Close] =
-            guard.events.as_slice()
-        else {
-            panic!("unexpected events: {:?}", guard.events);
-        };
-        assert_subtype_fetch_query(query);
-        assert!(query.contains("iid 0x1"));
     }
 }
 
@@ -1692,4 +1730,47 @@ async fn nonempty_ordered_write_is_refused_before_provider_io() {
         Some("query_plan_ordered_collection_unsupported")
     );
     assert!(state.lock().unwrap().events.is_empty());
+}
+
+#[tokio::test]
+async fn subtype_filter_all_keeps_concrete_child_fields_and_origin() {
+    let state = Arc::new(Mutex::new(State::default()));
+    let backend = Backend {
+        state: Arc::clone(&state),
+        responses: Arc::new(Mutex::new(
+            vec![Response::Result(QueryResult::Documents(vec![
+                serde_json::json!({"_iid":"0x1", "_type":"record", "attributes":{"name":"n1", "text":"first"}}),
+                serde_json::json!({"_iid":"0x2", "_type":"record", "attributes":{"name":"n2", "text":"second"}}),
+            ]))]
+            .into(),
+        )),
+        rollback_error: false,
+        close_error: false,
+    };
+    let db = crate::session::Database::<TestSchema>::from_test_parts(
+        OrmDatabase::with_backend(Box::new(backend), "subtype-filter"),
+        fixture_with_authority(false, true),
+    );
+    let rows = db
+        .entities::<Base>()
+        .subtypes()
+        .filter()
+        .unwrap()
+        .all()
+        .await
+        .unwrap_or_else(|error| panic!("{error:?}; {:?}", state.lock().unwrap().events));
+    assert_eq!(rows.len(), 2);
+    for (row, (iid, value)) in rows.iter().zip([("0x1", "first"), ("0x2", "second")]) {
+        let BaseFamily::Record(row) = row;
+        assert_eq!(row.iid, iid);
+        assert_eq!(row.value, value);
+        assert!(row.origin.projected().is_some());
+    }
+    let guard = state.lock().unwrap();
+    let [Event::Open(TxType::Read), Event::Query(query), Event::Close] = guard.events.as_slice()
+    else {
+        panic!("unexpected events: {:?}", guard.events);
+    };
+    assert!(query.contains(" isa base"));
+    assert!(!query.contains(" isa! base"));
 }

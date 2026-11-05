@@ -684,11 +684,16 @@ where
     }
 }
 
-impl<S, M> RelationSubtypeManager<'_, S, M>
+impl<'db, S, M> RelationSubtypeManager<'db, S, M>
 where
     S: Schema,
     M: SubtypeRootModel<Schema = S> + RelationModel<Schema = S>,
 {
+    /// Start an immutable read filter that preserves concrete subtype results.
+    pub fn filter(&self) -> Result<crate::ProjectedSubtypeFilter<'db, S, M>> {
+        crate::ProjectedSubtypeFilter::for_target(self.context.ok_or_else(schema_not_bound)?)
+    }
+
     /// Reads one canonical IID across the root and its generated concrete descendants.
     /// Invalid IIDs are rejected before I/O; a valid but absent IID returns `None`.
     pub async fn get_by_iid(&self, iid: &str) -> Result<Option<M::Subtypes>> {
