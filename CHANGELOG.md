@@ -228,6 +228,9 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Python native `DynamicExpr.iid`, `IidConstraint`, and `IidPattern`
+  constructors and IID setters require nominal `Iid` values instead of
+  strings. Their stored AST values and query lowering remain unchanged.
 - Generated Python model and reference `.iid` properties return `Iid | None`.
   Reference constructors, `attach_runtime_iid`, manager `get_by_iid`, IID
   `delete` arguments, and `iid`/`iid__in` filters require `Iid` values. Construct

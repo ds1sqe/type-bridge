@@ -58,6 +58,10 @@ For canonical mutations, use `filter(iid=target).delete()` or
 retain the batch input limits; reads and updates retain the 256-term Boolean
 limit and refuse larger lists before I/O.
 
+Native `DynamicExpr.iid`, `IidConstraint`, and `IidPattern` constructors and
+IID setters also require `Iid` values. The AST's stored string spelling and
+lowering remain unchanged.
+
 Pass `Iid("0x1234")` (imported from `type_bridge`) to query binding `iid`,
 `iid_in`, and generated model `by_iid` authoring. Plain strings are refused
 before execution. These methods retain their existing query and staged plans.

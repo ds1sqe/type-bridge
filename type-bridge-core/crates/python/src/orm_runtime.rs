@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::iid::PyIid;
 use crate::match_runtime::{PyQueryLimits, py_sdk_diagnostic};
 use crate::migration_catalog_runtime::PyMigrationCancellation;
 use crate::version::VersionError;
@@ -369,10 +370,10 @@ impl PyDynamicExpr {
 
     /// IID lookup.
     #[staticmethod]
-    fn iid(iid: &str) -> Self {
+    fn iid(iid: PyRef<'_, PyIid>) -> Self {
         Self {
             expr: DynamicExpr::Iid {
-                iid: iid.to_string(),
+                iid: iid.inner.as_str().to_owned(),
             },
         }
     }
@@ -1789,5 +1790,29 @@ mod commit_outcome_tests {
             commit_outcome_class(&rejected(Phase::Query, Reason::Unique)),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod iid_tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_iid_input_requires_nominal_value_and_preserves_expression() {
+        Python::initialize();
+        Python::attach(|py| {
+            let iid = py.get_type::<PyIid>().call1(("0xAb12",)).unwrap();
+            let expression = py
+                .get_type::<PyDynamicExpr>()
+                .call_method1("iid", (&iid,))
+                .unwrap();
+            let expression = expression.cast::<PyDynamicExpr>().unwrap().borrow();
+            assert!(matches!(&expression.expr, DynamicExpr::Iid { iid } if iid == "0xAb12"));
+            let error = py
+                .get_type::<PyDynamicExpr>()
+                .call_method1("iid", ("0xAb12",))
+                .unwrap_err();
+            assert!(error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+        });
     }
 }

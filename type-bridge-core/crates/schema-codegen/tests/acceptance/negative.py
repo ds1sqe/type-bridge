@@ -33,6 +33,7 @@ from generated_v2 import (
     aggregate,
     qualifying_score,
 )
+from type_bridge_core import DynamicExpr, IidConstraint, IidPattern
 from type_bridge_core import Transaction as StagedTransaction
 
 from type_bridge import Iid
@@ -212,3 +213,11 @@ person_manager.filter(_iid="0xa1")  # E: keyword_alias_string_iid:reportArgument
 person_manager.filter(iid__eq="0xa1")  # E: keyword_eq_string_iid:reportArgumentType
 person_manager.filter(_iid__eq="0xa1")  # E: keyword_alias_eq_string_iid:reportArgumentType
 person_manager.filter(_iid__in=["0xa1"])  # E: keyword_alias_string_iids:reportArgumentType
+
+DynamicExpr.iid("0xa1")  # E: dynamic_string_iid:reportArgumentType
+IidConstraint("0xa1")  # E: constraint_string_iid:reportArgumentType
+IidPattern("$person", "0xa1")  # E: pattern_string_iid:reportArgumentType
+iid_constraint = IidConstraint(Iid("0xa1"))
+iid_constraint.iid = "0xa2"  # E: constraint_string_iid_setter:reportAttributeAccessIssue
+iid_pattern = IidPattern("$person", Iid("0xa1"))
+iid_pattern.iid = "0xa2"  # E: pattern_string_iid_setter:reportAttributeAccessIssue

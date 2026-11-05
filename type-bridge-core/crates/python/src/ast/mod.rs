@@ -8,6 +8,8 @@
 
 use pyo3::prelude::*;
 
+use crate::iid::PyIid;
+
 #[pyclass(get_all, set_all)]
 pub struct LiteralValue {
     pub value: Py<PyAny>,
@@ -70,7 +72,7 @@ impl RolePlayer {
 }
 
 // Constraints
-#[pyclass(get_all, set_all)]
+#[pyclass(get_all)]
 pub struct IidConstraint {
     pub iid: String,
 }
@@ -78,8 +80,15 @@ pub struct IidConstraint {
 #[pymethods]
 impl IidConstraint {
     #[new]
-    fn new(iid: String) -> Self {
-        IidConstraint { iid }
+    fn new(iid: PyRef<'_, PyIid>) -> Self {
+        IidConstraint {
+            iid: iid.inner.as_str().to_owned(),
+        }
+    }
+
+    #[setter]
+    fn set_iid(&mut self, iid: PyRef<'_, PyIid>) {
+        self.iid = iid.inner.as_str().to_owned();
     }
 }
 
@@ -268,8 +277,9 @@ impl OrPattern {
     }
 }
 
-#[pyclass(get_all, set_all)]
+#[pyclass(get_all)]
 pub struct IidPattern {
+    #[pyo3(set)]
     pub variable: String,
     pub iid: String,
 }
@@ -277,8 +287,16 @@ pub struct IidPattern {
 #[pymethods]
 impl IidPattern {
     #[new]
-    fn new(variable: String, iid: String) -> Self {
-        IidPattern { variable, iid }
+    fn new(variable: String, iid: PyRef<'_, PyIid>) -> Self {
+        IidPattern {
+            variable,
+            iid: iid.inner.as_str().to_owned(),
+        }
+    }
+
+    #[setter]
+    fn set_iid(&mut self, iid: PyRef<'_, PyIid>) {
+        self.iid = iid.inner.as_str().to_owned();
     }
 }
 
@@ -640,5 +658,56 @@ impl ReduceClause {
             assignments,
             group_by,
         }
+    }
+}
+
+#[cfg(test)]
+mod iid_tests {
+    use super::*;
+    use pyo3::types::PyDict;
+
+    #[test]
+    fn ast_iid_inputs_require_nominal_values_and_preserve_spelling() {
+        Python::initialize();
+        Python::attach(|py| {
+            let globals = PyDict::new(py);
+            globals.set_item("Iid", py.get_type::<PyIid>()).unwrap();
+            globals
+                .set_item("IidConstraint", py.get_type::<IidConstraint>())
+                .unwrap();
+            globals
+                .set_item("IidPattern", py.get_type::<IidPattern>())
+                .unwrap();
+            py.run(
+                pyo3::ffi::c_str!(
+                    r#"
+for constructor in (IidConstraint, lambda iid: IidPattern("$person", iid)):
+    value = constructor(Iid("0xAb12"))
+    assert value.iid == "0xAb12"
+    value.iid = Iid("0xCd34")
+    assert value.iid == "0xCd34"
+    try:
+        constructor("0xAb12")
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("AST constructor accepted a string IID")
+    try:
+        value.iid = "0xEf56"
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("AST setter accepted a string IID")
+    assert value.iid == "0xCd34"
+pattern = IidPattern("$person", Iid("0xa1"))
+pattern.variable = "$other"
+assert pattern.variable == "$other"
+"#
+                ),
+                Some(&globals),
+                None,
+            )
+            .unwrap();
+        });
     }
 }
