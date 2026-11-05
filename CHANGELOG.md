@@ -200,6 +200,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Structured migration `CopyAttribute` now requires `mode: "isa"` or
+  `mode: "isa!"`. The explicit choice controls source and destination attribute
+  subtype matching; abstract attribute labels require `isa`.
+
 - `TypeDbMigrationProvider::new` now takes the verified migration plan's
   `schema_authorities()`. `MigrationAssertionExecutionContext::new` and
   `lower_migration_assertion` require explicit declared schema authority;

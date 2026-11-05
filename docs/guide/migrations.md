@@ -218,8 +218,12 @@ becomes an explicit raw step with the same text:
 Or use a structured native copy and pass the declared schema to `plan`:
 
 ```json
-{"kind":"copy_attribute","owner":"person","source":"old-name","dest":"new-name"}
+{"kind":"copy_attribute","owner":"person","source":"old-name","dest":"new-name","mode":"isa"}
 ```
+
+The required `mode` follows TypeQL. `"isa"` includes attribute subtypes and
+supports abstract attribute labels. `"isa!"` selects the exact concrete
+attribute type; use the same example with `"mode":"isa!"` for that behavior.
 
 Custom forward/reverse strings and textual filters are refused on
 `CopyAttribute`. For custom native behavior, `RunPlan` accepts canonical V3

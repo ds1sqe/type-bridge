@@ -237,6 +237,9 @@ pub enum OperationSpec {
         /// Destination attribute label (structured portable form).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dest: Option<String>,
+        /// Required explicit attribute matching form: isa or isa!.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
         /// Optional extra match constraint line (structured portable form).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
@@ -266,6 +269,7 @@ pub fn copy_attribute_typeql(op: &OperationSpec) -> crate::Result<(String, Optio
         owner,
         source,
         dest,
+        mode,
         filter,
         forward,
         reverse,
@@ -285,6 +289,9 @@ pub fn copy_attribute_typeql(op: &OperationSpec) -> crate::Result<(String, Optio
                 .to_string(),
         });
     };
+    let mode = type_bridge_contract::query_plan::TypeMatchMode::from_typeql(
+        mode.as_deref().unwrap_or(""),
+    )?;
     use type_bridge_core_lib::__internal as tql;
     let mut patterns = vec![
         tql::thing(
@@ -296,6 +303,13 @@ pub fn copy_attribute_typeql(op: &OperationSpec) -> crate::Result<(String, Optio
             vec![tql::has(dest, tql::var("d")?)?],
         )?]),
     ];
+    if mode == type_bridge_contract::query_plan::TypeMatchMode::IsaExact {
+        patterns[1] = tql::not(vec![
+            tql::thing("x", vec![tql::has(dest, tql::var("d")?)?])?,
+            tql::thing("d", vec![tql::isa(dest, true)?])?,
+        ]);
+        patterns.push(tql::thing("v", vec![tql::isa(source, true)?])?);
+    }
     if let Some(filter) = filter {
         patterns.extend(tql::parse_patterns(filter)?);
     }
@@ -306,11 +320,15 @@ pub fn copy_attribute_typeql(op: &OperationSpec) -> crate::Result<(String, Optio
             vec![tql::has_comparison(dest, "==", tql::var("v")?)?],
         )?]),
     ]))?;
+    let mut reverse_patterns = vec![tql::thing(
+        "x",
+        vec![tql::isa(owner, false)?, tql::has(dest, tql::var("v")?)?],
+    )?];
+    if mode == type_bridge_contract::query_plan::TypeMatchMode::IsaExact {
+        reverse_patterns.push(tql::thing("v", vec![tql::isa(dest, true)?])?);
+    }
     let synthesized_reverse = tql::render(&tql::pipeline(vec![
-        tql::match_stage(vec![tql::thing(
-            "x",
-            vec![tql::isa(owner, false)?, tql::has(dest, tql::var("v")?)?],
-        )?]),
+        tql::match_stage(reverse_patterns),
         tql::delete(vec![tql::delete_has("x", "v")?]),
     ]))?;
     Ok((
@@ -336,6 +354,7 @@ impl OperationSpec {
             owner,
             source,
             dest,
+            mode,
             filter,
             ..
         } = self
@@ -346,6 +365,7 @@ impl OperationSpec {
             owner,
             source,
             dest,
+            mode,
             filter,
             forward: Some(forward),
             reverse,
@@ -439,6 +459,7 @@ mod tests {
 
     fn lowered_copy_attribute(forward: &str, reverse: Option<&str>) -> OperationSpec {
         OperationSpec::CopyAttribute {
+            mode: None,
             owner: None,
             source: None,
             dest: None,
@@ -450,6 +471,7 @@ mod tests {
 
     fn structured_copy_attribute(filter: Option<&str>) -> OperationSpec {
         OperationSpec::CopyAttribute {
+            mode: Some("isa".into()),
             owner: Some("person".to_string()),
             source: Some("old-name".to_string()),
             dest: Some("new-name".to_string()),
@@ -549,6 +571,7 @@ mod tests {
     #[test]
     fn carried_typeql_wins_over_structured_fields() {
         let operation = OperationSpec::CopyAttribute {
+            mode: Some("isa".into()),
             owner: Some("person".to_string()),
             source: Some("old-name".to_string()),
             dest: Some("new-name".to_string()),
@@ -565,6 +588,7 @@ mod tests {
     #[test]
     fn copy_attribute_without_typeql_or_fields_is_rejected() {
         let operation = OperationSpec::CopyAttribute {
+            mode: Some("isa".into()),
             owner: Some("person".to_string()),
             source: None,
             dest: Some("new-name".to_string()),

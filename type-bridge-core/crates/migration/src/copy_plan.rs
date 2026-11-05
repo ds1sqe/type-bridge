@@ -8,7 +8,7 @@ use type_bridge_contract::query_plan::v3::{
     AttachItem, DeleteItem, Operation, Pattern, PlanSpec, QueryPlanV3, Stage, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
-    QueryOperand, QueryOutput, QueryPattern, ReduceAssignment, Reducer,
+    QueryOperand, QueryOutput, QueryPattern, ReduceAssignment, Reducer, TypeMatchMode,
 };
 use type_bridge_contract::schema::{DeclaredSchema, SchemaFact, SchemaFactId};
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
@@ -34,6 +34,7 @@ pub(crate) fn build(
         owner: Some(owner),
         source: Some(source),
         dest: Some(dest),
+        mode,
         filter: None,
         forward: None,
         reverse: None,
@@ -41,6 +42,7 @@ pub(crate) fn build(
     else {
         return Err(invalid("CopyAttribute requires structured owner/source/dest without text or filters; use RunPlan for native programs or RunTypeql for explicit raw TypeQL").into());
     };
+    let mode = TypeMatchMode::from_typeql(mode.as_deref().unwrap_or(""))?;
     let owner = schema
         .facts()
         .find_map(|fact| match fact {
@@ -89,7 +91,8 @@ pub(crate) fn build(
     };
     let total = vec![
         Pattern::from(isa.clone()),
-        QueryPattern::Has {
+        QueryPattern::HasType {
+            mode,
             owner: id(0),
             attribute: id(1),
             attribute_id: source,
@@ -99,7 +102,8 @@ pub(crate) fn build(
     let mut guarded = total.clone();
     guarded.push(
         QueryPattern::Not {
-            patterns: vec![QueryPattern::Has {
+            patterns: vec![QueryPattern::HasType {
+                mode,
                 owner: id(0),
                 attribute: id(2),
                 attribute_id: dest.clone(),
@@ -160,7 +164,8 @@ pub(crate) fn build(
                     Stage::Match {
                         patterns: vec![
                             isa.into(),
-                            QueryPattern::Has {
+                            QueryPattern::HasType {
+                                mode,
                                 owner: id(0),
                                 attribute: id(1),
                                 attribute_id: dest,
@@ -169,7 +174,8 @@ pub(crate) fn build(
                         ],
                     },
                     Stage::Delete {
-                        items: vec![DeleteItem::Has {
+                        items: vec![DeleteItem::HasValue {
+                            value: id(1),
                             owner: id(0),
                             field,
                         }],
@@ -215,6 +221,7 @@ pub(crate) mod tests {
         (
             schema,
             OperationSpec::CopyAttribute {
+                mode: Some("isa".into()),
                 owner: Some("person".into()),
                 source: Some("old-name".into()),
                 dest: Some("new-name".into()),
@@ -235,6 +242,48 @@ pub(crate) mod tests {
             reverse: None,
         }
     }
+    #[test]
+    fn copy_requires_mode_and_accepts_abstract_source_owned_by_a_subtype() {
+        let (_, op) = fixture();
+        let schema = type_bridge_schema_compat::typeql_to_declared(
+            type_bridge_contract::schema::DocumentId::new("abstract-copy.typeql").unwrap(),
+            "define attribute old-name @abstract, value string; attribute specialised, sub old-name; attribute new-name, value string; entity person, owns new-name; entity employee, sub person, owns specialised;",
+        ).unwrap();
+        assert!(build(&op, &schema, true).is_ok());
+        let mut wire = serde_json::to_value(&op).unwrap();
+        wire["mode"] = serde_json::json!("isa!");
+        let exact = serde_json::from_value(wire.clone()).unwrap();
+        assert!(
+            build(&exact, &schema, true)
+                .unwrap_err()
+                .to_string()
+                .contains("query_plan_abstract_exact_ownership")
+        );
+        wire.as_object_mut().unwrap().remove("mode");
+        let missing = serde_json::from_value(wire).unwrap();
+        let error = build(&missing, &schema, true).unwrap_err().to_string();
+        assert!(
+            error.contains("query_plan_type_match_mode") && error.contains("isa or isa!"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn legacy_reverse_keeps_its_destination_only_predicate() {
+        let step = step();
+        let reverse = step
+            .data
+            .as_ref()
+            .unwrap()
+            .program(crate::MigrationAction::Rollback)
+            .unwrap();
+        assert!(
+            matches!(reverse.pipeline(), [Stage::Match { patterns }, Stage::Delete { items }]
+            if matches!(patterns.as_slice(), [Pattern::Read(QueryPattern::Isa { .. }), Pattern::Read(QueryPattern::HasType { attribute_id, mode: TypeMatchMode::Isa, .. })] if attribute_id.label().as_str() == "new-name")
+            && matches!(items.as_slice(), [DeleteItem::HasValue { .. }]))
+        );
+    }
+
     #[test]
     fn inherited_destination_uses_its_actual_declaration_origin() {
         let (_, op) = fixture();

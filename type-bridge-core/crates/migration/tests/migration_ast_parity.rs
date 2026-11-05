@@ -261,7 +261,7 @@ async fn native_copy_attribute_counts_match_direct_queries() {
         assert_eq!((matched, skipped), (4, 2));
         let migration: MigrationSpec = serde_json::from_value(serde_json::json!({
             "app_label": "filtered", "name": "initial", "dependencies": [], "reversible": true,
-            "operations": [{"kind": "copy_attribute", "owner": "person", "source": "old-name", "dest": "new-name"}]
+            "operations": [{"kind": "copy_attribute", "mode": "isa", "owner": "person", "source": "old-name", "dest": "new-name"}]
         })).unwrap();
         let authority = type_bridge_schema_compat::typeql_to_declared(
             type_bridge_contract::schema::DocumentId::new("native-copy.typeql").unwrap(),
@@ -339,7 +339,7 @@ async fn native_and_raw_steps_share_a_migration_and_recovery_skips_committed_wor
         let mut graph = MigrationGraph { migrations: vec![MigrationSpec {
             app_label: "mixed".into(), name: "0001_data".into(), dependencies: vec![],
             checksum: Some("mixed-native-raw".into()), source_sha256: None, reversible: false,
-            operations: vec![OperationSpec::CopyAttribute { owner: Some("person".into()),
+            operations: vec![OperationSpec::CopyAttribute { mode: Some("isa".into()), owner: Some("person".into()),
                 source: Some("old-name".into()), dest: Some("new-name".into()), filter: None,
                 forward: None, reverse: None }],
         }] };
@@ -362,6 +362,31 @@ async fn native_and_raw_steps_share_a_migration_and_recovery_skips_committed_wor
         assert!(recovered.migrations[0].steps.iter().all(|step| matches!(step.outcome, StepExecutionOutcome::Applied { .. })));
         assert_eq!(controller.0.lock().unwrap().len(), 4);
         assert_eq!(direct_count(&database, "match $x isa person; reduce $c = count;").await, 2);
+    }).await;
+    database.delete_database().await.unwrap();
+    result.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires assigned TypeDB 3.14.0 server"]
+async fn native_copy_matches_an_abstract_source_owned_by_an_owner_subtype() {
+    let database = live_database().await;
+    let test_database = database.clone();
+    let result = tokio::spawn(async move {
+        let database = test_database;
+        let schema_text = "define attribute old-name @abstract, value string; attribute specialised, sub old-name; attribute new-name, value string; entity person, owns new-name; entity employee, sub person, owns specialised;";
+        database.execute_raw(schema_text, type_bridge_orm::TxType::Schema).await.unwrap();
+        database.execute_raw("insert $e isa employee, has specialised \"Ada\";", type_bridge_orm::TxType::Write).await.unwrap();
+        let authority = type_bridge_schema_compat::typeql_to_declared(type_bridge_contract::schema::DocumentId::new("abstract-copy-live.typeql").unwrap(), schema_text).unwrap();
+        let migration: MigrationSpec = serde_json::from_value(serde_json::json!({
+            "app_label":"copy", "name":"abstract_source", "dependencies":[], "reversible":true,
+            "operations":[{"kind":"copy_attribute", "owner":"person", "source":"old-name", "dest":"new-name", "mode":"isa"}]
+        })).unwrap();
+        let planned = plan(&MigrationGraph { migrations: vec![migration] }, &[], None, Some(&authority)).unwrap();
+        let step = &planned.to_apply[0].steps[0];
+        let observed = type_bridge_migration::backfill::execute_backfill(&database, step, 0).await.unwrap().unwrap();
+        assert_eq!((observed.matched, observed.inserted, observed.skipped), (1,1,0));
+        assert_eq!(direct_count(&database, "match $e isa employee, has new-name \"Ada\"; reduce $c = count;").await, 1);
     }).await;
     database.delete_database().await.unwrap();
     result.unwrap();
