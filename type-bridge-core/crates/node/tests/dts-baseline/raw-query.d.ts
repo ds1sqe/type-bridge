@@ -29,7 +29,12 @@ export interface NativeRawTransaction {
     rollback(): Promise<void>;
     close(): Promise<void>;
 }
-/** An eager direct transaction or single-query proxy raw context. */
+/**
+ * An eager direct transaction or single-query proxy raw context.
+ * Always await commit(), rollback(), or close() to release a direct transaction.
+ * A direct schema transaction holds its schema lock until it is completed.
+ * Use try/finally with close() so failed queries also release the context.
+ */
 export declare class RawTransaction {
     #private;
     /** @internal */

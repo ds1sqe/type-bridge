@@ -712,7 +712,13 @@ class Database:
         *,
         commit_on_exit: bool = True,
     ) -> RawTransaction:
-        """Open an eager raw context; clean context-manager exit commits by default."""
+        """Open an eager raw context; clean context-manager exit commits by default.
+
+        If an exception is caught inside ``with`` and the block exits normally,
+        the direct transaction commits its other successful queries. Call
+        ``rollback()`` or use ``commit_on_exit=False`` to discard pending writes.
+        An exception escaping the block closes the context without committing.
+        """
         from type_bridge._native import core_database_for
 
         return core_database_for(self).raw_transaction(kind, commit_on_exit=commit_on_exit)

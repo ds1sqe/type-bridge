@@ -126,7 +126,11 @@ with db.raw_transaction("write") as tx:
 ```
 
 Clean exit commits unless `commit_on_exit=False` or the caller already completed
-the context. An exception closes without committing. On a proxy connection a raw
+the context. An exception escaping the `with` block closes without committing.
+If you catch an exception inside the block and exit normally, a direct context
+commits its other successful queries. Call `rollback()` or set
+`commit_on_exit=False` to discard pending writes.
+On a proxy connection a raw
 transaction holds one query, because `/v3/raw` runs each request as its own
 transaction. A second query raises `RawQueryError` with code
 `raw_transaction_single_query`; rollback after a proxy write raises
