@@ -129,7 +129,14 @@ Legacy unordered packages retain their existing manager surface and runtime
 resource exactly; regenerate from an ordered schema to use the successor batch
 methods.
 
-The successor manager also exposes immutable, token-branded canonical filters:
+The successor manager also exposes immutable, token-branded canonical filters.
+Chaining `filter(...).where(...)` retains IID and closed scalar keyword predicates.
+Wider keyword lookups remain available through read terminals; `.where()` refuses
+those selections with `unsupported_manager_filter`. Read their matching models
+before explicit instance or IID batch operations. `filter({ iid__in: [] })` reads
+no matches without a provider request, including with wider keyword lookups.
+
+For example:
 
 ```ts
 const threshold = Person.manager(db)
@@ -142,8 +149,8 @@ const ada = Person.manager(db)
 
 Each `where` returns a reusable sibling. Canonical filters accept only generated
 field tokens, exact generated values, and `eq`, `ne`, `lt`, `lte`, `gt`, or
-`gte`; Boolean ordering rejects before I/O. Their `first` requires equality for
-every effective reference-key field and proves optional singularity. The
+`gte`; Boolean ordering rejects before I/O. Their `first` requires one IID or
+equality for every effective reference-key field and proves optional singularity. The
 object-based `filter(...)` API remains available for compatibility lookups and
 keeps its existing arbitrary-first behavior.
 

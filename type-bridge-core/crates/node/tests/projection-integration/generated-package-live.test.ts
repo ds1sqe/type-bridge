@@ -2371,6 +2371,18 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       [insertedPerson.iid],
     );
     const filteredManager = personManager.filter({ score__gte: Score.create(3n) });
+    assert.equal(personManager.filter({ identifier: Identifier.create("absent") })
+      .where(Person.score, "eq", Score.create(3n)).count(), 0n);
+    assert.equal(personManager.filter({ iid: insertedPerson.iid }).where().first().iid.toString(), insertedPerson.iid.toString());
+    assert.equal(personManager.filter({ iid__in: [insertedPerson.iid] }).where().count(), 1n);
+    const emptyIids = personManager.filter({ iid__in: [] }).filter({ identifier__contains: Identifier.create("person") });
+    assert.deepEqual(emptyIids.all(), []);
+    assert.equal(emptyIids.first(), null);
+    assert.equal(emptyIids.count(), 0n);
+    assert.equal(emptyIids.exists(), false);
+    assert.throws(() => personManager.filter({ identifier__contains: Identifier.create("person") }).where(),
+      (error: any) => error.code === "unsupported_manager_filter");
+
     assert.throws(
       () => personManager.filter({ identifier: undefined } as any),
       /filter values must be finite JSON scalars/i,

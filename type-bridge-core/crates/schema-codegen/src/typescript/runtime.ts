@@ -4606,9 +4606,6 @@ function orderedProjectedManager<Complete, Owner extends string>(
 function orderedProjectedManagerForNative<Complete, Owner extends string>(
   typeKey: Owner,
   native: NativeProjectedManager,
-  compatibilityFilter: OrderedNativeManagerFilter | null = projectedManagerNativeCall(
-    () => native.compatibilityFilter(),
-  ),
 ): OrderedProjectedModelManager<Complete, Owner> {
   const exactWire = (instance: Complete, operation: string): ProjectedWire => {
     requireLiveSnapshot(instance);
@@ -4744,25 +4741,9 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
           lowered.push({ name, value: lowerManagerFilterValue(value) });
         }
       }
-      let nextCompatibility: OrderedNativeManagerFilter | null = null;
-      const predicates = compatibilityFilter === null ? null : orderedCompatibilityPredicates(typeKey, entries);
-      if (compatibilityFilter !== null && predicates !== null) {
-        nextCompatibility = compatibilityFilter;
-        for (const predicate of predicates) {
-          nextCompatibility = projectedManagerNativeCall(() =>
-            nextCompatibility!.andProjected(
-              predicate.definition.owner,
-              predicate.definition.attribute,
-              predicate.comparison,
-              JSON.stringify(lowerOrderedProjectedValue(predicate.value)),
-            ),
-          );
-        }
-      }
       return orderedProjectedManagerForNative(
         typeKey,
         projectedManagerNativeCall(() => native.filterEntriesJson(JSON.stringify(lowered))),
-        nextCompatibility,
       );
     },
     where<Attribute extends string, Value>(
@@ -4794,28 +4775,18 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
         : hydrateOrderedProjectedEnvelope(envelope, typeKey);
     },
     all(): readonly Complete[] {
-      return compatibilityFilter === null
-        ? Object.freeze(projectedManagerNativeCall(() => native.allProjected()).map((envelope) =>
-            hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey),
-          ))
-        : orderedProjectedFilterForNative<Complete, Owner>(
-            typeKey,
-            compatibilityFilter,
-          ).all();
+      return Object.freeze(projectedManagerNativeCall(() => native.allProjected())
+        .map((envelope) => hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey)));
     },
     first(): Complete | null {
       const envelope = projectedManagerNativeCall(() => native.firstProjected());
       return envelope === null ? null : hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey);
     },
     count(): bigint {
-      return compatibilityFilter === null
-        ? projectedManagerNativeCall(() => native.count())
-        : projectedManagerNativeCall(() => compatibilityFilter.count());
+      return projectedManagerNativeCall(() => native.count());
     },
     exists(): boolean {
-      return compatibilityFilter === null
-        ? projectedManagerNativeCall(() => native.exists())
-        : projectedManagerNativeCall(() => compatibilityFilter.exists());
+      return projectedManagerNativeCall(() => native.exists());
     },
   });
 }
@@ -4886,91 +4857,6 @@ function orderedProjectedFilterForNative<
       return projectedManagerNativeCall(() => native.exists());
     },
   });
-}
-
-interface OrderedCompatibilityPredicate {
-  readonly definition: FieldTokenDefinition<string, string>;
-  readonly comparison: ProjectedManagerComparison;
-  readonly value: unknown;
-}
-
-function orderedCompatibilityPredicates(
-  typeKey: string,
-  entries: readonly (readonly [string, ProjectedManagerFilterValue])[],
-): readonly OrderedCompatibilityPredicate[] | null {
-  const model = orderedModelDefinitions.get(typeKey);
-  if (model === undefined) return null;
-  const fields = Object.values(model.fields)
-    .map((token) => fieldTokenStates.get(token))
-    .filter(
-      (field): field is FieldTokenDefinition<string, string> =>
-        field !== undefined,
-    );
-  const fieldNamed = (
-    name: string,
-  ): FieldTokenDefinition<string, string> | undefined =>
-    fields.find((field) => {
-      if (field.name === name) return true;
-      try {
-        return JSON.parse(field.attribute) === name;
-      } catch {
-        return false;
-      }
-    });
-  const recognisedOperations = new Set([
-    "eq",
-    "exact",
-    "ne",
-    "gt",
-    "gte",
-    "lt",
-    "lte",
-    "contains",
-    "startswith",
-    "endswith",
-    "regex",
-    "like",
-    "in",
-    "isnull",
-  ]);
-  const canonicalOperations = new Set([
-    "eq",
-    "exact",
-    "ne",
-    "lt",
-    "lte",
-    "gt",
-    "gte",
-  ]);
-  const predicates: OrderedCompatibilityPredicate[] = [];
-  for (const [lookupName, value] of entries) {
-    const direct = fieldNamed(lookupName);
-    const separator = lookupName.lastIndexOf("__");
-    const prefix = separator < 0 ? lookupName : lookupName.slice(0, separator);
-    const suffix = separator < 0 ? "eq" : lookupName.slice(separator + 2);
-    const prefixed = recognisedOperations.has(suffix)
-      ? fieldNamed(prefix)
-      : undefined;
-    const definition = prefixed ?? direct;
-    const operation = prefixed === undefined && direct !== undefined ? "eq" : suffix;
-    if (
-      definition === undefined ||
-      !canonicalOperations.has(operation) ||
-      !isProjectedModelValue(value) ||
-      Array.isArray(value)
-    ) {
-      return null;
-    }
-    predicates.push({
-      definition,
-      comparison:
-        operation === "exact"
-          ? "eq"
-          : (operation as ProjectedManagerComparison),
-      value,
-    });
-  }
-  return predicates;
 }
 
 /** @internal Define an ordered model whose create facet uses common native admission. */

@@ -37,6 +37,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Fixed
 
+- Node generated `manager.filter(...).where(...)` retains keyword predicates.
+  The 2.3.3 chain discarded them and could read extra rows. Wider lookups refuse
+  the canonical path with `unsupported_manager_filter`; read their matches
+  before explicit instance or IID batch operations.
+
 - Python generated `manager.filter(...).where(...)` now retains the keyword
   predicates. In 2.3.3, this chain discarded those predicates and could read
   extra rows. Unsupported wider lookups refuse the canonical path; use the

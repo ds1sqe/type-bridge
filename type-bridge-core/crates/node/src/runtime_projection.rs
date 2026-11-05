@@ -18,7 +18,7 @@ use napi_derive::napi;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
+use type_bridge_contract::id::{AttributeId, Iid, RoleId, TypeId, TypeKind};
 use type_bridge_contract::limits::{
     CodecLimits, MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_DEPTH,
     MAX_CANONICAL_STRING_BYTES,
@@ -2390,6 +2390,8 @@ impl NodeRuntimeProjection {
             successor_batch_marker: None,
             runtime,
             filters: vec![],
+            closed_filter: None,
+            has_empty_iids: false,
         })
     }
 
@@ -2409,6 +2411,8 @@ impl NodeRuntimeProjection {
             successor_batch_marker: None,
             runtime,
             filters: vec![],
+            closed_filter: None,
+            has_empty_iids: false,
         })
     }
 
@@ -2429,6 +2433,8 @@ impl NodeRuntimeProjection {
             successor_batch_marker: Some(successor_batch_marker),
             runtime,
             filters: vec![],
+            closed_filter: None,
+            has_empty_iids: false,
         })
     }
 
@@ -3326,6 +3332,8 @@ pub struct NodeProjectedModelManager {
     successor_batch_marker: Option<Arc<AtomicBool>>,
     runtime: Arc<ProviderRuntimeOwner>,
     filters: Vec<DynamicExpr>,
+    closed_filter: Option<ProjectedManagerFilter>,
+    has_empty_iids: bool,
 }
 
 /// One immutable exact-model field-token filter for generated successor managers.
@@ -3658,29 +3666,23 @@ impl NodeProjectedModelManager {
     /// Start one immutable canonical field-token filter for a generated package.
     #[napi(js_name = "managerFilter")]
     pub fn manager_filter(&self) -> napi::Result<NodeProjectedManagerFilter> {
-        let filter =
+        let filter = if self.filters.is_empty() {
             ProjectedManagerFilter::try_new(self.package.projection.as_ref(), self.type_id.clone())
-                .map_err(napi_sdk_diagnostic)?;
+                .map_err(napi_sdk_diagnostic)?
+        } else {
+            self.closed_filter.clone().ok_or_else(|| {
+                napi_sdk_diagnostic(SdkExecutionDiagnostic::invalid_input(
+                    SdkDiagnosticCode::new("unsupported_manager_filter").expect("static code"),
+                    SdkDiagnosticMessage::new("This keyword filter cannot enter the canonical filter path; read its matches then use explicit instance or IID batch operations").expect("static message"),
+                ))
+            })?
+        };
         Ok(NodeProjectedManagerFilter {
             package: Arc::clone(&self.package),
             filter,
             target: self.target.clone(),
             runtime: Arc::clone(&self.runtime),
         })
-    }
-
-    /// Preserve keyword reads on write contexts without relaxing canonical filters.
-    #[napi(js_name = "compatibilityFilter")]
-    pub fn compatibility_filter(&self) -> napi::Result<Option<NodeProjectedManagerFilter>> {
-        if self
-            .target
-            .as_ref()
-            .and_then(OwnedQueryTarget::transaction)
-            .is_some_and(|transaction| transaction.tx_type() != type_bridge_orm::TxType::Read)
-        {
-            return Ok(None);
-        }
-        self.manager_filter().map(Some)
     }
 
     /// Preserve authored object-entry order for successor compatibility filters.
@@ -3698,13 +3700,13 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Relation(descriptor) => &descriptor.owned_attributes,
         };
         let mut combined = self.filters.clone();
-        for filter in filters {
-            combined.extend(lower_filter_values(
-                self.package.as_ref(),
-                attributes,
-                BTreeMap::from([(filter.name, filter.value)]),
-            )?);
-        }
+        let closed = if self.filters.is_empty() {
+            Some(self.manager_filter()?.filter)
+        } else {
+            self.closed_filter.clone()
+        };
+        let lowered = lower_filter_values(self.package.as_ref(), attributes, filters, closed)?;
+        combined.extend(lowered.expressions);
         Ok(Self {
             package: Arc::clone(&self.package),
             type_id: self.type_id.clone(),
@@ -3712,6 +3714,8 @@ impl NodeProjectedModelManager {
             successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filters: combined,
+            closed_filter: lowered.closed,
+            has_empty_iids: self.has_empty_iids || lowered.empty_iids,
         })
     }
 
@@ -3751,6 +3755,9 @@ impl NodeProjectedModelManager {
     /// Count exact filtered values.
     #[napi]
     pub fn count(&self) -> napi::Result<BigInt> {
+        if let Some(filter) = self.canonical_read_filter()? {
+            return self.filter_handle(filter).count();
+        }
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
         self.runtime
             .block_on(executor.compatibility_count_on_target(
@@ -3771,6 +3778,9 @@ impl NodeProjectedModelManager {
     /// Return whether at least one exact filtered value exists.
     #[napi]
     pub fn exists(&self) -> napi::Result<bool> {
+        if let Some(filter) = self.canonical_read_filter()? {
+            return self.filter_handle(filter).exists();
+        }
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
         self.runtime
             .block_on(executor.compatibility_exists_on_target(
@@ -3789,6 +3799,31 @@ impl NodeProjectedModelManager {
 }
 
 impl NodeProjectedModelManager {
+    fn filter_handle(&self, filter: ProjectedManagerFilter) -> NodeProjectedManagerFilter {
+        NodeProjectedManagerFilter {
+            package: Arc::clone(&self.package),
+            filter,
+            target: self.target.clone(),
+            runtime: Arc::clone(&self.runtime),
+        }
+    }
+
+    fn canonical_read_filter(&self) -> napi::Result<Option<ProjectedManagerFilter>> {
+        if self.filters.is_empty() {
+            return self.manager_filter().map(|filter| Some(filter.filter));
+        }
+        if let Some(filter) = &self.closed_filter {
+            return Ok(Some(filter.clone()));
+        }
+        if self.has_empty_iids {
+            return ProjectedManagerFilter::try_new(&self.package.projection, self.type_id.clone())
+                .and_then(|filter| filter.try_and_iids(&self.package.projection, &[]))
+                .map(Some)
+                .map_err(napi_sdk_diagnostic);
+        }
+        Ok(None)
+    }
+
     fn prepare_returning_delete(
         &self,
         iids: Vec<String>,
@@ -4107,6 +4142,9 @@ impl NodeProjectedModelManager {
     }
 
     fn read_all_projected(&self) -> napi::Result<Vec<Arc<ProjectedThing>>> {
+        if let Some(filter) = self.canonical_read_filter()? {
+            return self.filter_handle(filter).execute_all();
+        }
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
         self.runtime
             .block_on(executor.compatibility_all_on_target(
@@ -4124,6 +4162,15 @@ impl NodeProjectedModelManager {
     }
 
     fn read_first_projected(&self) -> napi::Result<Option<Arc<ProjectedThing>>> {
+        if (self.has_empty_iids
+            || self
+                .closed_filter
+                .as_ref()
+                .is_some_and(|filter| filter.exact_iids().is_some_and(|iids| iids.len() == 1)))
+            && let Some(filter) = self.canonical_read_filter()?
+        {
+            return self.filter_handle(filter).execute_first();
+        }
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
         self.runtime
             .block_on(executor.compatibility_first_on_target(
@@ -5284,16 +5331,32 @@ fn ensure_wire_members(
     Ok(())
 }
 
+struct LoweredManagerFilters {
+    expressions: Vec<DynamicExpr>,
+    closed: Option<ProjectedManagerFilter>,
+    empty_iids: bool,
+}
+
 fn lower_filter_values(
     package: &InstalledPackage,
     descriptors: &[OwnedAttributeDescriptor],
-    filters: BTreeMap<String, Value>,
-) -> napi::Result<Vec<DynamicExpr>> {
+    filters: Vec<OrderedManagerFilterEntry>,
+    mut closed: Option<ProjectedManagerFilter>,
+) -> napi::Result<LoweredManagerFilters> {
+    let mut empty_iids = false;
     let mut lowered = Vec::with_capacity(filters.len());
-    for (key, value) in filters {
+    for OrderedManagerFilterEntry { name: key, value } in filters {
         if matches!(key.as_str(), "iid" | "_iid" | "iid__eq" | "_iid__eq") {
+            let iid = projected_filter_iid(&value)?;
+            if let Some(filter) = closed.take() {
+                closed = Some(
+                    filter
+                        .try_and_iid(&package.projection, &iid)
+                        .map_err(napi_sdk_diagnostic)?,
+                );
+            }
             lowered.push(DynamicExpr::Iid {
-                iid: projected_filter_iid(&value)?,
+                iid: iid.into_string(),
             });
             continue;
         }
@@ -5301,21 +5364,26 @@ fn lower_filter_values(
             let values = value.as_array().ok_or_else(|| {
                 invalid_error("generated manager iid__in lookup requires an array")
             })?;
-            if values.is_empty() {
-                return Err(invalid_error(
-                    "generated manager iid__in lookup requires at least one IID",
-                ));
-            }
+            empty_iids |= values.is_empty();
+            let iids = values
+                .iter()
+                .map(projected_filter_iid)
+                .collect::<napi::Result<Vec<_>>>()?;
             lowered.push(DynamicExpr::Or {
-                exprs: values
+                exprs: iids
                     .iter()
-                    .map(|value| {
-                        Ok(DynamicExpr::Iid {
-                            iid: projected_filter_iid(value)?,
-                        })
+                    .map(|iid| DynamicExpr::Iid {
+                        iid: iid.as_str().to_owned(),
                     })
-                    .collect::<napi::Result<Vec<_>>>()?,
+                    .collect(),
             });
+            if let Some(filter) = closed.take() {
+                closed = Some(
+                    filter
+                        .try_and_owned_iids(&package.projection, iids)
+                        .map_err(napi_sdk_diagnostic)?,
+                );
+            }
             continue;
         }
         // Generated target names may themselves contain a recognised lookup
@@ -5347,6 +5415,7 @@ fn lower_filter_values(
         }
         let operator = match lookup {
             ManagerLookup::IsNull => {
+                closed = None;
                 let is_null = value.as_bool().ok_or_else(|| {
                     invalid_error("generated manager isnull lookup requires a boolean")
                 })?;
@@ -5357,6 +5426,7 @@ fn lower_filter_values(
                 continue;
             }
             ManagerLookup::In => {
+                closed = None;
                 let values = value.as_array().ok_or_else(|| {
                     invalid_error("generated manager in lookup requires an array")
                 })?;
@@ -5392,13 +5462,72 @@ fn lower_filter_values(
             ManagerLookup::EndsWith => DynamicComparisonOp::EndsWith,
             ManagerLookup::Regex => DynamicComparisonOp::Like,
         };
+        let literal = projected_filter_attribute_value(package, descriptor, field_name, &value)?;
+        closed = narrow_closed_filter(package, descriptor, lookup, &literal, closed)?;
         lowered.push(DynamicExpr::Compare {
             attr_name: descriptor.attr_name.clone(),
             operator,
-            value: projected_filter_attribute_value(package, descriptor, field_name, &value)?,
+            value: literal,
         });
     }
-    Ok(lowered)
+    Ok(LoweredManagerFilters {
+        expressions: lowered,
+        closed,
+        empty_iids,
+    })
+}
+
+fn narrow_closed_filter(
+    package: &InstalledPackage,
+    descriptor: &OwnedAttributeDescriptor,
+    lookup: ManagerLookup,
+    literal: &AttributeValue,
+    base: Option<ProjectedManagerFilter>,
+) -> napi::Result<Option<ProjectedManagerFilter>> {
+    let Some(base) = base else { return Ok(None) };
+    let Ok(comparison) = ProjectedManagerComparison::try_from(lookup) else {
+        return Ok(None);
+    };
+    if descriptor.value_type == ValueType::Boolean
+        && !matches!(
+            comparison,
+            ProjectedManagerComparison::Eq | ProjectedManagerComparison::Ne
+        )
+    {
+        return Ok(None);
+    }
+    let model = base.model();
+    let field = package
+        .projection
+        .projection()
+        .models()
+        .get(model)
+        .and_then(|projection| {
+            projection
+                .query_tokens()
+                .fields()
+                .values()
+                .find(|field| field.target_name().as_str() == descriptor.field_name)
+        })
+        .ok_or_else(|| runtime_error("projected manager field token is absent"))?;
+    let attribute = package.type_by_label(&descriptor.attr_name)?;
+    let projected = ProjectedAttributeValue::try_from_attribute_value(
+        &package.projection,
+        attribute.clone(),
+        literal,
+    )
+    .map_err(napi_sdk_diagnostic)?;
+    base.try_and(
+        &package.projection,
+        &ProjectedTokenIdentity::Field {
+            owner: model.clone(),
+            field: field.id().clone(),
+        },
+        comparison,
+        &projected,
+    )
+    .map(Some)
+    .map_err(napi_sdk_diagnostic)
 }
 
 fn projected_filter_attribute_value(
@@ -5426,16 +5555,11 @@ fn projected_filter_attribute_value(
     scalar_to_attribute(scalar, descriptor.value_type)
 }
 
-fn projected_filter_iid(value: &Value) -> napi::Result<String> {
+fn projected_filter_iid(value: &Value) -> napi::Result<Iid> {
     let iid = value
         .as_str()
-        .ok_or_else(|| invalid_error("generated manager IID lookup requires strings"))?;
-    if !is_canonical_thing_iid(iid) {
-        return Err(invalid_error(
-            "generated manager IID lookup requires a canonical TypeDB thing IID",
-        ));
-    }
-    Ok(iid.to_owned())
+        .ok_or_else(|| invalid_error("generated manager IID wire requires strings"))?;
+    Iid::new(iid).map_err(diagnostic_error)
 }
 
 fn match_attributes(
@@ -7273,6 +7397,8 @@ entities:
                 ProviderRuntimeOwner::new().expect("provider runtime should start for native test"),
             ),
             filters: vec![],
+            closed_filter: None,
+            has_empty_iids: false,
         }
     }
 
@@ -7402,6 +7528,8 @@ entities:
                 successor_batch_marker: None,
                 runtime: Arc::clone(&runtime),
                 filters: vec![],
+                closed_filter: None,
+                has_empty_iids: false,
             };
             let manager = manager.filter_entries_json(serde_json::json!([{
                 "name":"identifier__in", "value":[attribute_wire("identifier", ValueTypeTag::String, Value::String("person-1".into()))]
@@ -7533,6 +7661,70 @@ entities:
         let diagnostic: Value = serde_json::from_str(&foreign.reason).unwrap();
         assert_eq!(diagnostic["category"], "integrity");
         assert_eq!(diagnostic["code"], "generated_token_package_mismatch");
+    }
+
+    #[test]
+    fn keyword_selection_is_retained_by_canonical_filters() {
+        let runtime = ordered_runtime();
+        let manager = manager_without_execution_target(
+            &runtime,
+            TypeId::new(TypeKind::Entity, "person").unwrap(),
+        );
+        let filtered = manager.filter_entries_json(serde_json::json!([
+            {"name":"identifier", "value": attribute_wire("identifier", ValueTypeTag::String, Value::String("alice".into()))},
+            {"name":"iid", "value":"0xa1"}
+        ]).to_string()).unwrap();
+        let canonical = filtered.manager_filter().unwrap();
+        assert_eq!(canonical.filter.len(), 2);
+        assert!(manager.manager_filter().unwrap().filter.is_empty());
+        let chained = filtered.filter_entries_json(serde_json::json!([
+            {"name":"score__gte", "value": attribute_wire("score", ValueTypeTag::Long, Value::String("3".into()))}
+        ]).to_string()).unwrap();
+        assert_eq!(chained.manager_filter().unwrap().filter.len(), 3);
+        let wider = filtered.filter_entries_json(serde_json::json!([
+            {"name":"identifier__contains", "value": attribute_wire("identifier", ValueTypeTag::String, Value::String("a".into()))}
+        ]).to_string()).unwrap();
+        assert!(wider.closed_filter.is_none());
+        let error = wider
+            .manager_filter()
+            .err()
+            .expect("wider selection must not be discarded");
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["code"], "unsupported_manager_filter");
+        assert_eq!(wider.filters.len(), 3);
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn empty_keyword_iid_reads_send_no_requests_even_with_wider_lookups() {
+        let projection = ordered_runtime();
+        let (database, state) = projection_recording_database_for_test(vec![]);
+        let mut manager = manager_without_execution_target(
+            &projection,
+            TypeId::new(TypeKind::Entity, "person").unwrap(),
+        );
+        manager.target = Some(OwnedQueryTarget::Database(database));
+        let empty = manager.filter_entries_json(serde_json::json!([
+            {"name":"iid__in", "value":[]},
+            {"name":"identifier__contains", "value": attribute_wire("identifier", ValueTypeTag::String, Value::String("a".into()))}
+        ]).to_string()).unwrap();
+        assert!(empty.all_projected().unwrap().is_empty());
+        assert!(empty.first_projected().unwrap().is_none());
+        assert_eq!(empty.count().unwrap().words, [0]);
+        assert!(!empty.exists().unwrap());
+        assert!(empty.manager_filter().is_err());
+        let large = manager.filter_entries_json(serde_json::json!([
+            {"name":"iid__in", "value": (0..257).map(|index| format!("0x{index:x}")).collect::<Vec<_>>()}
+        ]).to_string()).unwrap();
+        for result in [
+            large.all_projected().map(|_| ()),
+            large.first_projected().map(|_| ()),
+            large.count().map(|_| ()),
+            large.exists().map(|_| ()),
+        ] {
+            assert!(result.is_err());
+        }
+        assert!(state.lock().unwrap().queries.is_empty());
     }
 
     #[test]
@@ -7978,6 +8170,8 @@ entities:
                                     .then(|| Arc::new(AtomicBool::new(false))),
                                 runtime: Arc::clone(&runtime),
                                 filters: Vec::new(),
+                                closed_filter: None,
+                                has_empty_iids: false,
                             };
                             let roles = if kind == TypeKind::Relation {
                                 vec![(
@@ -8091,6 +8285,8 @@ entities:
                             successor_batch_marker: marker.clone(),
                             runtime: Arc::clone(&runtime),
                             filters: Vec::new(),
+                            closed_filter: None,
+                            has_empty_iids: false,
                         };
                         manager
                             .delete_by_iid("0xa1".into())
@@ -8158,6 +8354,8 @@ entities:
                     successor_batch_marker: marker.clone(),
                     runtime: Arc::clone(&runtime),
                     filters: Vec::new(),
+                    closed_filter: None,
+                    has_empty_iids: false,
                 };
                 let mut snapshots = manager
                     .delete_returning_envelopes(vec!["0xa1".into()])
@@ -8301,6 +8499,8 @@ entities:
                             successor_batch_marker: marker.clone(),
                             runtime: Arc::clone(&provider_runtime),
                             filters: Vec::new(),
+                            closed_filter: None,
+                            has_empty_iids: false,
                         };
                         let (batch, control) = one_row_insert_batch(
                             &runtime_projection,

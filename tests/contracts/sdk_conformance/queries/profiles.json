@@ -15,7 +15,7 @@
           "node": {
             "algorithm": "sha256",
             "canonicalization": "typebridge.binding-projection/v1",
-            "digest": "9fc5cd89867650a25a42914b057756952eb7d7f0b0f0b65a2f5743d3620b26c0",
+            "digest": "38e3b014fdcb9380617d2808e13aa130ee8822a36655d4e99a3266669fc42a52",
             "domain": "typebridge.binding.projection",
             "semantic_profile": "typedb-3.12.1/v1"
           },
@@ -57,7 +57,7 @@
           "node": {
             "algorithm": "sha256",
             "canonicalization": "typebridge.binding-projection/v1",
-            "digest": "92f1321f5333e842f68702b0afc2707628a6259d3a948d67a4178eeb0493dc65",
+            "digest": "c56aca7e2cc2e99a6fa5e58f0da8b6eb9e919ebc5a410ee31361795496498092",
             "domain": "typebridge.binding.projection",
             "semantic_profile": "typedb-3.13.6/v1"
           },

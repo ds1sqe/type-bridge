@@ -202,7 +202,6 @@ export interface NativeProjectedManager {
     deleteManyReturning<Complete>(iids: string[]): BatchWriteResult<Complete>;
     deleteManyProjected(rowCount: number, rowAt: (ordinal: number) => string): void;
     managerFilter(): NativeProjectedManagerFilter;
-    compatibilityFilter(): NativeProjectedManagerFilter | null;
     filterEntriesJson(filtersJson: string): NativeProjectedManager;
     getByIidProjected(iid: string): NativeProjectedValueEnvelope | null;
     allProjected(): readonly NativeProjectedValueEnvelope[];
