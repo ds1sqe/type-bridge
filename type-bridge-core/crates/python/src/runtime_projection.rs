@@ -1852,6 +1852,7 @@ impl PyRuntimeProjection {
             successor_batch_marker: None,
             runtime,
             filters: vec![],
+            use_compatibility_reads: compatibility_filter.is_some(),
             compatibility_filter,
         })
     }
@@ -1874,6 +1875,7 @@ impl PyRuntimeProjection {
             successor_batch_marker: None,
             runtime,
             filters: vec![],
+            use_compatibility_reads: compatibility_filter.is_some(),
             compatibility_filter,
         })
     }
@@ -1901,6 +1903,7 @@ impl PyRuntimeProjection {
             successor_batch_marker: Some(successor_batch_marker),
             runtime,
             filters: vec![],
+            use_compatibility_reads: compatibility_filter.is_some(),
             compatibility_filter,
         })
     }
@@ -2725,6 +2728,8 @@ pub struct PyProjectedModelManager {
     runtime: Arc<ProviderRuntimeOwner>,
     filters: Vec<DynamicExpr>,
     compatibility_filter: Option<ProjectedManagerFilter>,
+    // Keyword reads keep their released route even when writes can use a closed selection.
+    use_compatibility_reads: bool,
 }
 
 #[allow(
@@ -2828,6 +2833,7 @@ impl PyProjectedManagerFilter {
             runtime: Arc::clone(&self.runtime),
             filters: vec![],
             compatibility_filter: None,
+            use_compatibility_reads: false,
         };
         manager.ensure_instance(py, &instance)?;
         let input = project_create(py, self.package.as_ref(), self.filter.model(), &instance)?;
@@ -3086,7 +3092,19 @@ impl PyProjectedModelManager {
             attributes,
             filters,
         )?);
-        let compatibility_filter = match &self.compatibility_filter {
+        let initial_filter = if self.filters.is_empty() && self.compatibility_filter.is_none() {
+            Some(
+                ProjectedManagerFilter::try_new(&self.package.projection, self.type_id.clone())
+                    .map_err(py_sdk_diagnostic)?,
+            )
+        } else {
+            None
+        };
+        let compatibility_filter = match self
+            .compatibility_filter
+            .as_ref()
+            .or(initial_filter.as_ref())
+        {
             Some(filter) => lower_compatibility_filter_kwargs(
                 py,
                 self.package.as_ref(),
@@ -3104,13 +3122,16 @@ impl PyProjectedModelManager {
             successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filters: combined,
+            use_compatibility_reads: self.use_compatibility_reads,
             compatibility_filter,
         })
     }
 
     /// Fetch all exact instances of this projected type using `isa!`.
     fn all(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Some(filter) = &self.compatibility_filter {
+        if self.use_compatibility_reads
+            && let Some(filter) = &self.compatibility_filter
+        {
             return self.compatibility_filter_handle(filter.clone()).all(py);
         }
         self.legacy_all(py)
@@ -3171,7 +3192,9 @@ impl PyProjectedModelManager {
 
     /// Count exact filtered models.
     fn count(&self, py: Python<'_>) -> PyResult<u64> {
-        if let Some(filter) = &self.compatibility_filter {
+        if self.use_compatibility_reads
+            && let Some(filter) = &self.compatibility_filter
+        {
             return self.compatibility_filter_handle(filter.clone()).count(py);
         }
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
@@ -3195,7 +3218,9 @@ impl PyProjectedModelManager {
     }
     /// Return whether at least one exact filtered model exists.
     fn exists(&self, py: Python<'_>) -> PyResult<bool> {
-        if let Some(filter) = &self.compatibility_filter {
+        if self.use_compatibility_reads
+            && let Some(filter) = &self.compatibility_filter
+        {
             return self.compatibility_filter_handle(filter.clone()).exists(py);
         }
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
@@ -10473,6 +10498,7 @@ class StructBase:
                 runtime: Arc::new(ProviderRuntimeOwner::new().unwrap()),
                 filters: vec![],
                 compatibility_filter: None,
+                use_compatibility_reads: false,
             };
             for operation in [
                 ProjectedBatchOperation::Insert,
@@ -10566,6 +10592,7 @@ class StructBase:
                     filters: vec![],
                     compatibility_filter: initial_compatibility_filter(package.as_ref(), &model)
                         .unwrap(),
+                    use_compatibility_reads: true,
                 };
                 let identifier = package
                     .class(
@@ -11103,6 +11130,7 @@ class StructBase:
             runtime,
             filters: vec![],
             compatibility_filter: None,
+            use_compatibility_reads: false,
         }
     }
 
@@ -11186,82 +11214,88 @@ class StructBase:
     fn canonical_filter_delete_retains_scope_and_transaction_ownership() {
         Python::initialize();
         Python::attach(|py| {
-            for borrowed in [false, true] {
-                let (_, package) = install_batch(py);
-                let model = package
-                    .type_by_label("person", TypeKind::Entity)
-                    .unwrap()
-                    .clone();
-                let (backend, state) =
-                    OriginRecordingBackend::new(vec![QueryResult::Documents(vec![])]);
-                let database = Arc::new(Database::with_backend(Box::new(backend), "filter-delete"));
-                let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
-                let transaction = borrowed.then(|| {
-                    runtime
-                        .block_on(database.transaction_context(TxType::Write))
+            for ordered in [false, true] {
+                for borrowed in [false, true] {
+                    let (_, package) = if ordered {
+                        install_ordered_schema(py, BATCH_SCHEMA)
+                    } else {
+                        install_batch(py)
+                    };
+                    let model = package
+                        .type_by_label("person", TypeKind::Entity)
                         .unwrap()
-                });
-                let mut manager = origin_manager(
-                    Arc::clone(&package),
-                    model.clone(),
-                    (!borrowed).then(|| Arc::clone(&database)),
-                    transaction.clone(),
-                    Arc::clone(&runtime),
-                );
-                manager.compatibility_filter =
-                    initial_compatibility_filter(&package, &model).unwrap();
-                let identifier = package
-                    .class(
-                        package
-                            .type_by_label("identifier", TypeKind::Attribute)
+                        .clone();
+                    let (backend, state) =
+                        OriginRecordingBackend::new(vec![QueryResult::Documents(vec![])]);
+                    let database =
+                        Arc::new(Database::with_backend(Box::new(backend), "filter-delete"));
+                    let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                    let transaction = borrowed.then(|| {
+                        runtime
+                            .block_on(database.transaction_context(TxType::Write))
+                            .unwrap()
+                    });
+                    let manager = origin_manager(
+                        Arc::clone(&package),
+                        model.clone(),
+                        (!borrowed).then(|| Arc::clone(&database)),
+                        transaction.clone(),
+                        Arc::clone(&runtime),
+                    );
+                    assert!(!manager.use_compatibility_reads);
+                    let identifier = package
+                        .class(
+                            package
+                                .type_by_label("identifier", TypeKind::Attribute)
+                                .unwrap(),
+                            ProjectedModelForm::Complete,
+                        )
+                        .unwrap()
+                        .bind(py)
+                        .call1(("only-this-person",))
+                        .unwrap();
+                    let kwargs = PyDict::new(py);
+                    kwargs.set_item("identifier", identifier).unwrap();
+                    manager
+                        .filter(py, Some(&kwargs))
+                        .unwrap()
+                        .canonical_filter()
+                        .unwrap()
+                        .delete(py)
+                        .unwrap();
+                    {
+                        let state = state.lock().unwrap();
+                        assert_eq!(state.opens, [TxType::Write]);
+                        assert_eq!(state.queries.len(), 1);
+                        assert!(state.queries[0].contains("only-this-person"));
+                        assert!(state.queries[0].contains("delete"));
+                        assert_eq!(state.commits, usize::from(!borrowed));
+                        assert_eq!(state.rollbacks, 0);
+                    }
+                    if let Some(marker) = &manager.successor_batch_marker {
+                        assert!(marker.load(Ordering::Acquire));
+                    }
+                    let kwargs = PyDict::new(py);
+                    kwargs.set_item("identifier__contains", "person").unwrap();
+                    let error = manager
+                        .filter(py, Some(&kwargs))
+                        .unwrap()
+                        .canonical_filter()
+                        .err()
+                        .unwrap();
+                    assert_eq!(
+                        error
+                            .value(py)
+                            .getattr("code")
+                            .unwrap()
+                            .extract::<String>()
                             .unwrap(),
-                        ProjectedModelForm::Complete,
-                    )
-                    .unwrap()
-                    .bind(py)
-                    .call1(("only-this-person",))
-                    .unwrap();
-                let kwargs = PyDict::new(py);
-                kwargs.set_item("identifier", identifier).unwrap();
-                manager
-                    .filter(py, Some(&kwargs))
-                    .unwrap()
-                    .canonical_filter()
-                    .unwrap()
-                    .delete(py)
-                    .unwrap();
-                {
-                    let state = state.lock().unwrap();
-                    assert_eq!(state.opens, [TxType::Write]);
-                    assert_eq!(state.queries.len(), 1);
-                    assert!(state.queries[0].contains("only-this-person"));
-                    assert!(state.queries[0].contains("delete"));
-                    assert_eq!(state.commits, usize::from(!borrowed));
-                    assert_eq!(state.rollbacks, 0);
-                }
-                if let Some(marker) = &manager.successor_batch_marker {
-                    assert!(marker.load(Ordering::Acquire));
-                }
-                let kwargs = PyDict::new(py);
-                kwargs.set_item("identifier__contains", "person").unwrap();
-                let error = manager
-                    .filter(py, Some(&kwargs))
-                    .unwrap()
-                    .canonical_filter()
-                    .err()
-                    .unwrap();
-                assert_eq!(
-                    error
-                        .value(py)
-                        .getattr("code")
-                        .unwrap()
-                        .extract::<String>()
-                        .unwrap(),
-                    "unsupported_manager_filter"
-                );
-                assert_eq!(state.lock().unwrap().queries.len(), 1);
-                if let Some(transaction) = transaction {
-                    runtime.block_on(transaction.close()).unwrap();
+                        "unsupported_manager_filter"
+                    );
+                    assert_eq!(state.lock().unwrap().queries.len(), 1);
+                    if let Some(transaction) = transaction {
+                        runtime.block_on(transaction.close()).unwrap();
+                    }
                 }
             }
         });
@@ -12208,6 +12242,7 @@ class StructBase:
                 ),
                 filters: Vec::new(),
                 compatibility_filter: None,
+                use_compatibility_reads: false,
             };
 
             let errors = [
@@ -15650,6 +15685,7 @@ def public_state(value):
                     runtime: Arc::clone(&runtime),
                     filters: Vec::new(),
                     compatibility_filter: None,
+                    use_compatibility_reads: false,
                 };
                 let error = if operation == ProjectedBatchOperation::Insert {
                     let input = batch_person(py, package.as_ref(), "person-0", "authored-0", None);
@@ -15779,6 +15815,7 @@ def public_state(value):
                     runtime: Arc::clone(&runtime),
                     filters: Vec::new(),
                     compatibility_filter: None,
+                    use_compatibility_reads: false,
                 };
                 let filtered = manager.filter(py, None).unwrap();
                 let instances = (0..2)
@@ -15867,6 +15904,7 @@ def public_state(value):
                     runtime: Arc::clone(&runtime),
                     filters: Vec::new(),
                     compatibility_filter: None,
+                    use_compatibility_reads: false,
                 };
                 let context = Py::new(py, context).unwrap();
                 let commit_context = context.clone_ref(py);
@@ -17859,6 +17897,7 @@ class CyclicFinalizer:
                 ),
                 filters: Vec::new(),
                 compatibility_filter: None,
+                use_compatibility_reads: false,
             };
             // The test classes do not check counts at construction, so each
             // instance below reaches the lowering with a forged count.

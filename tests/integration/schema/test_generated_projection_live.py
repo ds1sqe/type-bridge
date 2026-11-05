@@ -3195,10 +3195,12 @@ def test_generated_filter_reads_uncommitted_writes_live(
         pending = _make_generated_person(generated, "borrowed-filter-read", 17)
         transaction_people = generated.Person.manager(transaction)
         transaction_people.insert(pending)
-        selection = transaction_people.where(
-            generated.Person.identifier,
+        keyword = transaction_people.filter(identifier=generated.Identifier("borrowed-filter-read"))
+        assert [value.iid for value in keyword.all()] == [pending.iid]
+        selection = keyword.where(
+            generated.Person.score,
             generated.ProjectedManagerComparison.EQ,
-            generated.Identifier("borrowed-filter-read"),
+            generated.Score(17),
         )
         assert selection.count() == 1
         assert selection.exists() is True
