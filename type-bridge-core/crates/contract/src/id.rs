@@ -27,6 +27,51 @@ pub fn is_canonical_thing_iid(value: &str) -> bool {
     })
 }
 
+/// A nominal provider Thing IID, validated before query construction or I/O.
+///
+/// Serialization preserves the provider spelling and the existing string wire
+/// representation. Construction accepts exactly [`is_canonical_thing_iid`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Iid(String);
+
+impl Iid {
+    /// Validate a provider IID without normalizing its spelling.
+    pub fn new(value: impl Into<String>) -> Result<Self, Diagnostic> {
+        let value = value.into();
+        if !is_canonical_thing_iid(&value) {
+            return Err(Diagnostic::stable(
+                DiagnosticCategory::InvalidContract,
+                "invalid_iid",
+                "IID must be 0x followed by one to 256 hexadecimal digits",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Borrow the validated provider spelling.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Iid {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl Serialize for Iid {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Iid {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
 // TypeDB 3.12.1 pins the TypeQL 3.12.0 grammar. Keep this vocabulary
 // explicit at the identifier boundary so every schema, plan, and local
 // function projection rejects spellings the target semantic validator reserves.
@@ -251,6 +296,27 @@ label_id!(StructId, "A typed struct identity.");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nominal_iids_validate_construction_and_wire_without_rewriting() {
+        let spelling = "0xAbCdEf";
+        let iid = Iid::new(spelling).unwrap();
+        assert_eq!(iid.as_str(), spelling);
+        assert_eq!(iid.to_string(), spelling);
+        let json = serde_json::to_string(&iid).unwrap();
+        assert_eq!(json, "\"0xAbCdEf\"");
+        assert_eq!(serde_json::from_str::<Iid>(&json).unwrap(), iid);
+        for invalid in ["", "0x", "0X01", "0xgg", " 0x01", "0x01 "] {
+            assert_eq!(
+                Iid::new(invalid).unwrap_err().code().as_str(),
+                "invalid_iid"
+            );
+            assert!(serde_json::from_str::<Iid>(&serde_json::to_string(invalid).unwrap()).is_err());
+        }
+        assert!(Iid::new(format!("0x{}", "a".repeat(256))).is_ok());
+        assert!(Iid::new(format!("0x{}", "a".repeat(257))).is_err());
+        assert!(serde_json::from_str::<Iid>("42").is_err());
+    }
 
     #[test]
     fn labels_reject_malformed_input_during_deserialization() {
