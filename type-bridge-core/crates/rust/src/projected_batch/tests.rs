@@ -2264,6 +2264,69 @@ async fn missing_inputs_do_not_shift_later_model_materialization_failures() {
 }
 
 #[tokio::test]
+async fn filter_delete_list_admission_and_hook_failures_match_batch_delete() {
+    for filtered in [false, true] {
+        let (database, state) = fixture(vec![], CommitBehavior::Success);
+        let hook = Arc::new(CountingHook::default());
+        let mut manager = database.entities::<Person>();
+        manager.add_hook(hook.clone());
+        let iids = [
+            crate::Iid::new("0x10").unwrap(),
+            crate::Iid::new("0x10").unwrap(),
+        ];
+        let error = if filtered {
+            manager
+                .filter()
+                .unwrap()
+                .iids(&iids)
+                .unwrap()
+                .delete()
+                .await
+                .unwrap_err()
+        } else {
+            manager
+                .delete_many(&iids.iter().map(ToString::to_string).collect::<Vec<_>>())
+                .await
+                .unwrap_err()
+        };
+        assert_eq!(error.code(), Some("duplicate_batch_target"));
+        assert_row_prefix(&error, 1);
+        assert_eq!(hook.before.load(Ordering::SeqCst), 0);
+        assert_eq!(hook.after.load(Ordering::SeqCst), 0);
+        assert!(state.lock().unwrap().opens.is_empty());
+
+        let (database, state) = fixture(vec![], CommitBehavior::Success);
+        let hook = Arc::new(RejectSecondHook::default());
+        let mut manager = database.entities::<Person>();
+        manager.add_hook(hook.clone());
+        let iids = [
+            crate::Iid::new("0x10").unwrap(),
+            crate::Iid::new("0x20").unwrap(),
+        ];
+        let error = if filtered {
+            manager
+                .filter()
+                .unwrap()
+                .iids(&iids)
+                .unwrap()
+                .delete()
+                .await
+                .unwrap_err()
+        } else {
+            manager
+                .delete_many(&iids.iter().map(ToString::to_string).collect::<Vec<_>>())
+                .await
+                .unwrap_err()
+        };
+        assert_eq!(error.code(), Some("lifecycle_hook_rejected"));
+        assert_row_prefix(&error, 1);
+        assert_eq!(hook.before.load(Ordering::SeqCst), 2);
+        assert_eq!(hook.after.load(Ordering::SeqCst), 0);
+        assert!(state.lock().unwrap().opens.is_empty());
+    }
+}
+
+#[tokio::test]
 async fn filter_mutations_skip_empty_hooks_and_keep_delete_hook_identity() {
     let (database, state) = fixture(vec![], CommitBehavior::Success);
     let hook = Arc::new(CountingHook::default());

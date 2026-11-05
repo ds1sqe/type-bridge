@@ -126,6 +126,23 @@ impl ProjectedManagerFilterExecutor<'_> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<(), QueryTargetError> {
+        self.delete_on_target_with_pre_execute(target, filter, control, || async { Ok(()) })
+            .await
+    }
+
+    /// Run a binding callback after input preparation and before executing a delete.
+    /// The callback value is returned only after the mutation succeeds.
+    #[doc(hidden)]
+    pub async fn delete_on_target_with_pre_execute<T, F>(
+        &self,
+        target: QueryTarget<'_>,
+        filter: &ProjectedManagerFilter,
+        control: ProjectedManagerFilterInvocationControl,
+        before_execute: impl FnOnce() -> F,
+    ) -> Result<T, QueryTargetError>
+    where
+        F: std::future::Future<Output = Result<T, QueryTargetError>>,
+    {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
         filter.require_exact_mutation()?;
@@ -161,7 +178,8 @@ impl ProjectedManagerFilterExecutor<'_> {
                     &input_control,
                 )?
             };
-            return crate::ProjectedBatchExecutor::new(self.installed)
+            let state = before_execute().await?;
+            crate::ProjectedBatchExecutor::new(self.installed)
                 .execute_on_target_mapped(
                     target,
                     &batch,
@@ -172,8 +190,10 @@ impl ProjectedManagerFilterExecutor<'_> {
                         _ => Err(SdkExecutionDiagnostic::internal_failure()),
                     },
                 )
-                .await;
+                .await?;
+            return Ok(state);
         }
+        let state = before_execute().await?;
         let query_limits = target
             .manager_query_limits(control.deadline, &control.cancellation)
             .await?;
@@ -197,7 +217,8 @@ impl ProjectedManagerFilterExecutor<'_> {
                 _ => Err(SdkExecutionDiagnostic::internal_failure()),
             },
         )
-        .await
+        .await?;
+        Ok(state)
     }
 
     /// Replace every exact model matched by this filter and return its new snapshot.

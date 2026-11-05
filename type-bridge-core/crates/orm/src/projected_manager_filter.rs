@@ -373,6 +373,15 @@ impl ProjectedManagerFilter {
         }
     }
 
+    /// Whether the filter is exactly one authored IID list, including a singleton.
+    #[doc(hidden)]
+    pub fn is_iid_list(&self) -> bool {
+        matches!(
+            self.predicates.as_ref(),
+            [ProjectedManagerPredicate::Iids(_)]
+        )
+    }
+
     /// Append a bounded IID set; an empty set proves that no thing matches.
     /// A singleton uses the same native IID predicate as an exact by-IID lookup.
     pub fn try_and_iids(

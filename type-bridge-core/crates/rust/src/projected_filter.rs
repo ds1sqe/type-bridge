@@ -114,11 +114,20 @@ impl<'target> ProjectedFilterCore<'target> {
         }
         let mut states = Vec::new();
         if let Some(iids) = self.filter.exact_iids() {
-            for iid in iids {
+            for (ordinal, iid) in iids.iter().enumerate() {
                 let state = self
                     .hooks
                     .run_pre(M::TYPE_ID_JSON, kind, operation, Some(iid.as_str()), input)
-                    .await?;
+                    .await
+                    .map_err(|error| {
+                        if self.filter.is_iid_list() {
+                            error.with_projected_batch_row(
+                                crate::projected_batch::checked_batch_ordinal(ordinal),
+                            )
+                        } else {
+                            error
+                        }
+                    })?;
                 states.push((Some(iid.as_str()), state));
             }
         } else {
@@ -133,11 +142,17 @@ impl<'target> ProjectedFilterCore<'target> {
     }
 
     async fn delete<M: CompleteModel>(&self, kind: ModelKind) -> Result<()> {
-        let states = self
-            .pre_hooks::<M>(kind, CrudOperation::Delete, None)
-            .await?;
-        ProjectedManagerFilterExecutor::new(self.installed)
-            .delete_on_target(self.target, &self.filter, self.control())
+        let states = ProjectedManagerFilterExecutor::new(self.installed)
+            .delete_on_target_with_pre_execute(
+                self.target,
+                &self.filter,
+                self.control(),
+                || async {
+                    self.pre_hooks::<M>(kind, CrudOperation::Delete, None)
+                        .await
+                        .map_err(|error| QueryTargetError::Callback(Box::new(error)))
+                },
+            )
             .await
             .map_err(crate::projected_batch::map_target_execution_error)?;
         for (iid, state) in states {
