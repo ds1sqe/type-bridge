@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::id::{Iid, TypeId, TypeKind};
 use type_bridge_contract::projection::ProjectedTokenIdentity;
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::{
@@ -125,8 +125,16 @@ impl ProjectedManagerFilterResourceMeasure {
     }
 }
 
+// Keep existing field predicates inline; boxing would add a default-path allocation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
-struct ProjectedManagerPredicate {
+enum ProjectedManagerPredicate {
+    Field(ProjectedManagerFieldPredicate),
+    Iids(Arc<[Iid]>),
+}
+
+#[derive(Clone, Debug)]
+struct ProjectedManagerFieldPredicate {
     field: OwnsFactId,
     comparison: ProjectedManagerComparison,
     value: ProjectedAttributeValue,
@@ -175,12 +183,12 @@ impl ProjectedManagerFilter {
     ) -> Result<Self, SdkExecutionDiagnostic> {
         self.validate_for(installed)?;
         let index = self.predicates.len();
-        if index >= MAX_MANAGER_FILTER_PREDICATES {
+        if self.measure.items >= MAX_MANAGER_FILTER_PREDICATES {
             return Err(resource_limit(
                 "manager_filter_predicate_limit",
                 "The manager filter exceeds the canonical predicate ceiling",
                 predicate_collection_path(&self.model),
-                u64::try_from(index.saturating_add(1)).unwrap_or(u64::MAX),
+                u64::try_from(self.measure.items.saturating_add(1)).unwrap_or(u64::MAX),
                 u64::try_from(MAX_MANAGER_FILTER_PREDICATES).unwrap_or(u64::MAX),
                 false,
             ));
@@ -310,19 +318,84 @@ impl ProjectedManagerFilter {
                 )
             })?;
         predicates.extend(self.predicates.iter().cloned());
-        predicates.push(ProjectedManagerPredicate {
-            field: field_id.clone(),
-            comparison,
-            value: value.clone(),
-        });
+        predicates.push(ProjectedManagerPredicate::Field(
+            ProjectedManagerFieldPredicate {
+                field: field_id.clone(),
+                comparison,
+                value: value.clone(),
+            },
+        ));
         Ok(Self {
             brand: self.brand.clone(),
             model: self.model.clone(),
             predicates: Arc::from(predicates),
             measure: ProjectedManagerFilterResourceMeasure {
-                items: index + 1,
+                items: self.measure.items.saturating_add(1),
                 bytes: next_bytes,
                 attribute_values: next_attribute_values,
+            },
+        })
+    }
+
+    /// Append a non-empty, bounded IID set without changing existing predicates.
+    /// A singleton uses the same native IID predicate as an exact by-IID lookup.
+    pub fn try_and_iids(
+        &self,
+        installed: &InstalledRuntimeProjection,
+        iids: &[Iid],
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        self.validate_for(installed)?;
+        if iids.is_empty() {
+            return Err(invalid_input(
+                "empty_iid_set",
+                "An IID filter requires at least one IID",
+                predicate_collection_path(&self.model),
+            ));
+        }
+        let next_items = self.measure.items.saturating_add(iids.len());
+        if next_items > MAX_MANAGER_FILTER_PREDICATES {
+            return Err(resource_limit(
+                "manager_filter_predicate_limit",
+                "The IID filter exceeds the canonical predicate ceiling",
+                predicate_collection_path(&self.model),
+                next_items as u64,
+                MAX_MANAGER_FILTER_PREDICATES as u64,
+                false,
+            ));
+        }
+        let bytes = iids
+            .iter()
+            .try_fold(self.measure.bytes, |bytes, iid| {
+                bytes.checked_add(iid.as_str().len())
+            })
+            .filter(|bytes| *bytes as u64 <= DEFAULT_PROXY_QUERY_BYTES)
+            .ok_or_else(|| {
+                resource_exhausted(
+                    "manager_filter_byte_limit",
+                    "The IID filter exceeds the canonical byte ceiling",
+                    predicate_collection_path(&self.model),
+                )
+            })?;
+        let mut predicates = Vec::new();
+        predicates
+            .try_reserve_exact(self.predicates.len() + 1)
+            .map_err(|_| {
+                resource_exhausted(
+                    "manager_filter_allocation_exhausted",
+                    "The manager filter could not reserve bounded predicate storage",
+                    predicate_collection_path(&self.model),
+                )
+            })?;
+        predicates.extend(self.predicates.iter().cloned());
+        predicates.push(ProjectedManagerPredicate::Iids(Arc::from(iids)));
+        Ok(Self {
+            brand: self.brand.clone(),
+            model: self.model.clone(),
+            predicates: Arc::from(predicates),
+            measure: ProjectedManagerFilterResourceMeasure {
+                items: next_items,
+                bytes,
+                attribute_values: self.measure.attribute_values,
             },
         })
     }
@@ -359,6 +432,9 @@ impl ProjectedManagerFilter {
         self.brand.validate(installed, type_path(&self.model))?;
         require_manager_model(installed, &self.model)?;
         for (index, predicate) in self.predicates.iter().enumerate() {
+            let ProjectedManagerPredicate::Field(predicate) = predicate else {
+                continue;
+            };
             let identity = ProjectedTokenIdentity::Field {
                 owner: self.model.clone(),
                 field: predicate.field.clone(),
@@ -441,6 +517,12 @@ impl ProjectedManagerFilter {
         &self,
         installed: &InstalledRuntimeProjection,
     ) -> Result<(), SdkExecutionDiagnostic> {
+        if self.predicates.iter().any(|predicate| {
+            matches!(predicate,
+            ProjectedManagerPredicate::Iids(iids) if iids.len() == 1)
+        }) {
+            return Ok(());
+        }
         let model = installed
             .projection()
             .models()
@@ -457,6 +539,9 @@ impl ProjectedManagerFilter {
         for key in keys {
             let mut selected: Option<(&CanonicalValue, usize)> = None;
             for (index, predicate) in self.predicates.iter().enumerate() {
+                let ProjectedManagerPredicate::Field(predicate) = predicate else {
+                    continue;
+                };
                 if &predicate.field != key || predicate.comparison != ProjectedManagerComparison::Eq
                 {
                     continue;
@@ -549,6 +634,24 @@ fn append_validated_manager_expression(
                     filter,
                 )?;
             }
+            Ok(())
+        }
+        MatchExpr::Or { expressions } => {
+            let iids = expressions
+                .iter()
+                .map(|expression| match expression {
+                    MatchExpr::BindingIid { binding, iid } if *binding == root => {
+                        Iid::new(iid.clone()).map_err(|_| manager_query_shape_invalid())
+                    }
+                    _ => Err(manager_query_shape_invalid()),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            *filter = filter.try_and_iids(installed, &iids)?;
+            Ok(())
+        }
+        MatchExpr::BindingIid { binding, iid } if *binding == root => {
+            let iid = Iid::new(iid.clone()).map_err(|_| manager_query_shape_invalid())?;
+            *filter = filter.try_and_iids(installed, &[iid])?;
             Ok(())
         }
         MatchExpr::FieldValue {
@@ -1476,6 +1579,19 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 )
             })?;
         for predicate in filter.predicates.iter() {
+            let predicate = match predicate {
+                ProjectedManagerPredicate::Iids(iids) => {
+                    let predicate = if let [iid] = iids.as_ref() {
+                        root.iid(iid.as_str())
+                    } else {
+                        root.iid_in(iids.iter().map(Iid::as_str))
+                    }
+                    .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
+                    predicates.push(predicate);
+                    continue;
+                }
+                ProjectedManagerPredicate::Field(predicate) => predicate,
+            };
             let projected = model
                 .query_tokens()
                 .fields()
@@ -1986,34 +2102,94 @@ mod target_tests {
         let executor = ProjectedManagerFilterExecutor::new(&installed);
         let control =
             ProjectedManagerFilterInvocationControl::capture(policy, AnswerCancellation::default());
-        for terminal in [
-            ManagerTerminal::all(&control, None),
-            ManagerTerminal::first(),
-            ManagerTerminal::Count,
-            ManagerTerminal::Exists,
-        ] {
-            let (registry, request) = executor.build_request(&filter, terminal).unwrap();
-            let direct =
-                crate::match_request::plan_adapter::adapt_match_request(&registry, &request)
-                    .unwrap();
-            let pending = proxy
-                .prepare(
-                    &registry,
-                    request,
-                    policy,
-                    &control.cancellation,
-                    control.deadline,
-                )
+        let empty = ProjectedManagerFilter::try_new(&installed, filter.model().clone()).unwrap();
+        let iid = Iid::new("0xAbCd").unwrap();
+        let iid_filter = empty
+            .try_and_iids(&installed, std::slice::from_ref(&iid))
+            .unwrap();
+        let iid_set_filter = empty
+            .try_and_iids(&installed, &[iid.clone(), Iid::new("0x1234").unwrap()])
+            .unwrap();
+        assert!(empty.is_empty());
+        assert!(iid_filter.require_first_identity(&installed).is_ok());
+        assert_eq!(
+            iid_set_filter
+                .require_first_identity(&installed)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "manager_first_requires_identity"
+        );
+        assert_eq!(
+            empty
+                .try_and_iids(&installed, &[])
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "empty_iid_set"
+        );
+        assert_eq!(
+            empty
+                .try_and_iids(&installed, &vec![iid; MAX_MANAGER_FILTER_PREDICATES + 1])
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "manager_filter_predicate_limit"
+        );
+        assert_eq!(iid_set_filter.resource_measure().items(), 2);
+        let mixed = filter
+            .try_and_iids(&installed, &[Iid::new("0xabc").unwrap()])
+            .unwrap();
+        assert_eq!(mixed.resource_measure().items(), 2);
+        assert_eq!(mixed.resource_measure().attribute_values(), 1);
+        assert_eq!(
+            mixed.resource_measure().bytes(),
+            filter.resource_measure().bytes() + 5
+        );
+        assert!(
+            mixed
+                .check_terminal_resources(QueryExecutionResourceLimits { items: 1, ..policy })
+                .is_err()
+        );
+        for filter in [&filter, &iid_filter, &iid_set_filter, &mixed] {
+            let (_, count) = executor
+                .build_request(filter, ManagerTerminal::Count)
                 .unwrap();
-            let staged =
-                StagedRequestV3::decode(pending.request_bytes(), &declared, &advertisement)
+            let restored =
+                ProjectedManagerFilter::try_from_validated_exact_query(&installed, &count).unwrap();
+            let (_, rebuilt) = executor
+                .build_request(&restored, ManagerTerminal::Count)
+                .unwrap();
+            assert_eq!(count.request(), rebuilt.request());
+            for terminal in [
+                ManagerTerminal::all(&control, None),
+                ManagerTerminal::first(),
+                ManagerTerminal::Count,
+                ManagerTerminal::Exists,
+            ] {
+                let (registry, request) = executor.build_request(filter, terminal).unwrap();
+                let direct =
+                    crate::match_request::plan_adapter::adapt_match_request(&registry, &request)
+                        .unwrap();
+                let pending = proxy
+                    .prepare(
+                        &registry,
+                        request,
+                        policy,
+                        &control.cancellation,
+                        control.deadline,
+                    )
                     .unwrap();
-            assert_eq!(staged.plans().len(), 1);
-            assert_eq!(direct.plans.len(), 1);
-            assert_eq!(
-                staged.plans()[0].plan().canonical_bytes().unwrap(),
-                direct.plans[0].canonical_bytes().unwrap()
-            );
+                let staged =
+                    StagedRequestV3::decode(pending.request_bytes(), &declared, &advertisement)
+                        .unwrap();
+                assert_eq!(staged.plans().len(), 1);
+                assert_eq!(direct.plans.len(), 1);
+                assert_eq!(
+                    staged.plans()[0].plan().canonical_bytes().unwrap(),
+                    direct.plans[0].canonical_bytes().unwrap()
+                );
+            }
         }
         // A binding's implicit proxy execution default must not author a
         // smaller manager window than the same direct caller policy.
