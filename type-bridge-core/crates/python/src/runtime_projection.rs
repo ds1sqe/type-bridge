@@ -2972,7 +2972,11 @@ impl PyProjectedManagerFilter {
 impl PyProjectedModelManager {
     /// Start a distinct persistent canonical filter for this exact model.
     fn canonical_filter(&self) -> PyResult<PyProjectedManagerFilter> {
-        let filter = if self.filters.is_empty() {
+        let filter = if self.has_empty_iid_input {
+            ProjectedManagerFilter::try_new(&self.package.projection, self.type_id.clone())
+                .and_then(|filter| filter.try_and_iids(&self.package.projection, &[]))
+                .map_err(py_sdk_diagnostic)?
+        } else if self.filters.is_empty() {
             ProjectedManagerFilter::try_new(&self.package.projection, self.type_id.clone())
                 .map_err(py_sdk_diagnostic)?
         } else {
@@ -11325,7 +11329,9 @@ class StructBase:
                     .unwrap()
                     .filter(py, Some(&kwargs))
                     .unwrap();
-                for selected in [&empty, &late_wider, &early_wider] {
+                kwargs.set_item("identifier__contains", "needle").unwrap();
+                let together = manager.filter(py, Some(&kwargs)).unwrap();
+                for selected in [&empty, &late_wider, &early_wider, &together] {
                     assert_eq!(
                         selected
                             .all(py)
@@ -11340,33 +11346,23 @@ class StructBase:
                     assert_eq!(selected.count(py).unwrap(), 0);
                     assert!(!selected.exists(py).unwrap());
                 }
-                for selected in [&late_wider, &early_wider] {
-                    let error = selected.canonical_filter().err().unwrap();
-                    assert_eq!(
-                        error
-                            .value(py)
-                            .getattr("code")
-                            .unwrap()
-                            .extract::<String>()
-                            .unwrap(),
-                        "unsupported_manager_filter"
-                    );
-                }
                 if borrowed != Some(TxType::Read) {
-                    let filter = empty.canonical_filter().unwrap();
-                    filter.delete(py).unwrap();
-                    let replacement = batch_person(py, &package, "empty", "authored", None);
-                    let result = filter.update(py, replacement.bind(py).clone()).unwrap();
-                    assert_eq!(
-                        result
-                            .bind(py)
-                            .getattr("count")
-                            .unwrap()
-                            .extract::<usize>()
-                            .unwrap(),
-                        0
-                    );
-                    assert!(replacement.bind(py).getattr("iid").unwrap().is_none());
+                    for selected in [&empty, &late_wider, &early_wider, &together] {
+                        let filter = selected.canonical_filter().unwrap();
+                        filter.delete(py).unwrap();
+                        let replacement = batch_person(py, &package, "empty", "authored", None);
+                        let result = filter.update(py, replacement.bind(py).clone()).unwrap();
+                        assert_eq!(
+                            result
+                                .bind(py)
+                                .getattr("count")
+                                .unwrap()
+                                .extract::<usize>()
+                                .unwrap(),
+                            0
+                        );
+                        assert!(replacement.bind(py).getattr("iid").unwrap().is_none());
+                    }
                 }
                 if let Some(marker) = &manager.successor_batch_marker {
                     assert!(!marker.load(Ordering::Acquire));
