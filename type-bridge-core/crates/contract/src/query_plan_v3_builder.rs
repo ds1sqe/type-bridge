@@ -688,6 +688,20 @@ impl PlanBuilder {
         self.push_delete(DeleteItem::Has { owner, field })
     }
 
+    /// Remove only the ownership of a bound attribute, keeping both things.
+    pub fn delete_field_value(
+        &mut self,
+        owner: BindingId,
+        field: OwnsFactId,
+        value: BindingId,
+    ) -> &mut Self {
+        self.push_delete(DeleteItem::HasValue {
+            owner,
+            field,
+            value,
+        })
+    }
+
     /// Remove `player` from `relation`'s `role`.
     pub fn delete_player(
         &mut self,

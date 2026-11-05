@@ -1248,6 +1248,8 @@ fn shared_plan_v3_fixtures() {
     // The ORM owns explanation fixtures because it owns provider lowering.
     let mut expected: std::collections::BTreeSet<_> = files.keys().cloned().collect();
     expected.insert("explain".to_owned());
+    // The ownership suite owns additive fixtures outside the frozen manifest.
+    expected.insert("delete_has_value.json".to_owned());
     assert_eq!(actual, expected);
 }
 

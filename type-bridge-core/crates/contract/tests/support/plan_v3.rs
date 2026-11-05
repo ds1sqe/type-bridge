@@ -340,3 +340,15 @@ pub fn matched() -> Stage {
 pub fn pat(n: u16, type_id: TypeId) -> type_bridge_contract::query_plan::v3::Pattern {
     isa(n, type_id).into()
 }
+
+#[allow(dead_code)]
+pub fn schema_with_attribute_subtype() -> DeclaredSchema {
+    let mut facts = schema_facts();
+    let child = TypeId::new(TypeKind::Attribute, "special_score").unwrap();
+    let parent = TypeId::new(TypeKind::Attribute, "score").unwrap();
+    facts.push(SchemaFact::Type(TypeFact::new(child.clone()).unwrap()));
+    facts.push(SchemaFact::Sub(SubFact::new(
+        SubFactId::new(child, parent).unwrap(),
+    )));
+    declare(facts)
+}

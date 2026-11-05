@@ -1517,7 +1517,9 @@ fn failure_context(plan: &QueryPlanV3) -> FailureContext {
                 }
             }
             Stage::Delete { items } => {
-                if let Some(DeleteItem::Has { field, .. }) = items.first() {
+                if let Some(DeleteItem::Has { field, .. } | DeleteItem::HasValue { field, .. }) =
+                    items.first()
+                {
                     return FailureContext::new(Some(field.owner().clone()), Some(field.clone()));
                 }
             }
@@ -2162,6 +2164,9 @@ impl Scope<'_> {
                     self.name(*relation)?,
                     vec![(role.label().as_str(), self.name(*player)?)],
                 ))?,
+                DeleteItem::HasValue { owner, value, .. } => {
+                    ast(tql::delete_has(self.name(*owner)?, self.name(*value)?))?
+                }
                 DeleteItem::Has { owner, field } => {
                     // Uppercase cannot collide with validated lowercase plan variables.
                     let value = format!("PlanHas{stage}x{index}");
@@ -2379,6 +2384,39 @@ mod tests {
             tql::equivalent(actual, expected).unwrap(),
             "lowered:\n{actual}\nexpected:\n{expected}"
         );
+    }
+
+    #[test]
+    fn selective_ownership_delete_uses_the_bound_value_without_a_rematch() {
+        use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::schema::OwnsFactId;
+        let owner_type = TypeId::new(TypeKind::Entity, "item").unwrap();
+        let attribute = AttributeId::new("price").unwrap();
+        let mut builder = PlanBuilder::new();
+        let owner = builder.exact(owner_type.clone());
+        let value = builder.field(owner, attribute.clone());
+        builder.delete_field_value(
+            owner,
+            OwnsFactId::new(owner_type, attribute).unwrap(),
+            value,
+        );
+        let plan = builder
+            .build(
+                &race::schema(),
+                race::purchase_template().managed_semantics().clone(),
+            )
+            .unwrap();
+        let lowered = typeql(&plan).0;
+        let owner = local_variable(plan.bindings(), owner).unwrap();
+        let value = local_variable(plan.bindings(), value).unwrap();
+        assert_same_ast(
+            &lowered,
+            &format!(
+                "match ${owner} isa! item; ${owner} has price ${value}; ${value} isa! price; delete has ${value} of ${owner};"
+            ),
+        );
+        assert_eq!(plan.statement_counts(), (0, 1));
     }
 
     #[test]

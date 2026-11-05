@@ -291,6 +291,15 @@ pub enum DeleteItem {
         /// Declared ownership.
         field: OwnsFactId,
     },
+    /// Remove only the ownership of an earlier bound attribute.
+    HasValue {
+        /// Bound owner.
+        owner: BindingId,
+        /// Declared ownership.
+        field: OwnsFactId,
+        /// Bound attribute whose ownership is removed.
+        value: BindingId,
+    },
     /// Remove one role player.
     Links {
         /// Bound relation.
@@ -1191,6 +1200,7 @@ fn validate_stages(
     let mut reduced_dropped = BTreeSet::new();
     let mut fetched: Option<&ThingDocument> = None;
     let mut captured_environment = None;
+    let mut deleted_ownership_values = BTreeSet::new();
     if !matches!(
         first,
         Stage::Match { .. } | Stage::Insert { .. } | Stage::Put { .. }
@@ -1682,6 +1692,36 @@ fn validate_stages(
                                 bound(*owner, &optional)?;
                             }
                             index.ownership(*owner, field, &types, false)?;
+                        }
+                        DeleteItem::HasValue {
+                            owner,
+                            field,
+                            value,
+                        } => {
+                            bound(*owner, &mandatory)?;
+                            bound(*value, &mandatory)?;
+                            index.ownership(*owner, field, &types, false)?;
+                            let attribute = TypeId::new(
+                                TypeKind::Attribute,
+                                field.attribute().label().as_str(),
+                            )?;
+                            if !types.get(value).is_some_and(|candidates| {
+                                !candidates.is_empty()
+                                    && candidates.iter().all(|candidate| {
+                                        index.ancestors(candidate).contains(&attribute)
+                                    })
+                            }) {
+                                return Err(invalid(
+                                    "query_plan_delete_ownership_value_type",
+                                    "selective ownership deletion requires a bound attribute of the field type or a subtype",
+                                ));
+                            }
+                            if !deleted_ownership_values.insert((*owner, field.clone(), *value)) {
+                                return Err(invalid(
+                                    "query_plan_duplicate_ownership_delete",
+                                    "an ownership value cannot be deleted twice",
+                                ));
+                            }
                         }
                         DeleteItem::Links {
                             relation,
@@ -2497,6 +2537,11 @@ enum DeleteWire {
         owner: u16,
         field: OwnsWire,
     },
+    HasValue {
+        owner: u16,
+        field: OwnsWire,
+        value: u16,
+    },
     Links {
         relation: u16,
         role: RoleIdWire,
@@ -2516,6 +2561,15 @@ impl DeleteWire {
             Self::Has { owner, field } => DeleteItem::Has {
                 owner: BindingId::new(owner)?,
                 field: field.rebuild()?,
+            },
+            Self::HasValue {
+                owner,
+                field,
+                value,
+            } => DeleteItem::HasValue {
+                owner: BindingId::new(owner)?,
+                field: field.rebuild()?,
+                value: BindingId::new(value)?,
             },
             Self::Links {
                 relation,
