@@ -124,7 +124,7 @@ fn render_models(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     );
     let _ = write!(
         output,
-        "import {{\n  defineFieldToken,\n  {define_model},\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  {model_token},\n  type ReferenceFacet,\n  type RoleToken,\n  Plan, PlanHandle, PlanValue, PlanExpr, PlanInput,\n  planDefinition, planMatch, planModelMatch, planModelInsert, planInsertMany,\n}} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
+        "import {{\n  defineFieldToken,\n  {define_model},\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  {model_token},\n  type ReferenceFacet,\n  type RoleToken,\n  Iid, Plan, PlanHandle, PlanValue, PlanExpr, PlanInput,\n  planDefinition, planMatch, planModelMatch, planModelInsert, planInsertMany,\n}} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
     );
 
     for id in projection.emission().model_shells() {
@@ -334,7 +334,7 @@ fn render_model_shell(
     };
     let reference_factory = match model.reference_read().target_name() {
         Some(reference) => format!(
-            "(iid: string | null, keys: {name}ReferenceInput) => {}",
+            "(iid: Iid | null, keys: {name}ReferenceInput) => {}",
             reference.as_str()
         ),
         None => "undefined".to_owned(),
@@ -369,7 +369,7 @@ fn render_model_link(
     };
     let reference_factory = match model.reference_read().target_name() {
         Some(reference) => format!(
-            "(iid: string | null, keys: {name}ReferenceInput) => {}",
+            "(iid: Iid | null, keys: {name}ReferenceInput) => {}",
             reference.as_str()
         ),
         None => "undefined".to_owned(),

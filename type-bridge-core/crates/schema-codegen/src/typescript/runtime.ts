@@ -44,9 +44,9 @@ export {
 } from "@type-bridge/node/runtime-projection";
 import type { PlanAuthority } from "@type-bridge/node";
 import type { Database } from "@type-bridge/node";
-import { Pending, StagedTransaction } from "@type-bridge/node";
+import { Iid, Pending, StagedTransaction } from "@type-bridge/node";
 import { Plan, Handle as PlanHandle, Value as PlanValue, Expr as PlanExpr, PlanInput, planFieldToken, planMatch, planInsert, planInsertMany, type FieldToken as AuthoringFieldToken, type PlanModelAuthoring } from "@type-bridge/node";
-export { Plan, PlanHandle, PlanValue, PlanExpr, PlanInput, planMatch, planInsertMany };
+export { Iid, Plan, PlanHandle, PlanValue, PlanExpr, PlanInput, planMatch, planInsertMany };
 
 const COMPLETE_BRAND: unique symbol = Symbol("typebridge.complete");
 const REFERENCE_BRAND: unique symbol = Symbol("typebridge.reference");
@@ -85,7 +85,7 @@ export interface ModelUse {
 export interface CompleteFacet<Id extends string> {
   readonly __typebridgeModel: Id;
   readonly __typebridgeForm: "complete";
-  readonly iid: string | null;
+  readonly iid: Iid | null;
   readonly deleted: boolean;
   readonly [COMPLETE_BRAND]: Id;
 }
@@ -96,23 +96,33 @@ export type ProjectedManagerFilterValue =
   | number
   | boolean
   | null
+  | Iid
   | CompleteFacet<string>
   | ReferenceFacet<string>
   | readonly ProjectedManagerFilterValue[];
+
+export type ProjectedManagerKeywords = Readonly<Record<string, ProjectedManagerFilterValue>> & {
+  readonly iid?: Iid;
+  readonly _iid?: Iid;
+  readonly iid__eq?: Iid;
+  readonly _iid__eq?: Iid;
+  readonly iid__in?: readonly Iid[];
+  readonly _iid__in?: readonly Iid[];
+};
 
 export interface ProjectedModelManager<Complete> {
   insert(instance: Complete): WriteResult<Complete>;
   insertMany(instances: readonly Complete[]): BatchWriteResult<Complete>;
   put(instance: Complete): WriteResult<Complete>;
   putMany(instances: readonly Complete[]): BatchWriteResult<Complete>;
-  update(iid: string, replacement: Complete): WriteResult<Complete>;
-  delete(instanceOrIid: Complete | string): void;
-  deleteReturning(iid: string): WriteResult<Complete>;
-  deleteManyReturning(iids: readonly string[]): BatchWriteResult<Complete>;
+  update(iid: Iid, replacement: Complete): WriteResult<Complete>;
+  delete(instanceOrIid: Complete | Iid): void;
+  deleteReturning(iid: Iid): WriteResult<Complete>;
+  deleteManyReturning(iids: readonly Iid[]): BatchWriteResult<Complete>;
   filter(
-    filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
+    filters: ProjectedManagerKeywords,
   ): ProjectedModelManager<Complete>;
-  getByIid(iid: string): Complete | null;
+  getByIid(iid: Iid): Complete | null;
   all(): readonly Complete[];
   first(): Complete | null;
   count(): bigint;
@@ -122,7 +132,7 @@ export interface ProjectedModelManager<Complete> {
 export interface ReferenceFacet<Id extends string> {
   readonly __typebridgeModel: Id;
   readonly __typebridgeForm: "reference";
-  readonly iid: string | null;
+  readonly iid: Iid | null;
   readonly deleted: boolean;
   readonly [REFERENCE_BRAND]: Id;
 }
@@ -706,7 +716,7 @@ export function defineModel<
     const result: Record<string | symbol, unknown> = {
       __typebridgeModel: definition.typeKey,
       __typebridgeForm: "complete",
-      iid,
+      iid: iid === null ? null : new Iid(iid),
     };
     if (definition.valueType !== null) {
       validateScalar(`${context} value`, input, definition.valueType);
@@ -759,10 +769,10 @@ export function defineModel<
         )
     : undefined;
   const reference = definition.referenceEnabled
-    ? (iid: string | null, keys: unknown): unknown => {
-        if (iid !== null && (typeof iid !== "string" || iid.length === 0)) {
+    ? (iid: Iid | null, keys: unknown): unknown => {
+        if (iid !== null && !(iid instanceof Iid)) {
           throw new TypeError(
-            `${definition.name}.reference iid must be a non-empty string`,
+            `${definition.name}.reference iid must be an Iid`,
           );
         }
         assertRecord(keys, `${definition.name}.reference keys`);
@@ -968,7 +978,7 @@ export function defineModel<
         if (typeof reference !== "function") {
           throw new TypeError(`${definition.name} has no reference projection`);
         }
-        return reference(wire.iid, keys) as FactoryResult<ReferenceFactory>;
+        return reference(wire.iid === null ? null : new Iid(wire.iid), keys) as FactoryResult<ReferenceFactory>;
       },
       encodeSnapshot: (
         value: Complete,
@@ -1230,7 +1240,7 @@ function hydrateProjectedBatchValue(
     const result: Record<string | symbol, unknown> = {
       __typebridgeModel: wire.typeKey,
       __typebridgeForm: "reference",
-      iid: wire.iid,
+      iid: new Iid(wire.iid),
       ...values,
     };
     Object.defineProperty(result, REFERENCE_BRAND, {
@@ -1245,7 +1255,7 @@ function hydrateProjectedBatchValue(
   const result: Record<string | symbol, unknown> = {
     __typebridgeModel: wire.typeKey,
     __typebridgeForm: "complete",
-    iid: wire.iid,
+    iid: new Iid(wire.iid),
   };
   for (const member of definition.completeMembers) {
     const value = values[member.name];
@@ -1393,7 +1403,13 @@ function requireLiveSnapshot(value: unknown): void {
   }
 }
 
+function iidText(iid: Iid): string {
+  if (!(iid instanceof Iid)) throw new TypeError("IID arguments require Iid values");
+  return iid.toString();
+}
+
 function lowerManagerFilterValue(value: unknown): unknown {
+  if (value instanceof Iid) return iidText(value);
   if (Array.isArray(value)) {
     return value.map(lowerManagerFilterValue);
   }
@@ -1453,10 +1469,8 @@ function lowerProjectedValue(value: unknown): ProjectedWire {
       "reference value does not carry the generated nominal brand",
     );
   }
-  const iid = value["iid"];
-  if (iid !== null && (typeof iid !== "string" || iid.length === 0)) {
-    throw new TypeError("projected IID must be null or a non-empty string");
-  }
+  const identity = value["iid"];
+  const iid = identity === null ? null : iidText(identity as Iid);
   if (entry.definition.valueType !== null) {
     if (form !== "complete") {
       throw new TypeError("attribute values cannot use a reference projection");
@@ -1619,7 +1633,7 @@ function hydrateProjectedValue(
       "native reference wire has no IID or reference factory",
     );
   }
-  return entry.token.reference(wire.iid, values);
+  return entry.token.reference(wire.iid === null ? null : new Iid(wire.iid), values);
 }
 
 function hydrateMemberValue(value: unknown): unknown {
@@ -1813,8 +1827,8 @@ export interface BoundVar<
     token: RoleToken<Owner, Role, Player, SubtypeRoot> &
       (Owner extends ModelTypeKey<Model> ? object : never),
   ): BoundRole<Player, SubtypeRoot>;
-  iid(iid: string): Predicate;
-  iidIn(iids: readonly string[]): Predicate;
+  iid(iid: Iid): Predicate;
+  iidIn(iids: readonly Iid[]): Predicate;
   collect(): Collected<Model>;
 }
 
@@ -2083,7 +2097,11 @@ function requireProjection(): InstalledRuntimeProjection {
 
 const planDefinitions = new WeakMap<object, PlanModelAuthoring<unknown>>();
 
-function encodePlanScalar(kind: ScalarValueType, value: unknown): unknown {
+function encodePlanScalar(kind: ScalarValueType | "iid", value: unknown): unknown {
+  if (kind === "iid") {
+    iidText(value as Iid);
+    return value;
+  }
   const wire = scalarToWire(kind, value);
   return kind === "long" || kind === "double" ? value : wire.value;
 }
@@ -2644,14 +2662,14 @@ class BoundVarValue<
     });
   }
 
-  iid(iid: string): Predicate {
+  iid(iid: Iid): Predicate {
     const own = boundVarState(this);
-    return new PredicateValue(own.binding.iid(iid), own.projection);
+    return new PredicateValue(own.binding.iid(iidText(iid)), own.projection);
   }
 
-  iidIn(iids: readonly string[]): Predicate {
+  iidIn(iids: readonly Iid[]): Predicate {
     const own = boundVarState(this);
-    return new PredicateValue(own.binding.iidIn([...iids]), own.projection);
+    return new PredicateValue(own.binding.iidIn(iids.map(iidText)), own.projection);
   }
 
   collect(): Collected<Model> {
@@ -4247,7 +4265,7 @@ const TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 4 as const;
 
 /** One exact IID plus its immutable complete replacement. */
 export type ProjectedBatchUpdate<Complete> = readonly [
-  iid: string,
+  iid: Iid,
   replacement: Complete,
 ];
 
@@ -4283,9 +4301,9 @@ export interface OrderedProjectedModelManager<
   updateMany(
     updates: readonly ProjectedBatchUpdate<Complete>[],
   ): BatchWriteResult<Complete>;
-  deleteMany(iids: readonly string[]): void;
+  deleteMany(iids: readonly Iid[]): void;
   filter(
-    filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
+    filters: ProjectedManagerKeywords,
   ): OrderedProjectedModelManager<Complete, Owner>;
   where(): ProjectedModelFilter<Complete, Owner>;
   where<Attribute extends string, Value>(
@@ -4506,10 +4524,8 @@ function lowerOrderedHydratedValue(value: unknown): ProjectedWire {
   if (Object.getOwnPropertyDescriptor(value, COMPLETE_BRAND)?.value !== typeKey) {
     throw new TypeError("ordered hydrated value has no complete nominal brand");
   }
-  const iid = value["iid"];
-  if (iid !== null && (typeof iid !== "string" || iid.length === 0)) {
-    throw new TypeError("ordered hydrated IID must be null or a non-empty string");
-  }
+  const identity = value["iid"];
+  const iid = identity === null ? null : iidText(identity as Iid);
   const values: Record<string, unknown> = {};
   for (const member of entry.definition.completeMembers) {
     const nested = value[member.name];
@@ -4645,15 +4661,11 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
         };
       }));
     },
-    update(iid: string, replacement: Complete): WriteResult<Complete> {
-      if (typeof iid !== "string" || iid.length === 0) {
-        throw new TypeError(
-          "projected manager update requires a non-empty TypeDB IID",
-        );
-      }
+    update(iid: Iid, replacement: Complete): WriteResult<Complete> {
+      const identity = iidText(iid);
       const wire = exactWire(replacement, "update");
       return projectedManagerNativeCall(() => native.updateProjected<Complete>(
-          iid,
+          identity,
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, replacement),
         ));
@@ -4672,47 +4684,42 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
           );
         }
         const [iid, replacement] = update;
-        if (typeof iid !== "string") {
-          throw new TypeError("projected manager updateMany requires string IIDs");
-        }
+        const identity = iidText(iid);
         const wire = exactWire(replacement, "updateMany");
         return {
-          iid,
+          iid: identity,
           instanceJson: JSON.stringify(wire),
           proofs: orderedRoleProofs(typeKey, replacement),
         };
       }));
     },
-    delete(instanceOrIid: Complete | string): void {
+    delete(instanceOrIid: Complete | Iid): void {
       requireLiveSnapshot(instanceOrIid);
-      const iid = typeof instanceOrIid === "string"
-        ? instanceOrIid
+      const iid = instanceOrIid instanceof Iid
+        ? iidText(instanceOrIid)
         : exactWire(instanceOrIid, "delete").iid;
       if (iid === null) {
         throw new TypeError("projected manager delete requires an attached TypeDB IID");
       }
       projectedManagerNativeCall(() => native.deleteByIid(iid));
     },
-    deleteReturning(iid: string): WriteResult<Complete> {
-      return projectedManagerNativeCall(() => native.deleteByIidReturning<Complete>(iid));
+    deleteReturning(iid: Iid): WriteResult<Complete> {
+      return projectedManagerNativeCall(() => native.deleteByIidReturning<Complete>(iidText(iid)));
     },
-    deleteManyReturning(iids: readonly string[]): BatchWriteResult<Complete> {
-      return projectedManagerNativeCall(() => native.deleteManyReturning<Complete>([...iids]));
+    deleteManyReturning(iids: readonly Iid[]): BatchWriteResult<Complete> {
+      return projectedManagerNativeCall(() => native.deleteManyReturning<Complete>(iids.map(iidText)));
     },
-    deleteMany(iids: readonly string[]): void {
+    deleteMany(iids: readonly Iid[]): void {
       if (!Array.isArray(iids)) {
         throw new TypeError("projected manager deleteMany requires an array");
       }
       projectedManagerNativeCall(() => native.deleteManyProjected(iids.length, (index) => {
         const iid = iids[index];
-        if (typeof iid !== "string") {
-          throw new TypeError("projected manager deleteMany requires string IIDs");
-        }
-        return iid;
+        return iidText(iid as Iid);
       }));
     },
     filter(
-      filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
+      filters: ProjectedManagerKeywords,
     ): OrderedProjectedModelManager<Complete, Owner> {
       if (
         filters === null ||
@@ -4726,7 +4733,16 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       const entries = Object.entries(filters);
       const lowered: { readonly name: string; readonly value: unknown }[] = [];
       for (const [name, value] of entries) {
-        lowered.push({ name, value: lowerManagerFilterValue(value) });
+        if (["iid", "_iid", "iid__eq", "_iid__eq"].includes(name)) {
+          lowered.push({ name, value: iidText(value as Iid) });
+        } else if (["iid__in", "_iid__in"].includes(name)) {
+          if (!Array.isArray(value)) {
+            throw new TypeError("IID list filters require an array of Iid values");
+          }
+          lowered.push({ name, value: value.map(iidText) });
+        } else {
+          lowered.push({ name, value: lowerManagerFilterValue(value) });
+        }
       }
       let nextCompatibility: OrderedNativeManagerFilter | null = null;
       const predicates = compatibilityFilter === null ? null : orderedCompatibilityPredicates(typeKey, entries);
@@ -4771,8 +4787,8 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       }
       return filter.where(field, comparison, value as Value);
     },
-    getByIid(iid: string): Complete | null {
-      const envelope = projectedManagerNativeCall(() => native.getByIidProjected(iid));
+    getByIid(iid: Iid): Complete | null {
+      const envelope = projectedManagerNativeCall(() => native.getByIidProjected(iidText(iid)));
       return envelope === null
         ? null
         : hydrateOrderedProjectedEnvelope(envelope, typeKey);

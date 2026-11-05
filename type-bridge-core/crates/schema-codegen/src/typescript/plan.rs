@@ -124,7 +124,7 @@ pub(super) fn shell(
         }
         let _ = writeln!(output, "  {method}(fields?: {name}.Match): {name}Handle;");
     }
-    let _ = writeln!(output, "  byIid(iid: string): {name}Handle;");
+    let _ = writeln!(output, "  byIid(iid: Iid): {name}Handle;");
     if crate::supports_scalar_plan_writes(model) {
         let _ = writeln!(
             output,
@@ -228,7 +228,7 @@ pub(super) fn link_tail(
     };
     let _ = writeln!(
         output,
-        "}}, (token) => {{\n  const definition = () => planDefinition<{name}>(token);\n  return {{\n    match: (input?: {input_type}) => planModelMatch(definition(), {name}Handle, {key_name}, input, false),\n    subtypes: (input?: {input_type}) => planModelMatch(definition(), {name}Handle, {key_name}, input, true),\n    byIid: (iid: string) => planMatch(definition(), {name}Handle, {{}}, {{ iid }}),"
+        "}}, (token) => {{\n  const definition = () => planDefinition<{name}>(token);\n  return {{\n    match: (input?: {input_type}) => planModelMatch(definition(), {name}Handle, {key_name}, input, false),\n    subtypes: (input?: {input_type}) => planModelMatch(definition(), {name}Handle, {key_name}, input, true),\n    byIid: (iid: Iid) => planMatch(definition(), {name}Handle, {{}}, {{ iid }}),"
     );
     if crate::supports_scalar_plan_writes(model) {
         let _ = writeln!(

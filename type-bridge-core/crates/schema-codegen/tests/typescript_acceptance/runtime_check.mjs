@@ -1,3 +1,4 @@
+import { Iid } from "@type-bridge/node";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -131,7 +132,7 @@ const person = Person.create({
   aliases: [Aliases.create("first"), Aliases.create("second")],
 });
 assert.equal(person.deleted, false);
-assert.equal(Person.reference("person-iid", { identifier }).deleted, false);
+assert.equal(Person.reference(new Iid("0xa1"), { identifier }).deleted, false);
 assert.throws(() => { person.deleted = true; }, TypeError);
 assert.throws(
   () =>
@@ -197,9 +198,13 @@ assert.deepEqual(scorePlan().canonicalBytes(), scorePlan().canonicalBytes());
 
 const event = Event.create({ subject: person });
 assert.equal(event.subject, person);
-const reference = Person.reference("person-iid", { identifier });
+const referenceIid = new Iid("0xa1");
+const reference = Person.reference(referenceIid, { identifier });
 assert.equal(reference.__typebridgeForm, "reference");
-assert.equal(reference.iid, "person-iid");
+assert.equal(reference.iid.toString(), "0xa1");
+assert.equal(reference.iid, referenceIid);
+assert.throws(() => Person.reference("0xa1", { identifier }), TypeError);
+assert(reference.iid instanceof Iid);
 assert.throws(() => Identifier.create({}), TypeError);
 assert.throws(() => Score.create(3), TypeError);
 assert.throws(() => Score.create(1n << 63n), TypeError);
@@ -209,10 +214,10 @@ const hydrateComplete = Object.getOwnPropertySymbols(Identifier).find(
 );
 assert(hydrateComplete);
 const hydratedIdentifier = Identifier[hydrateComplete](
-  "identifier-iid",
+  "0xaf",
   "provider-value",
 );
-assert.equal(hydratedIdentifier.iid, "identifier-iid");
+assert.equal(hydratedIdentifier.iid.toString(), "0xaf");
 assert.equal(hydratedIdentifier.value, "provider-value");
 assert(Object.isFrozen(hydratedIdentifier));
 const hydratedPerson = Person[hydrateComplete]("0xa1", {
@@ -220,12 +225,15 @@ const hydratedPerson = Person[hydrateComplete]("0xa1", {
   aliases: [],
   nickname: null,
 });
-assert.equal(hydratedPerson.iid, "0xa1");
+assert.equal(hydratedPerson.iid.toString(), "0xa1");
+assert(hydratedPerson.iid instanceof Iid);
+assert.equal(hydratedPerson.iid, hydratedPerson.iid);
+assert.throws(() => Person.reference("0xa1", { identifier }), TypeError);
 assert.equal(hydratedPerson.nickname, null);
 assert.deepEqual(hydratedPerson.aliases, []);
 Employment.create({ employee: person });
 
-const eventReference = Event.reference("0xe1", {});
+const eventReference = Event.reference(new Iid("0xe1"), {});
 Container.create({ item: [eventReference] });
 assert.throws(
   () =>
@@ -1532,7 +1540,7 @@ assert.equal(remoteLifecycle.isClosed, true);
 assert.equal(remoteLifecycleClone.isClosed, false);
 assert.equal(remoteLifecycleDerived.isClosed, false);
 assert.throws(
-  () => remoteLifecycle.where(generatedRemotePerson.iid("0x1")),
+  () => remoteLifecycle.where(generatedRemotePerson.iid(new Iid("0x1"))),
   /query_resource_closed/,
 );
 assert(remoteLifecycleClone.clone());

@@ -71,6 +71,22 @@ Declare staged identity inputs with `builder.input("target", "iid")` (or
 and `StagedResultRef` require those `PlanInput[Iid]` columns; ordinary string
 columns are refused. The existing staged wire format remains unchanged.
 
+## Node identifiers
+
+Import `Iid` from `@type-bridge/node` or the generated package. Model and
+reference `.iid` properties return a retained `Iid` object (or `null` when
+unattached). Repeated getters return the same object; use `iid.toString()` for
+text and `iid.equals(other)` for value equality.
+
+Pass `new Iid("0x1234")` to reference constructors, manager IID arguments,
+`filter({ iid })`, `filter({ iid__in: iids })`, query `iid`/`iidIn`, and generated
+or builder `byIid`. Plain strings are refused before execution.
+
+Declare staged identity columns with `builder.input("target", "iid")` or
+`optionalInput`, then bind `target.value(new Iid("0x1234"))`. `byIidInput` and
+staged result references require `PlanInput<Iid>`; ordinary string columns are
+refused. Query and staged plan bytes retain the existing string transport.
+
 ## Single-item manager write results
 
 Single-item `insert`, `put`, `update`, and `delete_returning` calls now return

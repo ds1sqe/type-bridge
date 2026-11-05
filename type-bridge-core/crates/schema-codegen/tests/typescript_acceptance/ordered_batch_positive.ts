@@ -1,3 +1,4 @@
+import { Iid } from "@type-bridge/node";
 import {
   type BatchWriteResult,
   Identifier,
@@ -49,17 +50,17 @@ const putPeople: BatchWriteResult<Person> = personManager.putMany([
   second,
 ] as const);
 const personUpdates = [
-  ["0xa1", first],
-  ["0xa2", second],
+  [new Iid("0xa1"), first],
+  [new Iid("0xa2"), second],
 ] as const satisfies readonly ProjectedBatchUpdate<Person>[];
 const updatedPeople: BatchWriteResult<Person> = personManager.updateMany(personUpdates);
-personManager.deleteMany(["0xa1", "0xa2"] as const);
+personManager.deleteMany([new Iid("0xa1"), new Iid("0xa2")] as const);
 
 const filtered: OrderedProjectedModelManager<Person> = personManager.filter({
   score__gte: Score.create(1n),
 });
 const filteredUpdates: BatchWriteResult<Person> = filtered.updateMany(personUpdates);
-filtered.deleteMany(["0xa1"] as const);
+filtered.deleteMany([new Iid("0xa1")] as const);
 
 const comparison: ProjectedManagerComparison = "gte";
 const canonicalFilter: ProjectedModelFilter<Person, typeof Person.typeKey> =
@@ -84,11 +85,11 @@ const insertedMemberships: BatchWriteResult<Membership> =
 const putMemberships: BatchWriteResult<Membership> =
   membershipManager.putMany([membership] as const);
 const membershipUpdates = [
-  ["0xb1", membership],
+  [new Iid("0xb1"), membership],
 ] as const satisfies readonly ProjectedBatchUpdate<Membership>[];
 const updatedMemberships: BatchWriteResult<Membership> =
   membershipManager.updateMany(membershipUpdates);
-membershipManager.deleteMany(["0xb1"] as const);
+membershipManager.deleteMany([new Iid("0xb1")] as const);
 
 const emptyPeople: BatchWriteResult<Person> = personManager.insertMany([]);
 const emptyPuts: BatchWriteResult<Person> = personManager.putMany([]);

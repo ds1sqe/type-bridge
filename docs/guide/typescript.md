@@ -75,6 +75,16 @@ After upgrading the generator and compatible runtime, regenerate the complete
 package. Projection and package fingerprints are recomputed from the corrected
 names and runtime resources; semantic schema fingerprints remain unchanged.
 
+## Identifiers
+
+Generated model and reference `.iid` properties retain an `Iid` object, or
+`null` for unattached values. Import `Iid` from `@type-bridge/node` (also exported
+by generated packages) and construct identifiers with `new Iid("0x1234")`.
+Reference constructors, manager IID arguments and filters, query `iid`/`iidIn`,
+and staged `byIid` require this type. Use `.toString()` for text and `.equals()`
+for identifier equality. Staged identity columns use `input("target", "iid")`
+or `optionalInput`, including columns receiving earlier staged IID results.
+
 ## Managers
 
 ```ts
@@ -97,7 +107,7 @@ Generated entity and relation managers expose `insert`, `insertMany`, `put`,
 
 Packages whose schema uses ordered collections select the successor manager and
 also expose atomic `updateMany` and `deleteMany`. Updates are readonly
-`[iid, replacement]` tuples; deletes accept canonical IID strings. Insert, put,
+`[iid, replacement]` tuples; deletes accept `Iid` values. Insert, put,
 and update batches return frozen values in input order, while delete returns no
 affected-row count:
 

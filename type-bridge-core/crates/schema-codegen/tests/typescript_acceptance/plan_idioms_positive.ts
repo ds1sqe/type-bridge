@@ -1,3 +1,4 @@
+import { Iid } from "@type-bridge/node";
 import { Account, AccountHandle, Item, ItemHandle, Purchase } from "./generated_plan_idioms/src/index.js";
 import { Plan, type Expr, type Pending, type StagedTransaction, type Value } from "@type-bridge/node";
 import { Named } from "./generated_plan_names/src/index.js";
@@ -6,7 +7,7 @@ function expectType<T>(_value: T): void {}
 
 export function names(): void {
   expectType<Plan<Named[]>>(Plan.build(() => {
-    expectType<Plan<bigint>>(Plan.build((p) => { Named.byIid("0x01"); return p.count(); }));
+    expectType<Plan<bigint>>(Plan.build((p) => { Named.byIid(new Iid("0x01")); return p.count(); }));
     const value = Named.match("key").where(Named.set_.eq("old"));
     expectType<Value<string>>(value.thing_);
     expectType<Value<string>>(value.recording_);
@@ -34,7 +35,7 @@ export function purchase(transaction: StagedTransaction): void {
   expectType<Purchase[]>(transaction.stage(order).result());
   expectType<Plan<Item[]>>(Plan.build(() => Item.insertMany([{ itemId: "I2", price: 3n }])));
   expectType<Plan<Item[]>>(Plan.build(() => Item.subtypes("I2").deleteReturning()));
-  expectType<Plan<bigint>>(Plan.build((p) => { Item.byIid("0x01"); return p.count(); }));
+  expectType<Plan<bigint>>(Plan.build((p) => { Item.byIid(new Iid("0x01")); return p.count(); }));
   const rows: Item.Values[] = [{ itemId: "I2", price: 3n }];
   expectType<Plan<Item[]>>(Plan.build(() => Item.putMany(rows)));
   const template = Plan.template();

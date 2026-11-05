@@ -28,6 +28,7 @@
  * @module
  */
 import type { AttributeValue, PlanAuthority } from "./index.js";
+import { Iid } from "./index.js";
 import type { NativePlan, NativeStagedPlan } from "./native.js";
 import type { PlanAnswer } from "./staged-transaction.js";
 import { Value } from "./plan-values.js";
@@ -53,17 +54,18 @@ export interface PlanRoleToken<Owner extends string = string> {
     readonly role: string;
 }
 /** The scalar domain of an input column. */
-export type PlanValueType = "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime_tz" | "decimal" | "duration";
+export type PlanValueType = "iid" | "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime_tz" | "decimal" | "duration";
 /**
  * A literal: a `string`, a `bigint` (long) or a `boolean`, or a typed
  * value from `long()`, `double()`, `decimal()`, `date()` and the other
  * value helpers. Plain numbers are not literals; use `double()` or a
  * `bigint`.
  */
-export type PlanLiteral = string | bigint | boolean | AttributeValue;
+export type PlanLiteral = Iid | string | bigint | boolean | AttributeValue;
 /** A scalar operand: a {@link PlanValue}, a {@link PlanInput}, or a literal. */
 export type PlanOperand = PlanValue | PlanInput<unknown> | PlanLiteral;
 type PlanHostTypes = {
+    iid: Iid;
     string: string;
     long: bigint;
     double: number;
@@ -74,7 +76,7 @@ type PlanHostTypes = {
     decimal: string;
     duration: string;
 };
-type LegacyInputValue = string | bigint | number | boolean | AttributeValue;
+type LegacyInputValue = Iid | string | bigint | number | boolean | AttributeValue;
 type Comparator = "equal" | "not_equal" | "less" | "less_or_equal" | "greater" | "greater_or_equal" | "contains" | "starts_with" | "ends_with" | "like";
 declare const planThingModel: unique symbol;
 declare const planHandleKind: unique symbol;
@@ -198,7 +200,7 @@ export declare class PlanNewThing<Id extends string = string> {
 }
 /** One template column reads an earlier selected thing IID. */
 export interface StagedResultRef {
-    readonly input: PlanInput<string>;
+    readonly input: PlanInput<Iid>;
     readonly sourcePlan: number;
     readonly sourceColumn: number;
     readonly expectedTypes: readonly PlanModelToken[];
@@ -227,9 +229,9 @@ export declare class PlanBuilder {
     /** @internal Generated field access uses the shared binding cache. */
     fieldValue(thing: PlanThing, token: PlanFieldToken): PlanValue;
     /** @internal Generated IID lookup. */
-    byIid(thing: PlanThing, iid: string): void;
+    byIid(thing: PlanThing, iid: Iid): void;
     /** Restrict a matched thing to an invocation IID column. */
-    byIidInput(thing: PlanThing, column: PlanInput<string>): this;
+    byIidInput(thing: PlanThing, column: PlanInput<Iid>): this;
     /** @internal Add a player without replacing existing role players. */
     link(relation: PlanThing, role: PlanRoleToken, player: PlanThing): void;
     /** @internal Lift a generated helper's caller value into given. */
@@ -237,9 +239,11 @@ export declare class PlanBuilder {
     /** @internal Name a generated assignment through the shared core. */
     letValue(thing: PlanThing, field: string, value: PlanExpr): PlanValue;
     /** Declare an input column named `name`; each {@link row} supplies a value. */
+    input(name: string, valueType: "iid"): PlanInput<Iid>;
     input(name: string, valueType: "string"): PlanInput<string>;
     input(name: string, valueType: PlanValueType): PlanInput;
     /** Declare an optional input column; rows may give it {@link PlanInput.absent}. */
+    optionalInput(name: string, valueType: "iid"): PlanInput<Iid>;
     optionalInput(name: string, valueType: "string"): PlanInput<string>;
     optionalInput(name: string, valueType: PlanValueType): PlanInput;
     /** @internal Strong input typing for explicit generated templates. */
@@ -471,7 +475,7 @@ export declare class Handle<M> {
 /** @internal Shared recorder behind generated match/subtypes/byIid helpers. */
 export declare function planMatch<M, H extends Handle<M>>(definition: PlanModelAuthoring<M>, HandleClass: new (recording: PlanRecording, thing: PlanThing, definition: PlanModelAuthoring<M>) => H, fields?: Readonly<Record<string, unknown>>, options?: {
     subtypes?: boolean;
-    iid?: string;
+    iid?: Iid;
     key?: readonly [string, unknown];
 }): H;
 /** @internal Shared scalar insert/put recorder for generated factories. */

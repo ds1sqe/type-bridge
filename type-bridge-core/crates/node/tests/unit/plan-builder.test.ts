@@ -7,6 +7,7 @@ import test = require("node:test");
 import {
   setDebugListener,
   type DebugEvent,
+  Iid,
   Plan,
   PlanBuilder,
   PlanExpr,
@@ -17,6 +18,9 @@ import {
   type PlanModelToken,
   type PlanRoleToken,
 } from "../../typescript/public.js";
+
+import { loadNative } from "../../typescript/native.js";
+import { planAuthorityHandle } from "../../typescript/plan-internals.js";
 
 // Written and checked by the Rust test
 // `typescript_purchase_fixture_is_the_rust_hand_built_purchase`: the Rust
@@ -294,7 +298,7 @@ test("explain returns the shared metadata without given values", () => {
 
 test("staged builder keeps typed IID references and rejects authored reference values", () => {
   const builder = new PlanBuilder();
-  const iid = builder.input("target_iid", "string");
+  const iid = builder.input("target_iid", "iid");
   const item = builder.exact(Item);
   builder.byIidInput(item, iid).returning([item]);
   const reference = { input: iid, sourcePlan: 0, sourceColumn: 0, expectedTypes: [Item] };
@@ -302,7 +306,42 @@ test("staged builder keeps typed IID references and rejects authored reference v
   assert.deepEqual(JSON.parse(staged.nativeHandle().resultRefsJson()), [
     { input: 0, source_plan: 0, source_column: 0, expected_types: [{ kind: "entity", label: "item" }] },
   ]);
-  assert.throws(() => builder.buildStaged(authority(), [[iid.value("0x10")]], [reference]), (error: unknown) => error instanceof PlanError && error.code === "query_stage_result_ref_template");
+  assert.throws(() => builder.buildStaged(authority(), [[iid.value(new Iid("0x10"))]], [reference]), (error: unknown) => error instanceof PlanError && error.code === "query_stage_result_ref_template");
   const foreign = new PlanBuilder().input("foreign", "string");
   assert.throws(() => builder.buildStaged(authority(), [[foreign.absent()]], [reference]), /does not belong|plan handle does not belong/);
+});
+
+
+test("nominal IID literal and input authoring keep native plan bytes", () => {
+  const schema = authority();
+  const nativeAuthority = planAuthorityHandle(schema);
+  assert.ok(nativeAuthority);
+  const identity = new Iid("0xAb12");
+  const typed = new PlanBuilder();
+  const item = typed.exact(Item);
+  typed.byIid(item, identity);
+  typed.returning([item]);
+  const native = new (loadNative().NodePlanBuilder)();
+  const nativeItem = native.exact(Item.typeKey);
+  native.byIid(nativeItem, "0xAb12");
+  native.returning([nativeItem]);
+  assert.deepEqual(typed.build(schema).canonicalBytes(), native.build(nativeAuthority).canonicalBytes());
+  assert.throws(() => Reflect.apply(typed.byIid, typed, [item, "0xAb12"]), TypeError);
+  for (const optional of [false, true]) {
+    const builder = new PlanBuilder();
+    const column = optional ? builder.optionalInput("target", "iid") : builder.input("target", "iid");
+    const root = builder.exact(Item);
+    builder.byIidInput(root, column).returning([root]);
+    builder.row([column.value(identity)]);
+    if (optional) builder.row([column.absent()]);
+    const wire = new (loadNative().NodePlanBuilder)();
+    const wireColumn = wire.input("target", "string", optional);
+    const wireRoot = wire.exact(Item.typeKey);
+    wire.byIidInput(wireRoot, wireColumn);
+    wire.returning([wireRoot]);
+    wire.row([wireColumn], [wire.literal("string", "0xAb12")]);
+    if (optional) wire.row([wireColumn], [null]);
+    assert.deepEqual(builder.build(schema).canonicalBytes(), wire.build(nativeAuthority).canonicalBytes());
+    assert.throws(() => builder.row([Reflect.apply(column.value, column, ["0xAb12"])]), TypeError);
+  }
 });

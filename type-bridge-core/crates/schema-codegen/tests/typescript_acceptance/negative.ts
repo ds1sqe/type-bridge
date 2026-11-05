@@ -1,3 +1,4 @@
+import { Iid } from "@type-bridge/node";
 import {
   Actor,
   Container,
@@ -38,8 +39,8 @@ const person = (value: Identifier): Person => Person.create({
   valDouble: ValDouble.create(3.5),
   valDuration: ValDuration.create("PT3S"),
 });
-const personReference = Person.reference("person-iid", { identifier });
-const eventReference = Event.reference("event-iid", {});
+const personReference = Person.reference(new Iid("0xa1"), { identifier });
+const eventReference = Event.reference(new Iid("0xe1"), {});
 declare const exactPersonManager: ReturnType<typeof Person.manager>;
 declare const maybeIdentifier: string | undefined;
 declare const database: Database;
@@ -137,3 +138,26 @@ const stagedPerson = await stagedSession.query(stagedRoot).one();
 const pendingAsModel: Person = stagedPerson;
 // @ts-expect-error a pending answer is not a scalar field input
 stagedRoot.field(Person.score).eq(stagedPerson);
+
+// @ts-expect-error IID reference arguments are nominal.
+Person.reference("0xa1", { identifier });
+// @ts-expect-error IID predicates reject strings.
+personVar.iid("0xa1");
+// @ts-expect-error IID lists reject string members.
+personVar.iidIn(["0xa1"]);
+// @ts-expect-error Manager IID keywords reject strings.
+exactPersonManager.filter({ iid: "0xa1" });
+// @ts-expect-error Manager IID lists reject string members.
+exactPersonManager.filter({ iid__in: ["0xa1"] });
+// @ts-expect-error By-IID reads reject strings.
+exactPersonManager.getByIid("0xa1");
+
+// @ts-expect-error Model IIDs are nominal values, not strings.
+const plainReferenceIid: string | null = personReference.iid;
+const iidBuilder = Plan.builder();
+const textColumn = iidBuilder.input("target", "string");
+const iidTarget = iidBuilder.exact(Person);
+// @ts-expect-error IID input predicates require nominal IID columns.
+iidBuilder.byIidInput(iidTarget, textColumn);
+// @ts-expect-error Authored by-IID helpers reject strings.
+Plan.build(() => Person.byIid("0xa1"));

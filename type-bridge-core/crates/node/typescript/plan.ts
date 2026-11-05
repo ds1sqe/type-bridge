@@ -29,6 +29,7 @@
  */
 
 import type { AttributeValue, PlanAuthority } from "./index.js";
+import { Iid } from "./index.js";
 import { loadNative } from "./native.js";
 import type {
   NativePlan,
@@ -65,6 +66,7 @@ export interface PlanRoleToken<Owner extends string = string> {
 
 /** The scalar domain of an input column. */
 export type PlanValueType =
+  | "iid"
   | "string"
   | "long"
   | "double"
@@ -81,15 +83,16 @@ export type PlanValueType =
  * value helpers. Plain numbers are not literals; use `double()` or a
  * `bigint`.
  */
-export type PlanLiteral = string | bigint | boolean | AttributeValue;
+export type PlanLiteral = Iid | string | bigint | boolean | AttributeValue;
 
 /** A scalar operand: a {@link PlanValue}, a {@link PlanInput}, or a literal. */
 export type PlanOperand = PlanValue | PlanInput<unknown> | PlanLiteral;
 type PlanHostTypes = {
+  iid: Iid;
   string: string; long: bigint; double: number; boolean: boolean;
   date: Date; datetime: Date; datetime_tz: Date; decimal: string; duration: string;
 };
-type LegacyInputValue = string | bigint | number | boolean | AttributeValue;
+type LegacyInputValue = Iid | string | bigint | number | boolean | AttributeValue;
 
 type Comparator =
   | "equal"
@@ -398,6 +401,11 @@ function fieldIdentity(token: PlanFieldToken): string {
 }
 
 function literalParts(value: PlanLiteral, valueType?: PlanValueType): [string, unknown] {
+  if (valueType === "iid") {
+    if (!(value instanceof Iid)) throw new TypeError("IID input columns require Iid values");
+    return ["string", value.toString()];
+  }
+  if (value instanceof Iid) return ["string", value.toString()];
   if (typeof value === "object" && value !== null && "value_type" in value) {
     if (value.value_type === "long" && /^-?\d+$/.test(value.value)) {
       return ["long", BigInt(value.value)];
@@ -424,7 +432,7 @@ function literalParts(value: PlanLiteral, valueType?: PlanValueType): [string, u
 
 /** One template column reads an earlier selected thing IID. */
 export interface StagedResultRef {
-  readonly input: PlanInput<string>;
+  readonly input: PlanInput<Iid>;
   readonly sourcePlan: number;
   readonly sourceColumn: number;
   readonly expectedTypes: readonly PlanModelToken[];
@@ -521,9 +529,13 @@ export class PlanBuilder {
   }
 
   /** @internal Generated IID lookup. */
-  byIid(thing: PlanThing, iid: string): void { this.#native.byIid(this.#index(thing), iid); }
+  byIid(thing: PlanThing, iid: Iid): void {
+    if (!(iid instanceof Iid)) throw new TypeError("byIid requires an Iid value");
+    this.#native.byIid(this.#index(thing), iid.toString());
+  }
   /** Restrict a matched thing to an invocation IID column. */
-  byIidInput(thing: PlanThing, column: PlanInput<string>): this {
+  byIidInput(thing: PlanThing, column: PlanInput<Iid>): this {
+    if (inputTypes.get(column) !== "iid") throw new TypeError("byIidInput requires an IID input column");
     this.#native.byIidInput(this.#index(thing), this.#index(column));
     return this;
   }
@@ -548,6 +560,7 @@ export class PlanBuilder {
   }
 
   /** Declare an input column named `name`; each {@link row} supplies a value. */
+  input(name: string, valueType: "iid"): PlanInput<Iid>;
   input(name: string, valueType: "string"): PlanInput<string>;
   input(name: string, valueType: PlanValueType): PlanInput;
   input(name: string, valueType: PlanValueType): PlanInput {
@@ -555,6 +568,7 @@ export class PlanBuilder {
   }
 
   /** Declare an optional input column; rows may give it {@link PlanInput.absent}. */
+  optionalInput(name: string, valueType: "iid"): PlanInput<Iid>;
   optionalInput(name: string, valueType: "string"): PlanInput<string>;
   optionalInput(name: string, valueType: PlanValueType): PlanInput;
   optionalInput(name: string, valueType: PlanValueType): PlanInput {
@@ -569,7 +583,7 @@ export class PlanBuilder {
   #input<T = LegacyInputValue>(name: string, valueType: PlanValueType, optional: boolean): PlanInput<T> {
     const input = new PlanInput<T>();
     inputTypes.set(input, valueType);
-    return register(input, this, this.#native.input(name, valueType, optional));
+    return register(input, this, this.#native.input(name, valueType === "iid" ? "string" : valueType, optional));
   }
 
   /** Require `condition` of every matched row. */
@@ -716,9 +730,14 @@ export class PlanBuilder {
     for (const row of rows) {
       const cells = row.map(cell => { const value = inputValues.get(cell); if (value === undefined) throw new TypeError("expected a PlanInputValue"); return value; });
       columns.push(cells.map(([input]) => this.#index(input)));
-      values.push(cells.map(([, value]) => value));
+      values.push(cells.map(([input, value]) =>
+        value !== null && inputTypes.get(input) === "iid" ? literalParts(value as PlanLiteral, "iid")[1] : value,
+      ));
     }
-    const refs = references.map(reference => ({ input: this.#index(reference.input), source_plan: reference.sourcePlan, source_column: reference.sourceColumn, expected_types: reference.expectedTypes.map(model => JSON.parse(model.typeKey) as unknown) }));
+    const refs = references.map(reference => {
+      if (inputTypes.get(reference.input) !== "iid") throw new TypeError("staged result references require an IID input column");
+      return { input: this.#index(reference.input), source_plan: reference.sourcePlan, source_column: reference.sourceColumn, expected_types: reference.expectedTypes.map(model => JSON.parse(model.typeKey) as unknown) };
+    });
     return new StagedPlan(planNativeCall(() => this.#native.buildStaged(native, columns, values, JSON.stringify(refs))));
   }
 
@@ -827,7 +846,7 @@ export class Plan<R = PlanAnswer> {
         if (handle === undefined || handle.builder !== binding.builder) throw new TypeError("input does not belong to this template");
         const kind = inputTypes.get(input)!;
         indexes.push(handle.index);
-        cells.push(value === null ? null : binding.encode === undefined ? literalParts(value as PlanLiteral, kind)[1] : binding.encode(kind, value));
+        cells.push(value === null ? null : binding.encode === undefined || kind === "iid" ? literalParts(value as PlanLiteral, kind)[1] : binding.encode(kind, value));
       }
       columns.push(indexes);
       values.push(cells);
@@ -1152,7 +1171,7 @@ export function planMatch<M, H extends Handle<M>>(
   definition: PlanModelAuthoring<M>,
   HandleClass: new (recording: PlanRecording, thing: PlanThing, definition: PlanModelAuthoring<M>) => H,
   fields: Readonly<Record<string, unknown>> = {},
-  options: { subtypes?: boolean; iid?: string; key?: readonly [string, unknown] } = {},
+  options: { subtypes?: boolean; iid?: Iid; key?: readonly [string, unknown] } = {},
 ): H {
   const recording = PlanRecording.current();
   recording.use(definition.authority(), definition.decodeScalars, definition.encodeScalar, definition.projection(), definition.decodeRows);

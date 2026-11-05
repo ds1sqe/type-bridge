@@ -1,3 +1,4 @@
+import { Iid } from "@type-bridge/node";
 import {
   type BatchWriteResult,
   Actor,
@@ -83,8 +84,8 @@ const interaction: Interaction = Interaction.create({
   target: person,
 });
 const plainActivity: PlainActivity = PlainActivity.create({ participant: person });
-const reference: PersonRef = Person.reference("person-iid", { identifier });
-const eventReference: EventRef = Event.reference("event-iid", {});
+const reference: PersonRef = Person.reference(new Iid("0xa1"), { identifier });
+const eventReference: EventRef = Event.reference(new Iid("0xe1"), {});
 
 Employment.create({ employee: person });
 Container.create({ item: [eventReference] });
@@ -98,7 +99,7 @@ Membership.create({
 const stats: PlayerStats = PlayerStats({ wins: 3n, nickname: null });
 const identifierValue: string = identifier.value;
 const scoreValue: bigint = score.value;
-const completeIid: string | null = person.iid;
+const completeIid: Iid | null = person.iid;
 declare const database: Database;
 const personManager: ProjectedModelManager<Person> = Person.manager(database);
 personManager.insert(person);
@@ -106,14 +107,14 @@ personManager.put(person);
 const insertedPeople: BatchWriteResult<Person> = personManager.insertMany([person]);
 const putPeople: BatchWriteResult<Person> = personManager.putMany([person]);
 const nativePersonManager = Person.manager(database);
-const updatedPeople: BatchWriteResult<Person> = nativePersonManager.updateMany([["0xa1", person]]);
-nativePersonManager.deleteMany(["0xa1"]);
+const updatedPeople: BatchWriteResult<Person> = nativePersonManager.updateMany([[new Iid("0xa1"), person]]);
+nativePersonManager.deleteMany([new Iid("0xa1")]);
 const ordinaryCanonicalFilter = nativePersonManager.where();
 void ordinaryCanonicalFilter;
 void updatedPeople;
-personManager.update("0x1", person);
+personManager.update(new Iid("0x1"), person);
 personManager.delete(person);
-personManager.delete("0x1");
+personManager.delete(new Iid("0x1"));
 const filteredPersonManager = personManager.filter({ score__gte: Score.create(3n) });
 const inPersonManager: ProjectedModelManager<Person> = personManager.filter({
   score__in: [Score.create(3n), Score.create(4n)],
@@ -122,7 +123,7 @@ const missingPersonManager: ProjectedModelManager<Person> = personManager.filter
   aliases__isnull: true,
 });
 const iidPersonManager: ProjectedModelManager<Person> = personManager.filter({
-  iid__in: ["0x1", "0x2"],
+  iid__in: [new Iid("0x1"), new Iid("0x2")],
 });
 const filteredPeople: readonly Person[] = filteredPersonManager.all();
 const firstFilteredPerson: Person | null = filteredPersonManager.first();
@@ -148,8 +149,8 @@ const interactionVar = querySession.exact(Interaction);
 const identifierPredicate = personVar.field(Person.identifier).eq(identifier);
 const presentPredicate: Predicate = personVar.field(Person.score).isPresent();
 const missingPredicate: Predicate = personVar.field(Person.score).isMissing();
-const iidPredicate: Predicate = personVar.iid("0x1");
-const iidSetPredicate: Predicate = personVar.iidIn(["0x1", "0x2"]);
+const iidPredicate: Predicate = personVar.iid(new Iid("0x1"));
+const iidSetPredicate: Predicate = personVar.iidIn([new Iid("0x1"), new Iid("0x2")]);
 const employeePredicate = employmentVar.role(Employment.employee).connects(personVar);
 const actorPredicate = interactionVar.role(Interaction.actor).connects(actorVar);
 const actorInteractionQuery: Query<Interaction> = querySession

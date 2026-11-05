@@ -946,7 +946,7 @@ function constructedObservations(package_) {
     identifier: package_.Identifier.create("interaction-absent"),
     target: ada,
   });
-  const event = package_.Event.reference("0x20", {});
+  const event = package_.Event.reference(new package_.Iid("0x20"), {});
   const container = package_.Container.create({ item: [event] });
   return {
     ada,
@@ -1282,9 +1282,9 @@ function constraintObservation(package_, constructed) {
     () =>
       package_.Container.create({
         item: [
-          package_.Event.reference("0x01", {}),
-          package_.Event.reference("0x02", {}),
-          package_.Event.reference("0x03", {}),
+          package_.Event.reference(new package_.Iid("0x01"), {}),
+          package_.Event.reference(new package_.Iid("0x02"), {}),
+          package_.Event.reference(new package_.Iid("0x03"), {}),
         ],
       }),
     { category: "invalid_input", code: "role_cardinality_violation" },
@@ -1466,7 +1466,7 @@ async function buildReport(root, package_, foreign, semanticProfile = selectedPr
   const localHydration =
     hydrated.ada.__typebridgeModel === package_.Person.typeKey &&
     hydrated.ada.__typebridgeForm === "complete" &&
-    hydrated.ada.iid === "0x01" &&
+    hydrated.ada.iid.toString() === "0x01" &&
     Object.isFrozen(hydrated.ada);
   requireCondition(
     localConstruction && localHydration,

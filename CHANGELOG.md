@@ -228,6 +228,13 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Generated Node model and reference `.iid` properties return retained `Iid`
+  objects. Reference constructors, manager IID arguments and filters, query
+  `iid`/`iidIn`, and staged `byIid` require `new Iid("0x1234")`, never strings.
+  Declare staged identity columns with `input("target", "iid")` or
+  `optionalInput`; `byIidInput` and staged result references require those
+  nominal columns. Query and staged wire bytes remain unchanged.
+
 - Python native `DynamicExpr.iid`, `IidConstraint`, and `IidPattern`
   constructors and IID setters require nominal `Iid` values instead of
   strings. Their stored AST values and query lowering remain unchanged.

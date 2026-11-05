@@ -43,7 +43,7 @@ export const SEMANTIC_SCHEMA_FINGERPRINT = Object.freeze({
 export const PROJECTION_FINGERPRINT = Object.freeze({
   algorithm: "sha256",
   canonicalization: "typebridge.binding-projection/v1",
-  digest: "aa83032c75366fde8523780351ffb5bdb5d7f64a932ac4c0dcf03f59b15d61bf",
+  digest: "9913b04146762623abd8f838acf7740a09ee13fca382d93a3c4f642945aba276",
   domain: "typebridge.binding.projection",
   semantic_profile: SEMANTIC_PROFILE,
 });
@@ -868,15 +868,15 @@ function actorIdentity(package_, actor) {
   );
 }
 
-function insertOne(ref, manager, value, created, actualOrder) {
+function insertOne(package_, ref, manager, value, created, actualOrder) {
   const result = manager.insert(value);
   const inserted = result.item;
   if (
     result.count !== 1 || result.items[0] !== inserted ||
     inserted === null ||
     typeof inserted !== "object" ||
-    typeof inserted.iid !== "string" ||
-    inserted.iid.length === 0
+    !(inserted.iid instanceof package_.Iid) ||
+    inserted.iid !== inserted.iid
   ) {
     throw new ProducerError(
       "invalid_crud_result",
@@ -989,6 +989,7 @@ export function runJourney(
     const ada = personValue(package_, record(records, "data-ada", "person"));
     const dana = personValue(package_, record(records, "data-dana", "person"));
     const hydratedAda = insertOne(
+      package_,
       "data-ada",
       managers.get("person"),
       ada,
@@ -996,6 +997,7 @@ export function runJourney(
       actualCreateOrder,
     );
     const hydratedDana = insertOne(
+      package_,
       "data-dana",
       managers.get("person"),
       dana,
@@ -1008,6 +1010,7 @@ export function runJourney(
     );
 
     const hydratedRobot7 = insertOne(
+      package_,
       "robot-7",
       managers.get("robot"),
       robotValue(package_, record(records, "robot-7", "robot")),
@@ -1015,6 +1018,7 @@ export function runJourney(
       actualCreateOrder,
     );
     const hydratedRobotNegative7 = insertOne(
+      package_,
       "robot-negative-7",
       managers.get("robot"),
       robotValue(package_, record(records, "robot-negative-7", "robot")),
@@ -1056,6 +1060,7 @@ export function runJourney(
       "interaction-person",
     ]) {
       hydratedInteractions[ref] = insertOne(
+        package_,
         ref,
         managers.get("interaction"),
         interactions[ref],
@@ -1065,6 +1070,7 @@ export function runJourney(
     }
 
     const hydratedPlain = insertOne(
+      package_,
       "plain-activity-ada",
       managers.get("plain-activity"),
       package_.PlainActivity.create({ participant: hydratedAda }),
@@ -1088,6 +1094,7 @@ export function runJourney(
     }
 
     const hydratedEvent = insertOne(
+      package_,
       "event-ada",
       managers.get("event"),
       package_.Event.create({ subject: hydratedAda }),
@@ -1095,6 +1102,7 @@ export function runJourney(
       actualCreateOrder,
     );
     const hydratedContainer = insertOne(
+      package_,
       "container-event",
       managers.get("container"),
       package_.Container.create({
@@ -1109,7 +1117,7 @@ export function runJourney(
       hydratedContainer.item.length === 1 &&
       relationPlayer?.__typebridgeModel === package_.Event.typeKey &&
       relationPlayer.__typebridgeForm === "reference" &&
-      relationPlayer.iid === hydratedEvent.iid;
+      relationPlayer.iid.equals(hydratedEvent.iid);
     if (!relationPlayerPreserved) {
       throw new ProducerError(
         "invalid_hydration",
