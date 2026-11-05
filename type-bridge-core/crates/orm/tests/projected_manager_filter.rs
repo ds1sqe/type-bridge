@@ -531,3 +531,100 @@ fn manager_query_validation_flattens_the_full_boolean_term_ceiling() {
         .unwrap_err();
     assert!(over_limit.to_string().contains("structural_limit_exceeded"));
 }
+
+#[tokio::test]
+async fn filtered_delete_dispatches_once_and_keeps_borrowed_failures_rollback_only() {
+    use type_bridge_orm::session::backend::QueryResult;
+    use type_bridge_orm::{ProjectedManagerFilterInvocationControl, QueryTarget, TxType};
+    let installed = installed(BindingTarget::Rust);
+    let person = type_id(TypeKind::Entity, "person");
+    let filter = ProjectedManagerFilter::try_new(&installed, person.clone())
+        .unwrap()
+        .try_and(
+            &installed,
+            &token(&person, "age"),
+            ProjectedManagerComparison::Gte,
+            &long_value(&installed, "age", 18),
+        )
+        .unwrap();
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    for borrowed in [false, true] {
+        let backend = MockBackend::new(vec![QueryResult::Rows(vec![
+            serde_json::json!({}),
+            serde_json::json!({}),
+        ])]);
+        let queries = backend.queries.clone();
+        let db = Database::with_backend(Box::new(backend), "filtered-delete");
+        let transaction = db.transaction_context(TxType::Write).await.unwrap();
+        let target = if borrowed {
+            QueryTarget::Transaction(&transaction)
+        } else {
+            QueryTarget::Database(&db)
+        };
+        ProjectedManagerFilterExecutor::new(&installed)
+            .delete_on_target(target, &filter, control())
+            .await
+            .unwrap();
+        {
+            let recorded = queries.lock().unwrap();
+            assert_eq!(recorded.len(), 1);
+            assert!(recorded[0].contains("delete"));
+            assert!(recorded[0].contains("18"));
+            assert!(!recorded[0].contains("limit"));
+        }
+        if borrowed {
+            transaction.commit_sdk().await.unwrap();
+        } else {
+            transaction.rollback().await.unwrap();
+        }
+    }
+    let backend = MockBackend::new(vec![]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "filtered-delete-refusal");
+    let read = db.transaction_context(TxType::Read).await.unwrap();
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .delete_on_target(QueryTarget::Transaction(&read), &filter, control())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+            .code()
+            .as_str(),
+        "transaction_type_mismatch"
+    );
+    read.close().await.unwrap();
+    let cancellation = AnswerCancellation::default();
+    cancellation.cancel();
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .delete_on_target(
+            QueryTarget::Database(&db),
+            &filter,
+            ProjectedManagerFilterInvocationControl::capture(Default::default(), cancellation),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+            .code()
+            .as_str(),
+        "provider_cancelled"
+    );
+    assert!(queries.lock().unwrap().is_empty());
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![serde_json::json!({})])]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "filtered-delete-failure");
+    let transaction = db.transaction_context(TxType::Write).await.unwrap();
+    assert!(
+        ProjectedManagerFilterExecutor::new(&installed)
+            .delete_on_target(QueryTarget::Transaction(&transaction), &filter, control())
+            .await
+            .is_err()
+    );
+    assert_eq!(queries.lock().unwrap().len(), 1);
+    let error = transaction.commit_sdk().await.unwrap_err();
+    assert_eq!(error.code().as_str(), "transaction_rollback_only");
+    transaction.rollback().await.unwrap();
+}

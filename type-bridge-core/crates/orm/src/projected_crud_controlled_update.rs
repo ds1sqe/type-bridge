@@ -1892,6 +1892,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn field_filter_delete_uses_one_staged_write_for_every_match() {
+        use crate::{
+            ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
+            ProjectedManagerFilterInvocationControl,
+        };
+        use type_bridge_contract::projection::ProjectedTokenIdentity;
+        for (kind, label) in [
+            (TypeKind::Entity, "wide-item"),
+            (TypeKind::Relation, "wide-edge"),
+        ] {
+            let model = TypeId::new(kind, label).unwrap();
+            let (installed, proxy, transport) = single_proxy_fixture(model.clone(), 3, 0);
+            let field =
+                OwnsFactId::new(model.clone(), AttributeId::new("item-tag").unwrap()).unwrap();
+            let token = ProjectedTokenIdentity::Field {
+                owner: model.clone(),
+                field,
+            };
+            let value = ProjectedAttributeValue::try_new(
+                &installed,
+                TypeId::new(TypeKind::Attribute, "item-tag").unwrap(),
+                CanonicalValue::String(
+                    type_bridge_contract::value::CanonicalString::new("tag-0").unwrap(),
+                ),
+            )
+            .unwrap();
+            let filter = ProjectedManagerFilter::try_new(&installed, model.clone())
+                .unwrap()
+                .try_and(&installed, &token, ProjectedManagerComparison::Eq, &value)
+                .unwrap();
+            ProjectedManagerFilterExecutor::new(&installed)
+                .delete_on_target(
+                    crate::QueryTarget::Proxy(&proxy),
+                    &filter,
+                    ProjectedManagerFilterInvocationControl::capture(
+                        Default::default(),
+                        Default::default(),
+                    ),
+                )
+                .await
+                .unwrap();
+            let seen = transport.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].plans().len(), 1);
+            let expressions = [crate::_dynamic::DynamicExpr::Compare {
+                attr_name: "item-tag".into(),
+                operator: crate::_dynamic::DynamicComparisonOp::Eq,
+                value: AttributeValue::String("tag-0".into()),
+            }];
+            let expected = ManagerPlans::new(installed.manager_registry().unwrap())
+                .delete_matching(
+                    label,
+                    crate::plan_builders::manager::ManagerSelection::Filter(&expressions),
+                    true,
+                    false,
+                )
+                .unwrap();
+            assert_eq!(
+                seen[0].plans()[0].plan().canonical_bytes().unwrap(),
+                expected.local().canonical_bytes().unwrap()
+            );
+            assert_eq!(
+                transport
+                    .dispatched_writes
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn ordered_proxy_single_and_many_deletes_preserve_call_plan_and_one_exchange() {
         for target in [
             BindingTarget::Python,

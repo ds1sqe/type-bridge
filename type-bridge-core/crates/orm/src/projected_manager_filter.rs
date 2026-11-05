@@ -32,6 +32,9 @@ use crate::runtime_projection::InstalledRuntimeProjection;
 use crate::session::backend::AnswerCancellation;
 use crate::session::{Database, TransactionContext};
 
+#[path = "projected_manager_mutation.rs"]
+mod mutation;
+
 const MAX_MANAGER_FILTER_PREDICATES: usize = crate::match_request::MAX_BOOLEAN_TERMS;
 
 /// One closed scalar comparison admitted by an exact generated-manager filter.
