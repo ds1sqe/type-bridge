@@ -973,3 +973,70 @@ fn ordered_collection_and_distinct_deltas_are_lossless_but_migration_unsupported
         DeltaSafety::Unsupported
     );
 }
+
+#[test]
+fn ownership_depends_on_nearest_inherited_value_and_each_sub_edge() {
+    for depth in [1, 2] {
+        let labels = ["leaf", "middle", "root"];
+        let mut facts = vec![
+            type_fact(TypeKind::Entity, "person"),
+            SchemaFact::Owns(OwnsFact::new(owns_id("person", "leaf"))),
+        ];
+        for label in &labels[..=depth] {
+            facts.push(type_fact(TypeKind::Attribute, label));
+        }
+        let mut edges = Vec::new();
+        for pair in labels[..=depth].windows(2) {
+            let edge = SubFactId::new(
+                type_id(TypeKind::Attribute, pair[0]),
+                type_id(TypeKind::Attribute, pair[1]),
+            )
+            .unwrap();
+            facts.push(SchemaFact::Sub(SubFact::new(edge.clone())));
+            edges.push(SchemaFactId::Sub(edge));
+        }
+        facts.push(value_fact(labels[depth], ValueTypeTag::String));
+        let source = declared(vec![]);
+        let target = declared(facts.clone());
+        let delta = diff_managed(&source, &target, &context()).unwrap();
+        let owns = SchemaFactId::Owns(owns_id("person", "leaf"));
+        let value = SchemaFactId::Value(ValueFactId::new(AttributeId::new(labels[depth]).unwrap()));
+        for dependency in edges.iter().chain(std::iter::once(&value)) {
+            assert!(operation_index(&delta, dependency) < operation_index(&delta, &owns));
+        }
+        apply_delta(&source, &delta, &context()).unwrap();
+        // A direct value on the intermediate type becomes the nearest authority.
+        if depth == 2 {
+            facts.push(value_fact("middle", ValueTypeTag::String));
+            let target = declared(facts);
+            let graph = FactDependencyGraph::from_declared(&target).unwrap();
+            let dependencies = graph.dependencies(&owns).unwrap();
+            assert!(dependencies.contains(&SchemaFactId::Value(ValueFactId::new(
+                AttributeId::new("middle").unwrap()
+            ))));
+            assert!(!dependencies.contains(&value));
+        }
+    }
+}
+
+#[test]
+fn ownership_without_value_authority_anywhere_in_the_chain_still_refuses() {
+    let facts = vec![
+        type_fact(TypeKind::Entity, "person"),
+        type_fact(TypeKind::Attribute, "leaf"),
+        type_fact(TypeKind::Attribute, "root"),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(
+                type_id(TypeKind::Attribute, "leaf"),
+                type_id(TypeKind::Attribute, "root"),
+            )
+            .unwrap(),
+        )),
+        SchemaFact::Owns(OwnsFact::new(owns_id("person", "leaf"))),
+    ];
+    let graph = FactDependencyGraph::from_facts(&facts).unwrap();
+    assert_eq!(
+        graph.validate_complete().unwrap_err().code().as_str(),
+        "schema_delta_missing_dependency"
+    );
+}
