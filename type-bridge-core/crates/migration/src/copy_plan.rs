@@ -10,7 +10,7 @@ use type_bridge_contract::query_plan::v3::{
 use type_bridge_contract::query_plan::{
     QueryOperand, QueryOutput, QueryPattern, ReduceAssignment, Reducer,
 };
-use type_bridge_contract::schema::{DeclaredSchema, OwnsFactId, SchemaFact};
+use type_bridge_contract::schema::{DeclaredSchema, SchemaFact, SchemaFactId};
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::value::ValueTypeTag;
 
@@ -57,8 +57,18 @@ pub(crate) fn build(
         })?;
     let source = AttributeId::new(source)?;
     let dest = AttributeId::new(dest)?;
-    let field = OwnsFactId::new(owner.clone(), dest.clone())?;
     let profile = SemanticProfileId::new("typedb-3.12.1/v1")?;
+    let resolved = type_bridge_schema::resolve(schema, &profile)
+        .map_err(|error| invalid(&error.to_string()))?;
+    let ownership = resolved
+        .types()
+        .get(&owner)
+        .and_then(|owner| owner.owns().get(&dest))
+        .ok_or_else(|| invalid("CopyAttribute destination is not effectively owned"))?;
+    let SchemaFactId::Owns(field) = ownership.origin().declared() else {
+        return Err(invalid("CopyAttribute destination has no declared ownership origin").into());
+    };
+    let field = field.clone();
     let canonical = type_bridge_schema::canonical_semantic_schema_bytes(schema, &profile)
         .map_err(|error| invalid(&error.to_string()))?;
     let semantics = ManagedSemanticSchemaFingerprint::compute(profile, &canonical)?;
@@ -225,6 +235,24 @@ pub(crate) mod tests {
             reverse: None,
         }
     }
+    #[test]
+    fn inherited_destination_uses_its_actual_declaration_origin() {
+        let (_, op) = fixture();
+        let schema = type_bridge_schema_compat::typeql_to_declared(
+            type_bridge_contract::schema::DocumentId::new("inherited-copy.typeql").unwrap(),
+            "define attribute old-name, value string; attribute new-name, value string; entity base, owns old-name, owns new-name; entity person, sub base;",
+        ).unwrap();
+        let data = build(&op, &schema, true).unwrap();
+        let forward = data.program(crate::MigrationAction::Apply).unwrap();
+        let Some(Stage::Attach { items }) = forward.pipeline().last() else {
+            panic!("copy attachment")
+        };
+        assert!(
+            matches!(&items[0], AttachItem::Has { field, .. } if field.owner().label().as_str() == "base")
+        );
+        assert!(data.program(crate::MigrationAction::Rollback).is_some());
+    }
+
     #[test]
     fn copy_roundtrips_native_counts_and_refuses_tampered_write_count() {
         let step = step();
