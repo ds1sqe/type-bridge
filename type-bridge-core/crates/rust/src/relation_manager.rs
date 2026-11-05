@@ -3,7 +3,6 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use type_bridge_contract::id::is_canonical_thing_iid;
 use type_bridge_orm::{
     ProjectedBatchOperation, ProjectedBatchRow, ProjectedCrudExecutor, ProjectedManagerComparison,
 };
@@ -16,8 +15,8 @@ use crate::error::{Error, ModelValidationPhase};
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, ModelKind};
 use crate::projected_batch::{
     checked_batch_ordinal, create_operation, create_rows, delete_rows, encode_batch_create,
-    execute_owned_delete, execute_owned_things, prepare_batch, prepare_single_delete,
-    project_encoded_batch_create, reserved_binding_vec, validate_binding_row_count,
+    execute_owned_delete, execute_owned_things, prepare_batch, project_encoded_batch_create,
+    reserved_binding_vec, validate_binding_row_count,
 };
 use crate::projected_codec::{materialize_projected, project_create};
 use type_bridge_orm::{ProjectedManagerFilterExecutor, QueryTarget};
@@ -31,16 +30,6 @@ use crate::{Database, Result, WriteResult};
 
 #[cfg(test)]
 mod tests;
-
-fn invalid_iid() -> Error {
-    Error::model_validation(
-        ModelValidationPhase::Input,
-        "invalid_iid",
-        vec!["iid".into()],
-        "IID is not canonical",
-        None,
-    )
-}
 
 /// Schema-bound, model-branded manager for exact relation operations.
 /// Exact reads and writes exclude subtypes; methods return client input/schema-validation,
@@ -207,43 +196,9 @@ where
         }
         self.write_many_with_hooks(inputs, CrudOperation::Put).await
     }
-    /// Completely replaces non-key ownership and the complete effective active-role player
-    /// set on the exact relation at canonical `iid`, preserves that IID and its keys, and
-    /// returns its complete freshly hydrated model.
-    pub async fn update(&self, iid: &str, input: M::Create) -> Result<WriteResult<M>> {
-        if !is_canonical_thing_iid(iid) {
-            return Err(invalid_iid());
-        }
-        if !self.hooks.has_hooks() {
-            return self
-                .projected_write(input, CrudOperation::Update, Some(iid))
-                .await;
-        }
-        let encoded = Self::encode_hook_input(&input)?;
-        let state = self
-            .hooks
-            .run_pre(
-                M::TYPE_ID_JSON,
-                ModelKind::Relation,
-                CrudOperation::Update,
-                Some(iid),
-                Some(&encoded),
-            )
-            .await?;
-        let output = self
-            .projected_write(input, CrudOperation::Update, Some(iid))
-            .await?;
-        self.hooks
-            .run_post(
-                M::TYPE_ID_JSON,
-                ModelKind::Relation,
-                CrudOperation::Update,
-                output.item().map(|item| item.iid()),
-                Some(&encoded),
-                state,
-            )
-            .await;
-        Ok(output)
+    /// Redirect to `filter()?.iid(iid)?.update(input)` for the exact model scope.
+    pub async fn update(&self, iid: &crate::Iid, input: M::Create) -> Result<WriteResult<M>> {
+        self.filter()?.iid(iid)?.update(input).await
     }
 
     /// Delete an exact model and return its snapshots in a write result.
@@ -313,37 +268,9 @@ where
         Ok(snapshots)
     }
 
-    /// Deletes only the exact relation at canonical `iid`; subtype instances are not
-    /// targeted.
-    pub async fn delete(&self, iid: &str) -> Result<()> {
-        if !is_canonical_thing_iid(iid) {
-            return Err(invalid_iid());
-        }
-        if !self.hooks.has_hooks() {
-            return self.projected_delete(iid).await;
-        }
-        let state = self
-            .hooks
-            .run_pre(
-                M::TYPE_ID_JSON,
-                ModelKind::Relation,
-                CrudOperation::Delete,
-                Some(iid),
-                None,
-            )
-            .await?;
-        self.projected_delete(iid).await?;
-        self.hooks
-            .run_post(
-                M::TYPE_ID_JSON,
-                ModelKind::Relation,
-                CrudOperation::Delete,
-                Some(iid),
-                None,
-                state,
-            )
-            .await;
-        Ok(())
+    /// Redirect to `filter()?.iid(iid)?.delete()` for the exact model scope.
+    pub async fn delete(&self, iid: &crate::Iid) -> Result<()> {
+        self.filter()?.iid(iid)?.delete().await
     }
 
     /// Atomically replaces each exact relation identified by its canonical IID and returns
@@ -488,18 +415,6 @@ where
         ManagerTarget { installed, target }
             .write(create, operation, iid, ModelKind::Relation)
             .await
-    }
-
-    async fn projected_delete(&self, iid: &str) -> Result<()> {
-        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
-        let (id, _descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let batch = prepare_single_delete(installed, id, iid)?;
-        execute_owned_delete(target, installed, &batch).await
     }
 
     async fn write_many_with_hooks(

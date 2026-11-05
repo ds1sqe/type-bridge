@@ -304,29 +304,6 @@ fn assert_queries(events: &[Event], query_needles: &[&[&str]]) {
     }
 }
 
-fn assert_model_error(
-    error: crate::Error,
-    phase: crate::error::ModelValidationPhase,
-    code: &str,
-    path: &[&str],
-) {
-    let crate::Error::ModelValidation {
-        phase: actual_phase,
-        code: actual,
-        path: actual_path,
-        ..
-    } = error
-    else {
-        panic!("expected model validation error")
-    };
-    assert_eq!(actual_phase, phase);
-    assert_eq!(actual, code);
-    assert_eq!(
-        actual_path,
-        path.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>()
-    );
-}
-
 #[test]
 fn routed_database_manager_future_is_send() {
     let (db, state) = test_db(Vec::new());
@@ -340,33 +317,6 @@ fn routed_database_manager_future_is_send() {
 
 #[tokio::test]
 async fn public_preflight_failures_are_zero_io() {
-    let (db, state) = test_db(Vec::new());
-
-    assert_eq!(state.lock().unwrap().events.as_slice(), &[] as &[Event]);
-    assert_model_error(
-        db.entities::<Record>()
-            .update(
-                "bad-iid",
-                RecordCreate {
-                    name: "n".into(),
-                    value: "v".into(),
-                },
-            )
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
-    assert_eq!(state.lock().unwrap().events.as_slice(), &[] as &[Event]);
-    assert_model_error(
-        db.entities::<Record>().delete("bad-iid").await.unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
-    assert_eq!(state.lock().unwrap().events.as_slice(), &[] as &[Event]);
-
     let (db, state) = test_db(Vec::new());
     let err = db
         .entities::<Record>()
@@ -494,7 +444,7 @@ async fn public_exact_managers_report_schema_not_bound_before_io() {
     check(
         db.entities::<Record>()
             .update(
-                "0x1",
+                &crate::Iid::new("0x1").unwrap(),
                 RecordCreate {
                     name: "n1".into(),
                     value: "v".into(),
@@ -503,7 +453,12 @@ async fn public_exact_managers_report_schema_not_bound_before_io() {
             .await
             .unwrap_err(),
     );
-    check(db.entities::<Record>().delete("0x1").await.unwrap_err());
+    check(
+        db.entities::<Record>()
+            .delete(&crate::Iid::new("0x1").unwrap())
+            .await
+            .unwrap_err(),
+    );
     check(db.entities::<Record>().count().await.unwrap_err());
     check(
         db.entities::<Record>()
@@ -1420,7 +1375,7 @@ async fn public_put_update_delete_success_lifecycles() {
     let result = db
         .entities::<Record>()
         .update(
-            "0x2",
+            &crate::Iid::new("0x2").unwrap(),
             RecordCreate {
                 name: "n2".into(),
                 value: "upd".into(),
@@ -1445,7 +1400,10 @@ async fn public_put_update_delete_success_lifecycles() {
     }
 
     let (db, state) = test_db(vec![Response::Result(QueryResult::Rows(Vec::new()))]);
-    db.entities::<Record>().delete("0x2").await.unwrap();
+    db.entities::<Record>()
+        .delete(&crate::Iid::new("0x2").unwrap())
+        .await
+        .unwrap();
     let events = &state.lock().unwrap().events;
     assert_queries(
         events,

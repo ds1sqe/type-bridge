@@ -735,21 +735,6 @@ async fn write_transaction_preflight_and_reads_share_the_open_context() {
     ]);
     let tx = db.write().await.unwrap();
 
-    assert_model_error(
-        tx.relations::<Assignment>()
-            .update(
-                "bad",
-                AssignmentCreate {
-                    position: "p".into(),
-                    worker_iid: "0x1".into(),
-                },
-            )
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
     {
         let guard = state.lock().unwrap();
         assert_eq!(guard.events.len(), 1);

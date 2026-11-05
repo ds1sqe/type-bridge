@@ -4,7 +4,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use type_bridge_contract::id::{TypeId, is_canonical_thing_iid};
+use type_bridge_contract::id::TypeId;
 use type_bridge_orm::_descriptor::{EntityDescriptor, RelationDescriptor};
 use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::_registry::DescriptorRegistry;
@@ -30,16 +30,6 @@ use crate::{Database, Result, WriteResult};
 
 #[cfg(test)]
 mod tests;
-
-fn invalid_iid() -> Error {
-    Error::model_validation(
-        ModelValidationPhase::Input,
-        "invalid_iid",
-        vec!["iid".into()],
-        "IID is not canonical",
-        None,
-    )
-}
 
 fn schema_not_bound() -> Error {
     Error::model_validation(
@@ -364,29 +354,9 @@ where
         execute_borrowed_things(&self.transaction.tx, installed, &batch).await
     }
 
-    /// Completely replaces non-key ownership on the exact model at canonical
-    /// `iid` in the open transaction, preserving that IID, without committing.
-    pub async fn update(&self, iid: &str, input: M::Create) -> Result<WriteResult<M>> {
-        if !is_canonical_thing_iid(iid) {
-            return Err(invalid_iid());
-        }
-        let installed = self.transaction.installed()?;
-        let (id, _descriptor) = resolve_entity_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let create = project_create(input, &id, installed)?;
-        crate::projected_batch::execute_transaction_single(
-            &self.transaction.tx,
-            installed,
-            create,
-            CrudOperation::Update,
-            Some(iid),
-            ModelKind::Entity,
-        )
-        .await
+    /// Redirect to `filter()?.iid(iid)?.update(input)` for the exact model scope.
+    pub async fn update(&self, iid: &crate::Iid, input: M::Create) -> Result<WriteResult<M>> {
+        self.filter()?.iid(iid)?.update(input).await
     }
 
     /// Delete the exact model and return its pre-delete snapshot without committing.
@@ -424,25 +394,9 @@ where
         .await
     }
 
-    /// Deletes only the exact model at canonical `iid` in the open
-    /// transaction, without committing.
-    pub async fn delete(&self, iid: &str) -> Result<()> {
-        if !is_canonical_thing_iid(iid) {
-            return Err(invalid_iid());
-        }
-        let installed = self.transaction.installed()?;
-        let (id, _descriptor) = resolve_entity_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        ProjectedCrudExecutor::new(installed)
-            .delete_entity_by_iid_in_transaction_with_compatibility(&self.transaction.tx, &id, iid)
-            .await
-            .map_err(|error| {
-                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Delete))
-            })
+    /// Redirect to `filter()?.iid(iid)?.delete()` for the exact model scope.
+    pub async fn delete(&self, iid: &crate::Iid) -> Result<()> {
+        self.filter()?.iid(iid)?.delete().await
     }
 
     /// Replaces each exact entity identified by its canonical IID in input
@@ -662,30 +616,9 @@ where
         execute_borrowed_things(&self.transaction.tx, installed, &batch).await
     }
 
-    /// Completely replaces non-key ownership and the complete effective
-    /// active-role player set on the exact relation at canonical `iid` in the
-    /// open transaction, preserving that IID, without committing.
-    pub async fn update(&self, iid: &str, input: M::Create) -> Result<WriteResult<M>> {
-        if !is_canonical_thing_iid(iid) {
-            return Err(invalid_iid());
-        }
-        let installed = self.transaction.installed()?;
-        let (id, _descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let create = project_create(input, &id, installed)?;
-        crate::projected_batch::execute_transaction_single(
-            &self.transaction.tx,
-            installed,
-            create,
-            CrudOperation::Update,
-            Some(iid),
-            ModelKind::Relation,
-        )
-        .await
+    /// Redirect to `filter()?.iid(iid)?.update(input)` for the exact model scope.
+    pub async fn update(&self, iid: &crate::Iid, input: M::Create) -> Result<WriteResult<M>> {
+        self.filter()?.iid(iid)?.update(input).await
     }
 
     /// Delete the exact model and return its pre-delete snapshot without committing.
@@ -723,29 +656,9 @@ where
         .await
     }
 
-    /// Deletes only the exact relation at canonical `iid` in the open
-    /// transaction, without committing.
-    pub async fn delete(&self, iid: &str) -> Result<()> {
-        if !is_canonical_thing_iid(iid) {
-            return Err(invalid_iid());
-        }
-        let installed = self.transaction.installed()?;
-        let (id, _descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        ProjectedCrudExecutor::new(installed)
-            .delete_relation_by_iid_in_transaction_with_compatibility(
-                &self.transaction.tx,
-                &id,
-                iid,
-            )
-            .await
-            .map_err(|error| {
-                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Delete))
-            })
+    /// Redirect to `filter()?.iid(iid)?.delete()` for the exact model scope.
+    pub async fn delete(&self, iid: &crate::Iid) -> Result<()> {
+        self.filter()?.iid(iid)?.delete().await
     }
 
     /// Replaces each exact relation identified by its canonical IID in input

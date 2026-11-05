@@ -209,13 +209,17 @@ impl<'target> ProjectedFilterCore<'target> {
             (error, None) => crate::projected_batch::map_target_execution_error(error),
         })?;
         for (iid, state) in states {
-            let returned_iid = iid.and_then(|iid| {
-                output
-                    .items()
-                    .iter()
-                    .find(|item| item.iid().eq_ignore_ascii_case(iid))
-                    .map(|item| item.iid())
-            });
+            let returned_iid = if self.filter.exact_iids().is_some() && !self.filter.is_iid_list() {
+                output.item().map(|item| item.iid())
+            } else {
+                iid.and_then(|iid| {
+                    output
+                        .items()
+                        .iter()
+                        .find(|item| item.iid().eq_ignore_ascii_case(iid))
+                        .map(|item| item.iid())
+                })
+            };
             self.hooks
                 .run_post(
                     M::TYPE_ID_JSON,

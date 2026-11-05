@@ -1542,7 +1542,7 @@ mod tests {
                     assert!(item.origin.projected().is_some());
                 }
                 assert_eq!(one_exchange!(manager.put($create)).count(), 0);
-                assert_eq!(one_exchange!(manager.update("0x10", $create)).count(), 0);
+                assert_eq!(one_exchange!(manager.update(&crate::Iid::new("0x10").unwrap(), $create)).count(), 0);
                 assert!(
                     one_exchange!(manager.insert_many(vec![$create]))
                         .items()
@@ -1558,7 +1558,7 @@ mod tests {
                         .items()
                         .is_empty()
                 );
-                one_exchange!(manager.delete("0x10"));
+                one_exchange!(manager.delete(&crate::Iid::new("0x10").unwrap()));
                 one_exchange!(manager.delete_many(&["0x10".into()]));
                 assert_eq!(one_exchange!(manager.delete_returning("0x10")).count(), 0);
                 assert!(

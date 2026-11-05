@@ -14,6 +14,11 @@ The permanent redirect is equivalent to `manager.filter()?.iid(&iid)?.first().aw
 Malformed provider documents are classified as hydration failures; the previous
 exact IID read path incorrectly labeled these as input failures.
 
+Rust `update` and `delete` likewise take `&Iid`, including transaction managers.
+Their permanent redirects are `filter()?.iid(&iid)?.update(input).await` and
+`filter()?.iid(&iid)?.delete().await`. Lifecycle hooks run in those filter
+terminals, so aliases and direct filter calls have the same events.
+
 ## Single-item manager write results
 
 Single-item `insert`, `put`, `update`, and `delete_returning` calls now return

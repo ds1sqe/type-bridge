@@ -2388,37 +2388,117 @@ async fn filter_mutations_skip_empty_hooks_and_keep_delete_hook_identity() {
 #[tokio::test]
 async fn scalar_filter_update_runs_hooks_after_commit_and_never_after_failure() {
     for fail in [false, true] {
-        let responses = if fail {
-            vec![Response::Error]
-        } else {
-            vec![Response::Documents(vec![
-                json!({"_iid":"0x10", "_type":"person", "attributes":{"name":"person", "tag":["one", "two"]}}),
-            ])]
-        };
-        let (database, state) = fixture(responses, CommitBehavior::Success);
-        let hook = Arc::new(TimingHook {
-            state: Arc::clone(&state),
-            before: AtomicUsize::new(0),
-            after: AtomicUsize::new(0),
-            violation: AtomicBool::new(false),
-        });
-        let mut manager = database.entities::<Person>();
-        manager.add_hook(hook.clone());
-        let result = manager
-            .filter()
-            .unwrap()
-            .iid(&crate::Iid::new("0x10").unwrap())
-            .unwrap()
-            .update(PersonCreate::named("person"))
-            .await;
-        if fail {
-            result.unwrap_err();
-        } else {
-            assert_eq!(result.unwrap().items()[0].iid, "0x10");
+        let mut expected_query = None;
+        for filtered in [false, true] {
+            let responses = if fail {
+                vec![Response::Error]
+            } else {
+                vec![Response::Documents(vec![
+                    json!({"_iid":"0x10", "_type":"person", "attributes":{"name":"person", "tag":["one", "two"]}}),
+                ])]
+            };
+            let (database, state) = fixture(responses, CommitBehavior::Success);
+            let hook = Arc::new(TimingHook {
+                state: Arc::clone(&state),
+                before: AtomicUsize::new(0),
+                after: AtomicUsize::new(0),
+                violation: AtomicBool::new(false),
+            });
+            let mut manager = database.entities::<Person>();
+            manager.add_hook(hook.clone());
+            let iid = crate::Iid::new("0x10").unwrap();
+            let result = if filtered {
+                manager
+                    .filter()
+                    .unwrap()
+                    .iid(&iid)
+                    .unwrap()
+                    .update(PersonCreate::named("person"))
+                    .await
+            } else {
+                manager.update(&iid, PersonCreate::named("person")).await
+            };
+            if fail {
+                result.unwrap_err();
+            } else {
+                assert_eq!(result.unwrap().items()[0].iid, "0x10");
+            }
+            assert_eq!(hook.before.load(Ordering::SeqCst), 1);
+            assert_eq!(hook.after.load(Ordering::SeqCst), usize::from(!fail));
+            assert!(!hook.violation.load(Ordering::SeqCst));
+            let state = state.lock().unwrap();
+            assert_eq!(state.calls.len(), 1);
+            let query = &state.calls[0].0;
+            if let Some(expected) = &expected_query {
+                assert_eq!(query, expected);
+            } else {
+                expected_query = Some(query.clone());
+            }
         }
-        assert_eq!(hook.before.load(Ordering::SeqCst), 1);
-        assert_eq!(hook.after.load(Ordering::SeqCst), usize::from(!fail));
-        assert!(!hook.violation.load(Ordering::SeqCst));
+    }
+}
+
+#[tokio::test]
+async fn scalar_delete_aliases_keep_filter_queries_and_hook_identity() {
+    for kind in [Kind::Entity, Kind::Relation] {
+        for fail in [false, true] {
+            let mut expected_query = None;
+            for filtered in [false, true] {
+                let responses = if fail {
+                    vec![Response::Error]
+                } else {
+                    responses(kind, Operation::Delete)
+                };
+                let (database, state) = fixture(responses, CommitBehavior::Success);
+                let timing = Arc::new(TimingHook {
+                    state: Arc::clone(&state),
+                    before: AtomicUsize::new(0),
+                    after: AtomicUsize::new(0),
+                    violation: AtomicBool::new(false),
+                });
+                let identity = Arc::new(CorrelatedPostHook {
+                    before: AtomicUsize::new(0),
+                    seen: Mutex::new(vec![]),
+                });
+                let iid = crate::Iid::new("0x10").unwrap();
+                macro_rules! delete {
+                    ($manager:expr) => {{
+                        let mut manager = $manager;
+                        manager.add_hook(timing.clone());
+                        manager.add_hook(identity.clone());
+                        if filtered {
+                            manager.filter().unwrap().iid(&iid).unwrap().delete().await
+                        } else {
+                            manager.delete(&iid).await
+                        }
+                    }};
+                }
+                let result = match kind {
+                    Kind::Entity => delete!(database.entities::<Person>()),
+                    Kind::Relation => delete!(database.relations::<Assignment>()),
+                };
+                assert_eq!(result.is_err(), fail);
+                assert_eq!(timing.before.load(Ordering::SeqCst), 1);
+                assert_eq!(timing.after.load(Ordering::SeqCst), usize::from(!fail));
+                assert!(!timing.violation.load(Ordering::SeqCst));
+                assert_eq!(
+                    *identity.seen.lock().unwrap(),
+                    if fail {
+                        vec![]
+                    } else {
+                        vec![(0, Some(iid.to_string()))]
+                    }
+                );
+                let state = state.lock().unwrap();
+                assert_eq!(state.calls.len(), 1);
+                let query = &state.calls[0].0;
+                if let Some(expected) = &expected_query {
+                    assert_eq!(query, expected);
+                } else {
+                    expected_query = Some(query.clone());
+                }
+            }
+        }
     }
 }
 

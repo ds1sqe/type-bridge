@@ -341,7 +341,79 @@ fn generated_manager_filter_compile_boundaries_fail_independently() {
     let generated = stage.path().join("generated");
     write_package(&emit(), &generated);
 
-    let cases: [(&str, &str, &[&str]); 14] = [
+    let cases: [(&str, &str, &[&str]); 22] = [
+        (
+            "entities-exact-delete-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().delete("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-exact-update-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>, input: generated::PersonCreate) {
+    let _ = db.entities::<Person>().update("0x10", input);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-delete-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.entities::<Person>().delete("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-update-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>, input: generated::PersonCreate) {
+    let _ = db.entities::<Person>().update("0x10", input);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-delete-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.relations::<Employment>().delete("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-update-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>, input: generated::EmploymentCreate) {
+    let _ = db.relations::<Employment>().update("0x10", input);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-delete-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.relations::<Employment>().delete("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-update-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>, input: generated::EmploymentCreate) {
+    let _ = db.relations::<Employment>().update("0x10", input);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
         (
             "entities-exact-lookup-rejects-string-iid",
             r#"use generated::{AppSchema, Person};
@@ -958,10 +1030,10 @@ async fn positive(db: &Database<AppSchema>, create: PersonCreate) {
     let _: EntityManager<'_, AppSchema, Person> = exact;
     let _: WriteResult<Person> = exact.insert(create.clone()).await.unwrap();
     let _: WriteResult<Person> = exact.put(create.clone()).await.unwrap();
-    let _: WriteResult<Person> = exact.update("0x1", create.clone()).await.unwrap();
+    let _: WriteResult<Person> = exact.update(&type_bridge::Iid::new("0x1").unwrap(), create.clone()).await.unwrap();
     let _: BatchWriteResult<Person> = exact.insert_many(vec![create.clone()]).await.unwrap();
     let _: BatchWriteResult<Person> = exact.put_many(vec![create.clone()]).await.unwrap();
-    let _: () = exact.delete("0x1").await.unwrap();
+    let _: () = exact.delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let snapshot: WriteResult<Person> = exact.delete_returning("0x1").await.unwrap();
     if let Some(snapshot) = snapshot.item() { let _: bool = snapshot.deleted(); }
     let _: BatchWriteResult<Person> = exact.delete_many_returning(&["0x1".into()]).await.unwrap();
@@ -994,10 +1066,10 @@ async fn relation_positive(db: &Database<AppSchema>, create: ContractCreate) {
     let _: RelationManager<'_, AppSchema, Contract> = exact;
     let _: WriteResult<Contract> = exact.insert(create.clone()).await.unwrap();
     let _: WriteResult<Contract> = exact.put(create.clone()).await.unwrap();
-    let _: WriteResult<Contract> = exact.update("0x1", create.clone()).await.unwrap();
+    let _: WriteResult<Contract> = exact.update(&type_bridge::Iid::new("0x1").unwrap(), create.clone()).await.unwrap();
     let _: BatchWriteResult<Contract> = exact.insert_many(vec![create.clone()]).await.unwrap();
     let _: BatchWriteResult<Contract> = exact.put_many(vec![create.clone()]).await.unwrap();
-    let _: () = exact.delete("0x1").await.unwrap();
+    let _: () = exact.delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let snapshot: WriteResult<Contract> = exact.delete_returning("0x1").await.unwrap();
     if let Some(snapshot) = snapshot.item() { let _: bool = snapshot.deleted(); }
     let _: BatchWriteResult<Contract> = exact.delete_many_returning(&["0x1".into()]).await.unwrap();
@@ -1018,20 +1090,20 @@ async fn transaction_positive(db: &Database<AppSchema>, create: PersonCreate, re
     let tx: WriteTransaction<'_, AppSchema> = db.write().await.unwrap();
     let _: WriteResult<Person> = tx.entities::<Person>().insert(create.clone()).await.unwrap();
     let _: WriteResult<Person> = tx.entities::<Person>().put(create.clone()).await.unwrap();
-    let _: WriteResult<Person> = tx.entities::<Person>().update("0x1", create.clone()).await.unwrap();
+    let _: WriteResult<Person> = tx.entities::<Person>().update(&type_bridge::Iid::new("0x1").unwrap(), create.clone()).await.unwrap();
     let _: BatchWriteResult<Person> = tx.entities::<Person>().insert_many(vec![create.clone()]).await.unwrap();
     let _: BatchWriteResult<Person> = tx.entities::<Person>().put_many(vec![create.clone()]).await.unwrap();
-    let _: () = tx.entities::<Person>().delete("0x1").await.unwrap();
+    let _: () = tx.entities::<Person>().delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: WriteResult<Person> = tx.entities::<Person>().delete_returning("0x1").await.unwrap();
     let _: Option<Person> = tx.entities::<Person>().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Person> = tx.entities::<Person>().all().await.unwrap();
     let _: u64 = tx.entities::<Person>().count().await.unwrap();
     let _: WriteResult<Contract> = tx.relations::<Contract>().insert(relation_create.clone()).await.unwrap();
     let _: WriteResult<Contract> = tx.relations::<Contract>().put(relation_create.clone()).await.unwrap();
-    let _: WriteResult<Contract> = tx.relations::<Contract>().update("0x1", relation_create.clone()).await.unwrap();
+    let _: WriteResult<Contract> = tx.relations::<Contract>().update(&type_bridge::Iid::new("0x1").unwrap(), relation_create.clone()).await.unwrap();
     let _: BatchWriteResult<Contract> = tx.relations::<Contract>().insert_many(vec![relation_create.clone()]).await.unwrap();
     let _: BatchWriteResult<Contract> = tx.relations::<Contract>().put_many(vec![relation_create.clone()]).await.unwrap();
-    let _: () = tx.relations::<Contract>().delete("0x1").await.unwrap();
+    let _: () = tx.relations::<Contract>().delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: WriteResult<Contract> = tx.relations::<Contract>().delete_returning("0x1").await.unwrap();
     let _: Option<Contract> = tx.relations::<Contract>().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Contract> = tx.relations::<Contract>().all().await.unwrap();
@@ -1132,8 +1204,8 @@ async fn insert(db: &Database<AppSchema>) { let _ = db.entities::<Party>().inser
 async fn insert_many(db: &Database<AppSchema>) { let _ = db.entities::<Party>().insert_many(vec![]); }
 async fn put(db: &Database<AppSchema>) { let _ = db.entities::<Party>().put(todo!()); }
 async fn put_many(db: &Database<AppSchema>) { let _ = db.entities::<Party>().put_many(vec![]); }
-async fn update(db: &Database<AppSchema>) { let _ = db.entities::<Party>().update("0x1", todo!()); }
-async fn delete(db: &Database<AppSchema>) { let _ = db.entities::<Party>().delete("0x1"); }
+async fn update(db: &Database<AppSchema>) { let _ = db.entities::<Party>().update(&type_bridge::Iid::new("0x1").unwrap(), todo!()); }
+async fn delete(db: &Database<AppSchema>) { let _ = db.entities::<Party>().delete(&type_bridge::Iid::new("0x1").unwrap()); }
 async fn get_by_iid(db: &Database<AppSchema>) { let _ = db.entities::<Party>().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()); }
 async fn all(db: &Database<AppSchema>) { let _ = db.entities::<Party>().all(); }
 async fn count(db: &Database<AppSchema>) { let _ = db.entities::<Party>().count(); }

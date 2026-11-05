@@ -910,7 +910,7 @@ async fn cleanup_live_records(
     live(
         database
             .relations::<Container>()
-            .delete(&created.container)
+            .delete(&type_bridge::Iid::new(&created.container).unwrap())
             .await,
         "delete container",
     )?;
@@ -919,7 +919,7 @@ async fn cleanup_live_records(
     order.push("container-event");
 
     live(
-        database.relations::<Event>().delete(&created.event).await,
+        database.relations::<Event>().delete(&type_bridge::Iid::new(&created.event).unwrap()).await,
         "delete event",
     )?;
     require_relation_absent::<Event>(database, &created.event, "read deleted event").await?;
@@ -928,7 +928,7 @@ async fn cleanup_live_records(
     live(
         database
             .relations::<PlainActivity>()
-            .delete(&created.plain_activity)
+            .delete(&type_bridge::Iid::new(&created.plain_activity).unwrap())
             .await,
         "delete plain activity",
     )?;
@@ -976,7 +976,7 @@ async fn cleanup_live_records(
         ),
     ] {
         live(
-            database.relations::<Interaction>().delete(iid).await,
+            database.relations::<Interaction>().delete(&type_bridge::Iid::new(iid).unwrap()).await,
             context,
         )?;
         require_relation_absent::<Interaction>(database, iid, "read deleted interaction").await?;
@@ -986,7 +986,7 @@ async fn cleanup_live_records(
     live(
         database
             .entities::<Robot>()
-            .delete(&created.negative_robot)
+            .delete(&type_bridge::Iid::new(&created.negative_robot).unwrap())
             .await,
         "delete negative robot",
     )?;
@@ -1001,7 +1001,7 @@ async fn cleanup_live_records(
     live(
         database
             .entities::<Robot>()
-            .delete(&created.positive_robot)
+            .delete(&type_bridge::Iid::new(&created.positive_robot).unwrap())
             .await,
         "delete positive robot",
     )?;
@@ -1014,14 +1014,14 @@ async fn cleanup_live_records(
     order.push("robot-7");
 
     live(
-        database.entities::<Person>().delete(&created.dana).await,
+        database.entities::<Person>().delete(&type_bridge::Iid::new(&created.dana).unwrap()).await,
         "delete Dana",
     )?;
     require_entity_absent::<Person>(database, &created.dana, "read deleted Dana").await?;
     order.push("data-dana");
 
     live(
-        database.entities::<Person>().delete(&created.ada).await,
+        database.entities::<Person>().delete(&type_bridge::Iid::new(&created.ada).unwrap()).await,
         "delete Ada",
     )?;
     require_entity_absent::<Person>(database, &created.ada, "read deleted Ada").await?;

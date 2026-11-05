@@ -548,24 +548,6 @@ fn assert_assignment(value: &Assignment, iid: &str, position: &str, worker_iid: 
 async fn public_relation_preflight_failures_are_zero_io() {
     let (db, state) = test_db(Vec::new());
 
-    assert_model_error(
-        db.relations::<Assignment>()
-            .update("bad-iid", create("p", "0x9"))
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
-    assert_model_error(
-        db.relations::<Assignment>()
-            .delete("bad-iid")
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
     let error = db
         .relations::<Assignment>()
         .insert_many(vec![create("ok", "0x9"), create("reject-input", "0x9")])
@@ -656,13 +638,13 @@ async fn public_relation_managers_report_schema_not_bound_before_io() {
     );
     check(
         db.relations::<Assignment>()
-            .update("0x1", create("p", "0x9"))
+            .update(&crate::Iid::new("0x1").unwrap(), create("p", "0x9"))
             .await
             .unwrap_err(),
     );
     check(
         db.relations::<Assignment>()
-            .delete("0x1")
+            .delete(&crate::Iid::new("0x1").unwrap())
             .await
             .unwrap_err(),
     );
@@ -1011,7 +993,10 @@ async fn public_relation_count_uses_one_exact_reduction() {
 #[tokio::test]
 async fn public_relation_delete_commits_one_exact_delete() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Rows(Vec::new()))]);
-    db.relations::<Assignment>().delete("0x1").await.unwrap();
+    db.relations::<Assignment>()
+        .delete(&crate::Iid::new("0x1").unwrap())
+        .await
+        .unwrap();
     let guard = state.lock().unwrap();
     let [
         Event::Open(TxType::Write),
@@ -1033,7 +1018,7 @@ async fn public_relation_update_replaces_and_rehydrates() {
     let (db, state) = test_db(vec![fetch("0x1", "captain", "0x9", "alice")]);
     let value = db
         .relations::<Assignment>()
-        .update("0x1", create("captain", "0x9"))
+        .update(&crate::Iid::new("0x1").unwrap(), create("captain", "0x9"))
         .await
         .unwrap()
         .into_items()

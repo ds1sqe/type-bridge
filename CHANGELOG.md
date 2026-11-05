@@ -208,6 +208,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust entity/relation manager `update` and `delete`, including transaction
+  forms, now require `&Iid`. They permanently redirect to
+  `filter()?.iid(iid)?.update(input)` and `filter()?.iid(iid)?.delete()`.
+
 - Rust entity, relation, subtype, and transaction manager `get_by_iid` methods
   now require `&Iid` instead of `&str`. They permanently redirect to
   `filter()?.iid(iid)?.first()`. Construct identifiers with `Iid::new(...)`.
