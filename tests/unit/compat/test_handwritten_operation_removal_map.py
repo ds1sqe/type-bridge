@@ -81,9 +81,11 @@ def test_cut_over_handwritten_sources_are_absent_but_their_audit_is_frozen() -> 
         if item["path"] in {
             "tests/integration/queries/test_compiler_integration.py",
             "tests/integration/queries/test_function_query.py",
+            "tests/integration/queries/test_query_v2_binding_smoke.py",
+            "type-bridge-core/crates/node/tests/integration/queries/query-v2-smoke.test.ts",
         }:
-            # The frozen 2.1 map retained raw Python builders until 3.0.
-            assert not path.exists(), f"retired raw query evidence still active: {path}"
+            # The frozen 2.1 map retained raw/V2 query evidence until 3.0.
+            assert not path.exists(), f"retired query evidence still active: {path}"
         elif item["binding"] in cutover_bindings and family["disposition"] == "generated_successor":
             assert not path.exists(), f"retired handwritten evidence still active: {path}"
         elif family["disposition"] != "generated_successor":

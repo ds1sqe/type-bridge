@@ -1049,7 +1049,9 @@ def test_core_sdist_requires_exact_native_and_cli_notices(tmp_path: Path, notice
 
 def test_root_artifacts_require_complete_source_inventory(tmp_path: Path) -> None:
     deep_public_file = "type_bridge/migration/state_schema.py"
-    assert len(SPECS["root"].wheel_members) == 16
+    assert len(SPECS["root"].wheel_members) == 14
+    assert "type_bridge/query_v2.py" not in SPECS["root"].wheel_members
+    assert "type_bridge/proxy.py" not in SPECS["root"].wheel_members
     assert "type_bridge/write_result.py" in SPECS["root"].wheel_members
     assert deep_public_file in SPECS["root"].wheel_members
 
