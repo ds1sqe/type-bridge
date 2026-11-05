@@ -2605,7 +2605,7 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
     let person_iids = [people[0].iid().as_str().to_owned(), people[1].iid().as_str().to_owned()];
     let read_after_create = db
         .entities::<Person>()
-        .get_by_iid(&person_iids[0])
+        .get_by_iid(&type_bridge::Iid::new(&person_iids[0]).unwrap())
         .await
         .expect("queries person read after create")
         .is_some();
@@ -2658,7 +2658,7 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
     let membership_iid = membership.iid().as_str().to_owned();
     let membership_read_after_create = db
         .relations::<Membership>()
-        .get_by_iid(&membership_iid)
+        .get_by_iid(&type_bridge::Iid::new(&membership_iid).unwrap())
         .await
         .expect("queries membership read after create")
         .is_some();
@@ -2879,7 +2879,7 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
     actual_cleanup_order.push(keyed_create_order[4].clone());
     let network_deleted = db
         .relations::<NetworkLink>()
-        .get_by_iid(&network_iid)
+        .get_by_iid(&type_bridge::Iid::new(&network_iid).unwrap())
         .await
         .expect("queries network cleanup read")
         .is_none();
@@ -2890,7 +2890,7 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
     actual_cleanup_order.push(membership_order_key);
     let membership_deleted = db
         .relations::<Membership>()
-        .get_by_iid(&membership_iid)
+        .get_by_iid(&type_bridge::Iid::new(&membership_iid).unwrap())
         .await
         .expect("queries membership cleanup read")
         .is_none();
@@ -2916,13 +2916,13 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
     actual_cleanup_order.push(keyed_create_order[0].clone());
     let people_deleted = db
         .entities::<Person>()
-        .get_by_iid(&person_iids[0])
+        .get_by_iid(&type_bridge::Iid::new(&person_iids[0]).unwrap())
         .await
         .expect("queries Ada cleanup read")
         .is_none()
         && db
             .entities::<Person>()
-            .get_by_iid(&person_iids[1])
+            .get_by_iid(&type_bridge::Iid::new(&person_iids[1]).unwrap())
             .await
             .expect("queries Dana cleanup read")
             .is_none();
@@ -3378,7 +3378,7 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
     let iid = person.iid().as_str().to_owned();
     let fetched = db
         .entities::<Person>()
-        .get_by_iid(&iid)
+        .get_by_iid(&type_bridge::Iid::new(&iid).unwrap())
         .await
         .expect("exact person lookup")
         .expect("person exists");
@@ -3457,7 +3457,7 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
     assert_eq!(put.nickname(), None);
     assert!(
         db.entities::<Person>()
-            .get_by_iid(&iid)
+            .get_by_iid(&type_bridge::Iid::new(&iid).unwrap())
             .await
             .expect("optional absence read")
             .unwrap()
@@ -3582,7 +3582,7 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
     );
     let updated_read = db
         .entities::<Person>()
-        .get_by_iid(&iid)
+        .get_by_iid(&type_bridge::Iid::new(&iid).unwrap())
         .await
         .expect("updated exact read")
         .expect("updated person exists");
@@ -3626,7 +3626,7 @@ async fn generated_entity_crud_batches_and_scalar_domains() {
     assert!(cleared_ownerships.aliases().is_empty());
     assert!(
         db.entities::<Person>()
-            .get_by_iid(&iid)
+            .get_by_iid(&type_bridge::Iid::new(&iid).unwrap())
             .await
             .expect("cleared ownership read")
             .expect("cleared ownership person exists")
@@ -3759,7 +3759,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     assert_eq!(employee_updated.party_name().value(), "employee-updated");
     let exact_employee = db
         .entities::<Employee>()
-        .get_by_iid(&employee_iid)
+        .get_by_iid(&type_bridge::Iid::new(&employee_iid).unwrap())
         .await
         .expect("employee exact get")
         .expect("employee exists");
@@ -3773,7 +3773,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
         .expect("new employee delete before subtype reads");
     assert!(
         db.entities::<Employee>()
-            .get_by_iid(&new_employee_iid)
+            .get_by_iid(&type_bridge::Iid::new(&new_employee_iid).unwrap())
             .await
             .expect("new employee absent")
             .is_none()
@@ -3846,7 +3846,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     );
     assert!(
         db.entities::<Employee>()
-            .get_by_iid(manager.iid().as_str())
+            .get_by_iid(manager.iid())
             .await
             .expect("exact employee lookup")
             .is_none()
@@ -3857,14 +3857,14 @@ async fn generated_inheritance_exact_and_subtype_reads() {
         .expect("exact employee delete manager iid");
     assert!(
         db.entities::<Manager>()
-            .get_by_iid(manager.iid().as_str())
+            .get_by_iid(manager.iid())
             .await
             .expect("manager remains")
             .is_some()
     );
     let manager_exact = db
         .entities::<Manager>()
-        .get_by_iid(manager.iid().as_str())
+        .get_by_iid(manager.iid())
         .await
         .expect("manager exact rehydrate")
         .expect("manager exact row");
@@ -3875,7 +3875,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     assert_eq!(manager_exact.manager_note().value(), "lead");
     let contractor_exact = db
         .entities::<Contractor>()
-        .get_by_iid(contractor.iid().as_str())
+        .get_by_iid(contractor.iid())
         .await
         .expect("contractor exact rehydrate")
         .expect("contractor exact row");
@@ -3916,7 +3916,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     let manager_variant = db
         .entities::<Employee>()
         .subtypes()
-        .get_by_iid(manager.iid().as_str())
+        .get_by_iid(manager.iid())
         .await
         .expect("manager subtype get")
         .expect("manager variant");
@@ -3930,7 +3930,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
     let contractor_variant = db
         .entities::<Party>()
         .subtypes()
-        .get_by_iid(contractor.iid().as_str())
+        .get_by_iid(contractor.iid())
         .await
         .expect("contractor subtype get")
         .expect("contractor variant");
@@ -4087,21 +4087,21 @@ async fn generated_inheritance_exact_and_subtype_reads() {
         .expect("contractor delete");
     assert!(
         db.entities::<Manager>()
-            .get_by_iid(manager.iid().as_str())
+            .get_by_iid(manager.iid())
             .await
             .expect("manager cleanup get")
             .is_none()
     );
     assert!(
         db.entities::<Employee>()
-            .get_by_iid(employee.iid().as_str())
+            .get_by_iid(employee.iid())
             .await
             .expect("employee cleanup get")
             .is_none()
     );
     assert!(
         db.entities::<Contractor>()
-            .get_by_iid(contractor.iid().as_str())
+            .get_by_iid(contractor.iid())
             .await
             .expect("contractor cleanup get")
             .is_none()
@@ -4488,7 +4488,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
     assert!(!employment_one_iid.is_empty());
     let employment_read = db
         .relations::<Employment>()
-        .get_by_iid(&employment_one_iid)
+        .get_by_iid(&type_bridge::Iid::new(&employment_one_iid).unwrap())
         .await
         .expect("employment exact read")
         .expect("employment exists");
@@ -5075,7 +5075,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
     let membership_variant = db
         .relations::<Membership>()
         .subtypes()
-        .get_by_iid(&employment_one_iid)
+        .get_by_iid(&type_bridge::Iid::new(&employment_one_iid).unwrap())
         .await
         .expect("membership family get")
         .expect("membership family member");
@@ -5112,7 +5112,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
     let container_iid = container.iid().as_str().to_owned();
     let container_read = db
         .relations::<Container>()
-        .get_by_iid(&container_iid)
+        .get_by_iid(&type_bridge::Iid::new(&container_iid).unwrap())
         .await
         .expect("container exact read")
         .expect("container exists");
@@ -5145,7 +5145,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
     }
     assert!(
         db.relations::<Employment>()
-            .get_by_iid(&employment_one_iid)
+            .get_by_iid(&type_bridge::Iid::new(&employment_one_iid).unwrap())
             .await
             .expect("employment absence read")
             .is_none()
@@ -5473,7 +5473,7 @@ async fn manager_program(
             }
             let baseline = terminal!(manager.all()).len();
             assert_eq!(terminal!(manager.count()), baseline as u64);
-            assert!(terminal!(manager.get_by_iid("0xffff")).is_none());
+            assert!(terminal!(manager.get_by_iid(&type_bridge::Iid::new("0xffff").unwrap())).is_none());
             assert_eq!(terminal!(manager.filter().unwrap().all()).len(), baseline);
             let absent = manager.where_($field, ProjectedManagerComparison::Eq,
                 &Identifier::new(format!("manager-absent-{}", $label)).unwrap()).unwrap();
@@ -5482,7 +5482,7 @@ async fn manager_program(
             assert_eq!(terminal!(manager.filter().unwrap().exists()), baseline != 0);
             let subtype_count = terminal!(manager.subtypes().all()).len();
             assert_eq!(terminal!(manager.subtypes().count()), subtype_count as u64);
-            assert!(terminal!(manager.subtypes().get_by_iid("0xffff")).is_none());
+            assert!(terminal!(manager.subtypes().get_by_iid(&type_bridge::Iid::new("0xffff").unwrap())).is_none());
 
             let inserted = one_written(terminal!(manager.insert(make("a", "insert"))));
             let first_iid = inserted.iid().as_str().to_owned();
@@ -5914,7 +5914,7 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
         .expect("negative-key robot delete");
     let surviving = db
         .relations::<Interaction>()
-        .get_by_iid(robot_interaction.iid().as_str())
+        .get_by_iid(robot_interaction.iid())
         .await
         .expect("surviving interaction read")
         .expect("interaction survives optional actor deletion");
@@ -5999,7 +5999,7 @@ async fn generated_plain_inherited_abstract_role_parity() {
 
     let stored = db
         .relations::<PlainActivity>()
-        .get_by_iid(activity.iid().as_str())
+        .get_by_iid(activity.iid())
         .await
         .expect("plain activity lookup")
         .expect("plain activity exists");
@@ -6070,7 +6070,7 @@ async fn generated_unkeyed_entity_iid_lifecycle_and_singular_query() {
 
     let stored = db
         .entities::<Counter>()
-        .get_by_iid(counter.iid().as_str())
+        .get_by_iid(counter.iid())
         .await
         .expect("counter exact read")
         .expect("counter exists");
@@ -6207,7 +6207,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
     for (iid, expected) in [(&first_iid, "original-a"), (&second_iid, "original-b")] {
         let value = db
             .entities::<Person>()
-            .get_by_iid(iid)
+            .get_by_iid(&type_bridge::Iid::new(iid).unwrap())
             .await
             .expect("cancelled hook parity read")
             .expect("cancelled hook parity person exists");
@@ -6234,7 +6234,7 @@ async fn generated_lifecycle_hooks_and_atomic_mutation_batches() {
     );
     let first_after_commit = db
         .entities::<Person>()
-        .get_by_iid(&first_iid)
+        .get_by_iid(&type_bridge::Iid::new(&first_iid).unwrap())
         .await
         .expect("partial-match durable read")
         .expect("matched person survives commit");
@@ -6388,7 +6388,7 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
     );
     assert!(
         tx.entities::<Person>()
-            .get_by_iid(committed_worker.iid().as_str())
+            .get_by_iid(committed_worker.iid())
             .await
             .expect("uncommitted read inside the open transaction")
             .is_some()
@@ -6396,14 +6396,14 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
     tx.commit().await.expect("multi-operation commit");
     assert!(
         db.entities::<Person>()
-            .get_by_iid(committed_worker.iid().as_str())
+            .get_by_iid(committed_worker.iid())
             .await
             .expect("committed person visible")
             .is_some()
     );
     assert!(
         db.relations::<Employment>()
-            .get_by_iid(committed_employment.iid().as_str())
+            .get_by_iid(committed_employment.iid())
             .await
             .expect("committed employment visible")
             .is_some()
@@ -6420,7 +6420,7 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
     tx.rollback().await.expect("explicit rollback");
     assert!(
         db.entities::<Person>()
-            .get_by_iid(&rolled_iid)
+            .get_by_iid(&type_bridge::Iid::new(&rolled_iid).unwrap())
             .await
             .expect("rolled-back person invisible")
             .is_none()
@@ -6437,7 +6437,7 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
     drop(tx);
     assert!(
         db.entities::<Person>()
-            .get_by_iid(&dropped_iid)
+            .get_by_iid(&type_bridge::Iid::new(&dropped_iid).unwrap())
             .await
             .expect("dropped-transaction person invisible")
             .is_none()
@@ -6709,7 +6709,7 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("unkeyed_entity_iid_lifecycle.get_by_iid");
     assert_eq!(
         *manager
-            .get_by_iid(&ids[0])
+            .get_by_iid(&type_bridge::Iid::new(&ids[0]).unwrap())
             .await
             .unwrap()
             .unwrap()
@@ -6827,7 +6827,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("ordered_distinct_collections.entity_read");
     assert!(
         people
-            .get_by_iid(ada.iid().as_str())
+            .get_by_iid(ada.iid())
             .await
             .unwrap()
             .unwrap()
@@ -6870,7 +6870,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("ordered_distinct_collections.role_read");
     assert!(
         links
-            .get_by_iid(link.iid().as_str())
+            .get_by_iid(link.iid())
             .await
             .unwrap()
             .unwrap()
@@ -7239,13 +7239,13 @@ async fn sdk_models_data_model_runtime_live() {
     assert!(delete_failure.is_err());
     let all_targets_remain = db
         .entities::<Counter>()
-        .get_by_iid(&batch_left_iid)
+        .get_by_iid(&type_bridge::Iid::new(&batch_left_iid).unwrap())
         .await
         .expect("left counter read")
         .is_some()
         && db
             .entities::<Counter>()
-            .get_by_iid(&batch_right_iid)
+            .get_by_iid(&type_bridge::Iid::new(&batch_right_iid).unwrap())
             .await
             .expect("right counter read")
             .is_some();
@@ -7255,13 +7255,13 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("counter delete batch");
     let all_targets_absent = db
         .entities::<Counter>()
-        .get_by_iid(&batch_left_iid)
+        .get_by_iid(&type_bridge::Iid::new(&batch_left_iid).unwrap())
         .await
         .expect("deleted left counter read")
         .is_none()
         && db
             .entities::<Counter>()
-            .get_by_iid(&batch_right_iid)
+            .get_by_iid(&type_bridge::Iid::new(&batch_right_iid).unwrap())
             .await
             .expect("deleted right counter read")
             .is_none();
@@ -7334,7 +7334,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("counter count");
     let found = db
         .entities::<Counter>()
-        .get_by_iid(&left_iid)
+        .get_by_iid(&type_bridge::Iid::new(&left_iid).unwrap())
         .await
         .expect("counter read")
         .expect("left counter exists");
@@ -7361,7 +7361,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("counter delete");
     let read_after_delete = db
         .entities::<Counter>()
-        .get_by_iid(&left_iid)
+        .get_by_iid(&type_bridge::Iid::new(&left_iid).unwrap())
         .await
         .expect("deleted counter read")
         .is_some();
@@ -7660,13 +7660,13 @@ async fn sdk_models_data_model_runtime_live() {
     assert!(membership_delete_failure.is_err());
     let membership_targets_remain = db
         .relations::<Membership>()
-        .get_by_iid(&membership_ada_iid)
+        .get_by_iid(&type_bridge::Iid::new(&membership_ada_iid).unwrap())
         .await
         .expect("Ada membership read")
         .is_some()
         && db
             .relations::<Membership>()
-            .get_by_iid(&membership_robot_iid)
+            .get_by_iid(&type_bridge::Iid::new(&membership_robot_iid).unwrap())
             .await
             .expect("robot membership read")
             .is_some();
@@ -7676,13 +7676,13 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("membership delete batch");
     let membership_targets_absent = db
         .relations::<Membership>()
-        .get_by_iid(&membership_ada_iid)
+        .get_by_iid(&type_bridge::Iid::new(&membership_ada_iid).unwrap())
         .await
         .expect("deleted Ada membership read")
         .is_none()
         && db
             .relations::<Membership>()
-            .get_by_iid(&membership_robot_iid)
+            .get_by_iid(&type_bridge::Iid::new(&membership_robot_iid).unwrap())
             .await
             .expect("deleted robot membership read")
             .is_none();
@@ -7744,7 +7744,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("membership count");
     let membership_read = db
         .relations::<Membership>()
-        .get_by_iid(&membership_ada_iid)
+        .get_by_iid(&type_bridge::Iid::new(&membership_ada_iid).unwrap())
         .await
         .expect("membership read")
         .expect("membership exists");
@@ -7782,7 +7782,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("membership delete");
     let membership_read_after_delete = db
         .relations::<Membership>()
-        .get_by_iid(&membership_ada_iid)
+        .get_by_iid(&type_bridge::Iid::new(&membership_ada_iid).unwrap())
         .await
         .expect("deleted membership read")
         .is_some();
@@ -7918,13 +7918,13 @@ async fn sdk_models_data_model_runtime_live() {
     let committed_iid = committed.iid().as_str().to_owned();
     let commit_same_transaction_visible = commit_transaction
         .entities::<Person>()
-        .get_by_iid(&committed_iid)
+        .get_by_iid(&type_bridge::Iid::new(&committed_iid).unwrap())
         .await
         .expect("same transaction commit read")
         .is_some();
     let commit_outside_before = db
         .entities::<Person>()
-        .get_by_iid(&committed_iid)
+        .get_by_iid(&type_bridge::Iid::new(&committed_iid).unwrap())
         .await
         .expect("outside precommit read")
         .is_some();
@@ -7934,7 +7934,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("borrowed transaction commit");
     let commit_outside_after = db
         .entities::<Person>()
-        .get_by_iid(&committed_iid)
+        .get_by_iid(&type_bridge::Iid::new(&committed_iid).unwrap())
         .await
         .expect("outside postcommit read")
         .is_some();
@@ -7952,13 +7952,13 @@ async fn sdk_models_data_model_runtime_live() {
     let rolled_iid = rolled.iid().as_str().to_owned();
     let rollback_same_transaction_visible = rollback_transaction
         .entities::<Person>()
-        .get_by_iid(&rolled_iid)
+        .get_by_iid(&type_bridge::Iid::new(&rolled_iid).unwrap())
         .await
         .expect("same transaction rollback read")
         .is_some();
     let rollback_outside_before = db
         .entities::<Person>()
-        .get_by_iid(&rolled_iid)
+        .get_by_iid(&type_bridge::Iid::new(&rolled_iid).unwrap())
         .await
         .expect("outside prerollback read")
         .is_some();
@@ -7968,7 +7968,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("borrowed transaction rollback");
     let rollback_outside_after = db
         .entities::<Person>()
-        .get_by_iid(&rolled_iid)
+        .get_by_iid(&type_bridge::Iid::new(&rolled_iid).unwrap())
         .await
         .expect("outside postrollback read")
         .is_some();
@@ -7989,7 +7989,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("commit after rollback");
     assert!(
         db.entities::<Person>()
-            .get_by_iid(&reused_iid)
+            .get_by_iid(&type_bridge::Iid::new(&reused_iid).unwrap())
             .await
             .expect("read reused commit")
             .is_some()

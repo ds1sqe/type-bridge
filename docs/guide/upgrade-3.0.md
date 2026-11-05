@@ -8,6 +8,12 @@ Use `.as_str()` to borrow the identifier text or `.to_string()` to own it. Model
 validate the IID during hydration and retain it, so repeated getters do not
 parse or allocate.
 
+Rust `get_by_iid` methods on exact, subtype, and transaction managers take
+`&Iid`. Pass a model's `iid()` directly, or construct `Iid::new("0x1234")?`.
+The permanent redirect is equivalent to `manager.filter()?.iid(&iid)?.first().await`.
+Malformed provider documents are classified as hydration failures; the previous
+exact IID read path incorrectly labeled these as input failures.
+
 ## Single-item manager write results
 
 Single-item `insert`, `put`, `update`, and `delete_returning` calls now return

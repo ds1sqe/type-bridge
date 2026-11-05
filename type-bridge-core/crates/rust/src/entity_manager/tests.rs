@@ -341,15 +341,7 @@ fn routed_database_manager_future_is_send() {
 #[tokio::test]
 async fn public_preflight_failures_are_zero_io() {
     let (db, state) = test_db(Vec::new());
-    assert_model_error(
-        db.entities::<Record>()
-            .get_by_iid("bad-iid")
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
+
     assert_eq!(state.lock().unwrap().events.as_slice(), &[] as &[Event]);
     assert_model_error(
         db.entities::<Record>()
@@ -513,7 +505,12 @@ async fn public_exact_managers_report_schema_not_bound_before_io() {
     );
     check(db.entities::<Record>().delete("0x1").await.unwrap_err());
     check(db.entities::<Record>().count().await.unwrap_err());
-    check(db.entities::<Record>().get_by_iid("0x1").await.unwrap_err());
+    check(
+        db.entities::<Record>()
+            .get_by_iid(&crate::Iid::new("0x1").unwrap())
+            .await
+            .unwrap_err(),
+    );
     check(db.entities::<Record>().all().await.unwrap_err());
 }
 
@@ -522,7 +519,7 @@ async fn public_get_by_iid_zero_uses_exact_read() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(Vec::new()))]);
     assert!(
         db.entities::<Record>()
-            .get_by_iid("0x1")
+            .get_by_iid(&crate::Iid::new("0x1").unwrap())
             .await
             .unwrap()
             .is_none()
@@ -539,7 +536,12 @@ async fn public_get_by_iid_zero_uses_exact_read() {
 #[tokio::test]
 async fn public_get_by_iid_one_materializes_exact_record() {
     let (db, state) = test_db(vec![fetch("0x1", "n1", "child-value")]);
-    let Some(result) = db.entities::<Record>().get_by_iid("0x1").await.unwrap() else {
+    let Some(result) = db
+        .entities::<Record>()
+        .get_by_iid(&crate::Iid::new("0x1").unwrap())
+        .await
+        .unwrap()
+    else {
         panic!("expected record")
     };
     assert_eq!(result.iid, "0x1");
@@ -1003,7 +1005,10 @@ async fn public_subtypes_get_by_iid_fetches_or_omits_in_one_plan() {
                     .await
                     .unwrap()
             } else {
-                manager.get_by_iid("0x1").await.unwrap()
+                manager
+                    .get_by_iid(&crate::Iid::new("0x1").unwrap())
+                    .await
+                    .unwrap()
             };
             if present {
                 let Some(BaseFamily::Record(row)) = result else {
@@ -1156,24 +1161,6 @@ async fn public_subtypes_count_uses_one_inclusive_reduction() {
             && !query.contains("\"_iid\"")
             && !query.contains("\"_type\"")
     );
-}
-
-#[tokio::test]
-async fn public_subtypes_invalid_iid_is_zero_io() {
-    let (db, state) = test_db(Vec::new());
-    let error = db
-        .entities::<Base>()
-        .subtypes()
-        .get_by_iid("bad-iid")
-        .await
-        .unwrap_err();
-    assert_model_error(
-        error,
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
-    assert_eq!(state.lock().unwrap().events.as_slice(), &[] as &[Event]);
 }
 
 #[tokio::test]
@@ -1773,4 +1760,66 @@ async fn subtype_filter_all_keeps_concrete_child_fields_and_origin() {
     };
     assert!(query.contains(" isa base"));
     assert!(!query.contains(" isa! base"));
+}
+
+#[tokio::test]
+async fn iid_lookup_preserves_provider_errors_and_classifies_bad_documents_as_hydration() {
+    for case in 0..5 {
+        for filtered in [false, true] {
+            let response = match case {
+                0 => Response::Error("provider failed".into()),
+                1 => Response::Result(QueryResult::Documents(vec![
+                    serde_json::json!({"_type":"record","attributes":{"name":["n"],"text":["v"]}}),
+                ])),
+                2 => Response::Result(QueryResult::Documents(vec![
+                    serde_json::json!({"_iid":"0x1","_type":"wrong","attributes":{"name":["n"],"text":["v"]}}),
+                ])),
+                3 => Response::Result(QueryResult::Documents(vec![
+                    serde_json::json!({"_iid":"bad","_type":"record","attributes":{"name":["n"],"text":["v"]}}),
+                ])),
+                _ => Response::Result(QueryResult::Documents(vec![
+                    serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n"]}}),
+                ])),
+            };
+            let (db, state) = test_db(vec![response]);
+            let manager = db.entities::<Record>();
+            let iid = crate::Iid::new("0x1").unwrap();
+            let error = if filtered {
+                manager
+                    .filter()
+                    .unwrap()
+                    .iid(&iid)
+                    .unwrap()
+                    .first()
+                    .await
+                    .unwrap_err()
+            } else {
+                manager.get_by_iid(&iid).await.unwrap_err()
+            };
+            if case == 0 {
+                assert_eq!(error.category(), crate::ErrorCategory::QueryExecution);
+                assert_eq!(
+                    std::error::Error::source(&error).unwrap().to_string(),
+                    "Query execution error: provider failed"
+                );
+            } else {
+                assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
+                assert_eq!(
+                    error.model_validation_phase(),
+                    Some(crate::ModelValidationPhase::Hydration)
+                );
+                assert_eq!(
+                    error.code(),
+                    Some(if case == 2 {
+                        "query_remote_v3_answer_kind"
+                    } else {
+                        "query_remote_v3_document_value"
+                    })
+                );
+            }
+            let state = state.lock().unwrap();
+            assert!(matches!(state.events.last(), Some(Event::Close)));
+            assert_eq!(state.query_modes, ["canonical"]);
+        }
+    }
 }

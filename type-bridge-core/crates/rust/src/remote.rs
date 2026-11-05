@@ -1486,7 +1486,7 @@ mod tests {
                 assert_eq!(exchanges.lock().unwrap().len(), base);
                 assert!(one_exchange!(manager.all()).is_empty());
                 assert_eq!(one_exchange!(manager.count()), 7);
-                assert!(one_exchange!(manager.get_by_iid("0x10")).is_none());
+                assert!(one_exchange!(manager.get_by_iid(&crate::Iid::new("0x10").unwrap())).is_none());
                 assert!(one_exchange!(manager.filter().unwrap().all()).is_empty());
                 let refusal = manager.filter().unwrap().first().await.unwrap_err();
                 assert_eq!(refusal.code(), Some("manager_first_requires_identity"));
@@ -1534,7 +1534,7 @@ mod tests {
                 assert!(one_exchange!(manager.filter().unwrap().exists()));
                 assert!(one_exchange!(manager.subtypes().all()).is_empty());
                 assert_eq!(one_exchange!(manager.subtypes().count()), 7);
-                assert!(one_exchange!(manager.subtypes().get_by_iid("0x10")).is_none());
+                assert!(one_exchange!(manager.subtypes().get_by_iid(&crate::Iid::new("0x10").unwrap())).is_none());
                 let inserted = one_exchange!(manager.insert($create));
                 assert_eq!(inserted.count(), $insert_count);
                 if let Some(item) = inserted.item() {
@@ -1768,7 +1768,7 @@ mod tests {
             remote.entities::<Person>().all().await.unwrap_err(),
             remote
                 .entities::<Person>()
-                .get_by_iid("0x10")
+                .get_by_iid(&crate::Iid::new("0x10").unwrap())
                 .await
                 .unwrap_err(),
             remote

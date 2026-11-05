@@ -185,7 +185,9 @@ let ada = db.entities::<Person>().where_(
 ```
 
 `where_`, `iid`, and `iids` return sibling filters. `where_` accepts the six
-canonical scalar comparisons. Generated model `iid()` accessors return `&Iid`
+canonical scalar comparisons. By-IID reads take `&Iid` and permanently redirect to
+`filter()?.iid(iid)?.first()`, including subtype and transaction managers.
+Generated model `iid()` accessors return `&Iid`
 (and reference accessors return `Option<&Iid>`); use `.as_str()` for text. IID predicates accept validated `Iid` values;
 `iids` can be combined with field comparisons. An empty IID set matches nothing
 and completes without a provider request.

@@ -547,15 +547,7 @@ fn assert_assignment(value: &Assignment, iid: &str, position: &str, worker_iid: 
 #[tokio::test]
 async fn public_relation_preflight_failures_are_zero_io() {
     let (db, state) = test_db(Vec::new());
-    assert_model_error(
-        db.relations::<Assignment>()
-            .get_by_iid("bad-iid")
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
+
     assert_model_error(
         db.relations::<Assignment>()
             .update("bad-iid", create("p", "0x9"))
@@ -677,7 +669,7 @@ async fn public_relation_managers_report_schema_not_bound_before_io() {
     check(db.relations::<Assignment>().count().await.unwrap_err());
     check(
         db.relations::<Assignment>()
-            .get_by_iid("0x1")
+            .get_by_iid(&crate::Iid::new("0x1").unwrap())
             .await
             .unwrap_err(),
     );
@@ -727,7 +719,7 @@ async fn hydrated_generated_reference_preserves_database_origin_before_relation_
     ]);
     let person = source
         .entities::<Person>()
-        .get_by_iid("0x9")
+        .get_by_iid(&crate::Iid::new("0x9").unwrap())
         .await
         .unwrap()
         .expect("source person exists");
@@ -945,7 +937,7 @@ async fn public_relation_get_by_iid_zero_and_one_use_exact_read() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(Vec::new()))]);
     assert!(
         db.relations::<Assignment>()
-            .get_by_iid("0x1")
+            .get_by_iid(&crate::Iid::new("0x1").unwrap())
             .await
             .unwrap()
             .is_none()
@@ -964,7 +956,7 @@ async fn public_relation_get_by_iid_zero_and_one_use_exact_read() {
     let (db, state) = test_db(vec![fetch("0x1", "captain", "0x9", "alice")]);
     let value = db
         .relations::<Assignment>()
-        .get_by_iid("0x1")
+        .get_by_iid(&crate::Iid::new("0x1").unwrap())
         .await
         .unwrap()
         .expect("expected assignment");
@@ -1221,7 +1213,10 @@ async fn public_relation_subtypes_get_by_iid_zero_and_one() {
                     .await
                     .unwrap()
             } else {
-                manager.get_by_iid("0x1").await.unwrap()
+                manager
+                    .get_by_iid(&crate::Iid::new("0x1").unwrap())
+                    .await
+                    .unwrap()
             };
             if present {
                 let Some(EngagementFamily::Assignment(assignment)) = value else {

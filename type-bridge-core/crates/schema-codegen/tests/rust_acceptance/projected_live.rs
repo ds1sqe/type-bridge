@@ -508,7 +508,7 @@ where
     M: type_bridge::__codegen::EntityModel<Schema = AppSchema>
         + type_bridge::__codegen::CompleteModel,
 {
-    live(database.entities::<M>().get_by_iid(iid).await, context)?.ok_or_else(|| {
+    live(database.entities::<M>().get_by_iid(&type_bridge::Iid::new(iid).unwrap()).await, context)?.ok_or_else(|| {
         ProducerError::new("missing_live_record", format!("{context} returned no row"))
     })
 }
@@ -522,7 +522,7 @@ where
     M: type_bridge::__codegen::RelationModel<Schema = AppSchema>
         + type_bridge::__codegen::CompleteModel,
 {
-    live(database.relations::<M>().get_by_iid(iid).await, context)?.ok_or_else(|| {
+    live(database.relations::<M>().get_by_iid(&type_bridge::Iid::new(iid).unwrap()).await, context)?.ok_or_else(|| {
         ProducerError::new("missing_live_record", format!("{context} returned no row"))
     })
 }
@@ -880,7 +880,7 @@ where
     M: type_bridge::__codegen::EntityModel<Schema = AppSchema>
         + type_bridge::__codegen::CompleteModel,
 {
-    if live(database.entities::<M>().get_by_iid(iid).await, context)?.is_some() {
+    if live(database.entities::<M>().get_by_iid(&type_bridge::Iid::new(iid).unwrap()).await, context)?.is_some() {
         return Err(ProducerError::new("delete_not_observed", context));
     }
     Ok(())
@@ -895,7 +895,7 @@ where
     M: type_bridge::__codegen::RelationModel<Schema = AppSchema>
         + type_bridge::__codegen::CompleteModel,
 {
-    if live(database.relations::<M>().get_by_iid(iid).await, context)?.is_some() {
+    if live(database.relations::<M>().get_by_iid(&type_bridge::Iid::new(iid).unwrap()).await, context)?.is_some() {
         return Err(ProducerError::new("delete_not_observed", context));
     }
     Ok(())
@@ -935,7 +935,7 @@ async fn cleanup_live_records(
     let read_after_delete = live(
         database
             .relations::<PlainActivity>()
-            .get_by_iid(&created.plain_activity)
+            .get_by_iid(&type_bridge::Iid::new(&created.plain_activity).unwrap())
             .await,
         "read deleted plain activity",
     )?

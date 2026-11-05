@@ -23,7 +23,7 @@ use crate::projected_batch::{
     create_operation, create_rows, delete_rows, execute_borrowed_delete, execute_borrowed_things,
     prepare_batch, update_rows, validate_binding_row_count,
 };
-use crate::projected_codec::{materialize_projected, project_create};
+use crate::projected_codec::project_create;
 use crate::relation_codec::{hydrate_relation, resolve_relation_authority};
 use crate::schema::Schema;
 use crate::{Database, Result, WriteResult};
@@ -486,25 +486,9 @@ where
         execute_borrowed_delete(&self.transaction.tx, installed, &batch).await
     }
 
-    /// Reads one exact model by canonical IID through the open transaction,
-    /// observing this transaction's uncommitted writes.
-    pub async fn get_by_iid(&self, iid: &str) -> Result<Option<M>> {
-        if !is_canonical_thing_iid(iid) {
-            return Err(invalid_iid());
-        }
-        let installed = self.transaction.installed()?;
-        let (id, _descriptor) = resolve_entity_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        ProjectedCrudExecutor::new(installed)
-            .get_entity_by_iid_in_transaction_with_compatibility(&self.transaction.tx, &id, iid)
-            .await
-            .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None))?
-            .map(|projected| materialize_projected(projected, installed))
-            .transpose()
+    /// Redirect to `filter()?.iid(iid)?.first()`, preserving the manager's model scope.
+    pub async fn get_by_iid(&self, iid: &crate::Iid) -> Result<Option<M>> {
+        self.filter()?.iid(iid)?.first().await
     }
 
     /// Reads all exact models through the open transaction, observing this
@@ -805,25 +789,9 @@ where
         execute_borrowed_delete(&self.transaction.tx, installed, &batch).await
     }
 
-    /// Reads one exact coalesced relation by canonical IID through the open
-    /// transaction, observing this transaction's uncommitted writes.
-    pub async fn get_by_iid(&self, iid: &str) -> Result<Option<M>> {
-        if !is_canonical_thing_iid(iid) {
-            return Err(invalid_iid());
-        }
-        let installed = self.transaction.installed()?;
-        let (id, _descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        ProjectedCrudExecutor::new(installed)
-            .get_relation_by_iid_in_transaction_with_compatibility(&self.transaction.tx, &id, iid)
-            .await
-            .map_err(|error| Error::from_projected_crud(error, ModelKind::Relation, None))?
-            .map(|projected| materialize_projected(projected, installed))
-            .transpose()
+    /// Redirect to `filter()?.iid(iid)?.first()`, preserving the manager's model scope.
+    pub async fn get_by_iid(&self, iid: &crate::Iid) -> Result<Option<M>> {
+        self.filter()?.iid(iid)?.first().await
     }
 
     /// Reads all exact coalesced relations through the open transaction,

@@ -734,12 +734,7 @@ async fn write_transaction_preflight_and_reads_share_the_open_context() {
         Response::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 0})])),
     ]);
     let tx = db.write().await.unwrap();
-    assert_model_error(
-        tx.entities::<Worker>().get_by_iid("bad").await.unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
+
     assert_model_error(
         tx.relations::<Assignment>()
             .update(
@@ -762,7 +757,7 @@ async fn write_transaction_preflight_and_reads_share_the_open_context() {
     }
     assert!(
         tx.entities::<Worker>()
-            .get_by_iid("0x9")
+            .get_by_iid(&crate::Iid::new("0x9").unwrap())
             .await
             .unwrap()
             .is_none()

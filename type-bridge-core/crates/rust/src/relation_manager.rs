@@ -606,34 +606,9 @@ where
             .map_err(crate::remote::target_error)
     }
 
-    /// Reads one exact coalesced relation by canonical IID; invalid IIDs are rejected before
-    /// I/O and a valid but absent relation returns `None`.
-    pub async fn get_by_iid(&self, iid: &str) -> Result<Option<M>> {
-        if !is_canonical_thing_iid(iid) {
-            return Err(invalid_iid());
-        }
-        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
-        let (id, _descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let executor = ProjectedCrudExecutor::new(installed);
-        let value = if let QueryTarget::Database(database) = target {
-            executor
-                .get_relation_by_iid_with_compatibility(database, &id, iid)
-                .await
-                .map_err(|error| Error::from_projected_crud(error, ModelKind::Relation, None))?
-        } else {
-            executor
-                .get_by_iid_on_target(target, &id, iid, None)
-                .await
-                .map_err(crate::remote::target_error)?
-        };
-        value
-            .map(|projected| materialize_projected(projected, installed))
-            .transpose()
+    /// Redirect to `filter()?.iid(iid)?.first()`, preserving the manager's model scope.
+    pub async fn get_by_iid(&self, iid: &crate::Iid) -> Result<Option<M>> {
+        self.filter()?.iid(iid)?.first().await
     }
 
     /// Reads all exact coalesced relations in application result order, excluding subtypes;
@@ -694,34 +669,9 @@ where
         crate::ProjectedSubtypeFilter::for_target(self.context.ok_or_else(schema_not_bound)?)
     }
 
-    /// Reads one canonical IID across the root and its generated concrete descendants.
-    /// Invalid IIDs are rejected before I/O; a valid but absent IID returns `None`.
-    pub async fn get_by_iid(&self, iid: &str) -> Result<Option<M::Subtypes>> {
-        if !is_canonical_thing_iid(iid) {
-            return Err(invalid_iid());
-        }
-        let ManagerTarget { installed, target } = self.context.ok_or_else(schema_not_bound)?;
-        let (id, _) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            false,
-        )?;
-        ProjectedManagerFilterExecutor::new(installed)
-            .get_by_iid_including_subtypes_on_target(target, &id, iid, manager_read_control(target))
-            .await
-            .map_err(crate::remote::target_error)?
-            .map(|thing| {
-                let hydrated =
-                    crate::projected_codec::projected_to_hydrated_row(&thing, installed)?;
-                M::__tb_dispatch_subtype(&hydrated, &HydrationCapability::new()).map_err(|error| {
-                    crate::entity_codec::map_validation_error(
-                        error,
-                        ModelValidationPhase::Hydration,
-                    )
-                })
-            })
-            .transpose()
+    /// Redirect to `filter()?.iid(iid)?.first()`, preserving the manager's model scope.
+    pub async fn get_by_iid(&self, iid: &crate::Iid) -> Result<Option<M::Subtypes>> {
+        self.filter()?.iid(iid)?.first().await
     }
 
     /// Reads all root/descendant relations in application result order, materialized as the

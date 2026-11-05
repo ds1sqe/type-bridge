@@ -208,6 +208,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Rust entity, relation, subtype, and transaction manager `get_by_iid` methods
+  now require `&Iid` instead of `&str`. They permanently redirect to
+  `filter()?.iid(iid)?.first()`. Construct identifiers with `Iid::new(...)`.
+
 - Generated Rust model and family `iid()` accessors now return `&Iid`; reference
   accessors return `Option<&Iid>`. Reference `from_iid` constructors accept an
   owned `Iid`. Construct one with `Iid::new(...)` and use `.as_str()` when text
