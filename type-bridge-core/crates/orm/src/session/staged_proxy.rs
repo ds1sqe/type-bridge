@@ -28,6 +28,15 @@ pub type StagedExchangeFn = Arc<
 /// Caller-owned asynchronous transport for the staged proxy protocol.
 /// Reply authentication and execution deadlines remain with the connection.
 pub trait StagedTransport: Send + Sync + 'static {
+    /// Exchange one `/v3/raw` request, retaining raw provider errors.
+    /// Custom transports opt in; raw never falls back to the staged endpoint.
+    fn exchange_raw<'a>(
+        &'a self,
+        _request: &'a [u8],
+    ) -> BoxFuture<'a, Result<Vec<u8>, super::raw::RawQueryError>> {
+        Box::pin(async { Err(super::raw::RawQueryError::unsupported()) })
+    }
+
     /// Fetch the exact `/v3/capabilities` advertisement.
     fn staged_capabilities(&self) -> BoxFuture<'_, Result<Vec<u8>, crate::QueryTargetError>>;
     /// Exchange the exact `/v3/staged` request for its exact reply bytes.

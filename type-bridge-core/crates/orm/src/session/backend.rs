@@ -573,6 +573,24 @@ pub(crate) async fn execute_typed_provider_statement<T: TransactionOps + ?Sized>
 /// The `RealBackend` (behind the `typedb` feature) provides the real
 /// TypeDB implementation; tests use mock implementations.
 pub trait TransactionOps: Send {
+    /// Execute unchecked TypeQL and retain the provider's HTTP-answer bytes.
+    fn query_raw<'a>(
+        &'a mut self,
+        _query: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<u8>, super::raw::RawQueryError>> {
+        Box::pin(async { Err(super::raw::RawQueryError::unsupported()) })
+    }
+
+    /// Commit an unchecked transaction while retaining durability certainty.
+    fn commit_raw(&mut self) -> BoxFuture<'_, Result<(), super::raw::RawQueryError>> {
+        Box::pin(async { Err(super::raw::RawQueryError::unsupported()) })
+    }
+
+    /// Close an unchecked transaction without committing.
+    fn close_raw(&mut self) -> BoxFuture<'_, Result<(), super::raw::RawQueryError>> {
+        Box::pin(async { Err(super::raw::RawQueryError::unsupported()) })
+    }
+
     /// Whether this transaction's active provider can transport `given` rows.
     ///
     /// Implementations opt in explicitly. The default keeps mocks and legacy
@@ -883,6 +901,15 @@ pub(super) fn cancelled_error(code: &'static str, message: &'static str) -> OrmE
 /// Opens transactions against a named database. Implementations must be
 /// thread-safe (`Send + Sync`) for use across async tasks.
 pub trait DriverBackend: Send + Sync {
+    /// Open an eager unchecked transaction, preserving raw provider errors.
+    fn open_raw_transaction(
+        &self,
+        _database: &str,
+        _kind: TxType,
+    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, super::raw::RawQueryError>> {
+        Box::pin(async { Err(super::raw::RawQueryError::unsupported()) })
+    }
+
     /// Canonical selected-match capabilities supported by this backend.
     ///
     /// The default is deliberately empty: legacy/materializing backends must

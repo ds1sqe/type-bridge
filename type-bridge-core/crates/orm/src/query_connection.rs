@@ -155,6 +155,31 @@ impl std::fmt::Debug for ProxyQueryConnection {
 }
 
 impl ProxyQueryConnection {
+    /// Open a single-query unchecked context using this connection's route.
+    /// Raw calls bypass typed plans, advertisements, hooks and answer limits.
+    pub fn raw_transaction(
+        &self,
+        kind: crate::TxType,
+    ) -> Result<crate::session::raw::RawTransaction, crate::session::raw::RawQueryError> {
+        use crate::session::raw::{RawExchangeFn, RawQueryError, RawTransaction};
+        let exchange: RawExchangeFn = match &self.route {
+            Some(Route::Http(http)) => http.raw_exchange(kind),
+            Some(Route::Transport(transport)) => {
+                let transport = Arc::clone(transport);
+                Arc::new(move |request| {
+                    let transport = Arc::clone(&transport);
+                    Box::pin(async move { transport.exchange_raw(&request).await })
+                })
+            }
+            _ => return Err(RawQueryError::unsupported()),
+        };
+        Ok(RawTransaction::proxy(
+            exchange,
+            kind,
+            self.admission_window_milliseconds,
+        ))
+    }
+
     /// Open `endpoint` and fetch its advertisement, or use the pinned
     /// `advertisement`, then validate it.
     ///
@@ -1639,5 +1664,48 @@ mod policy_tests {
         let mut invalid = requested;
         invalid.structural.bindings = 0;
         assert!(connection.with_query_limits(invalid).is_err());
+    }
+    #[tokio::test]
+    async fn raw_context_uses_only_the_raw_transport_seam() {
+        use crate::session::backend::BoxFuture;
+        use crate::session::raw::RawQueryError;
+        struct RawOnly;
+        impl StagedTransport for RawOnly {
+            fn staged_capabilities(&self) -> BoxFuture<'_, Result<Vec<u8>, QueryTargetError>> {
+                panic!("raw fetched a typed advertisement")
+            }
+            fn exchange_staged<'a>(
+                &'a self,
+                _: &'a [u8],
+            ) -> BoxFuture<'a, Result<Vec<u8>, QueryTargetError>> {
+                panic!("raw used the staged endpoint")
+            }
+            fn exchange_raw<'a>(
+                &'a self,
+                request: &'a [u8],
+            ) -> BoxFuture<'a, Result<Vec<u8>, RawQueryError>> {
+                Box::pin(async move {
+                    let request: serde_json::Value = serde_json::from_slice(request).unwrap();
+                    assert_eq!(request["query"], "unchecked text");
+                    Ok(b"raw answer".to_vec())
+                })
+            }
+        }
+        let connection = connection(advertisement(QueryLimits::V3));
+        assert_eq!(
+            connection
+                .raw_transaction(crate::TxType::Write)
+                .err()
+                .unwrap()
+                .code,
+            "raw_unsupported"
+        );
+        let connection = connection.with_staged_transport(Arc::new(RawOnly));
+        let mut transaction = connection.raw_transaction(crate::TxType::Write).unwrap();
+        assert_eq!(
+            transaction.execute_query("unchecked text").await.unwrap(),
+            b"raw answer"
+        );
+        transaction.commit().await.unwrap();
     }
 }

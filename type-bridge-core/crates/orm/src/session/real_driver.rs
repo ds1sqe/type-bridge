@@ -182,6 +182,25 @@ pub async fn delete_database_prepared_secure(
 }
 
 impl DriverBackend for RealBackend {
+    fn open_raw_transaction(
+        &self,
+        database: &str,
+        kind: TxType,
+    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, super::raw::RawQueryError>> {
+        let database = database.to_owned();
+        let runtime = Arc::clone(&self.inner);
+        Box::pin(async move {
+            let inner = runtime
+                .open_raw_transaction(&database, runtime_tx_type(kind))
+                .await?;
+            Ok(Box::new(RealTransaction {
+                inner,
+                runtime,
+                database,
+            }) as Box<dyn TransactionOps>)
+        })
+    }
+
     fn match_capabilities(&self) -> CapabilitySet {
         real_match_capabilities(self.inner.supports_given_rows())
     }
@@ -358,6 +377,21 @@ impl RealTransaction {
 }
 
 impl TransactionOps for RealTransaction {
+    fn query_raw<'a>(
+        &'a mut self,
+        query: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<u8>, super::raw::RawQueryError>> {
+        Box::pin(async move { self.inner.query_raw(query).await.map_err(Into::into) })
+    }
+
+    fn commit_raw(&mut self) -> BoxFuture<'_, Result<(), super::raw::RawQueryError>> {
+        Box::pin(async move { self.inner.commit_raw().await.map_err(Into::into) })
+    }
+
+    fn close_raw(&mut self) -> BoxFuture<'_, Result<(), super::raw::RawQueryError>> {
+        Box::pin(async move { self.inner.close_raw().await.map_err(Into::into) })
+    }
+
     fn supports_given_rows(&self) -> bool {
         self.inner.supports_given_rows()
     }

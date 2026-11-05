@@ -16,6 +16,7 @@ pub mod eager;
 pub(crate) mod eager;
 pub mod legacy_writer;
 mod proxy_connection;
+pub mod raw;
 pub mod staged;
 pub(crate) mod staged_proxy;
 mod tls_policy;

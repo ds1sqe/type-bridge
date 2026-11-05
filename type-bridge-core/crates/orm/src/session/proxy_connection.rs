@@ -98,6 +98,34 @@ impl ProxyHttpTransport {
         })
     }
 
+    /// Create the unchecked exchange used by a single-query raw context.
+    /// It shares endpoint trust and headers, without staged query bounds.
+    pub fn raw_exchange(&self, kind: super::backend::TxType) -> super::raw::RawExchangeFn {
+        let client = Arc::clone(&self.client);
+        Arc::new(move |request| {
+            let client = Arc::clone(&client);
+            Box::pin(async move {
+                let response =
+                    tokio::task::spawn_blocking(move || client.exchange_raw(&request)).await;
+                match response {
+                    Ok(Ok(response)) => super::raw::proxy_answer(response, kind),
+                    _ => {
+                        let mut error = super::raw::RawQueryError::refusal(
+                            "raw_proxy_transport_failed",
+                            "the raw proxy exchange failed",
+                        );
+                        error.status = 503;
+                        Err(if kind == super::backend::TxType::Read {
+                            error
+                        } else {
+                            error.unknown()
+                        })
+                    }
+                }
+            })
+        })
+    }
+
     /// Fetch the executor's staged (`query-remote/v3`) advertisement.
     ///
     /// # Errors
