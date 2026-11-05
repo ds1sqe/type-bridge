@@ -10,6 +10,9 @@ pub type Result<T> = std::result::Result<T, MigrationError>;
 /// Migration specification errors.
 #[derive(Debug, Error)]
 pub enum MigrationError {
+    /// Native migration data plan or explicit schema authority is invalid.
+    #[error(transparent)]
+    NativePlan(#[from] type_bridge_contract::diagnostic::Diagnostic),
     /// JSON serialization or deserialization failed.
     #[error("invalid migration specification JSON: {0}")]
     Json(#[from] serde_json::Error),

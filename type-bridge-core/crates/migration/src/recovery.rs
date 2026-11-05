@@ -118,8 +118,9 @@ pub fn plan_recovery(
     graph: &MigrationGraph,
     applied: &[AppliedMigrationRecord],
     target: Option<&str>,
+    authority: Option<&type_bridge_contract::schema::DeclaredSchema>,
 ) -> crate::Result<CheckedExecutionPlan> {
-    let execution_plan = plan(graph, applied, target)?;
+    let execution_plan = plan(graph, applied, target, authority)?;
     let checksums = graph
         .migrations
         .iter()
@@ -531,7 +532,13 @@ async fn execute_pending_step<C: StepRecoveryController + ?Sized>(
 
     let typeql = match step.migration.action {
         MigrationAction::Apply => step.execution.forward.as_str(),
-        MigrationAction::Rollback => match step.execution.reverse.as_deref() {
+        MigrationAction::Rollback => match step.execution.reverse.as_deref().or_else(|| {
+            step.execution
+                .data
+                .as_ref()
+                .and_then(|data| data.program(MigrationAction::Rollback))
+                .map(|_| "")
+        }) {
             Some(reverse) => reverse,
             None => {
                 return failed_before_commit(
@@ -567,7 +574,11 @@ async fn execute_pending_step<C: StepRecoveryController + ?Sized>(
             error: error.to_string(),
         };
     }
-    if let Err(error) = transaction.query(typeql).await {
+    if let Err(error) = step
+        .execution
+        .execute_program(&transaction, step.migration.action)
+        .await
+    {
         let _ = transaction.rollback().await;
         let _ = transaction.close().await;
         return failed_before_commit(controller, step, format!("query failed: {error}"), None)
@@ -845,6 +856,7 @@ mod tests {
         forward: &str,
     ) -> ExecutionStep {
         ExecutionStep {
+            data: None,
             tx_type,
             kind,
             operation_kind,
@@ -886,7 +898,7 @@ mod tests {
                 app_label: "app".to_string(),
                 name: "0001_initial".to_string(),
                 action: MigrationAction::Apply,
-                reversible: steps.iter().all(|step| step.reverse.is_some()),
+                reversible: steps.iter().all(ExecutionStep::has_reverse),
                 steps,
             }],
             to_rollback: Vec::new(),
@@ -964,7 +976,7 @@ mod tests {
             }],
         };
 
-        let checked = plan_recovery(&graph, &[], None).unwrap();
+        let checked = plan_recovery(&graph, &[], None, None).unwrap();
         let step = checked.ordered_steps().next().unwrap();
 
         assert_eq!(step.migration.checksum, "artifact-checksum");
@@ -1227,5 +1239,39 @@ mod tests {
             result.migrations[0].steps[0].outcome,
             StepExecutionOutcome::Committed { backfill: Some(_) }
         ));
+    }
+    #[tokio::test]
+    async fn native_steps_recover_without_replaying_applied_work() {
+        let (schema, graph) = crate::native_step::tests::fixture();
+        let plan = plan_recovery(&graph, &[], None, Some(&schema)).unwrap();
+        let (backend, log) =
+            MockMigrationBackend::with_responses(vec![crate::native_step::tests::answer()]);
+        let db = Database::with_backend(Box::new(backend), "native-recovery");
+        let controller = TestController::new(vec![pending()]);
+        let result = execute_recovery_plan(&db, &plan, &controller).await;
+        assert_eq!(result.status, RecoveryPlanStatus::Succeeded);
+        assert!(
+            controller
+                .event_kinds()
+                .contains(&StepRecoveryEventKind::BeforeCommit)
+        );
+        let committed_queries = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, MockEvent::Query(..)))
+            .count();
+        assert_eq!(committed_queries, 1);
+        let controller = TestController::new(vec![applied("native-commit")]);
+        let result = execute_recovery_plan(&db, &plan, &controller).await;
+        assert_eq!(result.status, RecoveryPlanStatus::Succeeded);
+        assert_eq!(
+            log.lock()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, MockEvent::Query(..)))
+                .count(),
+            committed_queries
+        );
     }
 }

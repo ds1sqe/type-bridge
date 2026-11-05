@@ -15,6 +15,7 @@ pub mod checksum;
 pub mod error;
 pub mod executor;
 pub mod graph;
+pub mod native_step;
 pub mod plan;
 pub mod recovery;
 pub mod spec;
@@ -30,6 +31,7 @@ pub use checksum::{
 pub use error::{MigrationError, Result};
 pub use executor::{MigrationResult, execute_migration, execute_plan, execute_plan_with_run_log};
 pub use graph::{AppliedMigrationRecord, MigrationValidationError, ValidationCode, validate_graph};
+pub use native_step::NativeDataStep;
 pub use plan::{
     ExecutionPlan, ExecutionStep, MigrationAction, MigrationExecution, OperationKind, StepKind,
     plan,

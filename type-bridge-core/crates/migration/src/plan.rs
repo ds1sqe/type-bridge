@@ -2,8 +2,8 @@
 //!
 //! Lowers a validated [`MigrationGraph`] and applied-state into an ordered
 //! [`ExecutionPlan`] of [`ExecutionStep`]s, each carrying its [`TxType`] and
-//! the executable TypeQL to run.  No database connection, no async, no TypeDB
-//! driver is touched here.
+//! the executable TypeQL or schema-bound native data program to run. No database
+//! connection, async work, or TypeDB driver is touched here.
 
 use std::collections::BTreeSet;
 
@@ -53,6 +53,8 @@ pub enum OperationKind {
     /// Arbitrary authored TypeQL.
     #[default]
     RunTypeql,
+    /// Native V3 migration data program.
+    RunPlan,
     /// Define a complete initial schema.
     DefineSchema,
     /// Add an attribute type.
@@ -96,6 +98,7 @@ impl OperationKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::RunTypeql => "run_typeql",
+            Self::RunPlan => "run_plan",
             Self::DefineSchema => "define_schema",
             Self::AddAttribute => "add_attribute",
             Self::RemoveAttribute => "remove_attribute",
@@ -120,6 +123,7 @@ impl OperationKind {
     fn from_spec(operation: &OperationSpec) -> Self {
         match operation {
             OperationSpec::RunTypeql { .. } => Self::RunTypeql,
+            OperationSpec::RunPlan { .. } => Self::RunPlan,
             OperationSpec::DefineSchema { .. } => Self::DefineSchema,
             OperationSpec::AddAttribute { .. } => Self::AddAttribute,
             OperationSpec::RemoveAttribute { .. } => Self::RemoveAttribute,
@@ -144,10 +148,14 @@ impl OperationKind {
 
 /// One executable step within a migration.
 ///
-/// Carries the transaction type and the forward (and optional reverse) TypeQL.
+/// Carries the transaction type and either native data programs or TypeQL.
 /// Every step maps to exactly one TypeDB transaction.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionStep {
+    /// Native data payload, validated against explicit planning authority.
+    /// When present, this is the executable payload; TypeQL fields are empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<crate::NativeDataStep>,
     /// Transaction type to open for this step.
     pub tx_type: TxType,
     /// Discriminant controlling executor dispatch.
@@ -208,6 +216,9 @@ pub struct ExecutionPlan {
 
 /// Produce an ordered [`ExecutionPlan`] from a validated graph and applied state.
 ///
+/// Native data operations require `authority`; schema and explicit raw steps
+/// may be planned with `None`. No provider query is used to obtain authority.
+///
 /// # Errors
 ///
 /// - [`MigrationError::Planning`] – graph validation found one or more errors.
@@ -220,6 +231,7 @@ pub fn plan(
     graph: &MigrationGraph,
     applied: &[AppliedMigrationRecord],
     target: Option<&str>,
+    authority: Option<&type_bridge_contract::schema::DeclaredSchema>,
 ) -> crate::Result<ExecutionPlan> {
     // Gate 1: structural graph validation (04).
     let errors = validate_graph(graph, applied);
@@ -278,8 +290,8 @@ pub fn plan(
     // Assemble MigrationExecution objects for the apply list.
     let mut apply_executions = Vec::with_capacity(to_apply.len());
     for migration in to_apply {
-        let steps = assemble_steps(&migration.operations, migration.reversible)?;
-        let reversible = steps.iter().all(|s| s.reverse.is_some());
+        let steps = assemble_steps(&migration.operations, migration.reversible, authority)?;
+        let reversible = steps.iter().all(ExecutionStep::has_reverse);
         apply_executions.push(MigrationExecution {
             app_label: migration.app_label.clone(),
             name: migration.name.clone(),
@@ -292,8 +304,8 @@ pub fn plan(
     // Assemble MigrationExecution objects for the rollback list.
     let mut rollback_executions = Vec::with_capacity(to_rollback.len());
     for migration in to_rollback {
-        let steps = assemble_steps(&migration.operations, migration.reversible)?;
-        let reversible = steps.iter().all(|s| s.reverse.is_some());
+        let steps = assemble_steps(&migration.operations, migration.reversible, authority)?;
+        let reversible = steps.iter().all(ExecutionStep::has_reverse);
         rollback_executions.push(MigrationExecution {
             app_label: migration.app_label.clone(),
             name: migration.name.clone(),
@@ -427,7 +439,7 @@ fn shadowed_by_remove_relation(op: &OperationSpec, removed: &BTreeSet<&str>) -> 
 pub fn render_operation_typeql_steps(
     operation: &OperationSpec,
 ) -> crate::Result<Vec<ExecutionStep>> {
-    let mut steps = assemble_steps(std::slice::from_ref(operation), true)?;
+    let mut steps = assemble_steps(std::slice::from_ref(operation), true, None)?;
     match operation {
         OperationSpec::AddRelation { relation } => {
             let mut nodes = vec![type_bridge_orm::_schema::generator::relation_node(
@@ -470,6 +482,7 @@ pub fn render_operation_typeql_steps(
 fn assemble_steps(
     operations: &[OperationSpec],
     migration_reversible: bool,
+    authority: Option<&type_bridge_contract::schema::DeclaredSchema>,
 ) -> crate::Result<Vec<ExecutionStep>> {
     let removed_relations = removed_relation_labels(operations);
     let mut steps = Vec::with_capacity(operations.len());
@@ -478,9 +491,26 @@ fn assemble_steps(
             continue;
         }
         let mut op_steps: Vec<ExecutionStep> = match op {
+            OperationSpec::RunPlan { forward, reverse } => {
+                let schema = authority.ok_or_else(crate::native_step::missing_authority)?;
+                let data = crate::NativeDataStep::new(
+                    schema,
+                    forward,
+                    reverse.as_ref().filter(|_| migration_reversible),
+                )?;
+                vec![ExecutionStep {
+                    data: Some(data),
+                    tx_type: TxType::Write,
+                    kind: StepKind::Write,
+                    operation_kind: OperationKind::RunPlan,
+                    forward: String::new(),
+                    reverse: None,
+                }]
+            }
             OperationSpec::RunTypeql { forward, reverse } => {
                 let tx_type = run_typeql_tx_type(forward);
                 vec![ExecutionStep {
+                    data: None,
                     tx_type,
                     kind: if tx_type == TxType::Write {
                         StepKind::Write
@@ -503,6 +533,7 @@ fn assemble_steps(
                         message: e.to_string(),
                     })?;
                 vec![ExecutionStep {
+                    data: None,
                     tx_type: TxType::Schema,
                     kind: StepKind::Schema,
                     operation_kind: OperationKind::DefineSchema,
@@ -630,6 +661,7 @@ fn assemble_steps(
                 // from this `forward` text's match clause.
                 let (forward, reverse) = copy_attribute_typeql(copy)?;
                 vec![ExecutionStep {
+                    data: None,
                     tx_type: TxType::Write,
                     kind: StepKind::Backfill,
                     operation_kind: OperationKind::CopyAttribute,
@@ -761,6 +793,7 @@ fn doc_meta_tokens(
 
 fn schema_step(forward: String, reverse: Option<String>) -> ExecutionStep {
     ExecutionStep {
+        data: None,
         tx_type: TxType::Schema,
         kind: StepKind::Schema,
         operation_kind: OperationKind::RunTypeql,
@@ -940,6 +973,7 @@ fn undefine_role_player(relation: &str, role: &str, player: &str) -> crate::Resu
 fn op_kind_name(op: &OperationSpec) -> &'static str {
     match op {
         OperationSpec::RunTypeql { .. } => "RunTypeql",
+        OperationSpec::RunPlan { .. } => "RunPlan",
         OperationSpec::DefineSchema { .. } => "DefineSchema",
         OperationSpec::AddAttribute { .. } => "AddAttribute",
         OperationSpec::RemoveAttribute { .. } => "RemoveAttribute",
@@ -1114,7 +1148,7 @@ mod tests {
             ),
         ]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
 
         assert_eq!(result.to_apply.len(), 2);
         assert_eq!(result.to_rollback.len(), 0);
@@ -1140,7 +1174,7 @@ mod tests {
             ),
         ]);
 
-        let result = plan(&g, &[applied("0001_initial")], None).expect("plan should succeed");
+        let result = plan(&g, &[applied("0001_initial")], None, None).expect("plan should succeed");
 
         assert_eq!(result.to_apply.len(), 1);
         assert_eq!(result.to_apply[0].name, "0002_add");
@@ -1176,7 +1210,7 @@ mod tests {
         ]);
 
         // target = 0002_add; none applied yet.
-        let result = plan(&g, &[], Some("0002_add")).expect("plan should succeed");
+        let result = plan(&g, &[], Some("0002_add"), None).expect("plan should succeed");
 
         assert_eq!(result.to_apply.len(), 2);
         assert_eq!(result.to_apply[0].name, "0001_initial");
@@ -1219,6 +1253,7 @@ mod tests {
                 applied("0003_more"),
             ],
             Some("0001_initial"),
+            None,
         )
         .expect("plan should succeed");
 
@@ -1253,6 +1288,7 @@ mod tests {
             &g,
             &[applied("0001_initial"), applied("0002_add")],
             Some("0001_initial"),
+            None,
         )
         .expect("plan should succeed");
 
@@ -1269,7 +1305,7 @@ mod tests {
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
 
         let exec = &result.to_apply[0];
         assert_eq!(exec.steps.len(), 1);
@@ -1295,7 +1331,7 @@ mod tests {
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         assert_eq!(result.to_apply[0].steps[0].tx_type, TxType::Schema);
     }
 
@@ -1309,7 +1345,7 @@ mod tests {
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         assert_eq!(result.to_apply[0].steps[0].tx_type, TxType::Schema);
     }
 
@@ -1328,7 +1364,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         let step = &result.to_apply[0].steps[0];
         assert_eq!(step.tx_type, TxType::Write);
         assert_eq!(step.kind, StepKind::Write);
@@ -1351,7 +1387,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
 
         assert_eq!(steps.len(), 2);
@@ -1377,7 +1413,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
 
         assert!(steps[0].forward.contains("entity person,"));
@@ -1413,7 +1449,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
 
         assert_eq!(steps.len(), 1);
@@ -1444,7 +1480,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
 
         assert_typeql_eq!(steps[0].forward, "define\nperson owns email @key;");
@@ -1481,7 +1517,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
 
         assert_eq!(steps.len(), 2);
@@ -1521,7 +1557,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
 
         // The no-op transition contributes zero steps.
@@ -1571,7 +1607,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
 
         assert_typeql_eq!(
@@ -1619,7 +1655,7 @@ delete $a has email "ops@example.com";"#,
         spec.reversible = false;
         let g = graph(vec![spec]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
 
         assert!(result.to_apply[0].steps[0].reverse.is_none());
         assert!(!result.to_apply[0].reversible);
@@ -1639,7 +1675,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let err = plan(&g, &[], None).expect_err("should fail for unsupported op");
+        let err = plan(&g, &[], None, None).expect_err("should fail for unsupported op");
         match err {
             MigrationError::UnloweredOperation { kind } => {
                 assert_eq!(kind, "RenameAttribute");
@@ -1659,7 +1695,7 @@ delete $a has email "ops@example.com";"#,
             vec![("app", "0001_initial")],
         )]);
 
-        let err = plan(&g, &[], None).expect_err("should fail on validation error");
+        let err = plan(&g, &[], None, None).expect_err("should fail on validation error");
         assert!(
             matches!(err, MigrationError::Planning { .. }),
             "expected Planning error, got {err:?}"
@@ -1684,7 +1720,7 @@ delete $a has email "ops@example.com";"#,
             applied_at: None,
         };
 
-        let err = plan(&g, &[bad_applied], None).expect_err("should fail on drift");
+        let err = plan(&g, &[bad_applied], None, None).expect_err("should fail on drift");
         assert!(
             matches!(err, MigrationError::ChecksumDrift { .. }),
             "expected ChecksumDrift error, got {err:?}"
@@ -1702,7 +1738,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         assert!(!result.to_apply[0].reversible);
     }
 
@@ -1717,7 +1753,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         assert!(result.to_apply[0].reversible);
     }
 
@@ -1730,7 +1766,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         assert!(!result.to_apply[0].reversible);
     }
 
@@ -1744,7 +1780,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let err = plan(&g, &[], Some("nonexistent_migration"))
+        let err = plan(&g, &[], Some("nonexistent_migration"), None)
             .expect_err("should fail for missing target");
         assert!(
             matches!(err, MigrationError::TargetNotFound { .. }),
@@ -1775,7 +1811,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
 
         let exec = &result.to_apply[0];
         assert_eq!(exec.steps.len(), 1);
@@ -1817,7 +1853,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
 
         let step = &result.to_apply[0].steps[0];
         assert_eq!(step.tx_type, TxType::Write);
@@ -1890,7 +1926,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
 
         let exec = &result.to_apply[0];
         assert_eq!(
@@ -1922,7 +1958,7 @@ delete $a has email "ops@example.com";"#,
         ];
         let g = graph(vec![migration("0002_trim_employment", ops, vec![])]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
 
         assert_eq!(result.to_apply[0].steps.len(), 3);
     }
@@ -1943,7 +1979,7 @@ delete $a has email "ops@example.com";"#,
         });
         let g = graph(vec![migration("0006_mixed_removals", ops, vec![])]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
 
         let forwards: Vec<&str> = result.to_apply[0]
             .steps
@@ -1975,7 +2011,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
         assert_eq!(steps.len(), 3);
 
@@ -2021,7 +2057,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         assert!(result.to_apply[0].steps.is_empty());
     }
 
@@ -2039,7 +2075,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
         assert_eq!(steps.len(), 3);
         assert_typeql_eq!(steps[0].forward, "undefine\n@meta(\"gone\") from person;");
@@ -2074,7 +2110,7 @@ delete $a has email "ops@example.com";"#,
             vec![],
         )]);
 
-        let result = plan(&g, &[], None).expect("plan should succeed");
+        let result = plan(&g, &[], None, None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
         assert_eq!(steps.len(), 1);
         assert_typeql_eq!(

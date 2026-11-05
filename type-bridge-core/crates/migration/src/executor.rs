@@ -245,7 +245,7 @@ pub async fn execute_migration(db: &Database, migration: &MigrationExecution) ->
         }
 
         // Execute the query.
-        if let Err(e) = ctx.query(typeql).await {
+        if let Err(e) = step.execute_program(&ctx, migration.action).await {
             // Best-effort rollback; ignore its error.
             let _ = ctx.rollback().await;
             let _ = ctx.close().await;
@@ -300,6 +300,7 @@ mod tests {
 
     fn schema_step(forward: &str, reverse: Option<&str>) -> ExecutionStep {
         ExecutionStep {
+            data: None,
             tx_type: TxType::Schema,
             kind: crate::plan::StepKind::Schema,
             operation_kind: crate::plan::OperationKind::RunTypeql,

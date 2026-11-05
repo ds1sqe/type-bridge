@@ -200,6 +200,13 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Migration `plan` and `plan_recovery` now take explicit optional declared
+  schema authority. Supply it for native `OperationSpec::RunPlan` steps;
+  schema and explicit raw-only plans may pass `None`. `ExecutionStep` struct
+  literals must set `data` (`None` for schema/raw text, or a validated
+  `NativeDataStep`). Persisted native payloads revalidate their carried authority.
+
+
 - Removed core `_manager::query_builder` and its compiler wrappers; use
   registry-backed `DynamicEntityManager` / `DynamicRelationManager` methods
   or native `PlanBuilder` plans. Removed wrapper functions:

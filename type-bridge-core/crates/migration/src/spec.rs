@@ -181,6 +181,14 @@ pub enum OperationSpec {
         /// Player type name.
         player_type_name: String,
     },
+    /// Execute a canonical native V3 data program under planning authority.
+    RunPlan {
+        /// Canonical query-plan/v3 object, validated by the planner.
+        forward: serde_json::Value,
+        /// Optional canonical reverse query-plan/v3 object.
+        #[serde(default)]
+        reverse: Option<serde_json::Value>,
+    },
     /// Execute authored TypeQL without interpreting it in this sub-plan.
     RunTypeql {
         /// Forward TypeQL text.

@@ -244,6 +244,7 @@ mod tests {
     // through from `CopyAttribute.to_typeql()` (value-copy form `has <dest> == $v`).
     fn backfill_step() -> ExecutionStep {
         ExecutionStep {
+            data: None,
             tx_type: TxType::Write,
             kind: StepKind::Backfill,
             operation_kind: crate::plan::OperationKind::CopyAttribute,

@@ -52,7 +52,7 @@ fn released_legacy_plans_keep_their_ast_and_carried_bytes() {
             },
             &[],
             None,
-        );
+         None);
         if let Some(error) = case["error"].as_str() {
             assert_eq!(result.unwrap_err().to_string(), error);
             rejected += 1;
@@ -116,7 +116,7 @@ fn known_parent_role_ordering_rejects_both_mismatch_directions() {
                 },
                 &[],
                 None,
-            );
+             None);
             if parent_ordered == child_ordered {
                 assert!(result.is_ok(), "{result:?}");
             } else {
@@ -177,7 +177,7 @@ fn removed_role_facts_do_not_constrain_a_later_recreated_relation() {
                 },
                 &[],
                 None
-            )
+            , None)
             .is_ok()
         );
     }
@@ -197,7 +197,7 @@ async fn ordered_role_specialisation_from_the_new_plan_applies_and_commits() {
                 "ordered": true, "overrides": "participant"
             }}]
         })).unwrap();
-        let planned = plan(&MigrationGraph { migrations: vec![migration] }, &[], None).unwrap();
+        let planned = plan(&MigrationGraph { migrations: vec![migration] }, &[], None, None).unwrap();
         let forward = &planned.to_apply[0].steps[0].forward;
         assert!(forward.contains("reviewer[] as participant[]"));
         let mut transaction = database.schema_transaction().await.unwrap();
@@ -262,7 +262,7 @@ async fn copy_attribute_filtered_counts_match_direct_queries() {
             "operations": [{"kind": "copy_attribute", "owner": "person", "source": "old-name", "dest": "new-name",
                 "filter": "not { $x has blocked true; }"}]
         })).unwrap();
-        let planned = plan(&MigrationGraph { migrations: vec![migration] }, &[], None).unwrap();
+        let planned = plan(&MigrationGraph { migrations: vec![migration] }, &[], None, None).unwrap();
         let step = &planned.to_apply[0].steps[0];
         let carried = step.forward.clone();
         let observed = type_bridge_migration::backfill::execute_backfill(&database, step, 0).await.unwrap();
