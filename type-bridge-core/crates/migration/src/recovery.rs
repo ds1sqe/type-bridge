@@ -552,7 +552,9 @@ async fn execute_pending_step<C: StepRecoveryController + ?Sized>(
         },
     };
 
-    if let Err(error) = db.check_schema_annotation_support(typeql) {
+    if step.execution.operation_kind != crate::plan::OperationKind::RunTypeql
+        && let Err(error) = db.check_schema_annotation_support(typeql)
+    {
         return failed_before_commit(controller, step, error.to_string(), None).await;
     }
     let transaction = match db.transaction_context(step.execution.tx_type).await {
@@ -624,7 +626,7 @@ async fn execute_pending_backfill<C: StepRecoveryController + ?Sized>(
             step,
             StepRecoveryEventKind::BeforeCommit,
             None,
-            Some(backfill.clone()),
+            backfill.clone(),
         ))
         .await
     {
@@ -634,15 +636,15 @@ async fn execute_pending_backfill<C: StepRecoveryController + ?Sized>(
             controller,
             step,
             format!("before-commit event was not recorded: {error}"),
-            Some(backfill),
+            backfill,
         )
         .await;
     }
     if let Err(error) = prepared.transaction.commit().await {
         let message = format!("backfill commit outcome is unknown: {error}");
-        return unknown_commit(controller, step, message, Some(backfill)).await;
+        return unknown_commit(controller, step, message, backfill).await;
     }
-    committed(controller, step, Some(backfill)).await
+    committed(controller, step, backfill).await
 }
 
 async fn committed<C: StepRecoveryController + ?Sized>(
@@ -1234,6 +1236,33 @@ mod tests {
             StepExecutionOutcome::Committed { backfill: Some(_) }
         ));
     }
+    #[tokio::test]
+    async fn raw_backfill_recovery_events_keep_counts_absent() {
+        let mut step = write_step("opaque provider text; # unchanged");
+        step.kind = StepKind::Backfill;
+        let plan = checked_plan(vec![step]);
+        let controller = TestController::new(vec![pending()]);
+        let (backend, log) = MockMigrationBackend::new(None);
+        let db = Database::with_backend(Box::new(backend), "test");
+        let result = execute_recovery_plan(&db, &plan, &controller).await;
+        assert_eq!(result.status, RecoveryPlanStatus::Succeeded);
+        assert!(matches!(
+            result.migrations[0].steps[0].outcome,
+            StepExecutionOutcome::Committed { backfill: None }
+        ));
+        let events = controller.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| event.backfill.is_none()));
+        assert_eq!(
+            log.lock()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, MockEvent::Query(_, _)))
+                .count(),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn native_steps_recover_without_replaying_applied_work() {
         let (schema, graph) = crate::native_step::tests::fixture();

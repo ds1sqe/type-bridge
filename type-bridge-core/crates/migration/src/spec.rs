@@ -189,7 +189,19 @@ pub enum OperationSpec {
         #[serde(default)]
         reverse: Option<serde_json::Value>,
     },
-    /// Execute authored TypeQL without interpreting it in this sub-plan.
+    /// Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+    /// to TypeDB as written, and TypeDB's output comes back as it
+    /// answered, in this SDK's native data types. TypeBridge adds no
+    /// validation, rewriting, hydration, hooks, limits or extra
+    /// queries. It runs in read, write and schema transactions and
+    /// accepts any TypeQL, schema-breaking changes included. The caller
+    /// owns its correctness; TypeBridge makes no promise about its
+    /// effects. On a proxy connection it posts to the server's opt-in
+    /// `/v3/raw` endpoint, which is off by default.
+    ///
+    /// Inside a migration, the step still runs within the migration's cutover
+    /// guard and recovery bookkeeping; the raw statement itself is sent once,
+    /// unchanged.
     RunTypeql {
         /// Forward TypeQL text.
         forward: String,

@@ -270,11 +270,98 @@ async fn native_copy_attribute_counts_match_direct_queries() {
         let planned = plan(&MigrationGraph { migrations: vec![migration] }, &[], None, Some(&authority)).unwrap();
         let step = &planned.to_apply[0].steps[0];
         let carried = serde_json::to_value(step).unwrap();
-        let observed = type_bridge_migration::backfill::execute_backfill(&database, step, 0).await.unwrap();
+        let observed = type_bridge_migration::backfill::execute_backfill(&database, step, 0).await.unwrap().unwrap();
         assert_eq!(observed.matched, matched);
         assert_eq!(observed.skipped, skipped);
         assert_eq!(observed.inserted, matched - skipped);
         assert_eq!(serde_json::to_value(step).unwrap(), carried);
+    }).await;
+    database.delete_database().await.unwrap();
+    result.unwrap();
+}
+
+#[derive(Default)]
+struct LiveRecoveryEvents(std::sync::Mutex<Vec<type_bridge_migration::StepRecoveryEvent>>);
+
+impl type_bridge_migration::StepRecoveryController for LiveRecoveryEvents {
+    fn classify<'a>(
+        &'a self,
+        _db: &'a type_bridge_orm::Database,
+        step: &'a type_bridge_migration::CheckedExecutionStep,
+    ) -> type_bridge_migration::RecoveryFuture<
+        'a,
+        type_bridge_migration::Result<type_bridge_migration::StepRecoveryDecision>,
+    > {
+        use type_bridge_migration::{PendingProof, StepRecoveryDecision, StepRecoveryEventKind};
+        let applied = self.0.lock().unwrap().iter().any(|event| {
+            event.step.id == step.id && event.kind == StepRecoveryEventKind::Committed
+        });
+        Box::pin(async move {
+            Ok(if applied {
+                StepRecoveryDecision::Applied {
+                    evidence: Some("observed successful live commit".into()),
+                }
+            } else {
+                StepRecoveryDecision::Pending {
+                    proof: PendingProof::NotCommitted,
+                }
+            })
+        })
+    }
+    fn record_event<'a>(
+        &'a self,
+        event: type_bridge_migration::StepRecoveryEvent,
+    ) -> type_bridge_migration::RecoveryFuture<'a, type_bridge_migration::Result<()>> {
+        self.0.lock().unwrap().push(event);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires assigned TypeDB 3.14.0 server"]
+async fn native_and_raw_steps_share_a_migration_and_recovery_skips_committed_work() {
+    use type_bridge_migration::{
+        MigrationAction, OperationSpec, RecoveryPlanStatus, StepExecutionOutcome,
+    };
+    let database = live_database().await;
+    let test_database = database.clone();
+    let result = tokio::spawn(async move {
+        let database = test_database;
+        let schema_text = "define attribute old-name, value string; attribute new-name, value string; entity person, owns old-name, owns new-name;";
+        let mut transaction = database.schema_transaction().await.unwrap();
+        transaction.query(schema_text).await.unwrap();
+        transaction.commit().await.unwrap();
+        let mut transaction = database.write_transaction().await.unwrap();
+        transaction.query("insert $x isa person, has old-name \"Ada\";").await.unwrap();
+        transaction.commit().await.unwrap();
+        let authority = type_bridge_schema_compat::typeql_to_declared(
+            type_bridge_contract::schema::DocumentId::new("mixed-native-raw.typeql").unwrap(), schema_text).unwrap();
+        let mut graph = MigrationGraph { migrations: vec![MigrationSpec {
+            app_label: "mixed".into(), name: "0001_data".into(), dependencies: vec![],
+            checksum: Some("mixed-native-raw".into()), source_sha256: None, reversible: false,
+            operations: vec![OperationSpec::CopyAttribute { owner: Some("person".into()),
+                source: Some("old-name".into()), dest: Some("new-name".into()), filter: None,
+                forward: None, reverse: None }],
+        }] };
+        let planned = plan(&graph, &[], None, Some(&authority)).unwrap();
+        let native = planned.to_apply[0].steps[0].data.as_ref().unwrap().program(MigrationAction::Apply).unwrap();
+        graph.migrations[0].operations = vec![
+            OperationSpec::RunPlan { forward: serde_json::to_value(native).unwrap(), reverse: None },
+            OperationSpec::RunTypeql { forward: "# deliberately raw\ninsert $x isa person, has old-name \"Raw\";".into(), reverse: None },
+        ];
+        let plan = type_bridge_migration::plan_recovery(&graph, &[], None, Some(&authority)).unwrap();
+        let controller = LiveRecoveryEvents::default();
+        let first = type_bridge_migration::execute_recovery_plan(&database, &plan, &controller).await;
+        assert_eq!(first.status, RecoveryPlanStatus::Succeeded, "{first:?}");
+        assert!(first.migrations[0].steps.iter().all(|step| matches!(step.outcome, StepExecutionOutcome::Committed { backfill: None })));
+        assert_eq!(controller.0.lock().unwrap().len(), 4);
+        assert_eq!(direct_count(&database, "match $x isa person; reduce $c = count;").await, 2);
+        assert_eq!(direct_count(&database, "match $x isa person, has new-name \"Ada\"; reduce $c = count;").await, 1);
+        let recovered = type_bridge_migration::execute_recovery_plan(&database, &plan, &controller).await;
+        assert_eq!(recovered.status, RecoveryPlanStatus::Succeeded, "{recovered:?}");
+        assert!(recovered.migrations[0].steps.iter().all(|step| matches!(step.outcome, StepExecutionOutcome::Applied { .. })));
+        assert_eq!(controller.0.lock().unwrap().len(), 4);
+        assert_eq!(direct_count(&database, "match $x isa person; reduce $c = count;").await, 2);
     }).await;
     database.delete_database().await.unwrap();
     result.unwrap();

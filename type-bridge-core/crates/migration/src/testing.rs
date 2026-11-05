@@ -181,6 +181,7 @@ fn legacy_guard_documents(
 /// See the module-level documentation for the two construction modes.
 pub struct MockMigrationBackend {
     log: EventLog,
+    guard_log: Option<EventLog>,
     /// Global query counter shared across all spawned transactions.
     query_count: Arc<Mutex<usize>>,
     /// If `Some(n)`, the n-th query call returns an error (used by `new`).
@@ -214,6 +215,7 @@ impl MockMigrationBackend {
         let log = Arc::new(Mutex::new(Vec::new()));
         let backend = Self {
             log: Arc::clone(&log),
+            guard_log: None,
             query_count: Arc::new(Mutex::new(0)),
             fail_on_query_index,
             scripted_responses: None,
@@ -237,6 +239,7 @@ impl MockMigrationBackend {
         let log = Arc::new(Mutex::new(Vec::new()));
         let backend = Self {
             log: Arc::clone(&log),
+            guard_log: None,
             query_count: Arc::new(Mutex::new(0)),
             fail_on_query_index: None,
             scripted_responses: Some(Arc::new(Mutex::new(responses))),
@@ -259,6 +262,14 @@ impl MockMigrationBackend {
         backend.legacy_cutover_present = true;
         backend.legacy_state_labels = Some(Arc::new(Mutex::new(all_state_labels())));
         (backend, log)
+    }
+
+    /// Record native lifecycle probes separately from user statements.
+    pub fn with_recorded_guards(responses: Vec<QueryResult>) -> (Self, EventLog, EventLog) {
+        let (mut backend, log) = Self::with_responses(responses);
+        let guards = Arc::new(Mutex::new(Vec::new()));
+        backend.guard_log = Some(Arc::clone(&guards));
+        (backend, log, guards)
     }
 
     /// Return native backfill counts before the transaction-local cutover guard.
@@ -338,12 +349,14 @@ impl DriverBackend for MockMigrationBackend {
         let commit_failure_certainty = self.commit_failure_certainty;
         let close_count = Arc::clone(&self.close_count);
         let fail_on_close_index = self.fail_on_close_index;
+        let guard_log = self.guard_log.as_ref().map(Arc::clone);
         let legacy_cutover_present = self.legacy_cutover_present;
         let legacy_state_labels = self.legacy_state_labels.as_ref().map(Arc::clone);
         Box::pin(async move {
             let tx: Box<dyn TransactionOps> = Box::new(MockMigrationTransaction {
                 tx_type,
                 log,
+                guard_log,
                 query_count,
                 fail_on,
                 scripted_responses: scripted,
@@ -369,6 +382,7 @@ impl DriverBackend for MockMigrationBackend {
 struct MockMigrationTransaction {
     tx_type: TxType,
     log: EventLog,
+    guard_log: Option<EventLog>,
     query_count: Arc<Mutex<usize>>,
     fail_on: Option<usize>,
     /// When present, each query consumes the next scripted response.
@@ -384,8 +398,7 @@ struct MockMigrationTransaction {
 
 impl TransactionOps for MockMigrationTransaction {
     fn schema_snapshot(&mut self) -> BoxFuture<'_, Result<Option<String>, OrmError>> {
-        let snapshot = self
-            .legacy_cutover_present
+        let snapshot = (self.legacy_cutover_present || self.guard_log.is_some())
             .then(|| format!("{MANAGED_FENCE_SCHEMA_TYPEQL}\n{LEGACY_LEDGER_SCHEMA_TYPEQL}"));
         Box::pin(async move { Ok(snapshot) })
     }
@@ -396,6 +409,11 @@ impl TransactionOps for MockMigrationTransaction {
         // database with no legacy ledger without consuming scripted answers;
         // dedicated cutover tests use a marker-aware backend instead.
         if is_native_guard_query(typeql) {
+            if let Some(log) = &self.guard_log {
+                log.lock()
+                    .unwrap()
+                    .push(MockEvent::Query(self.tx_type, typeql.to_owned()));
+            }
             let labels = self
                 .legacy_state_labels
                 .as_ref()

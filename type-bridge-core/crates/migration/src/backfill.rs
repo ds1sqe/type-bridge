@@ -4,7 +4,6 @@
 
 use type_bridge_orm::Database;
 use type_bridge_orm::session::TransactionContext;
-use type_bridge_orm::session::backend::QueryResult;
 
 use crate::error::MigrationError;
 use crate::plan::ExecutionStep;
@@ -40,11 +39,12 @@ pub struct BackfillResult {
 /// before-commit event in the only safe gap between query success and commit.
 pub(crate) struct PreparedBackfill {
     pub(crate) transaction: TransactionContext,
-    pub(crate) result: BackfillResult,
+    pub(crate) result: Option<BackfillResult>,
 }
 
 /// Execute a backfill [`ExecutionStep`] against `db`, deriving and returning
-/// matched/inserted/skipped counts.
+/// matched/inserted/skipped counts. Explicit raw steps return `None` and run
+/// no derived count queries.
 ///
 /// # Execution sequence
 ///
@@ -64,7 +64,7 @@ pub async fn execute_backfill(
     db: &Database,
     step: &ExecutionStep,
     step_index: usize,
-) -> Result<BackfillResult, MigrationError> {
+) -> Result<Option<BackfillResult>, MigrationError> {
     let prepared = prepare_backfill(db, step, step_index).await?;
     prepared
         .transaction
@@ -82,145 +82,45 @@ pub(crate) async fn prepare_backfill(
     step: &ExecutionStep,
     step_index: usize,
 ) -> Result<PreparedBackfill, MigrationError> {
-    use type_bridge_core_lib::__internal as tql;
     if let Some(data) = &step.data {
         return prepare_native_backfill(db, step, data, step_index).await;
     }
-    if step.operation_kind == crate::plan::OperationKind::CopyAttribute {
+    if step.operation_kind != crate::plan::OperationKind::RunTypeql {
         return Err(MigrationError::BackfillQuery {
             message: "CopyAttribute is missing native count plans".into(),
         });
     }
-    let (guarded, total) = tql::backfill_count_views(&step.forward)?;
-    let guarded_count_query = tql::render(&guarded)?;
-    let total_count_query = tql::render(&total)?;
-
-    // ── Run guarded count (Read tx) ─────────────────────────────────────────
-    let inserted: u64 = {
-        let ctx = db.transaction_context(TxType::Read).await.map_err(|e| {
-            MigrationError::BackfillQuery {
-                message: format!(
-                    "backfill step {step_index}: failed to open read tx for guarded count: {e}"
-                ),
-            }
-        })?;
-        let result = ctx.query(&guarded_count_query).await;
-        let _ = ctx.rollback().await;
-        let _ = ctx.close().await;
-        let result = result.map_err(|e| MigrationError::BackfillQuery {
-            message: format!("backfill step {step_index}: guarded count query failed: {e}"),
-        })?;
-        extract_count(result, step_index, "guarded")?
-    };
-
-    // ── Run total count (Read tx) ───────────────────────────────────────────
-    let matched: u64 = {
-        let ctx = db.transaction_context(TxType::Read).await.map_err(|e| {
-            MigrationError::BackfillQuery {
-                message: format!(
-                    "backfill step {step_index}: failed to open read tx for total count: {e}"
-                ),
-            }
-        })?;
-        let result = ctx.query(&total_count_query).await;
-        let _ = ctx.rollback().await;
-        let _ = ctx.close().await;
-        let result = result.map_err(|e| MigrationError::BackfillQuery {
-            message: format!("backfill step {step_index}: total count query failed: {e}"),
-        })?;
-        extract_count(result, step_index, "total")?
-    };
-
-    // ── Prepare the backfill write (Write tx, deliberately uncommitted) ─────
-    let transaction =
-        db.transaction_context(TxType::Write)
-            .await
-            .map_err(|e| MigrationError::BackfillQuery {
-                message: format!("backfill step {step_index}: failed to open write tx: {e}"),
-            })?;
-    if let Err(error) = require_legacy_writer_open_in_transaction(&transaction).await {
-        let _ = transaction.rollback().await;
-        let _ = transaction.close().await;
-        return Err(MigrationError::BackfillQuery {
-            message: format!(
-                "backfill step {step_index}: legacy cutover guard rejected the write: {error}"
-            ),
-        });
-    }
-    if let Err(error) = transaction.query(&step.forward).await {
-        let _ = transaction.rollback().await;
-        let _ = transaction.close().await;
-        return Err(MigrationError::BackfillQuery {
-            message: format!("backfill step {step_index}: backfill write query failed: {error}"),
-        });
-    }
-
-    let skipped = matched.saturating_sub(inserted);
-
     Ok(PreparedBackfill {
-        transaction,
-        result: BackfillResult {
-            step_index,
-            matched,
-            inserted,
-            skipped,
-            conflicts: 0,
-        },
+        transaction: prepare_write(db, step, step_index).await?,
+        result: None,
     })
 }
 
-/// Extract the count value from a `reduce $c = count;` answer.
-///
-/// TypeDB returns the answer keyed by the reduce variable (`c`) carrying a value
-/// envelope; the in-memory mock may use any key and a bare number. Both shapes
-/// are reduced via [`scalar_to_u64`]; an empty result set falls back to `0`.
-fn extract_count(
-    result: QueryResult,
+async fn prepare_write(
+    db: &Database,
+    step: &ExecutionStep,
     step_index: usize,
-    label: &str,
-) -> Result<u64, MigrationError> {
-    // Both Rows and Documents carry the reduce answer as a single object keyed
-    // by the reduce variable (`c`); the mock may use any key, so we fall back to
-    // the first value. The answer itself is a TypeDB value envelope that
-    // `scalar_to_u64` unwraps.
-    let answer = match result {
-        QueryResult::Rows(items) | QueryResult::Documents(items) => match items.first() {
-            Some(item) => item.clone(),
-            None => return Ok(0),
-        },
-        // QueryResult::Ok from a read-reduce query is unexpected; treat as 0.
-        QueryResult::Ok => return Ok(0),
+) -> Result<TransactionContext, MigrationError> {
+    let error = |cause| MigrationError::BackfillQuery {
+        message: format!("backfill step {step_index}: {cause}"),
     };
-
-    let value = answer
-        .get("c")
-        .or_else(|| answer.as_object().and_then(|m| m.values().next()))
-        .ok_or_else(|| MigrationError::BackfillQuery {
-            message: format!(
-                "backfill step {step_index}: {label} count answer has no recognizable key: {answer}"
-            ),
-        })?;
-
-    scalar_to_u64(value).ok_or_else(|| MigrationError::BackfillQuery {
-        message: format!(
-            "backfill step {step_index}: {label} count value is not a number: {value}"
-        ),
-    })
-}
-
-/// Reduce a TypeDB `reduce $c = count;` answer to a `u64`.
-///
-/// TypeDB returns the count as a value document
-/// `{"category":"Value","label":"integer","value":N,"value_type":"integer"}`;
-/// the in-memory mock returns a bare number. Descend into a `"value"` field when
-/// the answer is an object so both shapes parse identically (the same envelope
-/// the state backend unwraps in `state::typedb::extract_scalar`).
-fn scalar_to_u64(value: &serde_json::Value) -> Option<u64> {
-    match value {
-        serde_json::Value::Number(_) => value.as_u64().or_else(|| value.as_f64().map(|f| f as u64)),
-        serde_json::Value::Object(map) => map.get("value").and_then(scalar_to_u64),
-        _ => None,
+    let transaction = db
+        .transaction_context(TxType::Write)
+        .await
+        .map_err(|e| error(e.to_string()))?;
+    let result = async {
+        require_legacy_writer_open_in_transaction(&transaction).await?;
+        step.execute_program(&transaction, crate::plan::MigrationAction::Apply)
+            .await
+            .map_err(|e| error(e.to_string()))
     }
+    .await;
+    if let Err(cause) = result {
+        let _ = transaction.rollback().await;
+        let _ = transaction.close().await;
+        return Err(cause);
+    }
+    Ok(transaction)
 }
 
 async fn prepare_native_backfill(
@@ -267,31 +167,16 @@ async fn prepare_native_backfill(
             u64::try_from(*value).map_err(|_| error("count must be nonnegative".into()))?;
     }
     let [inserted, matched] = values;
-    let transaction = db
-        .transaction_context(TxType::Write)
-        .await
-        .map_err(|e| error(e.to_string()))?;
-    let result = async {
-        require_legacy_writer_open_in_transaction(&transaction).await?;
-        step.execute_program(&transaction, crate::plan::MigrationAction::Apply)
-            .await
-            .map_err(|e| error(e.to_string()))
-    }
-    .await;
-    if let Err(cause) = result {
-        let _ = transaction.rollback().await;
-        let _ = transaction.close().await;
-        return Err(error(cause.to_string()));
-    }
+    let transaction = prepare_write(db, step, step_index).await?;
     Ok(PreparedBackfill {
         transaction,
-        result: BackfillResult {
+        result: Some(BackfillResult {
             step_index,
             matched,
             inserted,
             skipped: matched.saturating_sub(inserted),
             conflicts: 0,
-        },
+        }),
     })
 }
 
@@ -299,6 +184,7 @@ async fn prepare_native_backfill(
 pub(crate) mod tests {
     use super::*;
     use crate::testing::{MockEvent, MockMigrationBackend};
+    use type_bridge_orm::session::backend::QueryResult;
 
     pub(crate) fn count(value: i64) -> QueryResult {
         QueryResult::Rows(vec![
@@ -306,6 +192,30 @@ pub(crate) mod tests {
                 value: type_bridge_contract::value::CanonicalValue::Long(value),
             }}),
         ])
+    }
+
+    #[tokio::test]
+    async fn raw_backfill_sends_exactly_one_unchanged_statement_and_has_no_counts() {
+        let text = "# opaque bytes\nprovider-specific text @doc \"untouched\";";
+        let step = ExecutionStep {
+            data: None,
+            tx_type: TxType::Write,
+            kind: crate::StepKind::Backfill,
+            operation_kind: crate::OperationKind::RunTypeql,
+            forward: text.into(),
+            reverse: None,
+        };
+        let (backend, log) = MockMigrationBackend::new(None);
+        let db = Database::with_backend(Box::new(backend), "test");
+        assert_eq!(execute_backfill(&db, &step, 0).await.unwrap(), None);
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                MockEvent::OpenTx(TxType::Write),
+                MockEvent::Query(TxType::Write, text.into()),
+                MockEvent::Commit
+            ]
+        );
     }
 
     #[tokio::test]
@@ -318,7 +228,7 @@ pub(crate) mod tests {
             ]);
             let db = Database::with_backend(Box::new(backend), "test");
             let step = crate::copy_plan::tests::step();
-            let result = execute_backfill(&db, &step, 4).await.unwrap();
+            let result = execute_backfill(&db, &step, 4).await.unwrap().unwrap();
             assert_eq!(
                 result,
                 BackfillResult {

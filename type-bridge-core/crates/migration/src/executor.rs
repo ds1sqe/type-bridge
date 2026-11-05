@@ -174,7 +174,7 @@ pub async fn execute_migration(db: &Database, migration: &MigrationExecution) ->
         if step.kind == StepKind::Backfill && migration.action == MigrationAction::Apply {
             match execute_backfill(db, step, step_index).await {
                 Ok(bf_result) => {
-                    backfill_results.push(bf_result);
+                    backfill_results.extend(bf_result);
                     // Backfill execution committed internally; continue.
                     continue;
                 }
@@ -205,7 +205,9 @@ pub async fn execute_migration(db: &Database, migration: &MigrationExecution) ->
         // Version-gate annotation-bearing schema DDL before opening a
         // transaction: pre-3.12 servers reject @doc/@meta with a syntax
         // error; the gate produces an actionable versioned error instead.
-        if let Err(e) = db.check_schema_annotation_support(typeql) {
+        if step.operation_kind != crate::plan::OperationKind::RunTypeql
+            && let Err(e) = db.check_schema_annotation_support(typeql)
+        {
             return MigrationResult {
                 app_label: migration.app_label.clone(),
                 name: migration.name.clone(),
@@ -295,6 +297,48 @@ mod tests {
     use crate::state::InMemoryStateStore;
     use crate::testing::{MockEvent, MockMigrationBackend};
     use type_bridge_orm::{Database, TxType};
+
+    #[tokio::test]
+    async fn raw_statement_keeps_native_lifecycle_guards_and_exact_bytes() {
+        let (schema, graph) = crate::native_step::tests::fixture();
+        let plan = crate::plan(&graph, &[], None, Some(&schema)).unwrap();
+        let native = plan.to_apply[0].clone();
+        let text = "# raw bytes\nprovider-specific text @doc \"unchanged\";";
+        let mut raw = native.clone();
+        raw.steps[0] = ExecutionStep {
+            data: None,
+            tx_type: TxType::Write,
+            kind: crate::StepKind::Write,
+            operation_kind: crate::OperationKind::RunTypeql,
+            forward: text.into(),
+            reverse: Some(text.into()),
+        };
+        let mut observed = Vec::new();
+        for (migration, answer) in [
+            (native, crate::native_step::tests::answer()),
+            (raw, type_bridge_orm::session::backend::QueryResult::Ok),
+        ] {
+            let (backend, log, guards) = MockMigrationBackend::with_recorded_guards(vec![answer]);
+            let db = Database::with_backend(Box::new(backend), "test");
+            let result = execute_migration(&db, &migration).await;
+            assert!(result.success, "{result:?}");
+            assert_eq!(result.backfill, None);
+            if migration.steps[0].data.is_none() {
+                let events = log.lock().unwrap();
+                let queries = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        MockEvent::Query(_, q) => Some(q.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(queries, vec![text]);
+            }
+            observed.push(guards.lock().unwrap().clone());
+        }
+        assert!(!observed[0].is_empty());
+        assert_eq!(observed[0], observed[1]);
+    }
 
     // ── helpers ───────────────────────────────────────────────────────────────
 

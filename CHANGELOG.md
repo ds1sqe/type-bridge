@@ -200,6 +200,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Migration `RunTypeql` is an explicit raw statement: no annotation text gate,
+  rewriting, or derived backfill counts. Migration cutover guards and recovery
+  bookkeeping still apply. `execute_backfill` now returns
+  `Option<BackfillResult>`; raw steps report absent counts, never fabricated zeros.
+
+
 - Migration `CopyAttribute` requires structured owner/source/destination and
   explicit declared schema authority. Carried forward/reverse TypeQL and textual
   filters are refused; use `RunPlan` or explicit raw `RunTypeql`. Copies and
