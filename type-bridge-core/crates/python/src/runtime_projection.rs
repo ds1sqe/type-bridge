@@ -3240,18 +3240,22 @@ impl PyProjectedModelManager {
         })
         .map_err(py_sdk_diagnostic)
     }
-    /// Fetch one exact instance by its validated TypeDB IID using `isa!`.
+    /// Permanent redirect to `filter(iid=iid).first()`.
     fn get_by_iid(&self, py: Python<'_>, iid: PyRef<'_, PyIid>) -> PyResult<Py<PyAny>> {
-        match self.get_projected(py, iid.inner.as_str())? {
-            Some(projected) => {
-                hydrate_projected_thing(py, self.package.as_ref(), Arc::new(projected))
-            }
-            None => Ok(py.None()),
-        }
+        self.filter_iid(&iid.inner)?.first(py)
     }
 }
 
 impl PyProjectedModelManager {
+    fn filter_iid(&self, iid: &Iid) -> PyResult<PyProjectedManagerFilter> {
+        let mut selected = self.canonical_filter()?;
+        selected.filter = selected
+            .filter
+            .try_and_iid(&self.package.projection, iid)
+            .map_err(py_sdk_diagnostic)?;
+        Ok(selected)
+    }
+
     #[inline]
     fn transaction(&self) -> Option<&TransactionContext> {
         self.target.as_ref().and_then(OwnedQueryTarget::transaction)
@@ -3475,24 +3479,6 @@ impl PyProjectedModelManager {
         )
         .map_err(py_sdk_diagnostic)?;
         self.execute_projected_delete(py, batch, control)
-    }
-
-    fn get_projected(&self, py: Python<'_>, iid: &str) -> PyResult<Option<ProjectedThing>> {
-        let target = self
-            .target
-            .as_ref()
-            .ok_or_else(|| py_runtime_error("projected manager has no execution target"))?
-            .as_target();
-        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        provider_block_on(
-            py,
-            self.runtime.as_ref(),
-            executor.get_by_iid_on_target(target, &self.type_id, iid, None),
-        )
-        .map_err(|error| {
-            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
-        })
-        .map_err(py_sdk_diagnostic)
     }
 
     fn write_many_projected(

@@ -39,7 +39,8 @@ Generated model and reference `.iid` properties return a retained `Iid` object
 to reference constructors and `attach_runtime_iid`. Repeated getters return
 the same object without parsing or allocation; use `str(iid)` for text or JSON.
 
-Manager `get_by_iid`, IID `delete`, and `filter(iid=...)`/`filter(iid__in=...)`
+`get_by_iid(iid)` permanently redirects to the shared `filter(iid=iid).first()`
+terminal. Manager `get_by_iid`, IID `delete`, and `filter(iid=...)`/`filter(iid__in=...)`
 also require nominal identifiers. Passing a malformed string to `get_by_iid`
 now raises a type error instead of returning `None`.
 

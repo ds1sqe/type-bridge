@@ -3234,6 +3234,11 @@ def test_generated_iid_keyword_selection_live(
     assert selection.first().iid in {selected.iid, excluded.iid}
     assert selection.filter(identifier__contains="selected").first().iid == selected.iid
     assert people.filter(iid=selected.iid).first().iid == selected.iid
+    assert people.get_by_iid(selected.iid).iid == selected.iid
+    assert (
+        people.filter(identifier=generated.Identifier("iid-excluded")).get_by_iid(selected.iid)
+        is None
+    )
     empty = people.filter(iid__in=[]).filter(identifier__contains="iid")
     assert empty.all() == []
     assert empty.first() is None
