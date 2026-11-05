@@ -3781,7 +3781,7 @@ pub(crate) mod tests {
                 .expect("empty catalog");
         let store_a = TypeDbMigrationStore::new(&binding_a, catalog_a).expect("first store");
         let store_b = TypeDbMigrationStore::new(&binding_b, catalog_b).expect("second store");
-        let provider_a = TypeDbMigrationProvider::new(&binding_a).expect("first provider");
+        let provider_a = TypeDbMigrationProvider::new(&binding_a, &[]).expect("first provider");
 
         let scope = ExecutionScope::new(scope_id);
         let holder = LeaseHolderId::new("same-holder").expect("holder");

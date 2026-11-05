@@ -353,14 +353,17 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
         .expect("paired store")
         .bind_plan(&plan)
         .expect("bind exact plan");
-    let provider =
-        TypeDbMigrationProvider::new(&binding).expect("version-gated provider from shared binding");
+    let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities())
+        .expect("version-gated provider from shared binding");
     let holder = LeaseHolderId::new("live-provider-coordinator").expect("holder");
 
     let outcome = execute_verified_migration_apply_plan(&store, &provider, &holder, &plan)
         .await
         .expect("coordinator execution against live TypeDB");
-    assert!(matches!(outcome, MigrationExecutionOutcome::Applied { .. }));
+    assert!(
+        matches!(outcome, MigrationExecutionOutcome::Applied { .. }),
+        "{outcome:#?}"
+    );
 
     let export = managed
         .schema_text()
@@ -454,7 +457,8 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         .expect("paired store")
         .bind_plan(&expand_plan)
         .expect("bind expand plan");
-    let provider = TypeDbMigrationProvider::new(&binding).expect("backfill provider");
+    let provider = TypeDbMigrationProvider::new(&binding, expand_plan.schema_authorities())
+        .expect("backfill provider");
     execute_verified_migration_apply_plan(
         &store,
         &provider,

@@ -9,14 +9,15 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::{
-    AssertionPattern, BindingId, MigrationAssertionPlan, MigrationAssertionPlanFingerprint,
-    QueryVariable, ValueComparator, ValueOperand,
+    BindingId, MigrationAssertionPlanFingerprint, QueryVariable, ValueComparator,
 };
+use type_bridge_contract::schema::DeclaredSchema;
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDuration};
 use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
 };
+#[cfg(test)]
 use type_bridge_core_lib::__internal as tql;
 use type_bridge_query::{BindingDomain, RowSchema, ValidatedMigrationAssertionPlan};
 
@@ -50,19 +51,22 @@ impl LoweredMigrationAssertion {
 /// Actual provider context checked before the first assertion query call.
 #[derive(Clone, Copy, Debug)]
 pub struct MigrationAssertionExecutionContext<'a> {
+    authority: &'a DeclaredSchema,
     available_capabilities: &'a CapabilitySet,
     source_state: &'a ManagedSchemaState,
     structural_limits: StructuralLimits,
 }
 
 impl<'a> MigrationAssertionExecutionContext<'a> {
-    /// Bind live provider capabilities, source identity, and the execution limit policy.
+    /// Bind the planning declaration, live capabilities, source identity, and limit policy.
     pub const fn new(
+        authority: &'a DeclaredSchema,
         source_state: &'a ManagedSchemaState,
         available_capabilities: &'a CapabilitySet,
         structural_limits: StructuralLimits,
     ) -> Self {
         Self {
+            authority,
             available_capabilities,
             source_state,
             structural_limits,
@@ -163,6 +167,7 @@ impl MigrationAssertionExecutionError {
 /// Lower every shipped assertion pattern into deterministic TypeQL with `limit 1`.
 pub fn lower_migration_assertion(
     validated: &ValidatedMigrationAssertionPlan,
+    authority: &DeclaredSchema,
 ) -> Result<LoweredMigrationAssertion, Diagnostic> {
     let plan = validated.plan();
     if plan.outputs().is_empty() {
@@ -173,18 +178,8 @@ pub fn lower_migration_assertion(
         ));
     }
 
-    let patterns = lower_patterns(plan, plan.patterns())?;
-    let selected = plan
-        .outputs()
-        .iter()
-        .map(|output| variable(plan, *output).map(|variable| variable.as_str()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let typeql = tql::render(&tql::pipeline(vec![
-        tql::match_stage(patterns),
-        tql::select(&selected).map_err(assertion_tql_error)?,
-        tql::limit(1),
-    ]))
-    .map_err(assertion_tql_error)?;
+    let native = validated.native_plan(authority)?;
+    let typeql = crate::query_plan_exec::staged_literal_query(&native)?.typeql;
 
     Ok(LoweredMigrationAssertion {
         typeql,
@@ -256,8 +251,8 @@ async fn execute_with_provider<P: AssertionProviderCall + ?Sized>(
     context: MigrationAssertionExecutionContext<'_>,
 ) -> Result<(), MigrationAssertionExecutionError> {
     preflight(validated, context).map_err(MigrationAssertionExecutionError::Preflight)?;
-    let lowered =
-        lower_migration_assertion(validated).map_err(MigrationAssertionExecutionError::Lowering)?;
+    let lowered = lower_migration_assertion(validated, context.authority)
+        .map_err(MigrationAssertionExecutionError::Lowering)?;
     let plan_fingerprint = validated
         .plan()
         .fingerprint()
@@ -413,143 +408,13 @@ fn preflight(
     Ok(())
 }
 
+#[cfg(test)]
 fn assertion_tql_error(_: tql::TqlError) -> Diagnostic {
     assertion_diagnostic(
         DiagnosticCategory::InvalidContract,
         "migration_assertion_typeql_shape",
         "validated assertion cannot be lowered to TypeQL",
     )
-}
-
-fn lower_patterns(
-    plan: &MigrationAssertionPlan,
-    patterns: &[AssertionPattern],
-) -> Result<Vec<tql::Pattern>, Diagnostic> {
-    let mut output = Vec::new();
-    for pattern in patterns {
-        match pattern {
-            AssertionPattern::Isa {
-                binding,
-                include_subtypes,
-                type_id,
-            } => {
-                output.push(
-                    tql::thing(
-                        variable(plan, *binding)?.as_str(),
-                        vec![
-                            tql::isa(type_id.label().as_str(), !include_subtypes)
-                                .map_err(assertion_tql_error)?,
-                        ],
-                    )
-                    .map_err(assertion_tql_error)?,
-                );
-            }
-            AssertionPattern::Has {
-                attribute,
-                attribute_id,
-                owner,
-            } => {
-                output.push(
-                    tql::thing(
-                        variable(plan, *owner)?.as_str(),
-                        vec![
-                            tql::has(
-                                attribute_id.label().as_str(),
-                                tql::var(variable(plan, *attribute)?.as_str())
-                                    .map_err(assertion_tql_error)?,
-                            )
-                            .map_err(assertion_tql_error)?,
-                        ],
-                    )
-                    .map_err(assertion_tql_error)?,
-                );
-                output.push(
-                    tql::thing(
-                        variable(plan, *attribute)?.as_str(),
-                        vec![
-                            tql::isa(attribute_id.label().as_str(), true)
-                                .map_err(assertion_tql_error)?,
-                        ],
-                    )
-                    .map_err(assertion_tql_error)?,
-                );
-            }
-            AssertionPattern::Links {
-                players,
-                relation,
-                relation_id,
-            } => {
-                let players = players
-                    .iter()
-                    .map(|player| {
-                        Ok((
-                            player.role().label().as_str(),
-                            variable(plan, player.player())?.as_str(),
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, Diagnostic>>()?;
-                output.push(
-                    tql::thing(
-                        variable(plan, *relation)?.as_str(),
-                        vec![
-                            tql::isa(relation_id.label().as_str(), true)
-                                .map_err(assertion_tql_error)?,
-                            tql::links(players).map_err(assertion_tql_error)?,
-                        ],
-                    )
-                    .map_err(assertion_tql_error)?,
-                );
-            }
-            AssertionPattern::Value {
-                comparator,
-                left,
-                right,
-            } => {
-                output.push(
-                    tql::compare(
-                        lower_operand(plan, left)?,
-                        render_comparator(*comparator),
-                        lower_operand(plan, right)?,
-                    )
-                    .map_err(assertion_tql_error)?,
-                );
-            }
-            AssertionPattern::Not { patterns } => {
-                output.push(tql::not(lower_patterns(plan, patterns)?));
-            }
-        }
-    }
-    Ok(output)
-}
-
-fn variable(
-    plan: &MigrationAssertionPlan,
-    binding: BindingId,
-) -> Result<&QueryVariable, Diagnostic> {
-    plan.binding(binding)
-        .map(|binding| binding.variable())
-        .ok_or_else(|| {
-            assertion_diagnostic(
-                DiagnosticCategory::InvalidContract,
-                "migration_assertion_unknown_binding",
-                "validated assertion references an unknown binding",
-            )
-        })
-}
-
-fn lower_operand(
-    plan: &MigrationAssertionPlan,
-    operand: &ValueOperand,
-) -> Result<tql::Expr, Diagnostic> {
-    match operand {
-        ValueOperand::Binding { binding } => {
-            tql::var(variable(plan, *binding)?.as_str()).map_err(assertion_tql_error)
-        }
-        ValueOperand::Literal { value } => {
-            type_bridge_schema::validate_provider_temporal_literal(value)?;
-            tql::compact_literal(value).map_err(assertion_tql_error)
-        }
-    }
 }
 
 pub(crate) const fn render_comparator(comparator: ValueComparator) -> &'static str {
@@ -971,7 +836,12 @@ mod tests {
         )
     }
 
+    use type_bridge_contract::migration_assertion::{
+        AssertionPattern, MigrationAssertionPlan, ValueOperand,
+    };
+
     struct SchemaFixture {
+        declared: DeclaredSchema,
         managed: ManagedSchemaState,
         resolved: type_bridge_schema::ResolvedSchema,
     }
@@ -1046,7 +916,11 @@ mod tests {
             ),
         )
         .expect("managed schema state");
-        SchemaFixture { managed, resolved }
+        SchemaFixture {
+            declared,
+            managed,
+            resolved,
+        }
     }
 
     fn schema_fixture() -> SchemaFixture {
@@ -1163,7 +1037,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
             self.calls += 1;
             self.statements.push(typeql.to_owned());
-            let bounded_to_one = typeql.trim_end().ends_with("limit 1;");
+            let bounded_to_one = typeql.contains("limit 1;");
             let result = self.result.take().unwrap_or(QueryResult::Rows(Vec::new()));
             Box::pin(async move {
                 let mut reader = BoundedAnswerReader::new(limits);
@@ -1256,7 +1130,7 @@ mod tests {
     fn lowering_is_deterministic_and_covers_the_closed_pattern_algebra() {
         let fixture = schema_fixture();
         let validated = validated(&fixture);
-        let lowered = lower_migration_assertion(&validated).expect("lowering");
+        let lowered = lower_migration_assertion(&validated, &fixture.declared).expect("lowering");
         assert!(
             tql::equivalent(
                 lowered.typeql(),
@@ -1271,12 +1145,43 @@ not {\n\
 \x20\x20\x20\x20$name != \"blocked\";\n\
 };\n\
 select $person;\n\
-limit 1;\n"
+limit 1;\nselect $person;\n"
             )
             .unwrap()
         );
-        assert_eq!(lowered, lower_migration_assertion(&validated).unwrap());
+        assert_eq!(
+            lowered,
+            lower_migration_assertion(&validated, &fixture.declared).unwrap()
+        );
         assert_eq!(lowered.row_schema(), validated.row_schema());
+    }
+
+    #[tokio::test]
+    async fn native_assertion_rejects_different_declared_authority_before_provider_io() {
+        let fixture = schema_fixture();
+        let different = schema_fixture_with_extra_type(true);
+        let validated = validated(&fixture);
+        let native = validated.native_plan(&fixture.declared).unwrap();
+        assert_eq!(native.statement_counts(), (1, 0));
+        let available = capabilities(&validated);
+        let mut provider = FakeProvider::returning(QueryResult::Rows(vec![]));
+        let error = execute_with_provider(
+            &mut provider,
+            &validated,
+            MigrationAssertionExecutionContext::new(
+                &different.declared,
+                &fixture.managed,
+                &available,
+                StructuralLimits::CANONICAL,
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.diagnostic().unwrap().code().as_str(),
+            "migration_assertion_declared_identity_mismatch"
+        );
+        assert_eq!(provider.calls, 0);
     }
 
     #[test]
@@ -1453,6 +1358,7 @@ limit 1;\n"
         let validated = validated(&fixture);
         let available = capabilities(&validated);
         let context = MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &fixture.managed,
             &available,
             StructuralLimits::CANONICAL,
@@ -1508,7 +1414,13 @@ limit 1;\n"
                 _limits: BoundedAnswerLimits,
                 consumer: &'a mut dyn AnswerConsumer,
             ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-                assert!(typeql.trim_end().ends_with("limit 1;"));
+                assert!(
+                    typeql
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .ends_with("limit 1; select $person;")
+                );
                 Box::pin(async move {
                     self.control = Some(consumer.accept(AnswerItem::Row(valid_row()))?);
                     Ok(BoundedAnswerStats {
@@ -1524,6 +1436,7 @@ limit 1;\n"
         let validated = validated(&fixture);
         let available = capabilities(&validated);
         let context = MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &fixture.managed,
             &available,
             StructuralLimits::CANONICAL,
@@ -1556,7 +1469,13 @@ limit 1;\n"
                 limits: BoundedAnswerLimits,
                 consumer: &'a mut dyn AnswerConsumer,
             ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-                assert!(typeql.trim_end().ends_with("limit 1;"));
+                assert!(
+                    typeql
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .ends_with("limit 1; select $person;")
+                );
                 assert_eq!(limits.max_items, 1);
                 self.max_bytes = Some(limits.max_bytes);
                 Box::pin(async move {
@@ -1585,7 +1504,12 @@ limit 1;\n"
         )
         .expect("tight diagnostic-byte policy remains structurally valid");
         let available = capabilities(&validated);
-        let context = MigrationAssertionExecutionContext::new(&fixture.managed, &available, limits);
+        let context = MigrationAssertionExecutionContext::new(
+            &fixture.declared,
+            &fixture.managed,
+            &available,
+            limits,
+        );
         let mut provider = ByteProbeProvider {
             max_bytes: None,
             control: None,
@@ -1616,7 +1540,13 @@ limit 1;\n"
                 _limits: BoundedAnswerLimits,
                 consumer: &'a mut dyn AnswerConsumer,
             ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-                assert!(typeql.trim_end().ends_with("limit 1;"));
+                assert!(
+                    typeql
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .ends_with("limit 1; select $person;")
+                );
                 Box::pin(async move {
                     let mut row = valid_row();
                     row.as_object_mut()
@@ -1632,6 +1562,7 @@ limit 1;\n"
         let validated = validated(&fixture);
         let available = capabilities(&validated);
         let context = MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &fixture.managed,
             &available,
             StructuralLimits::CANONICAL,
@@ -1657,6 +1588,7 @@ limit 1;\n"
         let validated = validated(&fixture);
         let available = capabilities(&validated);
         let context = MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &fixture.managed,
             &available,
             StructuralLimits::CANONICAL,
@@ -1695,6 +1627,7 @@ limit 1;\n"
         let validated = validated_all_outputs(&fixture);
         let available = capabilities(&validated);
         let context = MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &fixture.managed,
             &available,
             StructuralLimits::CANONICAL,
@@ -1737,6 +1670,7 @@ limit 1;\n"
         let validated = validated_all_outputs(&fixture);
         let available = capabilities(&validated);
         let context = MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &fixture.managed,
             &available,
             StructuralLimits::CANONICAL,
@@ -1821,6 +1755,7 @@ limit 1;\n"
             &mut no_capabilities,
             &validated,
             MigrationAssertionExecutionContext::new(
+                &fixture.declared,
                 &fixture.managed,
                 &missing,
                 StructuralLimits::CANONICAL,
@@ -1853,6 +1788,7 @@ limit 1;\n"
             &mut semantic,
             &validated,
             MigrationAssertionExecutionContext::new(
+                &fixture.declared,
                 &wrong_semantic,
                 &available,
                 StructuralLimits::CANONICAL,
@@ -1882,6 +1818,7 @@ limit 1;\n"
             &mut declared,
             &validated,
             MigrationAssertionExecutionContext::new(
+                &fixture.declared,
                 &wrong_declared,
                 &available,
                 StructuralLimits::CANONICAL,
@@ -1903,7 +1840,12 @@ limit 1;\n"
         let error = execute_with_provider(
             &mut limits,
             &validated,
-            MigrationAssertionExecutionContext::new(&fixture.managed, &available, tight),
+            MigrationAssertionExecutionContext::new(
+                &fixture.declared,
+                &fixture.managed,
+                &available,
+                tight,
+            ),
         )
         .await
         .expect_err("limit policy preflight");
@@ -1920,6 +1862,7 @@ limit 1;\n"
         let validated = validated(&fixture);
         let available = capabilities(&validated);
         let context = MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &fixture.managed,
             &available,
             StructuralLimits::CANONICAL,

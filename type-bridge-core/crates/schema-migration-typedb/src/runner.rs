@@ -914,6 +914,7 @@ impl TypeDbMigrationRunner {
             legacy_binding.clone(),
             self.context.scope_id().as_str().to_owned(),
             observation_authority.clone(),
+            plan.schema_authorities(),
         )?
         .for_replayed_profile_bridge(graph, &plan);
         let guarded_store = LegacyBoundStore::for_apply(
@@ -1177,6 +1178,7 @@ impl TypeDbMigrationRunner {
             legacy_binding.clone(),
             self.context.scope_id().as_str().to_owned(),
             observation_authority.clone(),
+            plan.schema_authorities(),
         )?;
         let guarded_store = LegacyBoundStore::for_rollback(
             &store,

@@ -203,6 +203,52 @@ pub struct ValidatedMigrationAssertionPlan {
 }
 
 impl ValidatedMigrationAssertionPlan {
+    /// Build the bounded native row program using the exact validated declaration.
+    pub fn native_plan(
+        &self,
+        authority: &type_bridge_contract::schema::DeclaredSchema,
+    ) -> Result<type_bridge_contract::query_plan::v3::QueryPlanV3, Diagnostic> {
+        use type_bridge_contract::query_plan::v3::{Operation, PlanSpec, QueryPlanV3, Stage};
+        if authority.declared_identity_fingerprint() != self.source_state.declared_identity() {
+            return Err(Diagnostic::new(
+                DiagnosticCategory::Integrity,
+                DiagnosticCode::new("migration_assertion_declared_identity_mismatch")
+                    .expect("static diagnostic code"),
+                "native assertion authority differs from the validated declaration",
+            ));
+        }
+        QueryPlanV3::new_with_limits(
+            PlanSpec {
+                bindings: self.plan.bindings().to_vec(),
+                inputs: vec![],
+                given_rows: None,
+                operation: Operation::Rows,
+                pipeline: vec![
+                    Stage::Match {
+                        patterns: convert_assertion_patterns(self.plan.patterns())
+                            .into_iter()
+                            .map(Into::into)
+                            .collect(),
+                    },
+                    Stage::Select {
+                        bindings: self.plan.outputs().to_vec(),
+                    },
+                    Stage::Limit { rows: 1 },
+                ],
+                output: type_bridge_contract::query_plan::QueryOutput::Rows {
+                    columns: self.plan.outputs().to_vec(),
+                },
+                managed_semantics: self.plan.managed_semantics().clone(),
+                functions: vec![],
+            },
+            authority,
+            type_bridge_contract::limits::QueryLimits {
+                structural: self.structural_limits,
+                ..type_bridge_contract::limits::QueryLimits::V3
+            },
+        )
+    }
+
     /// Return the context-free trusted plan.
     pub const fn plan(&self) -> &MigrationAssertionPlan {
         &self.plan

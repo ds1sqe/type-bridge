@@ -26,6 +26,7 @@ Lower-level embedders must do the same explicitly:
 # use type_bridge_contract::diagnostic::Diagnostic;
 # use type_bridge_orm::Database;
 # use type_bridge_schema::ManagedDeltaContext;
+# use type_bridge_schema_migration::VerifiedMigrationApplyPlan;
 # use type_bridge_schema_migration_typedb::{
 #     TypeDbExecutionBinding, TypeDbMigrationProvider, TypeDbMigrationStore,
 #     VerifiedMigrationCatalog,
@@ -35,10 +36,11 @@ Lower-level embedders must do the same explicitly:
 #     journal: Arc<Database>,
 #     context: ManagedDeltaContext,
 #     catalog: VerifiedMigrationCatalog<'a>,
+#     plan: &VerifiedMigrationApplyPlan,
 # ) -> Result<(), Diagnostic> {
 let binding = TypeDbExecutionBinding::new(managed, journal, context)?;
 let store = TypeDbMigrationStore::new(&binding, catalog)?;
-let provider = TypeDbMigrationProvider::new(&binding)?;
+let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities())?;
 # let _ = (store, provider);
 # Ok(())
 # }

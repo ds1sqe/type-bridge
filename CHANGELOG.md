@@ -200,6 +200,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- `TypeDbMigrationProvider::new` now takes the verified migration plan's
+  `schema_authorities()`. `MigrationAssertionExecutionContext::new` and
+  `lower_migration_assertion` require explicit declared schema authority;
+  assertions compile through native V3 with their existing bounded evidence stream.
+
 - Migration `RunTypeql` is an explicit raw statement: no annotation text gate,
   rewriting, or derived backfill counts. Migration cutover guards and recovery
   bookkeeping still apply. `execute_backfill` now returns

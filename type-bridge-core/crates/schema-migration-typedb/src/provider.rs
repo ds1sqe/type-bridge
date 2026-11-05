@@ -17,7 +17,7 @@ use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
 #[cfg(test)]
 use type_bridge_contract::migration_backfill::COPY_ATTRIBUTE_BACKFILL_CAPABILITY;
-use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
+use type_bridge_contract::schema::{DeclaredSchema, DocumentId, ManagedSchemaState};
 use type_bridge_core_lib::version::{GeneratedPackageRelease, Version};
 use type_bridge_orm::migration_assertion::{
     MigrationAssertionExecutionContext, MigrationAssertionExecutionError,
@@ -147,6 +147,7 @@ fn require_lease_binding(
 /// Every execution method rejects unbound leases and leases issued under a
 /// different [`TypeDbExecutionBinding`] before opening a TypeDB transaction.
 pub struct TypeDbMigrationProvider {
+    schema_authorities: Vec<DeclaredSchema>,
     binding: TypeDbExecutionBinding,
     legacy_binding: Option<(LegacyExecutionBinding, String)>,
     observation_authority: ManagedObservationAuthority,
@@ -157,10 +158,15 @@ impl TypeDbMigrationProvider {
     /// Construct a provider from one shared exact TypeDB execution binding.
     ///
     /// Pass the same binding used to construct the cooperating
-    /// [`crate::TypeDbMigrationStore`].
-    pub fn new(binding: &TypeDbExecutionBinding) -> Result<Self, Diagnostic> {
+    /// [`crate::TypeDbMigrationStore`], and the replayed plan's `schema_authorities()`.
+    /// These declared schemas supply data domains without an extra schema query.
+    pub fn new(
+        binding: &TypeDbExecutionBinding,
+        schema_authorities: &[DeclaredSchema],
+    ) -> Result<Self, Diagnostic> {
         binding.require_supported()?;
         Ok(Self {
+            schema_authorities: schema_authorities.to_vec(),
             binding: binding.clone(),
             legacy_binding: None,
             observation_authority: ManagedObservationAuthority::ExactPortable,
@@ -218,8 +224,9 @@ impl TypeDbMigrationProvider {
         legacy_binding: LegacyExecutionBinding,
         managed_scope: String,
         observation_authority: ManagedObservationAuthority,
+        schema_authorities: &[DeclaredSchema],
     ) -> Result<Self, Diagnostic> {
-        let mut provider = Self::new(binding)?;
+        let mut provider = Self::new(binding, schema_authorities)?;
         provider.legacy_binding = Some((legacy_binding, managed_scope));
         provider.observation_authority = observation_authority;
         Ok(provider)
@@ -508,6 +515,7 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
             Ok(Box::new(TypeDbPreparedGroup {
                 transaction,
                 capabilities: self.binding.context.available_capabilities(),
+                schema_authorities: &self.schema_authorities,
                 source: observed,
                 local_token: self.binding.local_token.clone(),
             }) as Box<dyn PreparedMigrationGroup + 'a>)
@@ -516,6 +524,7 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
 }
 
 struct TypeDbPreparedGroup<'a> {
+    schema_authorities: &'a [DeclaredSchema],
     transaction: Transaction,
     capabilities: &'a CapabilitySet,
     source: ManagedSchemaState,
@@ -528,10 +537,24 @@ impl PreparedMigrationGroup for TypeDbPreparedGroup<'_> {
         plan: &'a ValidatedMigrationAssertionPlan,
     ) -> ExecutionFuture<'a, ()> {
         Box::pin(async move {
+            let authority = self
+                .schema_authorities
+                .iter()
+                .find(|schema| {
+                    schema.declared_identity_fingerprint() == self.source.declared_identity()
+                })
+                .ok_or_else(|| {
+                    failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_typedb_declared_authority_missing",
+                        "assertion execution requires the exact planning schema authority",
+                    )
+                })?;
             execute_migration_assertion(
                 &mut self.transaction,
                 plan,
                 MigrationAssertionExecutionContext::new(
+                    authority,
                     &self.source,
                     self.capabilities,
                     StructuralLimits::CANONICAL,
