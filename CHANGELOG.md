@@ -200,6 +200,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Migration `CopyAttribute` requires structured owner/source/destination and
+  explicit declared schema authority. Carried forward/reverse TypeQL and textual
+  filters are refused; use `RunPlan` or explicit raw `RunTypeql`. Copies and
+  their guarded/total counts now execute native V3 plans.
+
+
 - Migration `plan` and `plan_recovery` now take explicit optional declared
   schema authority. Supply it for native `OperationSpec::RunPlan` steps;
   schema and explicit raw-only plans may pass `None`. `ExecutionStep` struct

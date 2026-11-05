@@ -712,11 +712,9 @@
       "dependencies": [],
       "operations": [
         {
-          "kind": "copy_attribute",
-          "owner": "person",
-          "source": "old-name",
-          "dest": "new-name",
-          "filter": null
+          "kind": "run_typeql",
+          "forward": "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;",
+          "reverse": "match $x isa person, has new-name $v;\ndelete $v of $x;"
         }
       ],
       "checksum": null,
@@ -731,8 +729,8 @@
           "steps": [
             {
               "tx_type": "Write",
-              "kind": "backfill",
-              "operation_kind": "copy_attribute",
+              "kind": "write",
+              "operation_kind": "run_typeql",
               "forward": "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;",
               "reverse": "match $x isa person, has new-name $v;\ndelete $v of $x;"
             }
@@ -752,11 +750,9 @@
       "dependencies": [],
       "operations": [
         {
-          "kind": "copy_attribute",
-          "owner": "person",
-          "source": "old-name",
-          "dest": "new-name",
-          "filter": "not { $x isa excluded; }"
+          "kind": "run_typeql",
+          "forward": "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\n  not { $x isa excluded; };\ninsert\n  $x has new-name == $v;",
+          "reverse": "match $x isa person, has new-name $v;\ndelete $v of $x;"
         }
       ],
       "checksum": null,
@@ -771,8 +767,8 @@
           "steps": [
             {
               "tx_type": "Write",
-              "kind": "backfill",
-              "operation_kind": "copy_attribute",
+              "kind": "write",
+              "operation_kind": "run_typeql",
               "forward": "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\n  not { $x isa excluded; };\ninsert\n  $x has new-name == $v;",
               "reverse": "match $x isa person, has new-name $v;\ndelete $v of $x;"
             }
@@ -792,10 +788,7 @@
       "dependencies": [],
       "operations": [
         {
-          "kind": "copy_attribute",
-          "owner": "person",
-          "source": "old-name",
-          "dest": "new-name",
+          "kind": "run_typeql",
           "forward": "# retained comment\nmatch $x isa person, has old-name $v; not { $x has new-name $d; }; insert $x has new-name == $v;",
           "reverse": "match $x isa person, has new-name $v; delete $v of $x;"
         }
@@ -812,8 +805,8 @@
           "steps": [
             {
               "tx_type": "Write",
-              "kind": "backfill",
-              "operation_kind": "copy_attribute",
+              "kind": "write",
+              "operation_kind": "run_typeql",
               "forward": "# retained comment\nmatch $x isa person, has old-name $v; not { $x has new-name $d; }; insert $x has new-name == $v;",
               "reverse": "match $x isa person, has new-name $v; delete $v of $x;"
             }

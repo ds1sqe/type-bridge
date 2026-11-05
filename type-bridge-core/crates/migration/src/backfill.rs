@@ -1,22 +1,6 @@
-//! Backfill count derivation for
-//! [`StepKind::Backfill`](crate::plan::StepKind::Backfill) steps.
-//!
-//! TypeDB's `insert` answer is [`QueryResult::Ok`] — it carries no affected-row
-//! count.  This module derives matched/inserted/skipped counts via bracketing
-//! `reduce $c = count;` read queries around the write (D2).
-//!
-//! # Cost
-//!
-//! Two extra read-transaction count queries are issued per backfill step
-//! (guarded count before insert, total-source count before insert).  This is
-//! acceptable for one-shot migrations and is the only way to surface counts given
-//! TypeDB's write answer surface.
-//!
-//! # Invariant 2 compliance
-//!
-//! The count queries are composed directly from the carried `step.forward` match
-//! clause — no op-semantic re-derivation occurs here.  The backfill step's
-//! `forward` text is the single source of truth for the query shape.
+//! Native copy counts execute two planned reductions before the write: the
+//! guarded candidate set and the full source set, each in a read transaction.
+//! Recovery retains the write transaction until its before-commit event is durable.
 
 use type_bridge_orm::Database;
 use type_bridge_orm::session::TransactionContext;
@@ -74,8 +58,8 @@ pub(crate) struct PreparedBackfill {
 ///
 /// # Invariant 2
 ///
-/// Both count queries are derived from the official AST of `step.forward`.
-/// Only the destination ownership guard is removed for the total count.  No `OperationSpec` is inspected here.
+/// Native count programs are carried alongside the mutation and validated
+/// against the same schema authority; execution does not parse mutation text.
 pub async fn execute_backfill(
     db: &Database,
     step: &ExecutionStep,
@@ -99,6 +83,14 @@ pub(crate) async fn prepare_backfill(
     step_index: usize,
 ) -> Result<PreparedBackfill, MigrationError> {
     use type_bridge_core_lib::__internal as tql;
+    if let Some(data) = &step.data {
+        return prepare_native_backfill(db, step, data, step_index).await;
+    }
+    if step.operation_kind == crate::plan::OperationKind::CopyAttribute {
+        return Err(MigrationError::BackfillQuery {
+            message: "CopyAttribute is missing native count plans".into(),
+        });
+    }
     let (guarded, total) = tql::backfill_count_views(&step.forward)?;
     let guarded_count_query = tql::render(&guarded)?;
     let total_count_query = tql::render(&total)?;
@@ -231,183 +223,141 @@ fn scalar_to_u64(value: &serde_json::Value) -> Option<u64> {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+async fn prepare_native_backfill(
+    db: &Database,
+    step: &ExecutionStep,
+    data: &crate::NativeDataStep,
+    step_index: usize,
+) -> Result<PreparedBackfill, MigrationError> {
+    let error = |message: String| MigrationError::BackfillQuery {
+        message: format!("backfill step {step_index}: {message}"),
+    };
+    let counts = data
+        .counts()
+        .ok_or_else(|| error("native count plans are missing".into()))?;
+    let mut values = [0; 2];
+    for (index, plan) in counts.iter().enumerate() {
+        let transaction = db
+            .transaction_context(TxType::Read)
+            .await
+            .map_err(|e| error(e.to_string()))?;
+        let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
+        let result = transaction
+            .execute_plans(
+                std::slice::from_ref(plan),
+                &limits,
+                &type_bridge_orm::AnswerCancellation::default(),
+                type_bridge_orm::QueryExecutionDeadline::for_limits(limits),
+            )
+            .await;
+        let _ = transaction.rollback().await;
+        let _ = transaction.close().await;
+        let mut answers = result.map_err(|e| error(e.to_string()))?;
+        let answer = answers
+            .pop()
+            .ok_or_else(|| error("count answer is missing".into()))?;
+        let rows = answer.scalar_rows(plan).map_err(|e| error(e.to_string()))?;
+        let [row] = rows.as_slice() else {
+            return Err(error("count must return exactly one row".into()));
+        };
+        let [type_bridge_contract::value::CanonicalValue::Long(value)] = row.as_slice() else {
+            return Err(error("count must return one integer".into()));
+        };
+        values[index] =
+            u64::try_from(*value).map_err(|_| error("count must be nonnegative".into()))?;
+    }
+    let [inserted, matched] = values;
+    let transaction = db
+        .transaction_context(TxType::Write)
+        .await
+        .map_err(|e| error(e.to_string()))?;
+    let result = async {
+        require_legacy_writer_open_in_transaction(&transaction).await?;
+        step.execute_program(&transaction, crate::plan::MigrationAction::Apply)
+            .await
+            .map_err(|e| error(e.to_string()))
+    }
+    .await;
+    if let Err(cause) = result {
+        let _ = transaction.rollback().await;
+        let _ = transaction.close().await;
+        return Err(error(cause.to_string()));
+    }
+    Ok(PreparedBackfill {
+        transaction,
+        result: BackfillResult {
+            step_index,
+            matched,
+            inserted,
+            skipped: matched.saturating_sub(inserted),
+            conflicts: 0,
+        },
+    })
+}
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::plan::StepKind;
     use crate::testing::{MockEvent, MockMigrationBackend};
-    use type_bridge_orm::{Database, TxType};
 
-    // Build a backfill ExecutionStep carrying the TypeQL the planner passes
-    // through from `CopyAttribute.to_typeql()` (value-copy form `has <dest> == $v`).
-    fn backfill_step() -> ExecutionStep {
-        ExecutionStep {
-            data: None,
-            tx_type: TxType::Write,
-            kind: StepKind::Backfill,
-            operation_kind: crate::plan::OperationKind::CopyAttribute,
-            forward: "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;".to_string(),
-            reverse: Some("match $x isa person, has new-name $v;\ndelete $v of $x;".to_string()),
+    pub(crate) fn count(value: i64) -> QueryResult {
+        QueryResult::Rows(vec![
+            serde_json::json!({"c": type_bridge_contract::query_remote::RemoteValue::Value {
+                value: type_bridge_contract::value::CanonicalValue::Long(value),
+            }}),
+        ])
+    }
+
+    #[tokio::test]
+    async fn native_counts_preserve_transaction_sequence_and_report_zero_or_nonzero() {
+        for (inserted, matched) in [(7, 10), (0, 0)] {
+            let (backend, log) = MockMigrationBackend::with_responses(vec![
+                count(inserted),
+                count(matched),
+                QueryResult::Rows(vec![]),
+            ]);
+            let db = Database::with_backend(Box::new(backend), "test");
+            let step = crate::copy_plan::tests::step();
+            let result = execute_backfill(&db, &step, 4).await.unwrap();
+            assert_eq!(
+                result,
+                BackfillResult {
+                    step_index: 4,
+                    inserted: inserted as u64,
+                    matched: matched as u64,
+                    skipped: (matched - inserted) as u64,
+                    conflicts: 0
+                }
+            );
+            let events = log.lock().unwrap();
+            assert!(matches!(events[0], MockEvent::OpenTx(TxType::Read)));
+            assert!(matches!(events[4], MockEvent::OpenTx(TxType::Read)));
+            assert!(matches!(events[8], MockEvent::OpenTx(TxType::Write)));
+            assert!(matches!(events[10], MockEvent::Commit));
+            let queries = events
+                .iter()
+                .filter_map(|e| match e {
+                    MockEvent::Query(_, q) => Some(q),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(queries.len(), 3);
+            assert!(queries[0].contains("not {"));
+            assert!(!queries[1].contains("not {"));
+            assert!(queries[0].contains("reduce"));
+            assert!(queries[1].contains("reduce"));
+            assert!(!queries[2].contains("reduce"));
         }
     }
 
-    // ── test: correct counts returned from scripted responses ─────────────────
-
     #[tokio::test]
-    async fn backfill_derives_counts_from_scripted_mock_responses() {
-        use serde_json::json;
-        use type_bridge_orm::session::backend::QueryResult;
-
-        // Script: guarded count = 7, total count = 10 (3 already have dest → skipped=3).
-        // Transaction order: Read (guarded), Read (total), Write.
-        let scripted = vec![
-            // Tx 1: Read — guarded count query → 7 rows to insert
-            QueryResult::Rows(vec![json!({"c": 7})]),
-            // Tx 2: Read — total count query → 10 total candidates
-            QueryResult::Rows(vec![json!({"c": 10})]),
-            // Tx 3: Write — the backfill insert → Ok
-            QueryResult::Ok,
-        ];
-
-        let (backend, log) = MockMigrationBackend::with_responses(scripted);
+    async fn cutover_rejects_native_backfill_before_the_write_query() {
+        let (backend, log) =
+            MockMigrationBackend::with_legacy_cutover_responses(vec![count(2), count(3)]);
         let db = Database::with_backend(Box::new(backend), "test");
-        let step = backfill_step();
-
-        let result = execute_backfill(&db, &step, 0)
+        let error = execute_backfill(&db, &crate::copy_plan::tests::step(), 0)
             .await
-            .expect("execute_backfill should succeed");
-
-        assert_eq!(result.step_index, 0);
-        assert_eq!(result.inserted, 7, "inserted = guarded count");
-        assert_eq!(result.matched, 10, "matched = total count");
-        assert_eq!(result.skipped, 3, "skipped = matched - inserted");
-        assert_eq!(result.conflicts, 0, "conflicts always 0 in v1");
-
-        // Verify the write ran under TxType::Write and counts under TxType::Read.
-        let events = log.lock().unwrap();
-        // Expect: OpenTx(Read), Query(Read, ...), Rollback, Close,
-        //         OpenTx(Read), Query(Read, ...), Rollback, Close,
-        //         OpenTx(Write), Query(Write, ...), Commit
-        assert!(
-            matches!(events[0], MockEvent::OpenTx(TxType::Read)),
-            "first tx must be Read (guarded count)"
-        );
-        assert!(
-            matches!(events[4], MockEvent::OpenTx(TxType::Read)),
-            "second tx must be Read (total count)"
-        );
-        assert!(
-            matches!(events[8], MockEvent::OpenTx(TxType::Write)),
-            "third tx must be Write (backfill insert)"
-        );
-        assert!(matches!(events[3], MockEvent::Close));
-        assert!(matches!(events[7], MockEvent::Close));
-        // Commit closes the write tx.
-        assert!(matches!(events[10], MockEvent::Commit));
-    }
-
-    // ── test: count queries are composed from the step's carried match (invariant 2) ──
-
-    #[tokio::test]
-    async fn count_queries_are_built_from_carried_match_not_re_derived() {
-        use serde_json::json;
-        use type_bridge_orm::session::backend::QueryResult;
-
-        let scripted = vec![
-            QueryResult::Rows(vec![json!({"c": 0})]),
-            QueryResult::Rows(vec![json!({"c": 0})]),
-            QueryResult::Ok,
-        ];
-
-        let (backend, log) = MockMigrationBackend::with_responses(scripted);
-        let db = Database::with_backend(Box::new(backend), "test");
-        let step = backfill_step();
-
-        execute_backfill(&db, &step, 1)
-            .await
-            .expect("execute_backfill should succeed");
-
-        let events = log.lock().unwrap();
-
-        // The first count query (guarded) must contain the match body text from the step.
-        let guarded_query = events.iter().find_map(|e| {
-            if let MockEvent::Query(TxType::Read, q) = e {
-                Some(q.as_str())
-            } else {
-                None
-            }
-        });
-        assert!(
-            guarded_query.is_some(),
-            "expected at least one Read query in the event log"
-        );
-        let q = guarded_query.unwrap();
-        // The guarded count query must contain the core match pattern from the
-        // step's forward text — proving no semantic re-derivation happened.
-        assert!(
-            q.contains("$x isa person, has old-name $v"),
-            "guarded count query must contain the step's match body; got: {q}"
-        );
-        assert!(
-            q.contains("reduce $c = count"),
-            "guarded count query must end with reduce count; got: {q}"
-        );
-    }
-
-    // ── test: write runs under TxType::Write ──────────────────────────────────
-
-    #[tokio::test]
-    async fn backfill_write_runs_under_write_tx() {
-        use serde_json::json;
-        use type_bridge_orm::session::backend::QueryResult;
-
-        let scripted = vec![
-            QueryResult::Rows(vec![json!({"c": 5})]),
-            QueryResult::Rows(vec![json!({"c": 5})]),
-            QueryResult::Ok,
-        ];
-
-        let (backend, log) = MockMigrationBackend::with_responses(scripted);
-        let db = Database::with_backend(Box::new(backend), "test");
-        let step = backfill_step();
-
-        execute_backfill(&db, &step, 2)
-            .await
-            .expect("execute_backfill should succeed");
-
-        let events = log.lock().unwrap();
-
-        // Find the Write-typed query event.
-        let write_query = events.iter().find_map(|e| {
-            if let MockEvent::Query(TxType::Write, q) = e {
-                Some(q.as_str())
-            } else {
-                None
-            }
-        });
-        assert!(write_query.is_some(), "expected a Write-typed query event");
-        // The write query must be the step's full forward text (not a count query).
-        let wq = write_query.unwrap();
-        assert!(
-            wq.contains("insert"),
-            "write query must contain 'insert'; got: {wq}"
-        );
-        assert!(
-            !wq.contains("reduce"),
-            "write query must not contain 'reduce' (it is the insert, not a count query); got: {wq}"
-        );
-    }
-
-    #[tokio::test]
-    async fn cutover_rejects_backfill_before_the_write_query() {
-        let (backend, log) = MockMigrationBackend::with_legacy_cutover();
-        let db = Database::with_backend(Box::new(backend), "test");
-
-        let error = execute_backfill(&db, &backfill_step(), 0)
-            .await
-            .expect_err("cutover must reject the backfill write");
+            .unwrap_err();
         assert!(
             error
                 .to_string()
@@ -417,55 +367,28 @@ mod tests {
         assert!(
             !events
                 .iter()
-                .any(|event| matches!(event, MockEvent::Query(TxType::Write, _))),
-            "no user write query may run after cutover: {events:?}"
+                .any(|e| matches!(e, MockEvent::Query(TxType::Write, _)))
         );
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, MockEvent::Rollback)),
-            "the rejected write transaction must be rolled back: {events:?}"
-        );
+        assert!(matches!(events.last(), Some(MockEvent::Close)));
     }
-
-    #[test]
-    fn count_views_remove_only_the_destination_guard() {
-        use type_bridge_core_lib::__internal as tql;
-        let forward = "match $x isa person, has old-name $v; not { $x has new-name $d; }; not { $x has blocked true; }; insert $x has new-name == $v;";
-        let before = forward.to_owned();
-        let (guarded, total) = tql::backfill_count_views(forward).unwrap();
-        assert!(tql::equivalent(&tql::render(&guarded).unwrap(),
-            "match $x isa person, has old-name $v; not { $x has new-name $d; }; not { $x has blocked true; }; reduce $c = count;").unwrap());
-        assert!(tql::equivalent(&tql::render(&total).unwrap(),
-            "match $x isa person, has old-name $v; not { $x has blocked true; }; reduce $c = count;").unwrap());
-        assert_eq!(forward, before);
-        assert!(tql::backfill_count_views("match $x isa person; delete $x;").is_err());
-    }
-
-    // ── test: zero counts (empty database) ───────────────────────────────────
 
     #[tokio::test]
-    async fn backfill_with_zero_counts_returns_zero_result() {
-        use serde_json::json;
-        use type_bridge_orm::session::backend::QueryResult;
-
-        let scripted = vec![
-            QueryResult::Rows(vec![json!({"c": 0})]),
-            QueryResult::Rows(vec![json!({"c": 0})]),
-            QueryResult::Ok,
-        ];
-
-        let (backend, _log) = MockMigrationBackend::with_responses(scripted);
-        let db = Database::with_backend(Box::new(backend), "test");
-        let step = backfill_step();
-
-        let result = execute_backfill(&db, &step, 0)
-            .await
-            .expect("execute_backfill should succeed with zero counts");
-
-        assert_eq!(result.matched, 0);
-        assert_eq!(result.inserted, 0);
-        assert_eq!(result.skipped, 0);
-        assert_eq!(result.conflicts, 0);
+    async fn malformed_counts_fail_before_the_write_and_close_read_transaction() {
+        for response in [count(-1), QueryResult::Rows(vec![]), QueryResult::Ok] {
+            let (backend, log) = MockMigrationBackend::with_responses(vec![response]);
+            let db = Database::with_backend(Box::new(backend), "test");
+            assert!(
+                execute_backfill(&db, &crate::copy_plan::tests::step(), 0)
+                    .await
+                    .is_err()
+            );
+            let events = log.lock().unwrap();
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, MockEvent::OpenTx(TxType::Write)))
+            );
+            assert!(events.iter().any(|e| matches!(e, MockEvent::Close)));
+        }
     }
 }

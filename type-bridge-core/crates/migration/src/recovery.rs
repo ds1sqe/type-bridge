@@ -753,7 +753,6 @@ mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::sync::Mutex;
 
-    use serde_json::json;
     use type_bridge_orm::session::backend::QueryResult;
     use type_bridge_orm::{Database, TxType};
 
@@ -884,12 +883,7 @@ mod tests {
     }
 
     fn backfill_step() -> ExecutionStep {
-        execution_step(
-            TxType::Write,
-            StepKind::Backfill,
-            OperationKind::CopyAttribute,
-            "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;",
-        )
+        crate::copy_plan::tests::step()
     }
 
     fn checked_plan(steps: Vec<ExecutionStep>) -> CheckedExecutionPlan {
@@ -1217,9 +1211,9 @@ mod tests {
             },
         }]);
         let responses = vec![
-            QueryResult::Rows(vec![json!({"c": 4})]),
-            QueryResult::Rows(vec![json!({"c": 7})]),
-            QueryResult::Ok,
+            crate::backfill::tests::count(4),
+            crate::backfill::tests::count(7),
+            QueryResult::Rows(vec![]),
         ];
         let (backend, _log) = MockMigrationBackend::with_responses(responses);
         let db = Database::with_backend(Box::new(backend), "test");

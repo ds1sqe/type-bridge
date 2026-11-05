@@ -25,9 +25,8 @@ use crate::spec::{MigrationGraph, OperationSpec, copy_attribute_typeql};
 
 /// The kind of execution step, controlling how the executor dispatches it.
 ///
-/// `Schema` and `Write` run the carried TypeQL directly.  `Backfill` is a
-/// write-typed step that additionally derives matched/inserted/skipped counts
-/// via bracketing `reduce $c = count;` read queries.
+/// `Schema` carries DDL; `Write` runs a native program or explicit raw text.
+/// `Backfill` carries a native copy and two planned read reductions for counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum StepKind {
@@ -439,6 +438,17 @@ fn shadowed_by_remove_relation(op: &OperationSpec, removed: &BTreeSet<&str>) -> 
 pub fn render_operation_typeql_steps(
     operation: &OperationSpec,
 ) -> crate::Result<Vec<ExecutionStep>> {
+    if matches!(operation, OperationSpec::CopyAttribute { .. }) {
+        let (forward, reverse) = copy_attribute_typeql(operation)?;
+        return Ok(vec![ExecutionStep {
+            data: None,
+            tx_type: TxType::Write,
+            kind: StepKind::Backfill,
+            operation_kind: OperationKind::CopyAttribute,
+            forward,
+            reverse,
+        }]);
+    }
     let mut steps = assemble_steps(std::slice::from_ref(operation), true, None)?;
     match operation {
         OperationSpec::AddRelation { relation } => {
@@ -655,18 +665,15 @@ fn assemble_steps(
                 )?),
             )],
             copy @ OperationSpec::CopyAttribute { .. } => {
-                // Carried TypeQL (the frozen `CopyAttribute.to_typeql()` output)
-                // executes verbatim; the structured portable form synthesizes the
-                // identical template. `backfill.rs` composes its count queries
-                // from this `forward` text's match clause.
-                let (forward, reverse) = copy_attribute_typeql(copy)?;
+                let schema = authority.ok_or_else(crate::native_step::missing_authority)?;
+                let data = crate::copy_plan::build(copy, schema, migration_reversible)?;
                 vec![ExecutionStep {
-                    data: None,
+                    data: Some(data),
                     tx_type: TxType::Write,
                     kind: StepKind::Backfill,
                     operation_kind: OperationKind::CopyAttribute,
-                    forward,
-                    reverse,
+                    forward: String::new(),
+                    reverse: None,
                 }]
             }
             other @ OperationSpec::RenameAttribute { .. } => {
@@ -1788,85 +1795,18 @@ delete $a has email "ops@example.com";"#,
         );
     }
 
-    // ── test: CopyAttribute lowers to Write-typed Backfill step ───────────────
-
     #[test]
-    fn copy_attribute_lowers_to_write_typed_backfill_step() {
-        // The carried forward/reverse mirror `CopyAttribute.to_typeql()` /
-        // `to_rollback_typeql()`; assemble_steps must pass them through verbatim
-        // under a Write/Backfill step (no re-synthesis — invariant 2).
-        let forward = "match\n  $x isa person, has old-name $v;\n  \
-            not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;";
-        let reverse = "match $x isa person, has new-name $v;\ndelete $v of $x;";
-        let g = graph(vec![migration(
-            "0002_backfill",
-            vec![OperationSpec::CopyAttribute {
-                owner: None,
-                source: None,
-                dest: None,
-                filter: None,
-                forward: Some(forward.to_string()),
-                reverse: Some(reverse.to_string()),
-            }],
-            vec![],
-        )]);
-
-        let result = plan(&g, &[], None, None).expect("plan should succeed");
-
-        let exec = &result.to_apply[0];
-        assert_eq!(exec.steps.len(), 1);
-        let step = &exec.steps[0];
-
-        assert_eq!(
-            step.tx_type,
-            TxType::Write,
-            "CopyAttribute step must use Write tx"
-        );
-        assert_eq!(
-            step.kind,
-            StepKind::Backfill,
-            "CopyAttribute step kind must be Backfill"
-        );
-        // The carried strings are passed through unchanged.
-        assert_eq!(step.forward, forward, "forward must be carried verbatim");
-        assert_eq!(
-            step.reverse.as_deref(),
-            Some(reverse),
-            "reverse must be carried verbatim"
-        );
-    }
-
-    #[test]
-    fn structured_copy_attribute_lowers_to_the_same_backfill_step() {
-        // The structured portable form synthesizes the exact TypeQL the
-        // carried form would have contained.
-        let g = graph(vec![migration(
-            "0002_backfill",
-            vec![OperationSpec::CopyAttribute {
-                owner: Some("person".to_string()),
-                source: Some("old-name".to_string()),
-                dest: Some("new-name".to_string()),
-                filter: None,
-                forward: None,
-                reverse: None,
-            }],
-            vec![],
-        )]);
-
-        let result = plan(&g, &[], None, None).expect("plan should succeed");
-
+    fn structured_copy_attribute_requires_authority_and_carries_native_plans() {
+        let (schema, op) = crate::copy_plan::tests::fixture();
+        let g = graph(vec![migration("0002_backfill", vec![op], vec![])]);
+        assert!(plan(&g, &[], None, None).is_err());
+        let result = plan(&g, &[], None, Some(&schema)).unwrap();
         let step = &result.to_apply[0].steps[0];
         assert_eq!(step.tx_type, TxType::Write);
         assert_eq!(step.kind, StepKind::Backfill);
-        assert_typeql_eq!(
-            step.forward,
-            "match\n  $x isa person, has old-name $v;\n  \
-             not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;"
-        );
-        assert_typeql_eq!(
-            step.reverse.as_deref(),
-            Some("match $x isa person, has new-name $v;\ndelete $v of $x;")
-        );
+        assert!(step.forward.is_empty());
+        assert!(step.has_reverse());
+        assert!(step.data.as_ref().unwrap().counts().is_some());
     }
 
     #[test]

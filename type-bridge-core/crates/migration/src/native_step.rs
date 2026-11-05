@@ -21,6 +21,8 @@ pub struct NativeDataStep {
     schema: DeclaredSchema,
     forward: QueryPlanV3,
     reverse: Option<QueryPlanV3>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    counts: Option<[QueryPlanV3; 2]>,
 }
 
 impl NativeDataStep {
@@ -35,7 +37,26 @@ impl NativeDataStep {
             schema: schema.clone(),
             forward: decode(forward)?,
             reverse: reverse.map(decode).transpose()?,
+            counts: None,
         })
+    }
+
+    pub(crate) fn from_copy_plans(
+        schema: &DeclaredSchema,
+        forward: QueryPlanV3,
+        reverse: Option<QueryPlanV3>,
+        counts: [QueryPlanV3; 2],
+    ) -> Self {
+        Self {
+            schema: schema.clone(),
+            forward,
+            reverse,
+            counts: Some(counts),
+        }
+    }
+
+    pub(crate) fn counts(&self) -> Option<&[QueryPlanV3; 2]> {
+        self.counts.as_ref()
     }
 
     /// Select a validated program without changing the transaction or authority.
@@ -55,12 +76,26 @@ impl<'de> Deserialize<'de> for NativeDataStep {
             schema: serde_json::Value,
             forward: serde_json::Value,
             reverse: Option<serde_json::Value>,
+            counts: Option<[serde_json::Value; 2]>,
         }
         let wire = Wire::deserialize(deserializer)?;
         let schema = to_canonical_json(&wire.schema)
             .and_then(|bytes| decode_declared_schema(&bytes))
             .map_err(serde::de::Error::custom)?;
-        Self::new(&schema, &wire.forward, wire.reverse.as_ref()).map_err(serde::de::Error::custom)
+        let mut data = Self::new(&schema, &wire.forward, wire.reverse.as_ref())
+            .map_err(serde::de::Error::custom)?;
+        if let Some(counts) = wire.counts {
+            let decode_count = |value: &serde_json::Value| {
+                let plan = decode_query_plan_v3(&to_canonical_json(value)?, &schema)?;
+                crate::copy_plan::validate_count(&plan)?;
+                Ok::<_, Diagnostic>(plan)
+            };
+            data.counts = Some([
+                decode_count(&counts[0]).map_err(serde::de::Error::custom)?,
+                decode_count(&counts[1]).map_err(serde::de::Error::custom)?,
+            ]);
+        }
+        Ok(data)
     }
 }
 
@@ -101,7 +136,10 @@ impl ExecutionStep {
                 .await?;
             return Ok(());
         }
-        if self.operation_kind == OperationKind::RunPlan {
+        if matches!(
+            self.operation_kind,
+            OperationKind::RunPlan | OperationKind::CopyAttribute
+        ) {
             return Err(OrmError::Transaction(
                 "native migration step is missing its validated program".into(),
             ));

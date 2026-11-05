@@ -261,6 +261,14 @@ impl MockMigrationBackend {
         (backend, log)
     }
 
+    /// Return native backfill counts before the transaction-local cutover guard.
+    pub fn with_legacy_cutover_responses(responses: Vec<QueryResult>) -> (Self, EventLog) {
+        let (mut backend, log) = Self::with_responses(responses);
+        backend.legacy_cutover_present = true;
+        backend.legacy_state_labels = Some(Arc::new(Mutex::new(all_state_labels())));
+        (backend, log)
+    }
+
     /// Create a backend with a complete frozen state schema and scripted
     /// responses for the actual ledger/run-log reads.
     pub fn with_state_read_responses(responses: Vec<QueryResult>) -> (Self, EventLog) {

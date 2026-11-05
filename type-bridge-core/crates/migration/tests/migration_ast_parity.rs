@@ -44,15 +44,15 @@ fn released_legacy_plans_keep_their_ast_and_carried_bytes() {
     for case in &cases {
         let migration: MigrationSpec = serde_json::from_value(case["migration"].clone()).unwrap();
         let operation = &case["migration"]["operations"][0];
-        let carried = operation["kind"] == "run_typeql"
-            || (operation["kind"] == "copy_attribute" && operation["forward"].is_string());
+        let carried = operation["kind"] == "run_typeql";
         let result = plan(
             &MigrationGraph {
                 migrations: vec![migration],
             },
             &[],
             None,
-         None);
+            None,
+        );
         if let Some(error) = case["error"].as_str() {
             assert_eq!(result.unwrap_err().to_string(), error);
             rejected += 1;
@@ -116,7 +116,8 @@ fn known_parent_role_ordering_rejects_both_mismatch_directions() {
                 },
                 &[],
                 None,
-             None);
+                None,
+            );
             if parent_ordered == child_ordered {
                 assert!(result.is_ok(), "{result:?}");
             } else {
@@ -176,8 +177,9 @@ fn removed_role_facts_do_not_constrain_a_later_recreated_relation() {
                     migrations: vec![migration]
                 },
                 &[],
+                None,
                 None
-            , None)
+            )
             .is_ok()
         );
     }
@@ -217,7 +219,7 @@ async fn live_database() -> std::sync::Arc<type_bridge_orm::Database> {
         http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
         ..ConnectOptions::default()
     };
-    let name = format!("tb_migration_ast_{}", uuid::Uuid::new_v4().simple());
+    let name = format!("tb270_06c_migration_ast_{}", uuid::Uuid::new_v4().simple());
     type_bridge_orm::ensure_database_exists(&address, &name, "admin", "password", options)
         .await
         .unwrap();
@@ -243,7 +245,7 @@ async fn direct_count(database: &type_bridge_orm::Database, query: &str) -> u64 
 
 #[tokio::test]
 #[ignore = "requires the isolated TypeDB 3.13.6 worker server"]
-async fn copy_attribute_filtered_counts_match_direct_queries() {
+async fn native_copy_attribute_counts_match_direct_queries() {
     let database = live_database().await;
     let test_database = database.clone();
     let result = tokio::spawn(async move {
@@ -254,22 +256,25 @@ async fn copy_attribute_filtered_counts_match_direct_queries() {
         let mut write = database.write_transaction().await.unwrap();
         write.query("insert $a isa person, has old-name \"Ada\"; $b isa person, has old-name \"Bob\", has new-name \"Bob\"; $c isa person, has old-name \"Cora\", has blocked true; $d isa person, has old-name \"Dora\", has new-name \"Dora\", has blocked true;").await.unwrap();
         write.commit().await.unwrap();
-        let matched = direct_count(&database, "match $x isa person, has old-name $v; not { $x has blocked true; }; reduce $c = count;").await;
-        let skipped = direct_count(&database, "match $x isa person, has old-name $v, has new-name $d; not { $x has blocked true; }; reduce $c = count;").await;
-        assert_eq!((matched, skipped), (2, 1));
+        let matched = direct_count(&database, "match $x isa person, has old-name $v; reduce $c = count;").await;
+        let skipped = direct_count(&database, "match $x isa person, has old-name $v, has new-name $d; reduce $c = count;").await;
+        assert_eq!((matched, skipped), (4, 2));
         let migration: MigrationSpec = serde_json::from_value(serde_json::json!({
             "app_label": "filtered", "name": "initial", "dependencies": [], "reversible": true,
-            "operations": [{"kind": "copy_attribute", "owner": "person", "source": "old-name", "dest": "new-name",
-                "filter": "not { $x has blocked true; }"}]
+            "operations": [{"kind": "copy_attribute", "owner": "person", "source": "old-name", "dest": "new-name"}]
         })).unwrap();
-        let planned = plan(&MigrationGraph { migrations: vec![migration] }, &[], None, None).unwrap();
+        let authority = type_bridge_schema_compat::typeql_to_declared(
+            type_bridge_contract::schema::DocumentId::new("native-copy.typeql").unwrap(),
+            "define attribute old-name, value string; attribute new-name, value string; attribute blocked, value boolean; entity person, owns old-name, owns new-name, owns blocked;",
+        ).unwrap();
+        let planned = plan(&MigrationGraph { migrations: vec![migration] }, &[], None, Some(&authority)).unwrap();
         let step = &planned.to_apply[0].steps[0];
-        let carried = step.forward.clone();
+        let carried = serde_json::to_value(step).unwrap();
         let observed = type_bridge_migration::backfill::execute_backfill(&database, step, 0).await.unwrap();
         assert_eq!(observed.matched, matched);
         assert_eq!(observed.skipped, skipped);
         assert_eq!(observed.inserted, matched - skipped);
-        assert_eq!(step.forward, carried);
+        assert_eq!(serde_json::to_value(step).unwrap(), carried);
     }).await;
     database.delete_database().await.unwrap();
     result.unwrap();

@@ -212,13 +212,9 @@ pub enum OperationSpec {
     /// schema.  The forward TypeQL is an insert-if-absent backfill; the reverse deletes the
     /// destination attribute.
     ///
-    /// Two wire forms exist. The lowered form carries only `forward`/`reverse`
-    /// TypeQL (what `.py` execution lowers to); the structured form carries
-    /// `owner`/`source`/`dest`(/`filter`) and lets the authoring core
-    /// synthesize the TypeQL via [`copy_attribute_typeql`] and render a
-    /// faithful `ops.CopyAttribute(...)` in the generated `.py`. Sidecars
-    /// written by the authoring core always carry the synthesized strings, so
-    /// the executor keeps running carried TypeQL.
+    /// Execution requires structured `owner`/`source`/`dest` and explicit declared
+    /// schema authority at planning. Custom text or filters are refused; use
+    /// `RunPlan` for native programs or `RunTypeql` for explicit raw TypeQL.
     CopyAttribute {
         /// Owner type label (structured portable form).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -232,9 +228,7 @@ pub enum OperationSpec {
         /// Optional extra match constraint line (structured portable form).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
-        /// Forward backfill TypeQL. Absent only in the structured form before
-        /// normalization; the executor derives its count queries from this
-        /// string's match clause.
+        /// Legacy authoring text; refused by native execution planning.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         forward: Option<String>,
         /// Reverse (rollback) TypeQL from `to_rollback_typeql()`, or `None` when

@@ -195,3 +195,33 @@ For every migration change, test:
 
 See [schema workflows](schema-workflows.md), [schema commands](schema.md), and
 the [Split-YAML reference](split-yaml-v1.md).
+
+## Native data steps in Rust migration plans
+
+The Rust migration planner accepts explicit declared schema authority for
+`RunPlan` and structured `CopyAttribute` operations. Native data programs and
+copy counts carry that authority into execution and recovery. Copy counts run
+as two read statements before the write: eligible rows, then all source rows.
+
+In 3.0, a text-carrying copy such as:
+
+```json
+{"kind":"copy_attribute","forward":"match $x isa person, has old-name $v; not { $x has new-name $d; }; insert $x has new-name == $v;"}
+```
+
+becomes an explicit raw step with the same text:
+
+```json
+{"kind":"run_typeql","forward":"match $x isa person, has old-name $v; not { $x has new-name $d; }; insert $x has new-name == $v;","reverse":null}
+```
+
+Or use a structured native copy and pass the declared schema to `plan`:
+
+```json
+{"kind":"copy_attribute","owner":"person","source":"old-name","dest":"new-name"}
+```
+
+Custom forward/reverse strings and textual filters are refused on
+`CopyAttribute`. For custom native behavior, `RunPlan` accepts canonical V3
+`forward` and optional `reverse` plan objects, validated at planning and again
+when persisted execution plans are decoded.
