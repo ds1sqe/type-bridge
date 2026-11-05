@@ -1791,6 +1791,15 @@ fn validate_stages(
         limits.structural,
         &scalar_types,
     )?;
+    for stage in &read_tail {
+        if let ReadStage::Reduce { assignments, .. } = stage {
+            for assignment in assignments {
+                if assignment.reducer() == Reducer::Count {
+                    scalar_types.insert(assignment.assigned(), ValueTypeTag::Long);
+                }
+            }
+        }
+    }
     for (binding, domains) in &types {
         binding_types
             .entry(*binding)

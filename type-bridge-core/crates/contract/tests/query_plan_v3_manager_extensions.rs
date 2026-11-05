@@ -579,3 +579,15 @@ fn reduced_rematch_refuses_dropped_binding_and_keeps_count_type_checks() {
         "query_plan_stage_order"
     );
 }
+
+#[test]
+fn terminal_count_retains_its_scalar_domain_through_codec_roundtrip() {
+    let plan = QueryPlanV3::new(spec(reduced_accounts(vec![]), vec![2]), &schema()).unwrap();
+    let decoded = decode_query_plan_v3(&plan.canonical_bytes().unwrap(), &schema()).unwrap();
+    for plan in [plan, decoded] {
+        assert_eq!(
+            plan.scalar_value_type(id(2)),
+            Some(type_bridge_contract::value::ValueTypeTag::Long)
+        );
+    }
+}
