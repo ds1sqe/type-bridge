@@ -26,19 +26,6 @@ fn raw_error(error: RawQueryError) -> napi::Error {
 }
 
 struct RawJson(serde_json::Value);
-impl RawJson {
-    fn decode(bytes: &[u8]) -> napi::Result<Self> {
-        serde_json::from_slice(bytes).map(Self).map_err(|error| {
-            raw_error(RawQueryError {
-                code: "raw_answer_encoding".into(),
-                message: error.to_string(),
-                status: 502,
-                provider_code: None,
-                commit_outcome: None,
-            })
-        })
-    }
-}
 
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 enum RawNumber {
@@ -125,7 +112,7 @@ impl ToNapiValue for RawJson {
 async fn execute_one(mut transaction: RawTransaction, query: String) -> napi::Result<RawJson> {
     let result: napi::Result<RawJson> = async {
         let bytes = transaction.execute_query(&query).await.map_err(raw_error)?;
-        let answer = RawJson::decode(&bytes)?;
+        let answer = RawJson(transaction.decode_answer(&bytes).map_err(raw_error)?);
         transaction.commit().await.map_err(raw_error)?;
         Ok(answer)
     }
@@ -155,14 +142,12 @@ impl NodeRawTransaction {
     pub fn execute_query(&self, env: Env, query: String) -> napi::Result<Object<'static>> {
         let inner = Arc::clone(&self.inner);
         settle(&env, &self.runtime, async move {
-            RawJson::decode(
-                &inner
-                    .lock()
-                    .await
-                    .execute_query(&query)
-                    .await
-                    .map_err(raw_error)?,
-            )
+            let mut transaction = inner.lock().await;
+            let bytes = transaction.execute_query(&query).await.map_err(raw_error)?;
+            transaction
+                .decode_answer(&bytes)
+                .map(RawJson)
+                .map_err(raw_error)
         })
     }
     #[napi(ts_return_type = "Promise<void>")]

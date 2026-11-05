@@ -28,13 +28,7 @@ impl RawTransaction {
     /// `/v3/raw` runs each request as its own transaction.
     pub async fn execute_query(&mut self, query: &str) -> Result<serde_json::Value, RawQueryError> {
         let answer = self.inner.execute_query(query).await?;
-        serde_json::from_slice(&answer).map_err(|error| RawQueryError {
-            code: "raw_answer_encoding".into(),
-            message: error.to_string(),
-            status: 502,
-            provider_code: None,
-            commit_outcome: None,
-        })
+        self.inner.decode_answer(&answer)
     }
 
     /// Commit direct writes; after a successful proxy write this is a no-op.

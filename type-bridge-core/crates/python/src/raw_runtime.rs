@@ -111,19 +111,12 @@ impl PyRawTransaction {
     /// On a proxy connection a raw transaction holds one query, because
     /// `/v3/raw` runs each request as its own transaction.
     fn execute_query(&self, py: Python<'_>, query: &str) -> PyResult<Py<PyAny>> {
-        let bytes = provider_block_on(py, &self.runtime, async {
-            self.inner.lock().await.execute_query(query).await
+        let value = provider_block_on(py, &self.runtime, async {
+            let mut transaction = self.inner.lock().await;
+            let bytes = transaction.execute_query(query).await?;
+            transaction.decode_answer(&bytes)
         })
         .map_err(raw_error)?;
-        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
-            raw_error(CoreRawError {
-                code: "raw_answer_encoding".into(),
-                message: error.to_string(),
-                status: 502,
-                provider_code: None,
-                commit_outcome: None,
-            })
-        })?;
         crate::json_value_to_python(py, &value)
     }
 

@@ -205,6 +205,26 @@ impl RawTransaction {
         }
     }
 
+    /// Decode a native SDK answer while preserving proxy write uncertainty.
+    /// A successful proxy exchange may already have committed before decoding.
+    pub fn decode_answer(&mut self, bytes: &[u8]) -> Result<serde_json::Value, RawQueryError> {
+        serde_json::from_slice(bytes).map_err(|error| {
+            let error = RawQueryError {
+                code: "raw_answer_encoding".into(),
+                message: error.to_string(),
+                status: 502,
+                provider_code: None,
+                commit_outcome: None,
+            };
+            if matches!(self.route, Route::Proxy { used: true, .. }) && self.kind != TxType::Read {
+                self.state = State::Unknown;
+                error.unknown()
+            } else {
+                error
+            }
+        })
+    }
+
     /// Commit direct writes. After a successful proxy query this is a no-op.
     pub async fn commit(&mut self) -> Result<(), RawQueryError> {
         if self.state == State::Committed
@@ -574,6 +594,59 @@ mod tests {
                 .as_millis() as u64;
             let expiry = request["expires_at_unix_ms"].as_u64().unwrap();
             assert!(expiry > now && expiry <= now + 60_000);
+        }
+    }
+
+    #[tokio::test]
+    async fn undecodable_success_preserves_proxy_write_uncertainty() {
+        for kind in [TxType::Read, TxType::Write, TxType::Schema] {
+            let exchange: RawExchangeFn = Arc::new(move |_| {
+                Box::pin(async move {
+                    proxy_answer(
+                        type_bridge_core_lib::proxy_http::RawHttpResponse {
+                            status: 200,
+                            body: b"truncated{".to_vec(),
+                        },
+                        kind,
+                    )
+                })
+            });
+            let mut proxy =
+                RawTransaction::proxy(exchange, kind, std::num::NonZeroU64::new(60_000).unwrap());
+            let bytes = proxy.execute_query("unchanged text").await.unwrap();
+            let error = proxy.decode_answer(&bytes).unwrap_err();
+            assert_eq!(error.status, 502);
+            if kind == TxType::Read {
+                assert_eq!(error.code, "raw_answer_encoding");
+                assert_eq!(error.commit_outcome, None);
+            } else {
+                assert_eq!(error.code, "commit_outcome_unknown");
+                assert_eq!(error.provider_code.as_deref(), Some("raw_answer_encoding"));
+                assert_eq!(error.commit_outcome, Some(CommitFailureCertainty::Unknown));
+                assert_eq!(
+                    proxy.commit().await.unwrap_err().code,
+                    "commit_outcome_unknown"
+                );
+                assert_eq!(
+                    proxy.rollback().await.unwrap_err().code,
+                    "commit_outcome_unknown"
+                );
+            }
+            assert_eq!(
+                proxy.execute_query("retry").await.unwrap_err().code,
+                "raw_transaction_single_query"
+            );
+            let mut direct = RawTransaction::direct(
+                Box::new(Direct {
+                    events: Arc::new(Mutex::new(vec![])),
+                    unknown_commit: false,
+                    pending_close: false,
+                }),
+                kind,
+            );
+            let error = direct.decode_answer(&bytes).unwrap_err();
+            assert_eq!(error.code, "raw_answer_encoding");
+            assert_eq!(error.commit_outcome, None);
         }
     }
 
