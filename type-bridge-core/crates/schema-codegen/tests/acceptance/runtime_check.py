@@ -640,6 +640,34 @@ explicit_manager.delete()
 assert explicit_native.selection.deletes == 1
 assert explicit_native.deleted_iids == [Iid("0x10"), Iid("0x20")]
 
+
+class InstanceDeleteHook(OrderedCrudHook[OrderedPerson]):
+    def pre_delete(self, sender: type[OrderedPerson], instance: OrderedPerson) -> None:
+        assert sender is OrderedPerson
+        delete_events.append(("pre", instance))
+
+    def post_delete(self, sender: type[OrderedPerson], instance: OrderedPerson) -> None:
+        assert sender is OrderedPerson
+        delete_events.append(("post", instance))
+
+
+class InstanceDeleteNative:
+    def delete(self, instance: OrderedPerson) -> None:
+        delete_events.append(("delete", instance))
+
+
+# A filtered manager's explicit instance operation retains its instance hooks.
+# Native selection coverage checks both matching and excluded instances by IID.
+for instance in [explicit_first, explicit_second]:
+    delete_events: list[tuple[str, OrderedPerson]] = []
+    instance_manager = OrderedProjectedModelManager.__new__(OrderedProjectedModelManager)
+    object.__setattr__(instance_manager, "_model", OrderedPerson)
+    object.__setattr__(instance_manager, "_native", InstanceDeleteNative())
+    object.__setattr__(instance_manager, "_hooks", [InstanceDeleteHook()])
+    object.__setattr__(instance_manager, "_filtered", True)
+    assert instance_manager.delete(instance) is instance
+    assert delete_events == [("pre", instance), ("delete", instance), ("post", instance)]
+
 try:
     make_person("person-1", aliases="not-a-sequence-value")
 except TypeError:

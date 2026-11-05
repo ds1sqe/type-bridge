@@ -3064,8 +3064,12 @@ impl PyProjectedModelManager {
             return self.filter_iid(&iid.get().inner)?.delete(py);
         }
         self.ensure_instance(py, &instance_or_iid)?;
-        self.filter_iid(&required_projected_iid(&instance_or_iid)?.get().inner)?
-            .delete(py)
+        let iid = required_projected_iid(&instance_or_iid)?;
+        let filter =
+            ProjectedManagerFilter::try_new(&self.package.projection, self.type_id.clone())
+                .and_then(|filter| filter.try_and_iid(&self.package.projection, &iid.get().inner))
+                .map_err(py_sdk_diagnostic)?;
+        self.compatibility_filter_handle(filter).delete(py)
     }
 
     /// Delete one exact model and return its stored pre-delete snapshot.
@@ -11510,6 +11514,61 @@ class StructBase:
             let state = state.lock().unwrap();
             assert!(state.opens.is_empty());
             assert!(state.queries.is_empty());
+        });
+    }
+
+    #[test]
+    fn filtered_instance_delete_uses_only_the_instance_iid() {
+        Python::initialize();
+        Python::attach(|py| {
+            for borrowed in [false, true] {
+                for identifier in ["selected", "excluded"] {
+                    let (_, package) = install_batch(py);
+                    let model = package
+                        .type_by_label("person", TypeKind::Entity)
+                        .unwrap()
+                        .clone();
+                    let (database, state) = BatchRecordingBackend::fixture(
+                        vec![BatchResponse::Documents(vec![])],
+                        false,
+                    );
+                    let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                    let transaction = borrowed.then(|| {
+                        runtime
+                            .block_on(database.transaction_context(TxType::Write))
+                            .unwrap()
+                    });
+                    let manager = origin_manager(
+                        Arc::clone(&package),
+                        model,
+                        (!borrowed).then(|| Arc::clone(&database)),
+                        transaction.clone(),
+                        Arc::clone(&runtime),
+                    );
+                    let kwargs = PyDict::new(py);
+                    kwargs.set_item("identifier", "selected").unwrap();
+                    let selected = manager.filter(py, Some(&kwargs)).unwrap();
+                    let instance = batch_person(py, &package, identifier, "tag", Some("0x20"));
+                    selected.delete(py, instance.bind(py).clone()).unwrap();
+                    {
+                        let state = state.lock().unwrap();
+                        assert_eq!(state.calls.len(), 1);
+                        assert_eq!(
+                            state.calls[0].1.rows,
+                            vec![vec![
+                                type_bridge_orm::GivenValue::Integer(0),
+                                type_bridge_orm::GivenValue::String("0x20".into()),
+                            ]]
+                        );
+                        assert!(!state.calls[0].0.contains("selected"));
+                        assert!(!state.calls[0].0.contains("excluded"));
+                        assert_eq!(state.commits, usize::from(!borrowed));
+                    }
+                    if let Some(transaction) = transaction {
+                        runtime.block_on(transaction.close()).unwrap();
+                    }
+                }
+            }
         });
     }
 
