@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 import type_bridge.typedb_driver as typedb_driver
 import type_bridge.version as version
-from type_bridge.proxy import ProxyDatabase, ProxyTransaction, ProxyTransactionContext
 from type_bridge.typedb_driver import (
     Credentials,
     TransactionType,
@@ -932,7 +931,5 @@ class TransactionContext:
         self.transaction.rollback()
 
 
-# Type alias for unified connection type (includes proxy equivalents)
-Connection = (
-    Database | TransactionContext | ProxyDatabase | ProxyTransaction | ProxyTransactionContext
-)
+# Direct facade connection types. Generated proxy packages own their connection type.
+Connection = Database | TransactionContext

@@ -89,3 +89,12 @@ list contracts.
 V1/V2 plan bytes and envelopes are no longer accepted. Rebuild plans through
 the native builder and regenerate schema packages. Native plan inputs are part
 of the built program; there is no separate legacy invocation object.
+
+## Python proxy connections
+
+Replace `type_bridge.proxy.ProxyDatabase` with your generated package's
+`connect_proxy(url)` and use that connection's transaction API. Catch
+`type_bridge.Failure` instead of `ProxyError`. `ProxyTransaction` and
+`ProxyTransactionContext` are removed with the legacy module. The public
+`Connection` alias describes direct facade connections; generated proxy
+connections retain their own native type.

@@ -18,7 +18,6 @@ EXCLUDE_PARTS = {
 PUBLIC_MODULES = {
     "type_bridge",
     "type_bridge.migration",
-    "type_bridge.proxy",
     "type_bridge.session",
     "type_bridge.typedb_driver",
 }

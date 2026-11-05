@@ -200,6 +200,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Remove Python `type_bridge.proxy`, `ProxyDatabase`, `ProxyError`,
+  `ProxyTransaction`, and `ProxyTransactionContext`. Use the generated package's
+  `connect_proxy(...)`, its transaction API, and `type_bridge.Failure`.
+  `Connection` now covers the direct facade only; generated proxy connections
+  carry their own native type.
+
 - New canonical backfill plans and YAML intents use format 2 and require an
   explicit `isa` or `isa!` mode. Format 1 remains readable for historical
   validation, interrupted recovery and rollback; new application requires

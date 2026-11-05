@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from type_bridge.failure import CommitConflict, CommitOutcomeUnknown, CommitRejected, Failure
 from type_bridge.plan import Plan, PlanBuilder, PlanExplanation, StagedPlan, StagedResultRef
-from type_bridge.proxy import ProxyDatabase, ProxyError
 from type_bridge.session import (
     Connection,
     Database,
@@ -38,7 +37,4 @@ __all__ = [
     "TransactionType",
     "TypeDB",
     "create_driver_options",
-    # Proxy
-    "ProxyDatabase",
-    "ProxyError",
 ]

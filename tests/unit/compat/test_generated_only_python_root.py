@@ -24,6 +24,7 @@ import type_bridge.session as session
         "attribute",
         "expressions",
         "query",
+        "proxy",
         "rules",
         "validation",
         "coercion",
@@ -45,6 +46,8 @@ def test_legacy_modules_are_absent(name: str) -> None:
     "name",
     [
         "Query",
+        "ProxyDatabase",
+        "ProxyError",
         "QueryBuilder",
         "CrudEvent",
         "CrudHook",
@@ -109,7 +112,6 @@ def test_generated_api_reference_has_an_exact_public_barrel_allowlist() -> None:
     assert ast.literal_eval(assignment.value) == {
         "type_bridge",
         "type_bridge.migration",
-        "type_bridge.proxy",
         "type_bridge.session",
         "type_bridge.typedb_driver",
     }

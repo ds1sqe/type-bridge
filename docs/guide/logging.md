@@ -23,8 +23,7 @@ type_bridge
 ├── type_bridge.plan          native plan construction and execution
 ├── type_bridge.io            native provider and server IO
 ├── type_bridge.session       connection and transaction facade
-├── type_bridge.migration     canonical workspace migration CLI
-└── type_bridge.proxy         remote proxy boundary
+└── type_bridge.migration     canonical workspace migration CLI
 ```
 
 Generated package managers execute in the native Rust engine. Their failures
