@@ -32,7 +32,17 @@ Query bindings use `binding.iid(&iid)` and `binding.iid_in([&first, &second])`.
 `Input<Iid>` accepts nominal identifier values and earlier staged IID result
 references. These authoring methods retain their existing staged plans.
 
-## Python query identifiers
+## Python identifiers
+
+Generated model and reference `.iid` properties return a retained `Iid` object
+(or `None` for an unattached model or key-only reference). Pass `Iid("0x1234")`
+to reference constructors and `attach_runtime_iid`. Repeated getters return
+the same object without parsing or allocation; use `str(iid)` for text or JSON.
+
+Manager `get_by_iid`, IID `delete`, and `filter(iid=...)`/`filter(iid__in=...)`
+also require nominal identifiers. Passing a malformed string to `get_by_iid`
+now raises a type error instead of returning `None`.
+
 
 Pass `Iid("0x1234")` (imported from `type_bridge`) to query binding `iid`,
 `iid_in`, and generated model `by_iid` authoring. Plain strings are refused

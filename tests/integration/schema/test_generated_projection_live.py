@@ -37,7 +37,7 @@ from type_bridge_core import (
     blocking,
 )
 
-from type_bridge import Database
+from type_bridge import Database, Iid
 
 pytestmark = pytest.mark.integration
 
@@ -70,13 +70,13 @@ class _IntegerValue(Protocol):
 class _GeneratedPerson(Protocol):
     """Static test view of the emitted person used before its package exists."""
 
-    iid: str | None
+    iid: Iid | None
     identifier: _StringValue
     nickname: _StringValue | None
     score: _IntegerValue
     aliases: list[_StringValue] | tuple[_StringValue, ...]
 
-    def attach_runtime_iid(self, iid: str) -> None: ...
+    def attach_runtime_iid(self, iid: Iid) -> None: ...
 
 
 # The answer policy every caller-exchanged session in this module runs under.
@@ -686,7 +686,7 @@ def _normalize_sdk_role(
     assert type(relation.member) is generated.Person
     assert relation.member.identifier.value == expected_player["key"]
     assert player.identifier.value == expected_player["key"]
-    assert isinstance(player.iid, str) and player.iid
+    assert isinstance(player.iid, Iid) and player.iid
     reference = generated.PersonRef(player.iid, identifier=player.identifier)
     assert type(reference) is generated.PersonRef
     assert reference.__model_form__ == "reference"
@@ -947,7 +947,7 @@ def _sdk_queries_resource_limits(
     clean_db: Database,
     remote_advertisement: bytes,
     remote_exchange: Any,
-    membership_iid: str,
+    membership_iid: Iid,
 ) -> dict[str, object]:
     assert generated.QueryExecutionResourceLimits().timeout_milliseconds == 60_000
     historical = generated.QueryExecutionResourceLimits(**_HISTORICAL_QUERY_POLICY, statements=3)
@@ -1152,12 +1152,12 @@ def _run_sdk_queries_journey(
         assert network_manager.insert(network).item is network
         inserted.append((network_manager, network))
 
-        assert all(isinstance(value.iid, str) and value.iid for _, value in inserted)
+        assert all(isinstance(value.iid, Iid) and value.iid for _, value in inserted)
         person_iids = [value.iid for value in people]
-        assert all(isinstance(iid, str) for iid in person_iids)
+        assert all(isinstance(iid, Iid) for iid in person_iids)
         membership_iid = membership.iid
         network_iid = network.iid
-        assert isinstance(membership_iid, str) and isinstance(network_iid, str)
+        assert isinstance(membership_iid, Iid) and isinstance(network_iid, Iid)
         plan_capture = _query_plan_capture(remote_advertisement, generated)
         if plan_capture is not None:
             record_names = journey["create_order"]
@@ -2322,11 +2322,11 @@ def _model_plan_mark(name: str = "") -> None:
         )
 
 
-def _model_plan_identity(name: str, iid: str) -> None:
+def _model_plan_identity(name: str, iid: Iid) -> None:
     path = os.environ.get("TYPE_BRIDGE_TEST_PLAN_CAPTURE_RECORDS")
     if path is not None:
         with Path(path).open("a") as destination:
-            destination.write(json.dumps([name, iid]) + "\n")
+            destination.write(json.dumps([name, str(iid)]) + "\n")
 
 
 def _sdk_models_counter_plan_lifecycle(generated: ModuleType, database: Database) -> None:
@@ -2337,7 +2337,7 @@ def _sdk_models_counter_plan_lifecycle(generated: ModuleType, database: Database
     assert manager.insert_many(values).items == values
     _model_plan_mark()
     for name, value in zip(("counter-left", "counter-right"), values, strict=True):
-        assert isinstance(value.iid, str)
+        assert isinstance(value.iid, Iid)
         _model_plan_identity(name, value.iid)
     _model_plan_mark("unkeyed_entity_iid_lifecycle.count")
     assert manager.count() == before + 2
@@ -3801,7 +3801,7 @@ def test_generated_managers_share_direct_and_http_proxy_terminals(
             baseline = len(terminal(manager.all))
             assert terminal(manager.count) == baseline
             assert terminal(manager.exists) is (baseline != 0)
-            assert terminal(lambda: manager.get_by_iid("0xffff")) is None
+            assert terminal(lambda: manager.get_by_iid(Iid("0xffff"))) is None
             canonical = manager.where()
             assert len(terminal(canonical.all)) == baseline
             assert terminal(canonical.count) == baseline
@@ -4035,8 +4035,9 @@ def test_generated_projection_round_trips_live_models(
         assert model.__runtime_projection__ is installed
 
     person_manager = generated.Person.manager(clean_db)
-    assert person_manager.get_by_iid("not-a-valid-iid") is None
-    assert person_manager.get_by_iid("0xdeadbeefdeadbeefdeadbeef") is None
+    with pytest.raises(TypeError):
+        person_manager.get_by_iid("not-a-valid-iid")
+    assert person_manager.get_by_iid(Iid("0xdeadbeefdeadbeefdeadbeef")) is None
 
     person = generated.Person(
         identifier=generated.Identifier("person-1"),

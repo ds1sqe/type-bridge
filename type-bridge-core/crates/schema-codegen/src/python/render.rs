@@ -992,9 +992,9 @@ fn render_reference_constructor(
         }
     }
     let signature = if parameters.is_empty() {
-        "self, iid: str".to_owned()
+        "self, iid: _Iid".to_owned()
     } else {
-        format!("self, iid: str, *, {}", parameters.join(", "))
+        format!("self, iid: _Iid, *, {}", parameters.join(", "))
     };
     let _ = writeln!(output, "    def __init__({signature}) -> None:");
     if stub {

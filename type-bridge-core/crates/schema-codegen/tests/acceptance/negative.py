@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -34,6 +35,7 @@ from generated_v2 import (
 )
 from type_bridge_core import Transaction as StagedTransaction
 
+from type_bridge import Iid
 from type_bridge.session import Database
 
 
@@ -66,7 +68,7 @@ Event()  # E: missing_event_subject:reportCallIssue
 Employment()  # E: missing_required:reportCallIssue
 Employment(
     employee=PersonRef(  # E: reference_as_complete:reportArgumentType
-        "person-iid", identifier=Identifier("person-1")
+        Iid("0xa1"), identifier=Identifier("person-1")
     )
 )
 Employment(
@@ -74,7 +76,7 @@ Employment(
     member=person(Identifier("person-2")),  # E: specialized_keyword:reportCallIssue
 )
 accepts_employment_role(Membership.member)  # E: wrong_owner:reportArgumentType
-Container(item=EventRef("event-iid"))  # E: scalar_for_sequence:reportArgumentType
+Container(item=EventRef(Iid("0xe1")))  # E: scalar_for_sequence:reportArgumentType
 Employment(
     employee=[  # E: sequence_for_scalar:reportArgumentType
         person(Identifier("person-1"))
@@ -193,3 +195,12 @@ async def staged_pending_requires_resolution(tx: StagedTransaction) -> None:
 
 person_var.iid("0x1")  # E: string_iid:reportArgumentType
 person_var.iid_in(["0x1"])  # E: string_iid_list:reportArgumentType
+
+PersonRef("0xa1", identifier=Identifier("person-1"))  # E: reference_string_iid:reportArgumentType
+person_manager.get_by_iid("0xa1")  # E: manager_string_iid:reportArgumentType
+def accepts_string_delete(delete: Callable[[str], None]) -> None:
+    del delete
+
+
+accepts_string_delete(person_manager.delete)  # E: delete_string_iid:reportArgumentType
+person(Identifier("person-1")).attach_runtime_iid("0xa1")  # E: attach_string_iid:reportArgumentType

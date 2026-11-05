@@ -208,6 +208,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Generated Python model and reference `.iid` properties return `Iid | None`.
+  Reference constructors, `attach_runtime_iid`, manager `get_by_iid`, IID
+  `delete` arguments, and `iid`/`iid__in` filters require `Iid` values. Construct
+  them with `Iid("0x1234")` and use `str(iid)` for text. Malformed string
+  lookups no longer return `None`; string arguments are refused before I/O.
+
 - Python `by_iid_input` and `StagedResultRef` require `PlanInput[Iid]`. Declare
   identity columns with `input(name, "iid")` or `optional_input(name, "iid")`
   and bind `Iid` values. The staged wire representation remains a string.

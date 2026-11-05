@@ -142,7 +142,7 @@ assert_type(person_manager.update(person), WriteResult[Person])
 assert_type(person_manager.delete_returning(person), WriteResult[Person])
 assert_type(person_manager.update_many([person]), BatchWriteResult[Person])
 assert_type(person_manager.delete(person), Person)
-assert_type(person_manager.delete("0x1"), None)
+assert_type(person_manager.delete(Iid("0x1")), None)
 assert_type(person_manager.delete_many([person]), list[Person])
 plain_activity = PlainActivity(participant=person)
 assert_type(
@@ -168,7 +168,7 @@ def generated_owner_lookup_types(database: Database) -> None:
         lookup="in",
     )
     for owner in (*entity_owners, *narrowed_owners, *relation_owners):
-        assert_type(owner.iid, str | None)
+        assert_type(owner.iid, Iid | None)
 
 
 filtered_person_manager = person_manager.filter(score__gte=Score(3))
@@ -193,7 +193,7 @@ assert_type(canonical_person_filter.count(), int)
 assert_type(canonical_person_filter.exists(), bool)
 assert_type(person_manager.filter(score__in=[Score(3), Score(4)]), ProjectedModelManager[Person])
 assert_type(person_manager.filter(aliases__isnull=True), ProjectedModelManager[Person])
-assert_type(person_manager.filter(iid__in=["0x1", "0x2"]), ProjectedModelManager[Person])
+assert_type(person_manager.filter(iid__in=[Iid("0x1"), Iid("0x2")]), ProjectedModelManager[Person])
 assert_type(filtered_person_manager.all(), list[Person])
 assert_type(filtered_person_manager.first(), Person | None)
 assert_type(filtered_person_manager.count(), int)
@@ -463,10 +463,10 @@ assert_type(event.subject, Person)
 employment = Employment(employee=person)
 assert_type(employment.employee, Person)
 
-container = Container(item=[EventRef("event-iid")])
+container = Container(item=[EventRef(Iid("0xe1"))])
 assert_type(container.item, tuple[EventRef, ...])
 
-person_reference = PersonRef("person-iid", identifier=Identifier("person-1"))
+person_reference = PersonRef(Iid("0xa1"), identifier=Identifier("person-1"))
 assert_type(person_reference, PersonRef)
 
 stats = PlayerStats(wins=3, nickname=None)

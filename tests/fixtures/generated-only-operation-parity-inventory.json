@@ -178,7 +178,7 @@
                 "person_manager.put(person)",
                 "person_manager.get_by_iid(person.iid)",
                 "person_manager.update(person)",
-                "person_manager.get_by_iid(\"not-a-valid-iid\") is None",
+                "with pytest.raises(TypeError):\n        person_manager.get_by_iid(\"not-a-valid-iid\")",
                 "mutation_edge.nickname = None",
                 "cleared_ownerships.aliases == ()",
                 "person_manager.delete(transaction_person)",
@@ -214,11 +214,11 @@
               "anchors": [
                 "generated_entity_crud_batches_and_scalar_domains",
                 "db.entities::<Person>().put",
-                ".get_by_iid(&iid)",
+                ".get_by_iid(&type_bridge::Iid::new(&iid).unwrap())",
                 ".update(",
                 "special ownership replacement",
                 "cleared_ownerships.aliases().is_empty()",
-                "db.entities::<Person>().delete(&iid)"
+                "db.entities::<Person>().delete(&type_bridge::Iid::new(&iid).unwrap())"
               ]
             }
           ]
@@ -420,8 +420,8 @@
               "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
               "anchors": [
                 "generated_lifecycle_hooks_and_atomic_mutation_batches",
-                ".update_many(vec![",
-                ".delete_many(&[first_employment_iid, second_employment_iid])",
+                ".update_many(typed_update_inputs(vec![",
+                ".delete_many(&typed_iids(&[first_employment_iid, second_employment_iid]))",
                 "empty person update batch",
                 "empty relation delete batch",
                 "assert_eq!(value.aliases()[0].value(), expected)",

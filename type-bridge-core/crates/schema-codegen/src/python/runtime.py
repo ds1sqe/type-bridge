@@ -25,6 +25,7 @@ from typing import (
 from weakref import ReferenceType, ref
 
 from type_bridge_core import (
+    Iid,
     QueryCancellation,
     QueryExecutionResourceLimits,
     QueryLimits,
@@ -224,11 +225,12 @@ class ModelBase:
     __type_id__: str
     __model_form__: str
     __plan_roles__: ClassVar[Sequence[tuple[object, bool]]]
-    _iid: str | None
+    _iid: Iid | None
     _values: dict[str, object]
 
     @property
-    def iid(self) -> str | None:
+    def iid(self) -> Iid | None:
+        """The retained identifier; reading it does not parse or copy its text."""
         return self._iid
 
     @property
@@ -300,9 +302,9 @@ class ModelBase:
         self._iid = None
         self._values = dict(values)
 
-    def attach_runtime_iid(self, iid: str) -> None:
-        if not iid:
-            raise TypeError("projected IID must be a non-empty string")
+    def attach_runtime_iid(self, iid: Iid) -> None:
+        if type(iid) is not Iid:
+            raise TypeError("projected IID must be an Iid")
         self._iid = iid
 
 
@@ -502,10 +504,12 @@ class ProjectedModelManager[ModelT: ModelBase]:
     def delete(self, instance_or_iid: ModelT) -> ModelT: ...
 
     @overload
-    def delete(self, instance_or_iid: str) -> None: ...
+    def delete(self, instance_or_iid: Iid) -> None: ...
 
-    def delete(self, instance_or_iid: ModelT | str) -> ModelT | None:
+    def delete(self, instance_or_iid: ModelT | Iid) -> ModelT | None:
         if isinstance(instance_or_iid, str):
+            raise TypeError("delete IID arguments require Iid, not a plain string")
+        if isinstance(instance_or_iid, Iid):
             self._native.delete(instance_or_iid)
             return None
         self._run_pre(CrudEvent.PRE_DELETE, instance_or_iid)
@@ -517,7 +521,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
         """Delete an instance and return its stored pre-delete snapshot."""
         self._run_pre(CrudEvent.PRE_DELETE, instance)
         result = cast(
-            WriteResult[ModelT], self._native.delete_by_iid_returning(cast(str, instance.iid))
+            WriteResult[ModelT], self._native.delete_by_iid_returning(cast(Iid, instance.iid))
         )
         self._run_post_many(CrudEvent.POST_DELETE, result.items)
         return result
@@ -528,7 +532,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
         self._run_pre_many(CrudEvent.PRE_DELETE, values)
         snapshots = cast(
             BatchWriteResult[ModelT],
-            self._native.delete_many_returning([cast(str, value.iid) for value in values]),
+            self._native.delete_many_returning([cast(Iid, value.iid) for value in values]),
         )
         self._run_post_many(CrudEvent.POST_DELETE, snapshots.items)
         return snapshots
@@ -541,7 +545,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
     ) -> list[ModelT]:
         values = list(instances)
         self._run_pre_many(CrudEvent.PRE_DELETE, values)
-        self._native.delete_many([cast(str, value.iid) for value in values])
+        self._native.delete_many([cast(Iid, value.iid) for value in values])
         self._run_post_many(CrudEvent.POST_DELETE, values)
         return values
 
@@ -580,7 +584,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
     def exists(self) -> bool:
         return self._native.exists()
 
-    def get_by_iid(self, iid: str) -> ModelT | None:
+    def get_by_iid(self, iid: Iid) -> ModelT | None:
         return cast(ModelT | None, self._native.get_by_iid(iid))
 
     def _run_pre(self, event: CrudEvent, instance: ModelT) -> None:
@@ -843,11 +847,12 @@ class ReferenceBase:
     __projection__: Mapping[str, object]
     __type_id__: str
     __model_form__: str
-    _iid: str | None
+    _iid: Iid | None
     _values: dict[str, object]
 
     @property
-    def iid(self) -> str | None:
+    def iid(self) -> Iid | None:
+        """The retained identifier; reading it does not parse or copy its text."""
         return self._iid
 
     def runtime_values(self) -> dict[str, object]:
@@ -869,11 +874,11 @@ class ReferenceBase:
 
     def initialize_runtime_reference(
         self,
-        iid: str | None,
+        iid: Iid | None,
         values: Mapping[str, object],
     ) -> None:
-        if iid is not None and not iid:
-            raise TypeError("projected IID must be null or a non-empty string")
+        if iid is not None and type(iid) is not Iid:
+            raise TypeError("projected IID must be null or an Iid")
         self._iid = iid
         self._values = dict(values)
 
@@ -1111,7 +1116,7 @@ def initialize_model(
 
 def initialize_reference(
     instance: ReferenceBase,
-    iid: str,
+    iid: Iid,
     values: Mapping[str, object],
 ) -> None:
     instance.initialize_runtime_reference(iid, values)

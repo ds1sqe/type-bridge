@@ -20,6 +20,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from type_bridge import Iid
+
 REPORT_FORMAT = "typebridge.projected-parity-report/v1"
 # The models TypeDB version matrix: the report's profile and the semantic
 # fingerprint the local package must carry.
@@ -757,9 +759,9 @@ async def _ordered_link_observation(package, model, graph, root_node):
     native = await _hydrate_exact(package, model, empty, root_node)
     assert native.participant == ()
     constructed = _constructed_observations(package)
-    constructed["ada"].attach_runtime_iid("0x01")
-    constructed["dana"].attach_runtime_iid("0x02")
-    constructed["link"].attach_runtime_iid("0x10")
+    constructed["ada"].attach_runtime_iid(Iid("0x01"))
+    constructed["dana"].attach_runtime_iid(Iid("0x02"))
+    constructed["link"].attach_runtime_iid(Iid("0x10"))
     return model.decode_snapshot(constructed["link"].encode_snapshot())
 
 
@@ -975,7 +977,7 @@ def _constructed_observations(package: Any) -> dict[str, object]:
         target=ada,
     )
     event = package.Event(subject=ada)
-    event.attach_runtime_iid("0x20")
+    event.attach_runtime_iid(Iid("0x20"))
     container = package.Container(item=(event,))
     return {
         "ada": ada,
@@ -1162,9 +1164,9 @@ def _constraint_observation(
         "role_cardinality",
         lambda: package.Container(
             item=(
-                package.EventRef("0x01"),
-                package.EventRef("0x02"),
-                package.EventRef("0x03"),
+                package.EventRef(Iid("0x01")),
+                package.EventRef(Iid("0x02")),
+                package.EventRef(Iid("0x03")),
             )
         ),
         exception_names=("ProjectedCardinalityError",),

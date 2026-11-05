@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::iid::PyIid;
 use pyo3::prelude::*;
 #[cfg(test)]
 use pyo3::types::PyWeakrefMethods;
@@ -15,7 +16,7 @@ use pyo3::types::{
 };
 use pythonize::pythonize;
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
+use type_bridge_contract::id::{Iid, TypeId, TypeKind};
 use type_bridge_contract::limits::{
     CodecLimits, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_DEPTH, MAX_CANONICAL_STRING_BYTES,
 };
@@ -2979,8 +2980,8 @@ impl PyProjectedModelManager {
 
     /// Delete one exact generated model by its instance or canonical TypeDB IID.
     fn delete(&self, py: Python<'_>, instance_or_iid: Bound<'_, PyAny>) -> PyResult<()> {
-        let iid = if let Ok(iid) = instance_or_iid.cast_exact::<PyString>() {
-            iid.to_str()?.to_owned()
+        let iid = if let Ok(iid) = instance_or_iid.cast::<PyIid>() {
+            copy_projected_iid(&iid.get().inner)?
         } else {
             self.ensure_instance(py, &instance_or_iid)?;
             required_projected_iid(&instance_or_iid)?
@@ -2989,8 +2990,12 @@ impl PyProjectedModelManager {
     }
 
     /// Delete one exact model and return its stored pre-delete snapshot.
-    fn delete_by_iid_returning(&self, py: Python<'_>, iid: String) -> PyResult<Py<PyAny>> {
-        self.delete_many_returning_projected(py, vec![iid], true)
+    fn delete_by_iid_returning(
+        &self,
+        py: Python<'_>,
+        iid: PyRef<'_, PyIid>,
+    ) -> PyResult<Py<PyAny>> {
+        self.delete_many_returning_projected(py, vec![copy_projected_iid(&iid.inner)?], true)
     }
 
     /// Delete exact models and return existing snapshots in input order.
@@ -3149,15 +3154,9 @@ impl PyProjectedModelManager {
         })
         .map_err(py_sdk_diagnostic)
     }
-    /// Fetch one exact instance by TypeDB IID using `isa!`.
-    fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<Py<PyAny>> {
-        // Preserve the released Python manager contract: malformed IIDs are
-        // indistinguishable from absent IIDs for this convenience lookup.
-        // Query predicates remain strict and reject malformed IIDs before I/O.
-        if !is_canonical_thing_iid(iid) {
-            return Ok(py.None());
-        }
-        match self.get_projected(py, iid)? {
+    /// Fetch one exact instance by its validated TypeDB IID using `isa!`.
+    fn get_by_iid(&self, py: Python<'_>, iid: PyRef<'_, PyIid>) -> PyResult<Py<PyAny>> {
+        match self.get_projected(py, iid.inner.as_str())? {
             Some(projected) => {
                 hydrate_projected_thing(py, self.package.as_ref(), Arc::new(projected))
             }
@@ -3806,7 +3805,7 @@ fn bounded_projected_iids(values: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     if !supports_python_iteration(values) {
         return Err(py_sdk_diagnostic(batch_input_shape_diagnostic(
             "batch_rows_not_iterable",
-            "Successor delete rows must be an iterable of exact strings",
+            "Successor delete rows must be an iterable of Iid values",
             &projected_batch_rows_path(),
         )));
     }
@@ -3817,21 +3816,14 @@ fn bounded_projected_iids(values: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
         ProjectedBatch::validate_binding_row_count(ordinal.saturating_add(1))
             .map_err(py_sdk_diagnostic)?;
         let path = projected_batch_iid_path(ordinal);
-        let value = value.cast_exact::<PyString>().map_err(|_| {
+        let value = value.cast::<PyIid>().map_err(|_| {
             py_sdk_diagnostic(batch_input_shape_diagnostic(
                 "batch_iid_type_mismatch",
-                "Successor delete rows require exact string IIDs",
+                "Successor delete rows require Iid values",
                 &path,
             ))
         })?;
-        let text = value.to_str().map_err(|_| {
-            py_sdk_diagnostic(batch_input_shape_diagnostic(
-                "batch_iid_type_mismatch",
-                "Successor delete rows require UTF-8 string IIDs",
-                &path,
-            ))
-        })?;
-        let iid = copy_canonical_batch_iid(text, ordinal)?;
+        let iid = copy_projected_iid(&value.get().inner)?;
         iids.try_reserve(1)
             .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
         iids.push(iid);
@@ -6369,26 +6361,14 @@ fn projected_reference_iid(
     if iid.is_none() {
         return Ok(None);
     }
-    let iid = iid.cast_exact::<PyString>().map_err(|_| {
+    let iid = iid.cast::<PyIid>().map_err(|_| {
         py_sdk_diagnostic(batch_input_shape_diagnostic(
             "reference_iid_type_mismatch",
-            "Projected role-player IIDs must be exact strings",
+            "Projected role-player IIDs must be Iid values",
             &iid_path,
         ))
     })?;
-    let iid = iid.to_str().map_err(|_| {
-        py_sdk_diagnostic(batch_input_shape_diagnostic(
-            "reference_iid_type_mismatch",
-            "Projected role-player IIDs must be UTF-8 strings",
-            &iid_path,
-        ))
-    })?;
-    copy_canonical_iid_at(
-        iid,
-        &iid_path,
-        "The reference IID is not canonical TypeDB identity text",
-    )
-    .map(Some)
+    copy_projected_iid(&iid.get().inner).map(Some)
 }
 
 fn project_hydrated_thing(
@@ -6989,16 +6969,9 @@ fn projected_filter_items<'py>(
 
 fn projected_filter_iid(value: &Bound<'_, PyAny>) -> PyResult<String> {
     let iid = value
-        .cast::<PyString>()
-        .map_err(|_| py_type_error("generated manager IID lookup requires strings"))?
-        .to_str()?
-        .to_owned();
-    if !is_canonical_thing_iid(&iid) {
-        return Err(py_value_error(
-            "generated manager IID lookup requires a canonical TypeDB thing IID",
-        ));
-    }
-    Ok(iid)
+        .cast::<PyIid>()
+        .map_err(|_| py_type_error("generated manager IID lookup requires Iid values"))?;
+    copy_projected_iid(&iid.get().inner)
 }
 
 fn projected_iid(value: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
@@ -7006,7 +6979,7 @@ fn projected_iid(value: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
     if iid.is_none() {
         Ok(None)
     } else {
-        iid.extract().map(Some)
+        projected_filter_iid(&iid).map(Some)
     }
 }
 
@@ -7019,57 +6992,22 @@ fn projected_iid_from_snapshot(
     if iid.is_none() {
         return Ok(String::new());
     }
-    let iid = iid.cast_exact::<PyString>().map_err(|_| {
+    let iid = iid.cast::<PyIid>().map_err(|_| {
         py_sdk_diagnostic(batch_input_shape_diagnostic(
             "batch_iid_type_mismatch",
-            "Successor update rows require an exact string IID slot",
+            "Successor update rows require an Iid slot",
             &projected_batch_iid_path(ordinal),
         ))
     })?;
-    let iid = iid.to_str().map_err(|_| {
-        py_sdk_diagnostic(batch_input_shape_diagnostic(
-            "batch_iid_type_mismatch",
-            "Successor update rows require a UTF-8 string IID slot",
-            &projected_batch_iid_path(ordinal),
-        ))
-    })?;
-    copy_canonical_batch_iid(iid, ordinal)
+    copy_projected_iid(&iid.get().inner)
 }
 
-fn copy_canonical_batch_iid(iid: &str, ordinal: usize) -> PyResult<String> {
-    copy_canonical_iid_at(
-        iid,
-        &projected_batch_iid_path(ordinal),
-        "The batch target IID is not canonical TypeDB identity text",
-    )
-}
-
-fn copy_canonical_iid_at(
-    iid: &str,
-    path: &[SdkDiagnosticPathSegment],
-    message: &'static str,
-) -> PyResult<String> {
-    if !is_canonical_thing_iid(iid) {
-        let diagnostic = path.iter().cloned().fold(
-            SdkExecutionDiagnostic::invalid_input(
-                SdkDiagnosticCode::new("noncanonical_iid")
-                    .expect("the static noncanonical-IID code is canonical"),
-                SdkDiagnosticMessage::new(message)
-                    .expect("the static noncanonical-IID message is canonical"),
-            ),
-            |diagnostic, segment| {
-                diagnostic
-                    .try_at(segment)
-                    .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
-            },
-        );
-        return Err(py_sdk_diagnostic(diagnostic));
-    }
+fn copy_projected_iid(iid: &Iid) -> PyResult<String> {
     let mut retained = String::new();
     retained
-        .try_reserve_exact(iid.len())
+        .try_reserve_exact(iid.as_str().len())
         .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
-    retained.push_str(iid);
+    retained.push_str(iid.as_str());
     Ok(retained)
 }
 
@@ -7520,6 +7458,26 @@ fn set_projected_hydrated_values(
     }
 }
 
+fn hydrate_iid(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    iid: &str,
+) -> PyResult<Py<PyAny>> {
+    let mut text = String::new();
+    text.try_reserve_exact(iid.len())
+        .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+    text.push_str(iid);
+    let inner = Iid::new(text).map_err(|_| {
+        py_sdk_diagnostic(
+            ProjectedThing::validate_hydrated_iid(&package.projection, id, iid)
+                .err()
+                .unwrap_or_else(SdkExecutionDiagnostic::internal_failure),
+        )
+    })?;
+    Py::new(py, PyIid { inner }).map(Py::into_any)
+}
+
 fn allocate_projected_complete(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -7529,7 +7487,7 @@ fn allocate_projected_complete(
 ) -> PyResult<Py<PyAny>> {
     let instance = allocate(py, package.class(id, ProjectedModelForm::Complete)?)?;
     instance.call_method1("initialize_runtime_values", (values,))?;
-    instance.call_method1("attach_runtime_iid", (iid,))?;
+    instance.call_method1("attach_runtime_iid", (hydrate_iid(py, package, id, iid)?,))?;
     Ok(instance.unbind())
 }
 
@@ -7542,7 +7500,7 @@ fn allocate_projected_complete_callback_free(
     pool: &BatchHydrationPool,
 ) -> PyResult<Py<PyAny>> {
     let slots = package.batch_slots_for(id, ProjectedModelForm::Complete)?;
-    let iid = fallible_python_string(py, iid)?;
+    let iid = hydrate_iid(py, package, id, iid)?;
     slots.allocate_initialized_after_fence(py, values.as_any(), iid.bind(py), None, pool)
 }
 
@@ -7554,7 +7512,10 @@ fn allocate_projected_reference(
     iid: &str,
 ) -> PyResult<Py<PyAny>> {
     let instance = allocate(py, package.class(id, ProjectedModelForm::Reference)?)?;
-    instance.call_method1("initialize_runtime_reference", (iid, values))?;
+    instance.call_method1(
+        "initialize_runtime_reference",
+        (hydrate_iid(py, package, id, iid)?, values),
+    )?;
     Ok(instance.unbind())
 }
 
@@ -7566,7 +7527,14 @@ fn allocate_projected_detached_reference(
     iid: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
     let instance = allocate(py, package.class(id, ProjectedModelForm::Reference)?)?;
-    instance.call_method1("initialize_runtime_reference", (iid, values))?;
+    instance.call_method1(
+        "initialize_runtime_reference",
+        (
+            iid.map(|iid| hydrate_iid(py, package, id, iid))
+                .transpose()?,
+            values,
+        ),
+    )?;
     Ok(instance.unbind())
 }
 
@@ -7601,7 +7569,7 @@ fn allocate_projected_reference_callback_free(
     pool: &BatchHydrationPool,
 ) -> PyResult<Py<PyAny>> {
     let slots = package.batch_slots_for(id, ProjectedModelForm::Reference)?;
-    let iid = fallible_python_string(py, iid)?;
+    let iid = hydrate_iid(py, package, id, iid)?;
     slots.allocate_initialized_after_fence(py, values.as_any(), iid.bind(py), None, pool)
 }
 
@@ -8047,7 +8015,7 @@ fn hydrate_complete(
     let instance = allocate(py, package.class(id, ProjectedModelForm::Complete)?)?;
     instance.call_method1("initialize_runtime_values", (values,))?;
     if let Some(iid) = iid {
-        instance.call_method1("attach_runtime_iid", (iid,))?;
+        instance.call_method1("attach_runtime_iid", (hydrate_iid(py, package, id, iid)?,))?;
     }
     Ok(instance.unbind())
 }
@@ -8060,7 +8028,10 @@ fn hydrate_reference(
     iid: &str,
 ) -> PyResult<Py<PyAny>> {
     let instance = allocate(py, package.class(id, ProjectedModelForm::Reference)?)?;
-    instance.call_method1("initialize_runtime_reference", (iid, values))?;
+    instance.call_method1(
+        "initialize_runtime_reference",
+        (hydrate_iid(py, package, id, iid)?, values),
+    )?;
     Ok(instance.unbind())
 }
 
@@ -10079,6 +10050,16 @@ plays:
         });
     }
 
+    fn fixture_iid<'py>(py: Python<'py>, value: &str) -> Bound<'py, PyIid> {
+        Bound::new(
+            py,
+            PyIid {
+                inner: Iid::new(value).unwrap(),
+            },
+        )
+        .unwrap()
+    }
+
     fn classes(
         py: Python<'_>,
         projection: &RuntimeProjection,
@@ -10101,11 +10082,18 @@ plays:
                 .unwrap();
             modules.set_item("type_bridge_core", package).unwrap();
         }
+        modules
+            .get_item("type_bridge_core")
+            .unwrap()
+            .setattr("Iid", py.get_type::<PyIid>())
+            .unwrap();
         py.import("type_bridge_core.write_result").unwrap();
         let module = PyModule::from_code(
             py,
             ffi::c_str!(
                 r#"
+from type_bridge_core import Iid
+
 class Complete:
     __slots__ = ("_values", "_iid", "__weakref__")
     __model_form__ = "complete"
@@ -10121,7 +10109,7 @@ class Complete:
         self._values = dict(values)
         self._iid = None
     def attach_runtime_iid(self, iid):
-        self._iid = iid
+        self._iid = Iid(iid) if isinstance(iid, str) else iid
 
 class Attribute(Complete):
     __slots__ = ("_attribute_value",)
@@ -10142,7 +10130,7 @@ class Reference:
     def runtime_values(self):
         return self._values
     def initialize_runtime_reference(self, iid, values):
-        self._iid = iid
+        self._iid = Iid(iid) if isinstance(iid, str) else iid
         self._values = dict(values)
 "#
             ),
@@ -11006,6 +10994,82 @@ class StructBase:
     }
 
     #[test]
+    fn generated_iids_are_retained_and_string_arguments_refuse_before_io() {
+        Python::initialize();
+        Python::attach(|py| {
+            let (_, package) = install_batch(py);
+            let projected = projected_batch_people(py, package.as_ref(), 1)
+                .pop()
+                .unwrap();
+            let person =
+                hydrate_projected_thing(py, package.as_ref(), Arc::new(projected)).unwrap();
+            let iid = person.bind(py).getattr("iid").unwrap();
+            assert!(iid.is_instance_of::<PyIid>());
+            assert!(iid.is(person.bind(py).getattr("iid").unwrap()));
+            assert_eq!(iid.cast::<PyIid>().unwrap().get().inner.as_str(), "0x20");
+
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let (backend, state) = OriginRecordingBackend::new(vec![]);
+            let manager = Py::new(
+                py,
+                origin_manager(
+                    package,
+                    person_id,
+                    Some(Arc::new(Database::with_backend(
+                        Box::new(backend),
+                        "typed-iid-boundary",
+                    ))),
+                    None,
+                    Arc::new(ProviderRuntimeOwner::new().unwrap()),
+                ),
+            )
+            .unwrap();
+            for method in ["get_by_iid", "delete", "delete_by_iid_returning"] {
+                let error = manager
+                    .bind(py)
+                    .call_method1(method, ("0x20",))
+                    .unwrap_err();
+                assert!(
+                    error.is_instance_of::<pyo3::exceptions::PyTypeError>(py),
+                    "{method}: {error}"
+                );
+            }
+            let error = manager
+                .bind(py)
+                .call_method1("delete_many", (vec!["0x20"],))
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "batch_iid_type_mismatch"
+            );
+            for lookup in ["iid", "iid__in"] {
+                let kwargs = PyDict::new(py);
+                if lookup == "iid" {
+                    kwargs.set_item(lookup, "0x20").unwrap();
+                } else {
+                    kwargs.set_item(lookup, vec!["0x20"]).unwrap();
+                }
+                let error = manager
+                    .bind(py)
+                    .call_method("filter", (), Some(&kwargs))
+                    .unwrap_err();
+                assert!(error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+            }
+            let state = state.lock().unwrap();
+            assert!(state.opens.is_empty());
+            assert!(state.queries.is_empty());
+        });
+    }
+
+    #[test]
     fn canonical_manager_filter_fences_tokens_domains_and_persists() {
         Python::initialize();
         Python::attach(|py| {
@@ -11745,8 +11809,12 @@ class StructBase:
                     .bind(py)
                     .getattr("iid")
                     .unwrap()
-                    .extract::<String>()
-                    .unwrap(),
+                    .cast::<PyIid>()
+                    .unwrap()
+                    .get()
+                    .inner
+                    .as_str()
+                    .to_owned(),
                 "0xabc"
             );
 
@@ -12211,8 +12279,12 @@ class StructBase:
                     participant
                         .getattr("iid")
                         .unwrap()
-                        .extract::<String>()
+                        .cast::<PyIid>()
                         .unwrap()
+                        .get()
+                        .inner
+                        .as_str()
+                        .to_owned()
                 })
                 .collect::<Vec<_>>();
             assert_eq!(hydrated_iids, ["0xa1", "0xa2"]);
@@ -12311,7 +12383,7 @@ class StructBase:
                 package.as_ref(),
                 &person_id,
                 &DynamicEntityRow {
-                    iid: Some("0x-person".into()),
+                    iid: Some("0xa1".into()),
                     type_name: Some("person".into()),
                     attributes: vec![
                         (
@@ -12368,7 +12440,9 @@ class StructBase:
                 None,
                 Arc::clone(&provider_runtime),
             );
-            let snapshot = source_manager.get_by_iid(py, "0xabc").unwrap();
+            let snapshot = source_manager
+                .get_by_iid(py, fixture_iid(py, "0xabc").borrow())
+                .unwrap();
             let runtime_projection = PyRuntimeProjection {
                 package: Arc::clone(&package),
             };
@@ -13088,7 +13162,7 @@ class ReenterOnDrop:
                 runtime,
             );
             let facade = manager
-                .get_by_iid(py, "0xa0")
+                .get_by_iid(py, fixture_iid(py, "0xa0").borrow())
                 .expect("ordered manager hydration should succeed");
             assert!(package.facade_origins.proof(facade.bind(py)).is_some());
 
@@ -13150,7 +13224,7 @@ class ReenterOnDrop:
 def public_state(value):
     if hasattr(value, "runtime_attribute_value"):
         return value.runtime_attribute_value()
-    return {"_iid": value.iid, "_values": value.runtime_values()}
+    return {"_iid": str(value.iid) if value.iid is not None else None, "_values": value.runtime_values()}
 "#
                 ),
                 ffi::c_str!("python_public_projection_state.py"),
@@ -13240,7 +13314,7 @@ def public_state(value):
                 Arc::clone(&runtime),
             );
             let person = source_manager
-                .get_by_iid(py, "0xa1")
+                .get_by_iid(py, fixture_iid(py, "0xa1").borrow())
                 .expect("ordered manager hydration should succeed");
             assert!(package.facade_origins.proof(person.bind(py)).is_some());
             let registry_weakref = py
@@ -13371,7 +13445,7 @@ def public_state(value):
                 Arc::clone(&runtime),
             );
             let person = source_manager
-                .get_by_iid(py, "0xa2")
+                .get_by_iid(py, fixture_iid(py, "0xa2").borrow())
                 .expect("borrowed transaction hydration should succeed");
 
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
@@ -13751,7 +13825,7 @@ def public_state(value):
                 Arc::clone(&runtime),
             );
             let manager_relation = source_manager
-                .get_by_iid(py, "0xb6")
+                .get_by_iid(py, fixture_iid(py, "0xb6").borrow())
                 .expect("manager relation hydration should succeed");
 
             let (manager_same_backend, manager_same_state) = OriginRecordingBackend::new(vec![
@@ -13933,8 +14007,13 @@ def public_state(value):
                 None,
                 Arc::clone(&runtime),
             );
-            let person = source_manager.get_by_iid(py, "0xa8").unwrap();
-            person.bind(py).setattr("_iid", "0xa9").unwrap();
+            let person = source_manager
+                .get_by_iid(py, fixture_iid(py, "0xa8").borrow())
+                .unwrap();
+            person
+                .bind(py)
+                .setattr("_iid", fixture_iid(py, "0xa9"))
+                .unwrap();
 
             let (target_backend, target_state) = OriginRecordingBackend::new(vec![]);
             let target = Arc::new(Database::with_backend(
@@ -14393,8 +14472,12 @@ def public_state(value):
                                             .bind(py)
                                             .getattr("iid")
                                             .unwrap()
-                                            .extract::<String>()
-                                            .unwrap(),
+                                            .cast::<PyIid>()
+                                            .unwrap()
+                                            .get()
+                                            .inner
+                                            .as_str()
+                                            .to_owned(),
                                         "0x20"
                                     );
                                 } else {
@@ -14419,7 +14502,14 @@ def public_state(value):
                                 }
                                 for (index, item) in items.iter().enumerate() {
                                     assert_eq!(
-                                        item.getattr("iid").unwrap().extract::<String>().unwrap(),
+                                        item.getattr("iid")
+                                            .unwrap()
+                                            .cast::<PyIid>()
+                                            .unwrap()
+                                            .get()
+                                            .inner
+                                            .as_str()
+                                            .to_owned(),
                                         format!("0x2{index}")
                                     );
                                     assert!(package.facade_origins.proof(&item).is_some());
@@ -14451,8 +14541,12 @@ def public_state(value):
                                             member
                                                 .getattr("iid")
                                                 .unwrap()
-                                                .extract::<String>()
-                                                .unwrap(),
+                                                .cast::<PyIid>()
+                                                .unwrap()
+                                                .get()
+                                                .inner
+                                                .as_str()
+                                                .to_owned(),
                                             "0x10"
                                         );
                                     }
@@ -14684,7 +14778,15 @@ def public_state(value):
                             {
                                 let value = items.get_item(position).unwrap();
                                 assert_eq!(
-                                    value.getattr("iid").unwrap().extract::<String>().unwrap(),
+                                    value
+                                        .getattr("iid")
+                                        .unwrap()
+                                        .cast::<PyIid>()
+                                        .unwrap()
+                                        .get()
+                                        .inner
+                                        .as_str()
+                                        .to_owned(),
                                     iid
                                 );
                                 assert!(package.facade_origins.proof(&value).is_some());
@@ -14865,7 +14967,9 @@ def public_state(value):
                             .map(|instance| instance.bind(py).as_ptr())
                             .collect::<Vec<_>>();
                         if operation == ProjectedBatchOperation::Delete {
-                            let iids = PyList::new(py, ["0x20", "0x21"]).unwrap();
+                            let iids =
+                                PyList::new(py, ["0x20", "0x21"].map(|iid| fixture_iid(py, iid)))
+                                    .unwrap();
                             manager.delete_many(py, iids.into_any()).unwrap();
                         } else {
                             let rows =
@@ -14889,8 +14993,12 @@ def public_state(value):
                                         .unwrap()
                                         .getattr("iid")
                                         .unwrap()
-                                        .extract::<String>()
-                                        .unwrap(),
+                                        .cast::<PyIid>()
+                                        .unwrap()
+                                        .get()
+                                        .inner
+                                        .as_str()
+                                        .to_owned(),
                                     if ordinal == 0 { "0x20" } else { "0x21" },
                                 );
                             }
@@ -14989,7 +15097,9 @@ def public_state(value):
                             .map(|instance| instance.bind(py).as_ptr())
                             .collect::<Vec<_>>();
                         if operation == ProjectedBatchOperation::Delete {
-                            let iids = PyList::new(py, ["0x30", "0x31"]).unwrap();
+                            let iids =
+                                PyList::new(py, ["0x30", "0x31"].map(|iid| fixture_iid(py, iid)))
+                                    .unwrap();
                             manager.delete_many(py, iids.into_any()).unwrap();
                         } else {
                             let rows =
@@ -15009,7 +15119,15 @@ def public_state(value):
                                 let value = output.get_item(ordinal).unwrap();
                                 assert_eq!(value.as_ptr(), *pointer);
                                 assert_eq!(
-                                    value.getattr("iid").unwrap().extract::<String>().unwrap(),
+                                    value
+                                        .getattr("iid")
+                                        .unwrap()
+                                        .cast::<PyIid>()
+                                        .unwrap()
+                                        .get()
+                                        .inner
+                                        .as_str()
+                                        .to_owned(),
                                     if ordinal == 0 { "0x30" } else { "0x31" },
                                 );
                             }
@@ -15084,7 +15202,15 @@ def public_state(value):
                     for (ordinal, iid) in ["0x20", "0x22"].into_iter().enumerate() {
                         let value = values.get_item(ordinal).unwrap();
                         assert_eq!(
-                            value.getattr("iid").unwrap().extract::<String>().unwrap(),
+                            value
+                                .getattr("iid")
+                                .unwrap()
+                                .cast::<PyIid>()
+                                .unwrap()
+                                .get()
+                                .inner
+                                .as_str()
+                                .to_owned(),
                             iid
                         );
                         assert!(facade_is_deleted(package.as_ref(), &value));
@@ -15244,7 +15370,12 @@ def public_state(value):
                         .unwrap_err()
                 } else {
                     manager
-                        .delete_many(py, PyList::new(py, ["0x20"]).unwrap().into_any())
+                        .delete_many(
+                            py,
+                            PyList::new(py, ["0x20"].map(|iid| fixture_iid(py, iid)))
+                                .unwrap()
+                                .into_any(),
+                        )
                         .unwrap_err()
                 };
                 let value = error.value(py);
@@ -15498,7 +15629,12 @@ def public_state(value):
                         assert_eq!(assert_python_batch_result(py, &output, &[0, 1]).len(), 2);
                     }
                     ProjectedBatchOperation::Delete => manager
-                        .delete_many(py, PyList::new(py, ["0x20", "0x21"]).unwrap().into_any())
+                        .delete_many(
+                            py,
+                            PyList::new(py, ["0x20", "0x21"].map(|iid| fixture_iid(py, iid)))
+                                .unwrap()
+                                .into_any(),
+                        )
                         .unwrap(),
                     _ => unreachable!(),
                 }
@@ -15612,7 +15748,7 @@ class BoundaryIterator:
                 (false, facade.clone_ref(py), "facade boundary"),
                 (
                     true,
-                    "0x20".into_pyobject(py).unwrap().into_any().unbind(),
+                    fixture_iid(py, "0x20").into_any().unbind(),
                     "iid boundary",
                 ),
             ] {
@@ -16256,7 +16392,15 @@ class BoundaryIterator:
                 let value = output.get_item(ordinal).unwrap();
                 assert_eq!(value.as_ptr(), pointer);
                 assert_eq!(
-                    value.getattr("iid").unwrap().extract::<String>().unwrap(),
+                    value
+                        .getattr("iid")
+                        .unwrap()
+                        .cast::<PyIid>()
+                        .unwrap()
+                        .get()
+                        .inner
+                        .as_str()
+                        .to_owned(),
                     format!("0x2{ordinal}"),
                 );
                 let values = value
@@ -17610,7 +17754,7 @@ class CyclicFinalizer:
                 package.as_ref(),
                 &person_id,
                 &DynamicEntityRow {
-                    iid: Some("0x-person".into()),
+                    iid: Some("0xa1".into()),
                     type_name: Some("person".into()),
                     attributes: vec![(
                         "identifier".into(),
@@ -17624,9 +17768,13 @@ class CyclicFinalizer:
                 hydrated
                     .getattr("iid")
                     .unwrap()
-                    .extract::<String>()
-                    .unwrap(),
-                "0x-person"
+                    .cast::<PyIid>()
+                    .unwrap()
+                    .get()
+                    .inner
+                    .as_str()
+                    .to_owned(),
+                "0xa1"
             );
             let wrapped = hydrated
                 .call_method0("runtime_values")
@@ -17655,12 +17803,12 @@ class CyclicFinalizer:
                 package.as_ref(),
                 &membership_id,
                 &DynamicRelationRow {
-                    iid: Some("0x-membership".into()),
+                    iid: Some("0xb1".into()),
                     type_name: Some("membership".into()),
                     attributes: vec![],
                     role_players: vec![DynamicRolePlayer {
                         role_name: "member".into(),
-                        player_iid: Some("0x-person".into()),
+                        player_iid: Some("0xa1".into()),
                         player_type_name: Some("person".into()),
                         attributes: vec![
                             ("identifier".into(), serde_json::json!("person-1")),
@@ -17679,8 +17827,16 @@ class CyclicFinalizer:
                 .unwrap();
             assert_eq!(member.get_type().as_ptr(), person_class.as_ptr());
             assert_eq!(
-                member.getattr("iid").unwrap().extract::<String>().unwrap(),
-                "0x-person"
+                member
+                    .getattr("iid")
+                    .unwrap()
+                    .cast::<PyIid>()
+                    .unwrap()
+                    .get()
+                    .inner
+                    .as_str()
+                    .to_owned(),
+                "0xa1"
             );
             let member_values = member.call_method0("runtime_values").unwrap();
             let member_values = member_values.cast::<PyDict>().unwrap();
@@ -17713,12 +17869,12 @@ class CyclicFinalizer:
                 package.as_ref(),
                 &container_id,
                 &DynamicRelationRow {
-                    iid: Some("0x-container".into()),
+                    iid: Some("0xc1".into()),
                     type_name: Some("container".into()),
                     attributes: vec![],
                     role_players: vec![DynamicRolePlayer {
                         role_name: "item".into(),
-                        player_iid: Some("0x-event".into()),
+                        player_iid: Some("0xe1".into()),
                         player_type_name: Some("event".into()),
                         attributes: vec![],
                     }],
@@ -17741,8 +17897,15 @@ class CyclicFinalizer:
                 "reference"
             );
             assert_eq!(
-                item.getattr("iid").unwrap().extract::<String>().unwrap(),
-                "0x-event"
+                item.getattr("iid")
+                    .unwrap()
+                    .cast::<PyIid>()
+                    .unwrap()
+                    .get()
+                    .inner
+                    .as_str()
+                    .to_owned(),
+                "0xe1"
             );
         });
     }

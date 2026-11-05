@@ -78,6 +78,7 @@ from generated_v2 import (
 from generated_variant import Person as VariantPerson
 from type_bridge_core import MatchRequestError, blocking
 
+from type_bridge import Iid
 from type_bridge.session import Database
 
 
@@ -358,16 +359,16 @@ for invalid_scalar_value in (
     else:
         raise AssertionError("unconstrained scalar bypassed canonical conversion")
 
-container = Container(item=[EventRef("0xe0")])
+container = Container(item=[EventRef(Iid("0xe0"))])
 assert len(container.item) == 1
-assert container.item[0].iid == "0xe0"
+assert container.item[0].iid == Iid("0xe0")
 
 try:
     Container(
         item=[
-            EventRef("0xe1"),
-            EventRef("0xe2"),
-            EventRef("0xe3"),
+            EventRef(Iid("0xe1")),
+            EventRef(Iid("0xe2")),
+            EventRef(Iid("0xe3")),
         ]
     )
 except ValueError as error:
@@ -395,10 +396,26 @@ except TypeError:
 else:
     raise AssertionError("specialized-away keyword was accepted")
 
-reference = PersonRef("person-iid", identifier=Identifier("person-1"))
-assert reference.iid == "person-iid"
+reference_iid = Iid("0xa1")
+reference = PersonRef(reference_iid, identifier=Identifier("person-1"))
+assert reference.iid is reference_iid
+assert reference.iid is reference.iid
+assert reference.iid == Iid("0xa1")
 assert reference.__model_form__ == "reference"
 assert person.iid is None
+for invalid_identity in ["0xa1", "not-an-iid"]:
+    try:
+        person.attach_runtime_iid(invalid_identity)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("model accepted a string IID")
+    try:
+        PersonRef(invalid_identity, identifier=Identifier("person-1"))
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("reference accepted a string IID")
 assert person.identifier.value == "person-1"
 assert weakref.ref(person)() is person
 
@@ -406,9 +423,9 @@ ordered_person = OrderedPerson(tag=[OrderedTag("first"), OrderedTag("second")])
 assert [tag.value for tag in ordered_person.tag] == ["first", "second"]
 ordered_person_weak = weakref.ref(ordered_person)
 assert ordered_person_weak() is ordered_person
-ordered_person_ref = OrderedPersonRef("0xa1")
+ordered_person_ref = OrderedPersonRef(Iid("0xa1"))
 assert weakref.ref(ordered_person_ref)() is ordered_person_ref
-ordered_membership_ref = OrderedMembershipRef("0xb1")
+ordered_membership_ref = OrderedMembershipRef(Iid("0xb1"))
 assert weakref.ref(ordered_membership_ref)() is ordered_membership_ref
 try:
     OrderedPerson(tag=[OrderedTag("duplicate"), OrderedTag("duplicate")])
@@ -436,7 +453,7 @@ else:
     raise AssertionError("ordered ownership reassignment accepted a duplicate scalar")
 assert ordered_person.tag is previous_ordered_tags
 
-ordered_person.attach_runtime_iid("0xa")
+ordered_person.attach_runtime_iid(Iid("0xa"))
 try:
     OrderedMembership(member=[ordered_person, ordered_person])
 except MatchRequestError as error:
@@ -445,7 +462,7 @@ except MatchRequestError as error:
 else:
     raise AssertionError("ordered create role accepted a duplicate identity")
 other_ordered_person = OrderedPerson(tag=[OrderedTag("other")])
-other_ordered_person.attach_runtime_iid("0xc")
+other_ordered_person.attach_runtime_iid(Iid("0xc"))
 ordered_membership = OrderedMembership(member=[ordered_person, other_ordered_person])
 previous_ordered_members = ordered_membership.member
 try:
@@ -470,7 +487,7 @@ foreign_person = variant.Person(
     val_double=variant.ValDouble(3.5),
     val_duration=variant.ValDuration(timedelta(seconds=3)),
 )
-foreign_person.attach_runtime_iid("0xb")
+foreign_person.attach_runtime_iid(Iid("0xb"))
 try:
     OrderedMembership(member=[foreign_person])
 except MatchRequestError as error:
@@ -557,7 +574,7 @@ assert fake_ordered_native.update_calls == 0
 class FakeExplicitIidBatchNative:
     def __init__(self) -> None:
         self.inputs: list[OrderedPerson] = []
-        self.deleted_iids: list[str] = []
+        self.deleted_iids: list[Iid] = []
 
     def update_many(
         self, instances: list[OrderedPerson]
@@ -565,14 +582,14 @@ class FakeExplicitIidBatchNative:
         self.inputs = instances
         return type_bridge_core.BatchWriteResult(instances[1:], [1])
 
-    def delete_many(self, iids: list[str]) -> None:
+    def delete_many(self, iids: list[Iid]) -> None:
         self.deleted_iids = iids
 
 
 explicit_first = OrderedPerson(tag=[OrderedTag("first")])
 explicit_second = OrderedPerson(tag=[OrderedTag("second")])
-explicit_first.attach_runtime_iid("0x10")
-explicit_second.attach_runtime_iid("0x20")
+explicit_first.attach_runtime_iid(Iid("0x10"))
+explicit_second.attach_runtime_iid(Iid("0x20"))
 explicit_native = FakeExplicitIidBatchNative()
 explicit_manager = OrderedProjectedModelManager.__new__(OrderedProjectedModelManager)
 object.__setattr__(explicit_manager, "_model", OrderedPerson)
@@ -588,7 +605,7 @@ assert explicit_manager.delete_many([explicit_first, explicit_second]) == [
     explicit_first,
     explicit_second,
 ]
-assert explicit_native.deleted_iids == ["0x10", "0x20"]
+assert explicit_native.deleted_iids == [Iid("0x10"), Iid("0x20")]
 assert not hasattr(explicit_manager, "update_with")
 assert not hasattr(OrderedProjectedModelManager, "_resolve_instance_iid")
 assert not hasattr(type_bridge_core.PyProjectedModelManager, "resolve_iid")
