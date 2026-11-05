@@ -33,6 +33,24 @@ use crate::staged::Transaction;
 /// Implementations return the exact `/v3/capabilities` bytes and perform
 /// exactly one `/v3/staged` exchange per terminal.
 pub trait ProxyExchange: Send + Sync + 'static {
+    /// Exchange one `/v3/raw` request, preserving raw provider errors.
+    /// The default refuses: raw requests never fall back to typed routes.
+    fn exchange_raw<'a>(
+        &'a self,
+        _request: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<Vec<u8>, crate::RawQueryError>> + Send + 'a>>
+    {
+        Box::pin(async {
+            Err(crate::RawQueryError {
+                code: "raw_unsupported".into(),
+                message: "this proxy exchange does not support raw queries".into(),
+                status: 400,
+                provider_code: None,
+                commit_outcome: None,
+            })
+        })
+    }
+
     /// Fetch the executor's exact signed capability advertisement.
     fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>>;
 
@@ -202,6 +220,16 @@ struct RemoteRuntime {
 
 struct ExchangeTransport(Arc<dyn ProxyExchange>);
 impl StagedTransport for ExchangeTransport {
+    fn exchange_raw<'a>(
+        &'a self,
+        request: &'a [u8],
+    ) -> type_bridge_orm::session::backend::BoxFuture<
+        'a,
+        std::result::Result<Vec<u8>, crate::RawQueryError>,
+    > {
+        self.0.exchange_raw(request)
+    }
+
     fn staged_capabilities(
         &self,
     ) -> type_bridge_orm::session::backend::BoxFuture<
@@ -409,6 +437,58 @@ impl ProxyDatabase<Unbound> {
 }
 
 impl<S: Schema> ProxyDatabase<S> {
+    /// Open a single-query raw context. It does not require a schema binding.
+    pub async fn raw_transaction(
+        &self,
+        kind: crate::raw::TransactionKind,
+    ) -> std::result::Result<crate::RawTransaction, crate::RawQueryError> {
+        if let Some(runtime) = &self.runtime {
+            return runtime
+                .connection
+                .raw_transaction(kind.into())
+                .map(crate::RawTransaction::new);
+        }
+        let options = self
+            .options
+            .as_ref()
+            .expect("connected proxy retains its route");
+        let exchange: type_bridge_orm::session::raw::RawExchangeFn = match &options.route {
+            ProxyRoute::Http(http) => http.raw_exchange(kind.into()),
+            ProxyRoute::Exchange(exchange) => {
+                let exchange = Arc::clone(exchange);
+                Arc::new(move |request| {
+                    let exchange = Arc::clone(&exchange);
+                    Box::pin(async move { exchange.exchange_raw(&request).await })
+                })
+            }
+            ProxyRoute::Endpoint(_) => unreachable!("connected endpoint is opened"),
+        };
+        Ok(crate::RawTransaction::new(
+            type_bridge_orm::session::raw::RawTransaction::proxy(
+                exchange,
+                kind.into(),
+                options.admission_window_milliseconds,
+            ),
+        ))
+    }
+
+    /// Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+    /// to TypeDB as written, and TypeDB's output comes back as it
+    /// answered, in this SDK's native data types. TypeBridge adds no
+    /// validation, rewriting, hydration, hooks, limits or extra
+    /// queries. It runs in read, write and schema transactions and
+    /// accepts any TypeQL, schema-breaking changes included. The caller
+    /// owns its correctness; TypeBridge makes no promise about its
+    /// effects. On a proxy connection it posts to the server's opt-in
+    /// `/v3/raw` endpoint, which is off by default.
+    pub async fn execute_query(
+        &self,
+        query: &str,
+        kind: crate::raw::TransactionKind,
+    ) -> std::result::Result<serde_json::Value, crate::RawQueryError> {
+        self.raw_transaction(kind).await?.execute_one(query).await
+    }
+
     fn manager_target(&self) -> Option<crate::manager_target::ManagerTarget<'_>> {
         self.installed
             .as_deref()
@@ -2594,6 +2674,70 @@ mod tests {
         ];
         if let Some((destination, run_nonce)) = requested_sdk_queries_proof_fragment() {
             publish_sdk_queries_rust_proof_fragment(&destination, &run_nonce, results);
+        }
+    }
+    #[tokio::test]
+    async fn raw_pair_works_before_and_after_schema_binding_with_one_proxy_call() {
+        use crate::raw::{RawQueryError, TransactionKind};
+        struct RawOnly(Arc<Mutex<Vec<Vec<u8>>>>);
+        impl ProxyExchange for RawOnly {
+            fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
+                panic!("raw fetched capabilities")
+            }
+            fn exchange<'a>(
+                &'a self,
+                _: &'a [u8],
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+                panic!("raw used typed exchange")
+            }
+            fn exchange_raw<'a>(
+                &'a self,
+                request: &'a [u8],
+            ) -> Pin<
+                Box<dyn Future<Output = std::result::Result<Vec<u8>, RawQueryError>> + Send + 'a>,
+            > {
+                self.0.lock().unwrap().push(request.to_vec());
+                Box::pin(async {
+                    Ok(br#"{"answers":[{"large":9223372036854775807}],"answerType":"conceptDocuments"}"#.to_vec())
+                })
+            }
+        }
+        async fn check<S: Schema>(database: &ProxyDatabase<S>) {
+            let answer = database
+                .execute_query("exact raw query", TransactionKind::Read)
+                .await
+                .unwrap();
+            assert_eq!(answer["answers"][0]["large"].as_i64(), Some(i64::MAX));
+            let mut transaction = database
+                .raw_transaction(TransactionKind::Write)
+                .await
+                .unwrap();
+            transaction.execute_query("exact raw write").await.unwrap();
+            assert_eq!(
+                transaction.execute_query("second").await.unwrap_err().code,
+                "raw_transaction_single_query"
+            );
+            transaction.commit().await.unwrap();
+            assert_eq!(
+                transaction.rollback().await.unwrap_err().code,
+                "raw_transaction_already_committed"
+            );
+        }
+        let requests = Arc::new(Mutex::new(vec![]));
+        let database = unconnected_remote(ProxyConnectionPolicy::with_exchange(RawOnly(
+            requests.clone(),
+        )));
+        check(&database).await;
+        let database = database.with_schema(package()).unwrap();
+        check(&database).await;
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        for (request, query) in requests
+            .iter()
+            .zip(["exact raw query", "exact raw write"].into_iter().cycle())
+        {
+            let request: serde_json::Value = serde_json::from_slice(request).unwrap();
+            assert_eq!(request["query"], query);
         }
     }
 }

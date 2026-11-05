@@ -549,3 +549,36 @@ transaction on a fresh snapshot. An indeterminate outcome requires
 reconciliation before retry. Rejection diagnostics keep their released codes
 and add a `rejection` detail naming the reason. Staged errors additionally
 retain operation indexes and schema identities supplied by plan metadata.
+
+## Raw TypeQL
+
+Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+to TypeDB as written, and TypeDB's output comes back as it
+answered, in this SDK's native data types. TypeBridge adds no
+validation, rewriting, hydration, hooks, limits or extra
+queries. It runs in read, write and schema transactions and
+accepts any TypeQL, schema-breaking changes included. The caller
+owns its correctness; TypeBridge makes no promise about its
+effects. On a proxy connection it posts to the server's opt-in
+`/v3/raw` endpoint, which is off by default.
+
+`Database`, `ProxyDatabase` and `Connection` expose `execute_query(text, kind)`.
+The answer is the complete TypeDB HTTP query-answer object as `serde_json::Value`.
+Use `raw_transaction(kind)` for explicit completion:
+
+```rust,ignore
+use type_bridge::raw::TransactionKind;
+
+let mut tx = db.raw_transaction(TransactionKind::Write).await?;
+tx.execute_query("insert $x isa person, has name \"Ada\";").await?;
+tx.rollback().await?;
+```
+
+Direct raw contexts share one real transaction across calls. On a proxy
+connection a raw transaction holds one query, because `/v3/raw` runs each
+request as its own transaction. A second query returns
+`raw_transaction_single_query` before I/O. After a proxy write or schema call,
+`commit()` succeeds without another request; `rollback()` returns
+`raw_transaction_already_committed`. A disabled endpoint returns `raw_disabled`.
+`RawQueryError` retains provider details and commit certainty; an uncertain
+commit has code `commit_outcome_unknown` and requires checking database state.

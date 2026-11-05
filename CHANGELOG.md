@@ -5,6 +5,12 @@ All notable changes to TypeBridge will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Rust SDK unchecked TypeQL pair: `Database::execute_query` and
+  `RawTransaction::execute_query`, also on proxy/configured connections.
+  Direct raw contexts retain atomic multi-query transactions; proxy contexts
+  allow one query, refuse a second with `raw_transaction_single_query`, and
+  refuse rollback after a write with `raw_transaction_already_committed`.
+  `RawQueryError` preserves provider details and uncertain commit outcomes.
 
 - Node canonical and explicit keyword filters expose `update(replacement)` for
   every match, returning one `WriteResult`. IID `update(iid, replacement)`

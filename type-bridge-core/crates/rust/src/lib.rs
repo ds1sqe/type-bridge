@@ -32,6 +32,7 @@ mod projected_batch;
 mod projected_codec;
 mod projected_filter;
 pub mod query;
+pub mod raw;
 #[allow(dead_code)]
 mod relation_codec;
 mod relation_manager;
@@ -71,6 +72,7 @@ pub use query::{
     Selectable, SelectedRowSpec, SelectedShape, SelectedSlot, SelectionMode, SingularSelectedShape,
     Subtypes,
 };
+pub use raw::{RawQueryError, RawTransaction};
 pub use relation_manager::{RelationManager, RelationSubtypeManager};
 pub use remote::{ProxyConnectionPolicy, ProxyDatabase, ProxyExchange};
 pub use schema::{Schema, SchemaPackage, Unbound};

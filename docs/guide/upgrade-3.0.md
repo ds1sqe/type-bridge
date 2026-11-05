@@ -247,3 +247,9 @@ and then instance operations. Borrowed write transactions may construct
 filters and mutate through them. Canonical read terminals accept borrowed
 read or write transactions, preserving read-after-write in the caller's
 transaction; borrowed schema transactions are refused.
+
+Rust raw TypeQL uses `db.execute_query(text, kind)` or
+`db.raw_transaction(kind).await?` followed by `tx.execute_query(text)`.
+Typed staged `Transaction::query()` stays unchanged. Proxy raw contexts accept
+one query and commit writes on the host; use a typed staged transaction when
+several operations must commit together through a proxy.
