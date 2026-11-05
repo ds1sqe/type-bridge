@@ -664,6 +664,20 @@ fn assemble_steps(
                     player_type_name,
                 )?),
             )],
+            copy @ OperationSpec::CopyAttribute {
+                filter,
+                forward,
+                reverse,
+                ..
+            } if filter.is_some() || forward.is_some() || reverse.is_some() => {
+                let (forward, reverse) = copy_attribute_typeql(copy)?;
+                steps.extend(assemble_steps(
+                    &[OperationSpec::RunTypeql { forward, reverse }],
+                    migration_reversible,
+                    authority,
+                )?);
+                continue;
+            }
             copy @ OperationSpec::CopyAttribute { .. } => {
                 let schema = authority.ok_or_else(crate::native_step::missing_authority)?;
                 let data = crate::copy_plan::build(copy, schema, migration_reversible)?;

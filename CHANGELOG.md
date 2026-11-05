@@ -4,6 +4,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Historical `CopyAttribute` migrations carrying custom TypeQL or filters can
+  apply and roll back through the raw migration path again. Carried forward and
+  reverse text stays unchanged and reports no derived counts; structured copies
+  continue to use schema-bound native plans and explicit counts.
+
 ### Added
 - Node `executeQuery(text, kind)` and `rawTransaction(kind)` expose unchecked
   TypeQL on direct and proxy connections. Provider answers preserve unsafe

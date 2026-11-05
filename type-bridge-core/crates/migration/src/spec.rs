@@ -224,9 +224,21 @@ pub enum OperationSpec {
     /// schema.  The forward TypeQL is an insert-if-absent backfill; the reverse deletes the
     /// destination attribute.
     ///
-    /// Execution requires structured `owner`/`source`/`dest` and explicit declared
-    /// schema authority at planning. Custom text or filters are refused; use
-    /// `RunPlan` for native programs or `RunTypeql` for explicit raw TypeQL.
+    /// Structured copies use native plans with explicit declared schema authority.
+    /// Historical filters or carried forward/reverse text retain RunTypeql
+    /// execution semantics on apply and rollback, without derived row counts.
+    /// Carried text is unchanged; filter-only specs use the retained renderer.
+    ///
+    /// Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+    /// to TypeDB as written, and TypeDB's output comes back as it
+    /// answered, in this SDK's native data types. TypeBridge adds no
+    /// validation, rewriting, hydration, hooks, limits or extra
+    /// queries. It runs in read, write and schema transactions and
+    /// accepts any TypeQL, schema-breaking changes included. The caller
+    /// owns its correctness; TypeBridge makes no promise about its
+    /// effects. On a proxy connection it posts to the server's opt-in
+    /// `/v3/raw` endpoint, which is off by default.
+    ///
     CopyAttribute {
         /// Owner type label (structured portable form).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -243,7 +255,7 @@ pub enum OperationSpec {
         /// Optional extra match constraint line (structured portable form).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
-        /// Legacy authoring text; refused by native execution planning.
+        /// Legacy authoring text; executed unchanged through the raw migration path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         forward: Option<String>,
         /// Reverse (rollback) TypeQL from `to_rollback_typeql()`, or `None` when

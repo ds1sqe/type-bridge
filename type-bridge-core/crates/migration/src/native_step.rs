@@ -265,4 +265,88 @@ pub(crate) mod tests {
             );
         }
     }
+    #[tokio::test]
+    async fn historical_copy_text_and_filters_apply_and_rollback_without_counts() {
+        let (_, base) = crate::copy_plan::tests::fixture();
+        for field in ["forward", "reverse", "filter"] {
+            let mut wire = serde_json::to_value(&base).unwrap();
+            if field == "forward" {
+                wire["forward"] =
+                    serde_json::json!("  match $x isa person; insert $x has new-name 'custom';\n");
+                wire["reverse"] = serde_json::json!(
+                    " match $x isa person, has new-name $v; delete has $v of $x; "
+                );
+                wire["owner"] = serde_json::Value::Null;
+                wire["mode"] = serde_json::Value::Null;
+            } else if field == "reverse" {
+                wire["reverse"] = serde_json::json!(
+                    " match $x isa person, has new-name $v; delete has $v of $x; "
+                );
+            } else {
+                wire["filter"] = serde_json::json!("$v != \"skip\";");
+            }
+            let operation: OperationSpec = serde_json::from_value(wire).unwrap();
+            let (forward, reverse) = crate::spec::copy_attribute_typeql(&operation).unwrap();
+            let (_, mut graph) = fixture();
+            graph.migrations[0].operations = vec![operation];
+            let mut initial = graph.migrations[0].clone();
+            initial.name = "0000_initial".into();
+            initial.checksum = Some("initial-checksum".into());
+            initial.operations.clear();
+            graph.migrations[0].dependencies = vec![crate::spec::MigrationDependencySpec {
+                app_label: "app".into(),
+                migration_name: "0000_initial".into(),
+            }];
+            graph.migrations.insert(0, initial);
+            let planned = crate::plan(&graph, &[], None, None).unwrap();
+            let applied = graph
+                .migrations
+                .iter()
+                .map(|migration| crate::graph::AppliedMigrationRecord {
+                    app_label: migration.app_label.clone(),
+                    name: migration.name.clone(),
+                    checksum: migration.checksum.clone().unwrap(),
+                    applied_at: None,
+                })
+                .collect::<Vec<_>>();
+            let rollback = crate::plan(&graph, &applied, Some("0000_initial"), None).unwrap();
+            assert_eq!(rollback.to_rollback.len(), 1);
+            let step = &planned.to_apply[1].steps[0];
+            assert_eq!(step.operation_kind, OperationKind::RunTypeql);
+            assert!(step.data.is_none());
+            assert_eq!(step.forward, forward);
+            assert_eq!(step.reverse, reverse);
+            for (action, expected) in [
+                (MigrationAction::Apply, forward.as_str()),
+                (MigrationAction::Rollback, reverse.as_deref().unwrap()),
+            ] {
+                let (backend, log) =
+                    MockMigrationBackend::with_responses(vec![QueryResult::Rows(vec![])]);
+                let db = Database::with_backend(Box::new(backend), "historical-copy");
+                let migration = match action {
+                    MigrationAction::Apply => &planned.to_apply[1],
+                    MigrationAction::Rollback => &rollback.to_rollback[0],
+                };
+                let result = crate::execute_migration(&db, migration).await;
+                assert!(result.success, "{field}: {result:?}");
+                assert!(result.backfill.is_none());
+                let events = log.lock().unwrap();
+                let queries = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        MockEvent::Query(kind, text) => Some((kind, text.as_str())),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(queries, vec![(&TxType::Write, expected)]);
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| matches!(event, MockEvent::Commit))
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
 }
