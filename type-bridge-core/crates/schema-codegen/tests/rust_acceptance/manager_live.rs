@@ -866,11 +866,11 @@ async fn run_database(
         let dana = dana_result.item().ok_or_else(|| ProducerError::new("seed_mismatch", "single-person insert did not return exactly one item"))?;
         let observation = manager_observation(&database).await?;
         live(
-            database.entities::<Person>().delete(dana.iid().as_str()).await,
+            database.entities::<Person>().delete(dana.iid()).await,
             "delete Dana",
         )?;
         live(
-            database.entities::<Person>().delete(ada.iid().as_str()).await,
+            database.entities::<Person>().delete(ada.iid()).await,
             "delete Ada",
         )?;
         if live(

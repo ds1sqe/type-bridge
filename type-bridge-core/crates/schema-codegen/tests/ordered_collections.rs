@@ -2365,14 +2365,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(error.code(), "ordered_distinct_duplicate");
     assert_eq!(error.field(), "type.tag[1]");
 
-    let first_player = PersonRef::from_iid("0xa")?;
-    let second_player = PersonRef::from_iid("0xb")?;
+    let first_player = PersonRef::from_iid(type_bridge::Iid::new("0xa")?)?;
+    let second_player = PersonRef::from_iid(type_bridge::Iid::new("0xb")?)?;
     let membership = MembershipCreate::new(vec![first_player.clone(), second_player])?;
     assert_eq!(
         membership
             .participant()
             .iter()
-            .map(|reference| reference.iid())
+            .map(|reference| reference.iid().map(type_bridge::Iid::as_str))
             .collect::<Vec<_>>(),
         [Some("0xa"), Some("0xb")],
     );
@@ -2469,7 +2469,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         accepted_membership
             .participant()
             .iter()
-            .map(Person::iid)
+            .map(|person| person.iid().as_str())
             .collect::<Vec<_>>(),
         ["0xa", "0xb"],
     );
@@ -2489,8 +2489,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )],
     );
     let error = materialize_model_for_test::<Membership>(&invalid_player_iid_row).unwrap_err();
-    assert_eq!(error.code(), "noncanonical_hydrated_iid");
-    assert_eq!(error.field(), "participant[0].type.iid");
+    assert_eq!(error.code(), "invalid_iid");
+    assert_eq!(error.field(), "participant[0].iid");
 
     let accepted_row = HydratedRow::new(
         Person::TYPE_ID_JSON,
@@ -2505,7 +2505,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![],
     );
     let accepted: Person = materialize_model_for_test(&accepted_row)?;
-    assert_eq!(accepted.iid(), "0x3");
+    assert_eq!(accepted.iid().as_str(), "0x3");
     assert_eq!(
         accepted.tag().iter().map(|value| value.value().as_str()).collect::<Vec<_>>(),
         ["first", "second"],
@@ -2521,8 +2521,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![],
     );
     let error = materialize_model_for_test::<Person>(&noncanonical_iid_row).unwrap_err();
-    assert_eq!(error.code(), "noncanonical_hydrated_iid");
-    assert_eq!(error.field(), "type.iid");
+    assert_eq!(error.code(), "invalid_iid");
+    assert_eq!(error.field(), "iid");
     Ok(())
 }
 "#,

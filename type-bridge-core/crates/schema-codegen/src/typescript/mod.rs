@@ -157,14 +157,14 @@ mod tests {
                 .unwrap();
             return;
         }
-        assert_eq!(RUNTIME_SOURCE.len(), 164_668);
+        assert_eq!(RUNTIME_SOURCE.len(), 163_628);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "ec59b4989f76e56881a81876af277236205328c475fafd65abce6bc04ae8c3bc"
+            "4519fed56a7d42158e97257c4d8b0a75fcedf3e4e0e96d012161f52d604b1afc"
         );
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "296e998a0854b5167af37f63aa06807b7f554b6ac4911d351d8b1f9cdfcf61e3"
+            "0739adc10d7f3c1c7d602d95483cc5e8ef394719b4b6ea745e03304adfefe2c6"
         );
     }
 
@@ -188,9 +188,9 @@ mod tests {
         // The base runtime imports the structured-error wrapper once.
         assert_eq!(source.matches("  projectedManagerNativeCall,\n").count(), 1);
         assert!(source.contains("const entries = Object.entries(filters);"));
-        assert!(source.contains("orderedCompatibilityPredicates(typeKey, entries)"));
-        assert!(!source.contains("orderedCompatibilityPredicates(typeKey, filters)"));
-        assert!(source.contains("return JSON.parse(field.attribute) === name;"));
+        assert!(source.contains("native.filterEntriesJson(JSON.stringify(lowered))"));
+        assert!(!source.contains("orderedCompatibilityPredicates"));
+        assert!(source.contains("lowered.push({ name, value: lowerManagerFilterValue(value) });"));
         assert!(
             source.contains("projectedManagerNativeCall(() => native.rejectForeignFieldToken())")
         );
@@ -319,6 +319,7 @@ mod tests {
             BTreeSet::from([
                 "BigInt".to_owned(),
                 "Date".to_owned(),
+                "Iid".to_owned(),
                 "TypeError".to_owned(),
                 "assertRecord".to_owned(),
                 "defineProperty".to_owned(),
