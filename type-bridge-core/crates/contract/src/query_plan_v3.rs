@@ -2821,6 +2821,14 @@ pub fn decode_query_plan_v3_with_limits(
 }
 
 fn validate_operation(spec: &PlanSpec) -> Result<(), Diagnostic> {
+    if matches!(spec.operation, Operation::Rows)
+        && matches!(spec.output, QueryOutput::Documents { .. })
+    {
+        return Err(invalid(
+            "query_plan_rows_document_output",
+            "row operations require row output; use a native fetch stage for documents",
+        ));
+    }
     if matches!(
         spec.pipeline.as_slice(),
         [.., Stage::Fetch(_), Stage::Delete { .. }]

@@ -2522,3 +2522,26 @@ fn native_optional_unions_keep_branch_visibility_and_legacy_fences() {
         }
     }
 }
+
+#[test]
+fn rows_refuses_flat_document_output_before_execution() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::migration_assertion::QueryVariable;
+    use type_bridge_contract::query_plan::{DocumentField, DocumentSource, QueryOutput};
+    let mut request = spec(vec![matched()], vec![0]);
+    request.output = QueryOutput::Documents {
+        fields: vec![DocumentField::new(
+            QueryVariable::new("balances").unwrap(),
+            DocumentSource::AttributeList {
+                attribute: AttributeId::new("balance").unwrap(),
+                owner: id(0),
+            },
+        )],
+    };
+    let error = QueryPlanV3::new(request, &schema()).unwrap_err();
+    assert_eq!(error.code().as_str(), "query_plan_rows_document_output");
+    assert_eq!(
+        error.category(),
+        type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract
+    );
+}
