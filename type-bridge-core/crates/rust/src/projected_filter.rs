@@ -182,15 +182,16 @@ impl<'target> ProjectedFilterCore<'target> {
         } else {
             None
         };
-        let states = self
-            .pre_hooks::<M>(kind, CrudOperation::Update, encoded.as_ref())
-            .await?;
         let replacement =
             crate::projected_codec::project_create(input, self.filter.model(), self.installed)?;
         let binding_error = std::sync::Mutex::new(None);
         let result = ProjectedManagerFilterExecutor::new(self.installed)
-            .update_on_target_mapped(
-                self.target, &self.filter, replacement, self.control(), |things| {
+            .update_on_target_mapped_with_pre_execute(
+                self.target, &self.filter, replacement, self.control(),
+                || async {
+                    self.pre_hooks::<M>(kind, CrudOperation::Update, encoded.as_ref())
+                        .await.map_err(|error| QueryTargetError::Callback(Box::new(error)))
+                }, |things| {
                     crate::projected_codec::materialize_write_result::<M>(things, self.installed)
                         .map_err(|error| {
                             *binding_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
@@ -201,7 +202,7 @@ impl<'target> ProjectedFilterCore<'target> {
         let original = binding_error
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let output = result.map_err(|error| match (error, original) {
+        let (output, states) = result.map_err(|error| match (error, original) {
             (QueryTargetError::Commit(error), Some(original)) => {
                 Error::from(error.with_binding_source(Box::new(original)))
             }

@@ -2583,3 +2583,40 @@ fn typed_update_inputs<T>(inputs: Vec<(String, T)>) -> Vec<(crate::Iid, T)> {
         .map(|(iid, input)| (crate::Iid::new(iid).unwrap(), input))
         .collect()
 }
+
+#[tokio::test]
+async fn invalid_filter_updates_never_invoke_hooks_or_provider() {
+    let (database, state) = fixture(vec![], CommitBehavior::Success);
+    let hook = Arc::new(CountingHook::default());
+    let mut manager = database.entities::<Person>();
+    manager.add_hook(hook.clone());
+    let iids = (0..257)
+        .map(|n| crate::Iid::new(format!("0x{n:x}")).unwrap())
+        .collect::<Vec<_>>();
+    let error = manager
+        .filter()
+        .unwrap()
+        .iids(&iids)
+        .unwrap()
+        .update(PersonCreate::named("unused"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Some("manager_filter_predicate_limit"));
+    for scalar in [false, true] {
+        let iid = crate::Iid::new("0x10").unwrap();
+        let filter = manager.filter().unwrap();
+        let filter = if scalar {
+            filter.iid(&iid).unwrap()
+        } else {
+            filter
+        };
+        filter
+            .update(PersonCreate::named("foreign-field"))
+            .await
+            .unwrap_err();
+    }
+    assert_eq!(hook.before.load(Ordering::SeqCst), 0);
+    assert_eq!(hook.after.load(Ordering::SeqCst), 0);
+    assert!(state.lock().unwrap().opens.is_empty());
+    assert!(state.lock().unwrap().calls.is_empty());
+}

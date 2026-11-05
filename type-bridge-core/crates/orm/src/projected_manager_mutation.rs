@@ -249,6 +249,33 @@ impl ProjectedManagerFilterExecutor<'_> {
     where
         F: FnOnce(crate::WriteResult<crate::ProjectedThing>) -> Result<T, SdkExecutionDiagnostic>,
     {
+        self.update_on_target_mapped_with_pre_execute(
+            target,
+            filter,
+            replacement,
+            control,
+            || async { Ok(()) },
+            mapper,
+        )
+        .await
+        .map(|(output, ())| output)
+    }
+
+    /// Prepare and validate an update before invoking binding hooks.
+    #[doc(hidden)]
+    pub async fn update_on_target_mapped_with_pre_execute<T, S, F, H>(
+        &self,
+        target: QueryTarget<'_>,
+        filter: &ProjectedManagerFilter,
+        replacement: crate::ProjectedCreate,
+        control: ProjectedManagerFilterInvocationControl,
+        before_execute: impl FnOnce() -> H,
+        mapper: F,
+    ) -> Result<(T, S), QueryTargetError>
+    where
+        F: FnOnce(crate::WriteResult<crate::ProjectedThing>) -> Result<T, SdkExecutionDiagnostic>,
+        H: std::future::Future<Output = Result<S, QueryTargetError>>,
+    {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
         filter.require_exact_mutation()?;
@@ -269,9 +296,11 @@ impl ProjectedManagerFilterExecutor<'_> {
                 },
                 &input_control,
             )?;
+            let state = before_execute().await?;
             return executor
                 .execute_single_write_on_target(target, &batch, input_control, mapper)
-                .await;
+                .await
+                .map(|output| (output, state));
         }
         crate::projected_batch::validate_filtered_replacement(
             self.installed,
@@ -292,7 +321,10 @@ impl ProjectedManagerFilterExecutor<'_> {
         let executor = crate::ProjectedCrudExecutor::new(self.installed);
         let model = executor.prepare_write_model(filter.model(), &replacement, &identity)?;
         if filter.matches_none {
-            return mapper(crate::WriteResult::new(Vec::new())).map_err(Into::into);
+            let state = before_execute().await?;
+            return mapper(crate::WriteResult::new(Vec::new()))
+                .map(|output| (output, state))
+                .map_err(Into::into);
         }
         let query_limits = target
             .manager_query_limits(control.deadline, &control.cancellation)
@@ -302,6 +334,7 @@ impl ProjectedManagerFilterExecutor<'_> {
             .plan_authority_with_query_limits(query_limits.as_ref())
             .map_err(crate::plan_builders::manager::diagnostic)?;
         let prepared = executor.prepare_filtered_update(filter, model, &authority)?;
+        let state = before_execute().await?;
         self.execute_mutation(
             target,
             filter,
@@ -340,6 +373,7 @@ impl ProjectedManagerFilterExecutor<'_> {
             },
         )
         .await
+        .map(|output| (output, state))
     }
 
     async fn execute_mutation<T, F>(
