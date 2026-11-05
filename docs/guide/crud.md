@@ -35,7 +35,7 @@ borrowed write makes that transaction rollback-only.
 | `put(value)` | Idempotently match/insert by the declared key. |
 | `put_many(values)` | Put one homogeneous batch atomically. |
 | `update(value)` | Update by attached canonical TypeDB IID. |
-| `delete(value_or_iid)` | Delete by attached canonical TypeDB IID or an IID string. |
+| `delete(value_or_iid)` | Delete by attached canonical TypeDB IID or an `Iid` value. |
 | `get_by_iid(iid)` | Return one hydrated model or `None`. |
 | `filter(**lookups)` | Return a new immutable filtered manager. |
 | `where(field, comparison, value)` | Start an immutable exact field-token filter. |
@@ -129,10 +129,14 @@ const ada = Person.manager(db)
   .first();
 ```
 
-Canonical filters expose only `where`, `all`, `first`, `count`, and `exists`.
-They cannot mutate or accept string/IID/rich-operator escapes. Their `first`
-is identity-strict: every effective reference-key field needs one semantically
-consistent equality predicate. An unkeyed, partial, conflicting, or otherwise
+Canonical filters expose `where`, `all`, `first`, `count`, and `exists`.
+Python filters also expose `delete()` and `update(replacement)`; these mutations
+act on every match and do not run instance CRUD hooks. Python
+`filter(iid=Iid("0x1234")).where()` retains the IID selection for those terminals.
+Use `iid__in` for a list or iterable of `Iid` values; an empty list matches
+nothing without a provider request. String IID arguments are refused.
+Their `first` is identity-strict: supply a single IID or one semantically
+consistent equality predicate for every effective reference-key field. An unkeyed, partial, conflicting, or otherwise
 nonsingular filter fails before provider I/O. Compatibility-manager `first()`
 retains its released arbitrary-first behavior.
 

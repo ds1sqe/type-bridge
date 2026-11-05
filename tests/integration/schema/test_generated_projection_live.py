@@ -3216,6 +3216,42 @@ def test_generated_filter_reads_uncommitted_writes_live(
         assert refused.value.code == "borrowed_target_not_read_only"
 
 
+def test_generated_iid_keyword_selection_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    selected = _make_generated_person(generated, "iid-selected", 10)
+    excluded = _make_generated_person(generated, "iid-excluded", 20)
+    people.insert_many([selected, excluded])
+    selection = people.filter(iid__in=(value.iid for value in [selected, excluded]))
+    assert {value.iid for value in selection.all()} == {selected.iid, excluded.iid}
+    assert selection.count() == 2
+    assert selection.exists() is True
+    assert selection.first().iid in {selected.iid, excluded.iid}
+    assert selection.filter(identifier__contains="selected").first().iid == selected.iid
+    assert people.filter(iid=selected.iid).first().iid == selected.iid
+    empty = people.filter(iid__in=[]).filter(identifier__contains="iid")
+    assert empty.all() == []
+    assert empty.first() is None
+    assert empty.count() == 0
+    assert empty.exists() is False
+    with clean_db.transaction("write") as transaction:
+        borrowed = generated.Person.manager(transaction)
+        replacement = _make_generated_person(generated, "iid-selected", 11)
+        result = borrowed.filter(iid=selected.iid).where().update(replacement)
+        assert result.count == 1
+        assert result.item.iid == selected.iid
+        assert borrowed.filter(iid=selected.iid).first().score.value == 11
+        assert people.filter(iid=selected.iid).first().score.value == 10
+        borrowed.filter(iid__in=[excluded.iid]).where().delete()
+    assert people.filter(iid=selected.iid).first().score.value == 11
+    assert people.filter(iid=excluded.iid).first() is None
+
+
 def test_generated_keyword_then_canonical_filter_preserves_scope_live(
     clean_db: Database,
     generated_package: ModuleType,

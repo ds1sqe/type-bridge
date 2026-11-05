@@ -154,6 +154,9 @@ All notable changes to TypeBridge will be documented in this file.
   `iid(&Iid)` and `iids(&[Iid])` predicates; an empty IID set matches nothing
   without a provider request. Rust subtype managers expose the same read filter
   terminals and retain their concrete leaf or family result types.
+- Python `filter(iid=...)` and `filter(iid__in=...)` retain their selection
+  through `.where()` and its canonical mutation terminals. Empty IID lists
+  match nothing without provider work; list iterators are consumed once.
 
 - V3 `DocumentScalar` fetch fields accept bound entities and relations and
   return their canonical IID. Optional thing bindings omit the field when

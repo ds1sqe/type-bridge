@@ -43,6 +43,13 @@ Manager `get_by_iid`, IID `delete`, and `filter(iid=...)`/`filter(iid__in=...)`
 also require nominal identifiers. Passing a malformed string to `get_by_iid`
 now raises a type error instead of returning `None`.
 
+Python IID lists are consumed once. `filter(iid__in=[])` returns no matches
+without a provider request, including when combined with other read lookups.
+For canonical mutations, use `filter(iid=target).where().delete()` or
+`filter(iid__in=targets).where().update(replacement)`. Pure IID-list deletes
+retain the batch input limits; reads and updates retain the 256-term Boolean
+limit and refuse larger lists before I/O.
+
 Pass `Iid("0x1234")` (imported from `type_bridge`) to query binding `iid`,
 `iid_in`, and generated model `by_iid` authoring. Plain strings are refused
 before execution. These methods retain their existing query and staged plans.

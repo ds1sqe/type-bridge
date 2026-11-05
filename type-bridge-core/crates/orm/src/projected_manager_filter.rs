@@ -1,5 +1,6 @@
 //! Immutable projected-model filters and bounded generated-manager terminals.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
@@ -360,7 +361,7 @@ impl ProjectedManagerFilter {
         installed: &InstalledRuntimeProjection,
         iid: &Iid,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        self.try_and_iid_selection(installed, std::slice::from_ref(iid), true)
+        self.try_and_iid_selection(installed, Cow::Borrowed(std::slice::from_ref(iid)), true)
     }
 
     /// Pure IID selection in authored order, for per-input lifecycle events.
@@ -391,13 +392,23 @@ impl ProjectedManagerFilter {
         installed: &InstalledRuntimeProjection,
         iids: &[Iid],
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        self.try_and_iid_selection(installed, iids, false)
+        self.try_and_iid_selection(installed, Cow::Borrowed(iids), false)
+    }
+
+    /// Retain a binding-owned list without cloning its validated identifier strings.
+    #[doc(hidden)]
+    pub fn try_and_owned_iids(
+        &self,
+        installed: &InstalledRuntimeProjection,
+        iids: Vec<Iid>,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        self.try_and_iid_selection(installed, Cow::Owned(iids), false)
     }
 
     fn try_and_iid_selection(
         &self,
         installed: &InstalledRuntimeProjection,
-        iids: &[Iid],
+        iids: Cow<'_, [Iid]>,
         single: bool,
     ) -> Result<Self, SdkExecutionDiagnostic> {
         self.validate_for(installed)?;
@@ -437,16 +448,20 @@ impl ProjectedManagerFilter {
                 )
             })?;
         predicates.extend(self.predicates.iter().cloned());
+        let matches_none = self.matches_none || iids.is_empty();
         predicates.push(if single {
             ProjectedManagerPredicate::Iid(iids[0].clone())
         } else {
-            ProjectedManagerPredicate::Iids(Arc::from(iids))
+            ProjectedManagerPredicate::Iids(match iids {
+                Cow::Borrowed(values) => Arc::from(values),
+                Cow::Owned(values) => Arc::from(values),
+            })
         });
         Ok(Self {
             brand: self.brand.clone(),
             model: self.model.clone(),
             predicates: Arc::from(predicates),
-            matches_none: self.matches_none || iids.is_empty(),
+            matches_none,
             match_mode: self.match_mode,
             measure: ProjectedManagerFilterResourceMeasure {
                 items: next_items,

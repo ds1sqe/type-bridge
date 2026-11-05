@@ -1334,6 +1334,12 @@ fn collect_manager_field_predicates<'a>(
         MatchExpr::And { expressions } => expressions
             .iter()
             .all(|expression| collect_manager_field_predicates(expression, root, grouped)),
+        // Native result validation already checks IID evidence. These predicates
+        // cannot affect the shared-member rule for multivalued fields.
+        MatchExpr::BindingIid { binding, .. } if *binding == root => true,
+        MatchExpr::Or { expressions } => expressions.iter().all(|expression| {
+            matches!(expression, MatchExpr::BindingIid { binding, .. } if *binding == root)
+        }),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
         | MatchExpr::ScalarComparison { .. }
@@ -1341,7 +1347,6 @@ fn collect_manager_field_predicates<'a>(
         | MatchExpr::BindingIid { .. }
         | MatchExpr::RoleEdge { .. }
         | MatchExpr::Reachable { .. }
-        | MatchExpr::Or { .. }
         | MatchExpr::Not { .. } => false,
     }
 }
@@ -2910,6 +2915,47 @@ mod tests {
             ),
             "exists_root_mismatch"
         );
+    }
+
+    #[test]
+    fn manager_field_evidence_admits_only_root_iid_disjunctions() {
+        let root = BindingId::new(0);
+        let iid = |binding, value: &str| MatchExpr::BindingIid {
+            binding,
+            iid: value.to_owned(),
+        };
+        assert!(collect_manager_field_predicates(
+            &iid(root, "0xa1"),
+            root,
+            &mut BTreeMap::new(),
+        ));
+        assert!(collect_manager_field_predicates(
+            &MatchExpr::Or {
+                expressions: vec![iid(root, "0xa1"), iid(root, "0xa2")]
+            },
+            root,
+            &mut BTreeMap::new(),
+        ));
+        assert!(!collect_manager_field_predicates(
+            &MatchExpr::Or {
+                expressions: vec![iid(root, "0xa1"), iid(BindingId::new(1), "0xa2")]
+            },
+            root,
+            &mut BTreeMap::new(),
+        ));
+        let registry = registry();
+        let literal = MatchExpr::FieldValue {
+            field: BoundFieldId::new(root, field(&registry, "employee", "notes")),
+            operator: ComparisonOp::Equal,
+            value: AttributeValue::String("note".into()),
+        };
+        assert!(!collect_manager_field_predicates(
+            &MatchExpr::Or {
+                expressions: vec![iid(root, "0xa1"), literal]
+            },
+            root,
+            &mut BTreeMap::new(),
+        ));
     }
 
     #[test]

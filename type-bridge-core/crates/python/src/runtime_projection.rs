@@ -1853,6 +1853,7 @@ impl PyRuntimeProjection {
             runtime,
             filters: vec![],
             use_compatibility_reads: compatibility_filter.is_some(),
+            has_empty_iid_input: false,
             compatibility_filter,
         })
     }
@@ -1876,6 +1877,7 @@ impl PyRuntimeProjection {
             runtime,
             filters: vec![],
             use_compatibility_reads: compatibility_filter.is_some(),
+            has_empty_iid_input: false,
             compatibility_filter,
         })
     }
@@ -1904,6 +1906,7 @@ impl PyRuntimeProjection {
             runtime,
             filters: vec![],
             use_compatibility_reads: compatibility_filter.is_some(),
+            has_empty_iid_input: false,
             compatibility_filter,
         })
     }
@@ -2730,6 +2733,7 @@ pub struct PyProjectedModelManager {
     compatibility_filter: Option<ProjectedManagerFilter>,
     // Keyword reads keep their released route even when writes can use a closed selection.
     use_compatibility_reads: bool,
+    has_empty_iid_input: bool,
 }
 
 #[allow(
@@ -2834,6 +2838,7 @@ impl PyProjectedManagerFilter {
             filters: vec![],
             compatibility_filter: None,
             use_compatibility_reads: false,
+            has_empty_iid_input: false,
         };
         manager.ensure_instance(py, &instance)?;
         let input = project_create(py, self.package.as_ref(), self.filter.model(), &instance)?;
@@ -3085,13 +3090,6 @@ impl PyProjectedModelManager {
             TypeDescriptor::Entity(descriptor) => &descriptor.owned_attributes,
             TypeDescriptor::Relation(descriptor) => &descriptor.owned_attributes,
         };
-        let mut combined = self.filters.clone();
-        combined.extend(lower_filter_kwargs(
-            py,
-            self.package.as_ref(),
-            attributes,
-            filters,
-        )?);
         let initial_filter = if self.filters.is_empty() && self.compatibility_filter.is_none() {
             Some(
                 ProjectedManagerFilter::try_new(&self.package.projection, self.type_id.clone())
@@ -3100,21 +3098,17 @@ impl PyProjectedModelManager {
         } else {
             None
         };
-        let compatibility_filter = match self
-            .compatibility_filter
-            .as_ref()
-            .or(initial_filter.as_ref())
-        {
-            Some(filter) => lower_compatibility_filter_kwargs(
-                py,
-                self.package.as_ref(),
-                &self.type_id,
-                attributes,
-                filters,
-                filter,
-            )?,
-            None => None,
-        };
+        let lowered = lower_filter_kwargs(
+            py,
+            self.package.as_ref(),
+            attributes,
+            filters,
+            self.compatibility_filter
+                .as_ref()
+                .or(initial_filter.as_ref()),
+        )?;
+        let mut combined = self.filters.clone();
+        combined.extend(lowered.expressions);
         Ok(Self {
             package: Arc::clone(&self.package),
             type_id: self.type_id.clone(),
@@ -3123,16 +3117,15 @@ impl PyProjectedModelManager {
             runtime: Arc::clone(&self.runtime),
             filters: combined,
             use_compatibility_reads: self.use_compatibility_reads,
-            compatibility_filter,
+            compatibility_filter: lowered.closed,
+            has_empty_iid_input: self.has_empty_iid_input || lowered.empty_iids,
         })
     }
 
     /// Fetch all exact instances of this projected type using `isa!`.
     fn all(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if self.use_compatibility_reads
-            && let Some(filter) = &self.compatibility_filter
-        {
-            return self.compatibility_filter_handle(filter.clone()).all(py);
+        if let Some(filter) = self.canonical_read_filter()? {
+            return self.compatibility_filter_handle(filter).all(py);
         }
         self.legacy_all(py)
     }
@@ -3166,6 +3159,15 @@ impl PyProjectedModelManager {
 
     /// Return the first exact filtered model, or `None` when no model matches.
     fn first(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if (self.has_empty_iid_input
+            || self
+                .compatibility_filter
+                .as_ref()
+                .is_some_and(|filter| filter.exact_iids().is_some_and(|iids| iids.len() == 1)))
+            && let Some(filter) = self.canonical_read_filter()?
+        {
+            return self.compatibility_filter_handle(filter).first(py);
+        }
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
         let thing = provider_block_on(
             py,
@@ -3192,10 +3194,8 @@ impl PyProjectedModelManager {
 
     /// Count exact filtered models.
     fn count(&self, py: Python<'_>) -> PyResult<u64> {
-        if self.use_compatibility_reads
-            && let Some(filter) = &self.compatibility_filter
-        {
-            return self.compatibility_filter_handle(filter.clone()).count(py);
+        if let Some(filter) = self.canonical_read_filter()? {
+            return self.compatibility_filter_handle(filter).count(py);
         }
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
         provider_block_on(
@@ -3218,10 +3218,8 @@ impl PyProjectedModelManager {
     }
     /// Return whether at least one exact filtered model exists.
     fn exists(&self, py: Python<'_>) -> PyResult<bool> {
-        if self.use_compatibility_reads
-            && let Some(filter) = &self.compatibility_filter
-        {
-            return self.compatibility_filter_handle(filter.clone()).exists(py);
+        if let Some(filter) = self.canonical_read_filter()? {
+            return self.compatibility_filter_handle(filter).exists(py);
         }
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
         provider_block_on(
@@ -3264,6 +3262,25 @@ impl PyProjectedModelManager {
             .as_ref()
             .map(OwnedQueryTarget::as_target)
             .ok_or_else(|| py_runtime_error("projected manager has no execution target"))
+    }
+
+    fn canonical_read_filter(&self) -> PyResult<Option<ProjectedManagerFilter>> {
+        if let Some(filter) = &self.compatibility_filter
+            && (self.use_compatibility_reads
+                || filter.exact_iids().is_some()
+                || filter.matches_none())
+        {
+            return Ok(Some(filter.clone()));
+        }
+        if self.has_empty_iid_input {
+            // Preserve the authored empty IID input even if a wider lookup made
+            // the complete selection ineligible for canonical mutation.
+            return ProjectedManagerFilter::try_new(&self.package.projection, self.type_id.clone())
+                .and_then(|filter| filter.try_and_iids(&self.package.projection, &[]))
+                .map(Some)
+                .map_err(py_sdk_diagnostic);
+        }
+        Ok(None)
     }
 
     fn compatibility_filter_handle(
@@ -6862,93 +6879,69 @@ fn initial_compatibility_filter(
         .map_err(py_sdk_diagnostic)
 }
 
-/// Preserve the released keyword-filter grammar while routing only its closed,
-/// exact-wrapper comparison subset through the canonical manager executor.
-/// Iterating the Python dict directly retains authored predicate order.
-fn lower_compatibility_filter_kwargs(
+/// Keep the closed candidate only for exact-wrapper scalar comparisons. Wider
+/// keyword reads retain their released grammar through the accompanying expressions.
+fn narrow_closed_filter(
     py: Python<'_>,
     package: &InstalledPackage,
-    model: &TypeId,
-    descriptors: &[OwnedAttributeDescriptor],
-    filters: Option<&Bound<'_, PyDict>>,
-    base: &ProjectedManagerFilter,
+    descriptor: &OwnedAttributeDescriptor,
+    field_name: &str,
+    lookup: ManagerLookup,
+    value: &Bound<'_, PyAny>,
+    base: Option<ProjectedManagerFilter>,
 ) -> PyResult<Option<ProjectedManagerFilter>> {
-    let Some(filters) = filters else {
-        return Ok(Some(base.clone()));
+    let Some(base) = base else {
+        return Ok(None);
     };
-    let mut lowered = base.clone();
-    for (key, value) in filters {
-        let key = key
-            .cast::<PyString>()
-            .map_err(|_| py_type_error("generated manager filter names must be strings"))?
-            .to_str()?;
-        if matches!(
-            key,
-            "iid" | "_iid" | "iid__eq" | "_iid__eq" | "iid__in" | "_iid__in"
-        ) {
-            return Ok(None);
-        }
-        let has_field = |name: &str| {
-            descriptors
-                .iter()
-                .any(|descriptor| descriptor.field_name == name || descriptor.attr_name == name)
-        };
-        let resolved = resolve_generated_manager_lookup(key, has_field);
-        let field_name = resolved.field_name();
-        let Some(comparison) = resolved
-            .operator()
-            .ok()
-            .and_then(|lookup| ProjectedManagerComparison::try_from(lookup).ok())
-        else {
-            return Ok(None);
-        };
-        let Some(descriptor) = descriptors.iter().find(|descriptor| {
-            descriptor.field_name == field_name || descriptor.attr_name == field_name
-        }) else {
-            return Ok(None);
-        };
-        if descriptor.value_type == ValueType::Boolean
-            && !matches!(
-                comparison,
-                ProjectedManagerComparison::Eq | ProjectedManagerComparison::Ne
-            )
-        {
-            return Ok(None);
-        }
-        let expected = package.type_by_label(&descriptor.attr_name, TypeKind::Attribute)?;
-        if !matches!(
-            package.identify_value(py, &value),
-            Ok((ref attribute, ProjectedModelForm::Complete)) if attribute == expected
-        ) {
-            return Ok(None);
-        }
-        let field = package
-            .projection
-            .projection()
-            .models()
-            .get(model)
-            .and_then(|projection| {
-                projection
-                    .query_tokens()
-                    .fields()
-                    .values()
-                    .find(|field| field.target_name().as_str() == field_name)
-            })
-            .ok_or_else(|| py_runtime_error("projected manager field token is absent"))?;
-        let projected = project_attribute_value(py, package, &value, &[])?;
-        lowered = lowered
-            .try_and(
-                &package.projection,
-                &ProjectedTokenIdentity::Field {
-                    owner: model.clone(),
-                    field: field.id().clone(),
-                },
-                comparison,
-                &projected,
-            )
-            .map_err(py_sdk_diagnostic)?;
+    let Ok(comparison) = ProjectedManagerComparison::try_from(lookup) else {
+        return Ok(None);
+    };
+    if descriptor.value_type == ValueType::Boolean
+        && !matches!(
+            comparison,
+            ProjectedManagerComparison::Eq | ProjectedManagerComparison::Ne
+        )
+    {
+        return Ok(None);
     }
-    Ok(Some(lowered))
+    let expected = package.type_by_label(&descriptor.attr_name, TypeKind::Attribute)?;
+    if !matches!(package.identify_value(py, value),
+        Ok((ref attribute, ProjectedModelForm::Complete)) if attribute == expected)
+    {
+        return Ok(None);
+    }
+    let model = base.model();
+    let field = package
+        .projection
+        .projection()
+        .models()
+        .get(model)
+        .and_then(|projection| {
+            projection
+                .query_tokens()
+                .fields()
+                .values()
+                .find(|field| field.target_name().as_str() == field_name)
+        })
+        .ok_or_else(|| py_runtime_error("projected manager field token is absent"))?;
+    let projected = project_attribute_value(py, package, value, &[])?;
+    base.try_and(
+        &package.projection,
+        &ProjectedTokenIdentity::Field {
+            owner: model.clone(),
+            field: field.id().clone(),
+        },
+        comparison,
+        &projected,
+    )
+    .map(Some)
+    .map_err(py_sdk_diagnostic)
+}
+
+struct ProjectedKeywordFilters {
+    expressions: Vec<DynamicExpr>,
+    closed: Option<ProjectedManagerFilter>,
+    empty_iids: bool,
 }
 
 fn lower_filter_kwargs(
@@ -6956,9 +6949,16 @@ fn lower_filter_kwargs(
     package: &InstalledPackage,
     descriptors: &[OwnedAttributeDescriptor],
     filters: Option<&Bound<'_, PyDict>>,
-) -> PyResult<Vec<DynamicExpr>> {
+    base: Option<&ProjectedManagerFilter>,
+) -> PyResult<ProjectedKeywordFilters> {
+    let mut closed = base.cloned();
+    let mut empty_iids = false;
     let Some(filters) = filters else {
-        return Ok(vec![]);
+        return Ok(ProjectedKeywordFilters {
+            expressions: vec![],
+            closed,
+            empty_iids,
+        });
     };
     let mut lowered = Vec::with_capacity(filters.len());
     for (key, value) in filters {
@@ -6967,22 +6967,41 @@ fn lower_filter_kwargs(
             .map_err(|_| py_type_error("generated manager filter names must be strings"))?
             .to_str()?;
         if matches!(key, "iid" | "_iid" | "iid__eq" | "_iid__eq") {
+            let iid = value
+                .cast::<PyIid>()
+                .map_err(|_| py_type_error("generated manager IID lookup requires Iid values"))?;
+            if let Some(filter) = closed.take() {
+                closed = Some(
+                    filter
+                        .try_and_iid(&package.projection, &iid.get().inner)
+                        .map_err(py_sdk_diagnostic)?,
+                );
+            }
             lowered.push(DynamicExpr::Iid {
-                iid: projected_filter_iid(&value)?,
+                iid: copy_projected_iid(&iid.get().inner)?,
             });
             continue;
         }
         if matches!(key, "iid__in" | "_iid__in") {
-            let iids = projected_filter_items(&value, "iid__in")?
-                .iter()
-                .map(projected_filter_iid)
-                .collect::<PyResult<Vec<_>>>()?;
-            lowered.push(DynamicExpr::Or {
-                exprs: iids
-                    .into_iter()
-                    .map(|iid| DynamicExpr::Iid { iid })
-                    .collect(),
-            });
+            let iids = projected_filter_iids(&value)?;
+            empty_iids |= iids.is_empty();
+            let mut exprs = Vec::new();
+            exprs
+                .try_reserve_exact(iids.len())
+                .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+            for iid in &iids {
+                exprs.push(DynamicExpr::Iid {
+                    iid: copy_projected_iid(iid)?,
+                });
+            }
+            if let Some(filter) = closed.take() {
+                closed = Some(
+                    filter
+                        .try_and_owned_iids(&package.projection, iids)
+                        .map_err(py_sdk_diagnostic)?,
+                );
+            }
+            lowered.push(DynamicExpr::Or { exprs });
             continue;
         }
         // A generated field may itself contain `__`. A recognised trailing
@@ -7013,6 +7032,7 @@ fn lower_filter_kwargs(
         }
         let operator = match lookup {
             ManagerLookup::IsNull => {
+                closed = None;
                 let is_null = value
                     .cast_exact::<PyBool>()
                     .map_err(|_| py_type_error("generated manager isnull lookup requires a bool"))?
@@ -7024,6 +7044,7 @@ fn lower_filter_kwargs(
                 continue;
             }
             ManagerLookup::In => {
+                closed = None;
                 let exprs = projected_filter_items(&value, "in")?
                     .iter()
                     .map(|item| {
@@ -7050,13 +7071,20 @@ fn lower_filter_kwargs(
             ManagerLookup::EndsWith => DynamicComparisonOp::EndsWith,
             ManagerLookup::Regex => DynamicComparisonOp::Like,
         };
+        let literal =
+            projected_filter_attribute_value(py, package, descriptor, field_name, &value)?;
+        closed = narrow_closed_filter(py, package, descriptor, field_name, lookup, &value, closed)?;
         lowered.push(DynamicExpr::Compare {
             attr_name: descriptor.attr_name.clone(),
             operator,
-            value: projected_filter_attribute_value(py, package, descriptor, field_name, &value)?,
+            value: literal,
         });
     }
-    Ok(lowered)
+    Ok(ProjectedKeywordFilters {
+        expressions: lowered,
+        closed,
+        empty_iids,
+    })
 }
 
 fn projected_filter_attribute_value(
@@ -7078,6 +7106,31 @@ fn projected_filter_attribute_value(
     } else {
         attribute_value_from_py(py, value, descriptor.value_type)
     }
+}
+
+fn projected_filter_iids(value: &Bound<'_, PyAny>) -> PyResult<Vec<Iid>> {
+    if value.cast::<PyString>().is_ok() || value.cast::<PyDict>().is_ok() {
+        return Err(py_type_error(
+            "generated manager iid__in lookup requires a non-string iterable",
+        ));
+    }
+    let iterator = value
+        .try_iter()
+        .map_err(|_| py_type_error("generated manager iid__in lookup requires an iterable"))?;
+    let mut values = Vec::new();
+    for (ordinal, item) in iterator.enumerate() {
+        ProjectedBatch::validate_binding_row_count(ordinal.saturating_add(1))
+            .map_err(py_sdk_diagnostic)?;
+        let item = item?;
+        let iid = item
+            .cast::<PyIid>()
+            .map_err(|_| py_type_error("generated manager IID lookup requires Iid values"))?;
+        values
+            .try_reserve(1)
+            .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+        values.push(iid.get().inner.clone());
+    }
+    Ok(values)
 }
 
 fn projected_filter_items<'py>(
@@ -10499,6 +10552,7 @@ class StructBase:
                 filters: vec![],
                 compatibility_filter: None,
                 use_compatibility_reads: false,
+                has_empty_iid_input: false,
             };
             for operation in [
                 ProjectedBatchOperation::Insert,
@@ -10593,6 +10647,7 @@ class StructBase:
                     compatibility_filter: initial_compatibility_filter(package.as_ref(), &model)
                         .unwrap(),
                     use_compatibility_reads: true,
+                    has_empty_iid_input: false,
                 };
                 let identifier = package
                     .class(
@@ -11131,7 +11186,244 @@ class StructBase:
             filters: vec![],
             compatibility_filter: None,
             use_compatibility_reads: false,
+            has_empty_iid_input: false,
         }
+    }
+
+    #[test]
+    fn iid_keyword_iterators_are_consumed_once_and_keep_wider_read_guards() {
+        Python::initialize();
+        Python::attach(|py| {
+            let (_, package) = install_batch(py);
+            let model = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let (backend, state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![]),
+                QueryResult::Documents(vec![]),
+            ]);
+            let manager = origin_manager(
+                package,
+                model,
+                Some(Arc::new(Database::with_backend(
+                    Box::new(backend),
+                    "iid-generator",
+                ))),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().unwrap()),
+            );
+            let globals = PyDict::new(py);
+            globals.set_item("Iid", py.get_type::<PyIid>()).unwrap();
+            py.run(pyo3::ffi::c_str!("seen = []\ndef values():\n    for text in ('0xa1', '0xa2'):\n        seen.append(text)\n        yield Iid(text)\nsource = values()"), Some(&globals), None).unwrap();
+            let kwargs = PyDict::new(py);
+            kwargs
+                .set_item("iid__in", globals.get_item("source").unwrap().unwrap())
+                .unwrap();
+            let selected = manager.filter(py, Some(&kwargs)).unwrap();
+            assert_eq!(
+                globals
+                    .get_item("seen")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<Vec<String>>()
+                    .unwrap(),
+                ["0xa1", "0xa2"]
+            );
+            assert_eq!(
+                selected
+                    .compatibility_filter
+                    .as_ref()
+                    .unwrap()
+                    .exact_iids()
+                    .unwrap()
+                    .iter()
+                    .map(Iid::as_str)
+                    .collect::<Vec<_>>(),
+                ["0xa1", "0xa2"]
+            );
+            assert!(!selected.has_empty_iid_input);
+            assert_eq!(
+                selected
+                    .all(py)
+                    .unwrap()
+                    .bind(py)
+                    .cast::<PyList>()
+                    .unwrap()
+                    .len(),
+                0
+            );
+            let wider = PyDict::new(py);
+            wider.set_item("identifier__contains", "needle").unwrap();
+            let fallback = selected.filter(py, Some(&wider)).unwrap();
+            assert!(fallback.compatibility_filter.is_none());
+            assert_eq!(
+                fallback
+                    .all(py)
+                    .unwrap()
+                    .bind(py)
+                    .cast::<PyList>()
+                    .unwrap()
+                    .len(),
+                0
+            );
+            let state = state.lock().unwrap();
+            assert_eq!(state.queries.len(), 2);
+            for query in &state.queries {
+                assert!(query.contains("0xa1") && query.contains("0xa2"));
+            }
+            assert!(state.queries[1].contains("needle"));
+        });
+    }
+
+    #[test]
+    fn iid_keyword_empty_lists_are_admitted_without_provider_work() {
+        Python::initialize();
+        Python::attach(|py| {
+            for borrowed in [None, Some(TxType::Read), Some(TxType::Write)] {
+                let (_, package) = install_batch(py);
+                let model = package
+                    .type_by_label("person", TypeKind::Entity)
+                    .unwrap()
+                    .clone();
+                let (backend, state) = OriginRecordingBackend::new(vec![]);
+                let database = Arc::new(Database::with_backend(Box::new(backend), "empty-iids"));
+                let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                let transaction = borrowed.map(|kind| {
+                    runtime
+                        .block_on(database.transaction_context(kind))
+                        .unwrap()
+                });
+                let manager = origin_manager(
+                    Arc::clone(&package),
+                    model,
+                    borrowed.is_none().then(|| Arc::clone(&database)),
+                    transaction.clone(),
+                    Arc::clone(&runtime),
+                );
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("iid__in", PyList::empty(py)).unwrap();
+                let empty = manager.filter(py, Some(&kwargs)).unwrap();
+                let wider = PyDict::new(py);
+                wider.set_item("identifier__contains", "needle").unwrap();
+                let late_wider = empty.filter(py, Some(&wider)).unwrap();
+                let early_wider = manager
+                    .filter(py, Some(&wider))
+                    .unwrap()
+                    .filter(py, Some(&kwargs))
+                    .unwrap();
+                for selected in [&empty, &late_wider, &early_wider] {
+                    assert_eq!(
+                        selected
+                            .all(py)
+                            .unwrap()
+                            .bind(py)
+                            .cast::<PyList>()
+                            .unwrap()
+                            .len(),
+                        0
+                    );
+                    assert!(selected.first(py).unwrap().bind(py).is_none());
+                    assert_eq!(selected.count(py).unwrap(), 0);
+                    assert!(!selected.exists(py).unwrap());
+                }
+                for selected in [&late_wider, &early_wider] {
+                    let error = selected.canonical_filter().err().unwrap();
+                    assert_eq!(
+                        error
+                            .value(py)
+                            .getattr("code")
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        "unsupported_manager_filter"
+                    );
+                }
+                if borrowed != Some(TxType::Read) {
+                    let filter = empty.canonical_filter().unwrap();
+                    filter.delete(py).unwrap();
+                    let replacement = batch_person(py, &package, "empty", "authored", None);
+                    let result = filter.update(py, replacement.bind(py).clone()).unwrap();
+                    assert_eq!(
+                        result
+                            .bind(py)
+                            .getattr("count")
+                            .unwrap()
+                            .extract::<usize>()
+                            .unwrap(),
+                        0
+                    );
+                    assert!(replacement.bind(py).getattr("iid").unwrap().is_none());
+                }
+                if let Some(marker) = &manager.successor_batch_marker {
+                    assert!(!marker.load(Ordering::Acquire));
+                }
+                {
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.opens.len(), usize::from(borrowed.is_some()));
+                    assert!(state.queries.is_empty());
+                    assert_eq!(state.commits, 0);
+                }
+                if let Some(transaction) = transaction {
+                    runtime.block_on(transaction.close()).unwrap();
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn iid_keyword_large_lists_keep_delete_bytes_and_refuse_reads_before_io() {
+        Python::initialize();
+        Python::attach(|py| {
+            let (_, package) = install_batch(py);
+            let model = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let iids = (0..257)
+                .map(|index| Iid::new(format!("0x{index:x}")).unwrap())
+                .collect::<Vec<_>>();
+            let kwargs = PyDict::new(py);
+            let values = PyList::empty(py);
+            for iid in &iids {
+                values.append(fixture_iid(py, iid.as_str())).unwrap();
+            }
+            kwargs.set_item("iid__in", values).unwrap();
+            let (database, state) =
+                BatchRecordingBackend::fixture(vec![BatchResponse::Documents(vec![])], false);
+            let manager = origin_manager(
+                Arc::clone(&package),
+                model.clone(),
+                Some(database),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().unwrap()),
+            );
+            let selected = manager.filter(py, Some(&kwargs)).unwrap();
+            for result in [
+                selected.all(py).map(|_| ()),
+                selected.first(py).map(|_| ()),
+                selected.count(py).map(|_| ()),
+                selected.exists(py).map(|_| ()),
+            ] {
+                assert!(result.is_err());
+            }
+            assert!(state.lock().unwrap().calls.is_empty());
+            selected.canonical_filter().unwrap().delete(py).unwrap();
+            let actual = state.lock().unwrap().calls.clone();
+            assert_eq!(actual.len(), 1);
+            let (database, old_state) =
+                BatchRecordingBackend::fixture(vec![BatchResponse::Documents(vec![])], false);
+            let old = origin_manager(
+                package,
+                model,
+                Some(database),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().unwrap()),
+            );
+            old.delete_many_projected(py, iids.into_iter().map(Iid::into_string).collect())
+                .unwrap();
+            assert_eq!(actual, old_state.lock().unwrap().calls);
+        });
     }
 
     #[test]
@@ -12243,6 +12535,7 @@ class StructBase:
                 filters: Vec::new(),
                 compatibility_filter: None,
                 use_compatibility_reads: false,
+                has_empty_iid_input: false,
             };
 
             let errors = [
@@ -15686,6 +15979,7 @@ def public_state(value):
                     filters: Vec::new(),
                     compatibility_filter: None,
                     use_compatibility_reads: false,
+                    has_empty_iid_input: false,
                 };
                 let error = if operation == ProjectedBatchOperation::Insert {
                     let input = batch_person(py, package.as_ref(), "person-0", "authored-0", None);
@@ -15816,6 +16110,7 @@ def public_state(value):
                     filters: Vec::new(),
                     compatibility_filter: None,
                     use_compatibility_reads: false,
+                    has_empty_iid_input: false,
                 };
                 let filtered = manager.filter(py, None).unwrap();
                 let instances = (0..2)
@@ -15905,6 +16200,7 @@ def public_state(value):
                     filters: Vec::new(),
                     compatibility_filter: None,
                     use_compatibility_reads: false,
+                    has_empty_iid_input: false,
                 };
                 let context = Py::new(py, context).unwrap();
                 let commit_context = context.clone_ref(py);
@@ -17898,6 +18194,7 @@ class CyclicFinalizer:
                 filters: Vec::new(),
                 compatibility_filter: None,
                 use_compatibility_reads: false,
+                has_empty_iid_input: false,
             };
             // The test classes do not check counts at construction, so each
             // instance below reaches the lowering with a forged count.
