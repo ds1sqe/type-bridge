@@ -87,6 +87,14 @@ Declare staged identity columns with `builder.input("target", "iid")` or
 staged result references require `PlanInput<Iid>`; ordinary string columns are
 refused. Query and staged plan bytes retain the existing string transport.
 
+Node filter `update(replacement)` replaces every match and returns `WriteResult`
+with all hydrated roots. Use `filter({ iid }).update(replacement)` or the
+canonical `where(...).update(replacement)` form. IID `update(iid, replacement)`
+permanently redirects to that filter terminal, preserving existing predicates.
+An unfiltered one-argument manager update refuses. `updateMany` keeps its
+heterogeneous ordinal batch inputs. Materialization stays inside the write lease;
+a failure after a possible mutation makes borrowed transactions rollback-only.
+
 Node filter `delete()` acts on every match. Use `filter({ iid }).delete()` or
 `where(field, comparison, value).delete()`; IID `delete(iid)` is a permanent
 redirect to that filter terminal and retains any existing predicates. A direct

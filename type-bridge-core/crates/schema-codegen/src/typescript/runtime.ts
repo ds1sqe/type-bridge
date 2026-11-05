@@ -115,6 +115,9 @@ export interface ProjectedModelManager<Complete> {
   insertMany(instances: readonly Complete[]): BatchWriteResult<Complete>;
   put(instance: Complete): WriteResult<Complete>;
   putMany(instances: readonly Complete[]): BatchWriteResult<Complete>;
+  /** Replace every match of an explicit keyword filter. */
+  update(replacement: Complete): WriteResult<Complete>;
+  /** Permanent redirect to `filter({ iid }).update(replacement)`. */
   update(iid: Iid, replacement: Complete): WriteResult<Complete>;
   /** Delete every match of an explicit keyword filter. */
   delete(): void;
@@ -4296,6 +4299,8 @@ export interface ProjectedModelFilter<Complete, Owner extends string = string> {
   exists(): boolean;
   /** Delete every match through the shared native mutation path. */
   delete(): void;
+  /** Replace every match through the shared native mutation path. */
+  update(replacement: Complete): WriteResult<Complete>;
 }
 
 /** Native batch-complete manager surface for every generated package. */
@@ -4610,24 +4615,25 @@ function orderedProjectedManager<Complete, Owner extends string>(
   );
 }
 
+function exactOrderedModelWire(typeKey: string, instance: unknown, operation: string): ProjectedWire {
+  requireLiveSnapshot(instance);
+  const wire = lowerOrderedProjectedValue(instance);
+  if (wire.typeKey !== typeKey || wire.form !== "complete") {
+    throw new TypeError(
+      `projected ${operation} requires the manager's exact complete model`,
+    );
+  }
+  return wire;
+}
+
 function orderedProjectedManagerForNative<Complete, Owner extends string>(
   typeKey: Owner,
   native: NativeProjectedManager,
   filtered = false,
 ): OrderedProjectedModelManager<Complete, Owner> {
-  const exactWire = (instance: Complete, operation: string): ProjectedWire => {
-    requireLiveSnapshot(instance);
-    const wire = lowerOrderedProjectedValue(instance);
-    if (wire.typeKey !== typeKey || wire.form !== "complete") {
-      throw new TypeError(
-        `projected ${operation} requires the manager's exact complete model`,
-      );
-    }
-    return wire;
-  };
   return Object.freeze({
     insert(instance: Complete): WriteResult<Complete> {
-      const wire = exactWire(instance, "insert");
+      const wire = exactOrderedModelWire(typeKey, instance, "insert");
       return projectedManagerNativeCall(() => native.insertProjected<Complete>(
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, instance),
@@ -4639,7 +4645,7 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       }
       return projectedManagerNativeCall(() => native.insertManyProjected<Complete>(instances.length, (index) => {
         const instance = instances[index] as Complete;
-        const wire = exactWire(instance, "insertMany");
+        const wire = exactOrderedModelWire(typeKey, instance, "insertMany");
         return {
           instanceJson: JSON.stringify(wire),
           proofs: orderedRoleProofs(typeKey, instance),
@@ -4647,7 +4653,7 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       }));
     },
     put(instance: Complete): WriteResult<Complete> {
-      const wire = exactWire(instance, "put");
+      const wire = exactOrderedModelWire(typeKey, instance, "put");
       return projectedManagerNativeCall(() => native.putProjected<Complete>(
           JSON.stringify(wire),
           orderedRoleProofs(typeKey, instance),
@@ -4659,16 +4665,22 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       }
       return projectedManagerNativeCall(() => native.putManyProjected<Complete>(instances.length, (index) => {
         const instance = instances[index] as Complete;
-        const wire = exactWire(instance, "putMany");
+        const wire = exactOrderedModelWire(typeKey, instance, "putMany");
         return {
           instanceJson: JSON.stringify(wire),
           proofs: orderedRoleProofs(typeKey, instance),
         };
       }));
     },
-    update(iid: Iid, replacement: Complete): WriteResult<Complete> {
-      const identity = iidText(iid);
-      const wire = exactWire(replacement, "update");
+    update(iidOrReplacement: Iid | Complete, replacement?: Complete): WriteResult<Complete> {
+      if (arguments.length === 1) {
+        if (!filtered) throw new TypeError("update(replacement) requires an explicit manager filter");
+        return orderedProjectedFilterForNative<Complete, Owner>(typeKey,
+          projectedManagerNativeCall(() => native.managerFilter())).update(iidOrReplacement as Complete);
+      }
+      const identity = iidText(iidOrReplacement as Iid);
+      if (replacement === undefined) throw new TypeError("update requires a complete replacement");
+      const wire = exactOrderedModelWire(typeKey, replacement, "update");
       return projectedManagerNativeCall(() => native.updateProjected<Complete>(
           identity,
           JSON.stringify(wire),
@@ -4690,7 +4702,7 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
         }
         const [iid, replacement] = update;
         const identity = iidText(iid);
-        const wire = exactWire(replacement, "updateMany");
+        const wire = exactOrderedModelWire(typeKey, replacement, "updateMany");
         return {
           iid: identity,
           instanceJson: JSON.stringify(wire),
@@ -4707,7 +4719,7 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
       requireLiveSnapshot(instanceOrIid);
       const iid = instanceOrIid instanceof Iid
         ? iidText(instanceOrIid)
-        : exactWire(instanceOrIid, "delete").iid;
+        : exactOrderedModelWire(typeKey, instanceOrIid, "delete").iid;
       if (iid === null) {
         throw new TypeError("projected manager delete requires an attached TypeDB IID");
       }
@@ -4849,6 +4861,11 @@ function orderedProjectedFilterForNative<
           ),
         ),
       );
+    },
+    update(replacement: Complete): WriteResult<Complete> {
+      const wire = exactOrderedModelWire(typeKey, replacement, "update");
+      return projectedManagerNativeCall(() => native.updateProjected<Complete>(
+        JSON.stringify(wire), orderedRoleProofs(typeKey, replacement)));
     },
     delete(): void {
       projectedManagerNativeCall(() => native.delete());

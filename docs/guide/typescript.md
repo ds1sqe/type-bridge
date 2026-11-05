@@ -89,10 +89,10 @@ or `optionalInput`, including columns receiving earlier staged IID results.
 
 ```ts
 const manager = Person.manager(db);
-const stored = manager.put(ada);
+const stored = manager.put(ada).item;
 const people = manager.filter({ age__gte: Age.create(18n) }).all();
 
-if (stored.iid !== null) {
+if (stored?.iid != null) {
   const replacement = Person.create({
     personId: PersonId.create("ada"),
     age: Age.create(37n),
@@ -115,7 +115,7 @@ and update batches return frozen values in input order, while delete returns no
 affected-row count:
 
 ```ts
-if (stored.iid !== null) {
+if (stored?.iid != null) {
   const replacements = [
     [stored.iid, Person.create({
       personId: PersonId.create("ada"),
@@ -138,6 +138,14 @@ Wider keyword lookups remain available through read terminals; `.where()` refuse
 those selections with `unsupported_manager_filter`. Read their matching models
 before explicit instance or IID batch operations. `filter({ iid__in: [] })` reads
 no matches without a provider request, including with wider keyword lookups.
+
+Replace all selected rows with `manager.filter({ iid }).update(replacement)`
+or `manager.where(field, "eq", value).update(replacement)`. The replacement must
+be the manager's exact complete model. Results include every changed root; no
+match returns `count: 0`, empty `items`, and `item: null`. IID
+`update(iid, replacement)` is a permanent redirect to that filter terminal.
+Unfiltered `manager.update(replacement)` refuses; select all explicitly with
+`filter({})` or `where()`. Heterogeneous `updateMany` keeps ordinal per-row inputs.
 
 Delete all selected rows with `manager.filter({ iid }).delete()` or
 `manager.where(Person.fields.age, "gte", Age.create(18n)).delete()`.

@@ -394,3 +394,6 @@ void batchItems;
 // Canonical and keyword filters expose mutation terminals.
 nativePersonManager.filter({ iid: new Iid("0xa1") }).delete();
 nativePersonManager.where(Person.identifier, "eq", Identifier.create("alice")).delete();
+
+nativePersonManager.filter({ iid: new Iid("0xa1") }).update(person);
+nativePersonManager.where(Person.identifier, "eq", identifier).update(person);

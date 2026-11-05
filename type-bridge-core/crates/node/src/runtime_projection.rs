@@ -3350,6 +3350,14 @@ pub struct NodeProjectedModelManager {
     has_empty_iids: bool,
 }
 
+enum ProjectedSingleWriteSelection<'a> {
+    Crud {
+        operation: ProjectedBatchOperation,
+        iid: Option<String>,
+    },
+    Filter(&'a ProjectedManagerFilter),
+}
+
 /// One immutable exact-model field-token filter for generated successor managers.
 #[napi]
 pub struct NodeProjectedManagerFilter {
@@ -3409,6 +3417,35 @@ impl NodeProjectedManagerFilter {
                     .expect("static manager predicate argument is canonical"),
             ),
         ])))
+    }
+
+    /// Replace every match inside the shared native mutation/materialization lease.
+    #[napi(js_name = "updateProjected")]
+    pub fn update_projected<'env>(
+        &self,
+        env: Env,
+        instance_json: String,
+        proofs: Unknown<'env>,
+    ) -> napi::Result<Object<'env>> {
+        let manager = NodeProjectedModelManager {
+            package: Arc::clone(&self.package),
+            type_id: self.filter.model().clone(),
+            target: self.target.clone(),
+            runtime: Arc::clone(&self.runtime),
+            successor_batch_marker: self.successor_batch_marker.clone(),
+            filters: vec![],
+            closed_filter: None,
+            has_empty_iids: false,
+        };
+        let proofs =
+            raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
+                .map_err(RawProjectedBindingError::into_napi)?;
+        let instance = manager.projected_create_input(&instance_json, &proofs)?;
+        manager.write_single_materialized(
+            &env,
+            instance,
+            ProjectedSingleWriteSelection::Filter(&self.filter),
+        )
     }
 
     /// Delete every match through the shared canonical mutation executor.
@@ -3552,7 +3589,14 @@ impl NodeProjectedModelManager {
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
-        self.write_single_materialized(&env, instance, ProjectedBatchOperation::Insert, None)
+        self.write_single_materialized(
+            &env,
+            instance,
+            ProjectedSingleWriteSelection::Crud {
+                operation: ProjectedBatchOperation::Insert,
+                iid: None,
+            },
+        )
     }
 
     /// Put one projected value through the common projected executor.
@@ -3567,10 +3611,17 @@ impl NodeProjectedModelManager {
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
-        self.write_single_materialized(&env, instance, ProjectedBatchOperation::Put, None)
+        self.write_single_materialized(
+            &env,
+            instance,
+            ProjectedSingleWriteSelection::Crud {
+                operation: ProjectedBatchOperation::Put,
+                iid: None,
+            },
+        )
     }
 
-    /// Replace one projected value through the common projected executor.
+    /// Permanent redirect to the IID filter update terminal.
     #[napi(js_name = "updateProjected")]
     pub fn update_projected<'env>(
         &self,
@@ -3583,7 +3634,12 @@ impl NodeProjectedModelManager {
             raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
-        self.write_single_materialized(&env, instance, ProjectedBatchOperation::Update, Some(iid))
+        let filter = self.filter_iid(&Iid::new(iid).map_err(diagnostic_error)?)?;
+        self.write_single_materialized(
+            &env,
+            instance,
+            ProjectedSingleWriteSelection::Filter(&filter.filter),
+        )
     }
 
     /// Insert projected values atomically through the common executor.
@@ -3933,6 +3989,7 @@ impl NodeProjectedModelManager {
         .map_err(napi_sdk_diagnostic)
     }
 
+    #[cfg(test)]
     fn execute_single_projected<T, F>(
         &self,
         instance: ProjectedCreate,
@@ -3945,45 +4002,111 @@ impl NodeProjectedModelManager {
             type_bridge_orm::WriteResult<ProjectedThing>,
         ) -> Result<T, SdkExecutionDiagnostic>,
     {
-        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+        self.execute_single_projected_selected(
+            instance,
+            ProjectedSingleWriteSelection::Crud { operation, iid },
+            mapper,
+        )
+    }
+
+    fn execute_single_projected_selected<T, F>(
+        &self,
+        instance: ProjectedCreate,
+        selection: ProjectedSingleWriteSelection<'_>,
+        mapper: F,
+    ) -> napi::Result<T>
+    where
+        F: FnOnce(
+            type_bridge_orm::WriteResult<ProjectedThing>,
+        ) -> Result<T, SdkExecutionDiagnostic>,
+    {
         let control =
             ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
-        let row = match operation {
-            ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put => {
-                ProjectedBatchRow::Create(instance)
+        let result = match selection {
+            ProjectedSingleWriteSelection::Crud { operation, iid } => {
+                let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+                let row = match operation {
+                    ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put => {
+                        ProjectedBatchRow::Create(instance)
+                    }
+                    ProjectedBatchOperation::Update => ProjectedBatchRow::Update {
+                        iid: iid
+                            .ok_or_else(|| runtime_error("projected update omitted its IID"))?,
+                        replacement: instance,
+                    },
+                    ProjectedBatchOperation::Delete => {
+                        return Err(runtime_error("projected create cannot select deletion"));
+                    }
+                };
+                let batch = executor
+                    .single_controlled_write_batch(&self.type_id, operation, row, &control)
+                    .map_err(napi_sdk_diagnostic)?;
+                let target = self
+                    .target
+                    .as_ref()
+                    .ok_or_else(|| runtime_error("projected manager has no execution target"))?
+                    .as_target();
+                self.runtime.block_on(
+                    executor.execute_single_write_on_target(target, &batch, control, mapper),
+                )
             }
-            ProjectedBatchOperation::Update => ProjectedBatchRow::Update {
-                iid: iid.ok_or_else(|| runtime_error("projected update omitted its IID"))?,
-                replacement: instance,
-            },
-            ProjectedBatchOperation::Delete => {
-                return Err(runtime_error("projected create cannot select deletion"));
+            ProjectedSingleWriteSelection::Filter(filter) => {
+                let target = self.execution_target()?;
+                let transaction = self
+                    .target
+                    .as_ref()
+                    .and_then(OwnedQueryTarget::transaction)
+                    .filter(|_| !filter.matches_none());
+                let marker = if let Some(transaction) = transaction {
+                    let prior = self.runtime.block_on(transaction.lifecycle_state());
+                    self.successor_batch_marker.as_ref().filter(|_| {
+                        matches!(
+                            prior,
+                            TransactionContextState::Active | TransactionContextState::RolledBack
+                        )
+                    })
+                } else {
+                    None
+                };
+                let (limits, deadline, cancellation) = control.into_parts();
+                let control = ProjectedManagerFilterInvocationControl::from_parts(
+                    limits,
+                    deadline,
+                    cancellation,
+                );
+                let result = self.runtime.block_on(
+                    ProjectedManagerFilterExecutor::new(&self.package.projection)
+                        .update_on_target_mapped(target, filter, instance, control, |result| {
+                            if let Some(marker) = marker {
+                                marker.store(true, Ordering::Release);
+                            }
+                            mapper(result)
+                        }),
+                );
+                if let (Some(transaction), Some(marker)) = (transaction, marker)
+                    && (result.is_ok()
+                        || self.runtime.block_on(transaction.lifecycle_state())
+                            == TransactionContextState::RollbackOnly)
+                {
+                    marker.store(true, Ordering::Release);
+                }
+                result
             }
         };
-        let batch = executor
-            .single_controlled_write_batch(&self.type_id, operation, row, &control)
-            .map_err(napi_sdk_diagnostic)?;
-        let target = self
-            .target
-            .as_ref()
-            .ok_or_else(|| runtime_error("projected manager has no execution target"))?
-            .as_target();
-        self.runtime
-            .block_on(executor.execute_single_write_on_target(target, &batch, control, mapper))
-            .map_err(|error| {
+        result.map_err(|error| {
+            napi_sdk_diagnostic(
                 error.into_diagnostic(
                     type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
-                )
-            })
-            .map_err(napi_sdk_diagnostic)
+                ),
+            )
+        })
     }
 
     fn write_single_materialized<'env>(
         &self,
         env: &Env,
         instance: ProjectedCreate,
-        operation: ProjectedBatchOperation,
-        iid: Option<String>,
+        selection: ProjectedSingleWriteSelection<'_>,
     ) -> napi::Result<Object<'env>> {
         if self.package.projected_batch_materializer.is_none() {
             return Err(invalid_error(
@@ -3992,7 +4115,7 @@ impl NodeProjectedModelManager {
         }
         let authority = NodeProjectedBatchAuthority::pending(Arc::clone(&self.package.projection));
         let guard = PendingBatchAuthority::new(Arc::clone(&authority));
-        let output = self.execute_single_projected(instance, operation, iid, |result| {
+        let output = self.execute_single_projected_selected(instance, selection, |result| {
             let result = BindingWriteAnswers::Single(result.into_items());
             self.materialize_projected_write_result(env, result, authority, true)
         })?;
@@ -10067,6 +10190,197 @@ plays:
                 assert_eq!(state.commits, 2);
             }
         }
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn filter_update_materializes_every_root_before_completion() {
+        use type_bridge_orm::TxType;
+        use type_bridge_orm::session::backend::QueryResult;
+        let projection = runtime_for_schema(
+            &ORDERED_SCHEMA
+                .replace("        ordered: true\n", "")
+                .replace("        distinct: true\n", ""),
+            "node-filter-update.yaml",
+        );
+        let model = TypeId::new(TypeKind::Entity, "group").unwrap();
+        for borrowed in [false, true] {
+            for fail in [false, true] {
+                for count in [0, 2] {
+                    let documents = (0..count).map(|index| serde_json::json!({
+                        "_iid":format!("0xa{index}"), "_type":"group", "attributes":{"tag":["changed"]}
+                    })).collect();
+                    let (database, state) = projection_recording_database_for_test(vec![
+                        ProjectionRecordingResponse::Query(QueryResult::Documents(documents)),
+                    ]);
+                    let mut manager = manager_without_execution_target(&projection, model.clone());
+                    let transaction = borrowed.then(|| {
+                        manager
+                            .runtime
+                            .block_on(database.transaction_context(TxType::Write))
+                            .unwrap()
+                    });
+                    manager.target = Some(transaction.as_ref().map_or_else(
+                        || OwnedQueryTarget::Database(database),
+                        |tx| OwnedQueryTarget::Transaction(tx.clone()),
+                    ));
+                    let marker = Arc::new(AtomicBool::new(false));
+                    manager.successor_batch_marker = borrowed.then(|| Arc::clone(&marker));
+                    let instance = ProjectedCreate::try_new(
+                        &projection.package.projection,
+                        model.clone(),
+                        vec![(
+                            OwnsFactId::new(model.clone(), AttributeId::new("tag").unwrap())
+                                .unwrap(),
+                            vec![
+                                project_attribute_wire(
+                                    &projection.package,
+                                    &attribute_wire(
+                                        "tag",
+                                        ValueTypeTag::String,
+                                        Value::String("changed".into()),
+                                    ),
+                                )
+                                .unwrap(),
+                            ],
+                        )],
+                        vec![],
+                    )
+                    .unwrap();
+                    let filter = manager.manager_filter().unwrap().filter;
+                    let result = manager.execute_single_projected_selected(
+                        instance,
+                        ProjectedSingleWriteSelection::Filter(&filter),
+                        |result| {
+                            assert_eq!(state.lock().unwrap().commits, 0);
+                            assert_eq!(result.items().len(), count);
+                            assert!(
+                                result
+                                    .items()
+                                    .iter()
+                                    .all(|thing| thing.origin_carrier().is_some())
+                            );
+                            if fail {
+                                Err(SdkExecutionDiagnostic::internal_failure())
+                            } else {
+                                Ok(result.items().len())
+                            }
+                        },
+                    );
+                    assert_eq!(result.is_err(), fail);
+                    assert_eq!(state.lock().unwrap().queries.len(), 1);
+                    if let Some(tx) = transaction {
+                        assert!(marker.load(Ordering::Acquire));
+                        assert_eq!(
+                            manager.runtime.block_on(tx.lifecycle_state()),
+                            if fail {
+                                TransactionContextState::RollbackOnly
+                            } else {
+                                TransactionContextState::Active
+                            }
+                        );
+                        if !fail {
+                            manager.runtime.block_on(tx.commit_sdk()).unwrap();
+                        }
+                    } else {
+                        assert_eq!(state.lock().unwrap().commits, usize::from(!fail));
+                        assert_eq!(state.lock().unwrap().rollbacks, usize::from(fail));
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn iid_filter_update_keeps_bytes_and_empty_or_large_lists_do_no_io() {
+        use type_bridge_orm::session::backend::QueryResult;
+        let projection = runtime_for_schema(
+            &ORDERED_SCHEMA
+                .replace("        ordered: true\n", "")
+                .replace("        distinct: true\n", ""),
+            "node-filter-update.yaml",
+        );
+        let model = TypeId::new(TypeKind::Entity, "group").unwrap();
+        let (database, state) = projection_recording_database_for_test(vec![
+            ProjectionRecordingResponse::Query(QueryResult::Documents(vec![])),
+            ProjectionRecordingResponse::Query(QueryResult::Documents(vec![])),
+        ]);
+        let mut manager = manager_without_execution_target(&projection, model.clone());
+        manager.target = Some(OwnedQueryTarget::Database(database));
+        let instance = ProjectedCreate::try_new(
+            &projection.package.projection,
+            model.clone(),
+            vec![(
+                OwnsFactId::new(model, AttributeId::new("tag").unwrap()).unwrap(),
+                vec![
+                    project_attribute_wire(
+                        &projection.package,
+                        &attribute_wire(
+                            "tag",
+                            ValueTypeTag::String,
+                            Value::String("changed".into()),
+                        ),
+                    )
+                    .unwrap(),
+                ],
+            )],
+            vec![],
+        )
+        .unwrap();
+        let filter = manager.filter_iids(vec![]).unwrap().filter;
+        assert!(
+            manager
+                .execute_single_projected_selected(
+                    instance.clone(),
+                    ProjectedSingleWriteSelection::Filter(&filter),
+                    Ok
+                )
+                .unwrap()
+                .items()
+                .is_empty()
+        );
+        let filter = manager
+            .filter_iids(
+                (0..257)
+                    .map(|index| Iid::new(format!("0x{index:x}")).unwrap())
+                    .collect(),
+            )
+            .unwrap()
+            .filter;
+        assert!(
+            manager
+                .execute_single_projected_selected(
+                    instance.clone(),
+                    ProjectedSingleWriteSelection::Filter(&filter),
+                    Ok
+                )
+                .is_err()
+        );
+        assert!(state.lock().unwrap().queries.is_empty());
+        let filter = manager
+            .filter_iid(&Iid::new("0xa1").unwrap())
+            .unwrap()
+            .filter;
+        manager
+            .execute_single_projected_selected(
+                instance.clone(),
+                ProjectedSingleWriteSelection::Filter(&filter),
+                Ok,
+            )
+            .unwrap();
+        manager
+            .execute_single_projected(
+                instance,
+                ProjectedBatchOperation::Update,
+                Some("0xa1".into()),
+                Ok,
+            )
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.queries.len(), 2);
+        assert_eq!(state.queries[0], state.queries[1]);
+        assert_eq!(state.commits, 2);
     }
 
     #[test]

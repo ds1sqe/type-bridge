@@ -1913,7 +1913,12 @@ function managerHttpProgram(
     const iid = inserted.iid;
     assertIidsEqual(single(terminal(() => manager.put(make("a", "put")), true), "put").iid, iid);
     assertIidsEqual(single(terminal(() => manager.update(iid, make("a", "update")), true), "update").iid, iid);
+    assertIidsEqual(single(terminal(() => manager.filter({ identifier: inserted.identifier }).update(make("a", "filter-update")), true), "filter-update").iid, iid);
+
     terminal(() => manager.delete(iid), true);
+    const fieldDelete = single(terminal(() => manager.insert(make("filter-delete", "filter-delete")), true), "filter-delete");
+    terminal(() => manager.where(model.identifier, "eq", fieldDelete.identifier).delete(), true);
+
     const keys = ["b", "c", "d"];
     const many = terminal(() => manager.insertMany(keys.map((key) => make(key, "many-insert"))), true);
     assert.equal(many.count, 3);
@@ -1947,7 +1952,7 @@ function managerHttpProgram(
     assertIidsEqual(deletedMany.items[0].iid, iids.get(2));
     assert.equal(deletedMany.items[0].nickname.value, "many-update");
     assert.equal(deletedMany.items[0].deleted, true);
-    assert.equal(calls, 22);
+    assert.equal(calls, 25);
     return { baseline, terminals: calls, batchCount: 3, snapshots: 2 };
   }
   return [
@@ -2129,8 +2134,8 @@ test("generated managers share direct and HTTP proxy terminals", { timeout: 360_
     const proxy = await generated.connectProxy(`http://127.0.0.1:${port}`);
     assert.deepEqual(managerHttpProgram(generated, proxy, players, trace), direct);
     const events = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
-    assert.equal(events.filter((event) => event.event === "request").length, 44);
-    assert.equal(events.filter((event) => event.event === "commit" && event.kind === "write").length, 20);
+    assert.equal(events.filter((event) => event.event === "request").length, 50);
+    assert.equal(events.filter((event) => event.event === "commit" && event.kind === "write").length, 26);
   } catch (error) {
     process.stderr.write(serverStderr);
     throw error;
@@ -2371,6 +2376,34 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       [insertedPerson.iid],
     );
     const filteredManager = personManager.filter({ score__gte: Score.create(3n) });
+    const filterCounters = Counter.manager(database);
+    const counterReplacement = (value: bigint) => Counter.create({ counterValue: CounterValue.create(value) });
+    assert.throws(() => filterCounters.update(counterReplacement(30n)), /requires an explicit manager filter/);
+    const counterProbes = filterCounters.insertMany([counterReplacement(10n), counterReplacement(20n)]).items;
+    const counterProbeIids = counterProbes.map((counter: any) => counter.iid);
+    const matchedUpdate = filterCounters.where(Counter.counterValue, "gte", CounterValue.create(10n)).update(counterReplacement(30n));
+    assert.equal(matchedUpdate.count, 2);
+    assert.equal(matchedUpdate.item, null);
+    assert.deepEqual(matchedUpdate.items.map((item: any) => item.iid.toString()).sort(), counterProbeIids.map((iid: IidValue) => iid.toString()).sort());
+    assert.ok(matchedUpdate.items.every((item: any) => item.counterValue.value === 30n));
+    assert.equal(filterCounters.filter({ iid: counterProbeIids[0] }).update(counterReplacement(31n)).count, 1);
+    assert.equal(filterCounters.filter({ counterValue: CounterValue.create(99n) }).update(counterProbeIids[0], counterReplacement(32n)).count, 0);
+    assert.equal(filterCounters.getByIid(counterProbeIids[0]).counterValue.value, 31n);
+    const emptyUpdate = filterCounters.filter({ iid__in: [] }).update(counterReplacement(99n));
+    assert.deepEqual([emptyUpdate.count, emptyUpdate.items, emptyUpdate.item], [0, [], null]);
+    assert.throws(() => filterCounters.filter({ counterValue__in: [CounterValue.create(31n)] }).update(counterReplacement(99n)),
+      (error: any) => error.code === "unsupported_manager_filter");
+    const filterTransaction = database.transaction("write");
+    try {
+      const borrowedCounters = Counter.manager(filterTransaction);
+      assert.equal(borrowedCounters.filter({ iid__in: counterProbeIids }).update(counterReplacement(40n)).count, 2);
+      assert.equal(borrowedCounters.getByIid(counterProbeIids[0]).counterValue.value, 40n);
+      assert.equal(filterCounters.getByIid(counterProbeIids[0]).counterValue.value, 31n);
+      filterTransaction.rollback();
+    } finally { filterTransaction.close(); }
+    assert.equal(filterCounters.getByIid(counterProbeIids[0]).counterValue.value, 31n);
+    filterCounters.deleteMany(counterProbeIids);
+
     assert.throws(() => personManager.delete(), /requires an explicit manager filter/);
     const deleteProbe = oneWritten(personManager.insert(generatedPerson("filter-delete-probe", 99n)));
     personManager.filter({ identifier: Identifier.create("absent") }).delete(deleteProbe.iid);

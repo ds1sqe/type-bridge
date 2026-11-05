@@ -6,6 +6,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Added
 
+- Node canonical and explicit keyword filters expose `update(replacement)` for
+  every match, returning one `WriteResult`. IID `update(iid, replacement)`
+  permanently redirects to `filter({ iid }).update(replacement)`. Hydration
+  remains inside the mutation lease; unfiltered one-argument updates refuse.
+
 - Node canonical filters and explicit keyword filters expose `delete()` for all
   matches. IID `delete(iid)` permanently redirects to `filter({ iid }).delete()`;
   existing keyword predicates are retained. Unfiltered zero-argument manager

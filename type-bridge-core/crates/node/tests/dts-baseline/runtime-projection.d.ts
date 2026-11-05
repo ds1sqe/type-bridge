@@ -220,6 +220,7 @@ export interface NativeProjectedManagerFilter {
     count(): bigint;
     exists(): boolean;
     delete(): void;
+    updateProjected<Complete>(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): WriteResult<Complete>;
 }
 /** @internal Preserve structured SDK diagnostics from generated-manager N-API calls. */
 export declare function projectedManagerNativeCall<Result>(operation: () => Result): Result;
