@@ -44,9 +44,18 @@ from type_bridge_core import (
 PlanError = _PlanError
 
 type PlanValueType = Literal[
-    "string", "long", "double", "boolean", "date", "datetime", "datetime_tz", "decimal", "duration"
+    "iid",
+    "string",
+    "long",
+    "double",
+    "boolean",
+    "date",
+    "datetime",
+    "datetime_tz",
+    "decimal",
+    "duration",
 ]
-type _Scalar = bool | int | float | str | Decimal | date | timedelta | PlanLiteral[Any]
+type _Scalar = bool | int | float | str | Iid | Decimal | date | timedelta | PlanLiteral[Any]
 type _Operand = PlanValue | PlanInput[Any] | PlanThing | _Scalar
 type _ExprLike = PlanExpr | _Operand
 type _Answer = Rows | Documents | Count | Exists | Matched
@@ -119,7 +128,7 @@ class PlanInputCell[T]:
 
 @dataclass(frozen=True)
 class StagedResultRef:
-    input: PlanInput[Any]
+    input: PlanInput[Iid]
     source_plan: int
     source_column: int
     expected_types: Sequence[type[Any]]
@@ -161,6 +170,8 @@ class PlanNewThing:
 
 class _Inputs:
     @overload
+    def input(self, name: str, value_type: Literal["iid"]) -> PlanInput[Iid]: ...
+    @overload
     def input(self, name: str, value_type: Literal["string"]) -> PlanInput[str]: ...
     @overload
     def input(self, name: str, value_type: Literal["long"]) -> PlanInput[int]: ...
@@ -180,6 +191,8 @@ class _Inputs:
     def input(self, name: str, value_type: Literal["duration"]) -> PlanInput[timedelta]: ...
     @overload
     def input(self, name: str, value_type: PlanValueType) -> PlanInput[Any]: ...
+    @overload
+    def optional_input(self, name: str, value_type: Literal["iid"]) -> PlanInput[Iid]: ...
     @overload
     def optional_input(self, name: str, value_type: Literal["string"]) -> PlanInput[str]: ...
     @overload
@@ -210,7 +223,7 @@ class PlanBuilder(_Inputs):
     def __init__(self, *, query_limits: QueryLimits | None = None) -> None: ...
     def exact(self, model: type[Any]) -> PlanThing: ...
     def subtypes(self, model: type[Any]) -> PlanThing: ...
-    def by_iid_input(self, thing: PlanThing, column: PlanInput[str]) -> Self: ...
+    def by_iid_input(self, thing: PlanThing, column: PlanInput[Iid]) -> Self: ...
     def field(self, thing: PlanThing, token: _FieldToken) -> PlanValue: ...
     def where_(self, condition: PlanCondition) -> Self: ...
     def links(self, relation: PlanThing, role: _RoleToken, player: PlanThing) -> Self: ...

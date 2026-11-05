@@ -83,6 +83,7 @@ __all__ = [
 ]
 
 PlanValueType = Literal[
+    "iid",
     "string",
     "long",
     "double",
@@ -151,15 +152,25 @@ def literal(value_type: PlanValueType, value: object) -> PlanLiteral:
     return PlanLiteral(value_type, value)
 
 
-type _Scalar = bool | int | float | str | Decimal | _dt.date | _dt.timedelta | PlanLiteral
+type _Scalar = bool | int | float | str | Iid | Decimal | _dt.date | _dt.timedelta | PlanLiteral
 type _Operand = _Comparable | PlanThing | _Scalar
 type _ExprLike = PlanExpr | _Operand
+
+
+def _iid_value(value: object) -> Iid:
+    if not isinstance(value, Iid):
+        raise TypeError("IID input values require Iid, not a plain string")
+    return value
 
 
 def _literal_parts(
     value: _Scalar, value_type: PlanValueType | None
 ) -> tuple[PlanValueType, object]:
+    if value_type == "iid":
+        return "string", _iid_value(value)
     if isinstance(value, PlanLiteral):
+        if value.value_type == "iid":
+            return "string", _iid_value(value.value)
         return value.value_type, value.value
     if value_type is not None:
         return value_type, _host_text(value)
@@ -169,6 +180,8 @@ def _literal_parts(
         return "long", value
     if isinstance(value, float):
         return "double", value
+    if isinstance(value, Iid):
+        return "string", value
     if isinstance(value, str):
         return "string", value
     if isinstance(value, Decimal):
@@ -295,10 +308,14 @@ class PlanInput[T](_Handle, _Comparable):
 class StagedResultRef:
     """One template column reads an earlier selected thing IID."""
 
-    input: PlanInput
+    input: PlanInput[Iid]
     source_plan: int
     source_column: int
     expected_types: Sequence[type[Any]]
+
+    def __post_init__(self) -> None:
+        if self.input.value_type != "iid":
+            raise TypeError("staged IID result references require an IID input column")
 
 
 class PlanInputCell[T]:
@@ -494,9 +511,12 @@ class PlanBuilder:
         """Match things of ``model`` or any subtype."""
         return PlanThing(self, self._native.subtypes(_type_json(model)), model)
 
-    def by_iid_input(self, thing: PlanThing, column: PlanInput[str]) -> PlanBuilder:
-        """Restrict a matched thing to an invocation IID column."""
-        self._native.by_iid_input(self._own(thing)._index, self._own(column)._index)
+    def by_iid_input(self, thing: PlanThing, column: PlanInput[Iid]) -> PlanBuilder:
+        """Restrict a matched thing to an ``input(name, "iid")`` column."""
+        column = self._own(column)
+        if column.value_type != "iid":
+            raise TypeError("IID predicates require an IID input column")
+        self._native.by_iid_input(self._own(thing)._index, column._index)
         return self
 
     def _check_field(self, thing: PlanThing, token: _FieldToken) -> None:
@@ -514,11 +534,19 @@ class PlanBuilder:
 
     def input(self, name: str, value_type: PlanValueType) -> PlanInput:
         """Declare a required input column named ``name``."""
-        return PlanInput(self, self._native.input(name, value_type, False), value_type)
+        return PlanInput(
+            self,
+            self._native.input(name, "string" if value_type == "iid" else value_type, False),
+            value_type,
+        )
 
     def optional_input(self, name: str, value_type: PlanValueType) -> PlanInput:
         """Declare an input column a row may leave absent."""
-        return PlanInput(self, self._native.input(name, value_type, True), value_type)
+        return PlanInput(
+            self,
+            self._native.input(name, "string" if value_type == "iid" else value_type, True),
+            value_type,
+        )
 
     def where_(self, condition: PlanCondition) -> PlanBuilder:
         """Require ``condition`` of every matched row."""

@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from type_bridge_core import PlanAuthority, PlanError, plan_authority
 
+from type_bridge import Iid
 from type_bridge import Plan as TopLevelPlan
 from type_bridge.plan import (
     Count,
@@ -294,7 +295,7 @@ def test_staged_builder_keeps_typed_iid_references_and_rejects_invalid_templates
     from type_bridge.plan import StagedResultRef
 
     builder = PlanBuilder()
-    iid = builder.input("target_iid", "string")
+    iid = builder.input("target_iid", "iid")
     item = builder.exact(Item)
     builder.by_iid_input(item, iid).returning([item])
     reference = StagedResultRef(iid, 0, 0, [Item])
@@ -308,8 +309,75 @@ def test_staged_builder_keeps_typed_iid_references_and_rejects_invalid_templates
         }
     ]
     with pytest.raises(PlanError) as error:
-        builder.build_staged(_authority(), [[iid.value("0x10")]], [reference])
+        builder.build_staged(_authority(), [[iid.value(Iid("0x10"))]], [reference])
     assert error.value.code == "query_stage_result_ref_template"
     foreign = PlanBuilder().input("foreign", "string")
     with pytest.raises(TypeError, match="does not belong"):
         builder.build_staged(_authority(), [[foreign.absent()]], [reference])
+
+
+@pytest.mark.parametrize("optional", [False, True])
+def test_nominal_iid_input_preserves_string_wire_bytes(optional: bool) -> None:
+    builder = PlanBuilder()
+    declare = builder.optional_input if optional else builder.input
+    target = declare("target_iid", "iid")
+    item = builder.exact(Item)
+    builder.by_iid_input(item, target).returning([item])
+    builder.row([target.value(Iid("0xAb12"))])
+    actual = builder.build(_authority())
+
+    from type_bridge_core import _PlanBuilderCore
+
+    legacy = _PlanBuilderCore()
+    text = legacy.input("target_iid", "string", optional)
+    legacy_item = legacy.exact(Item.__type_id__)
+    legacy.by_iid_input(legacy_item, text)
+    legacy.returning([legacy_item])
+    legacy.row([(text, legacy.literal("string", "0xAb12"))])
+    assert actual.canonical_bytes() == legacy.build(_authority()).canonical_bytes()
+
+
+@pytest.mark.parametrize("value", ["0xAb12", "invalid", literal("string", "0xAb12")])
+def test_iid_input_refuses_plain_strings_before_build(value: Any) -> None:
+    builder = PlanBuilder()
+    target = builder.input("target_iid", "iid")
+    item = builder.exact(Item)
+    builder.by_iid_input(item, target).count()
+    with pytest.raises(TypeError, match="IID input values require Iid"):
+        builder.row([target.value(value)])
+    with pytest.raises(TypeError, match="IID input values require Iid"):
+        builder.build_staged(_authority(), [[target.value(value)]])
+
+
+def test_iid_predicates_and_result_references_refuse_string_columns() -> None:
+    from type_bridge.plan import StagedResultRef
+
+    builder = PlanBuilder()
+    text: Any = builder.input("target_iid", "string")
+    item = builder.exact(Item)
+    with pytest.raises(TypeError, match="IID predicates require an IID input column"):
+        builder.by_iid_input(item, text)
+    with pytest.raises(TypeError, match="staged IID result references require an IID input column"):
+        StagedResultRef(text, 0, 0, [Item])
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_iid_literals_keep_the_shared_string_value_encoding(wrapped: bool) -> None:
+    builder = PlanBuilder()
+    item = builder.exact(Item)
+    value = Iid("0xAb12")
+    operand = literal("iid", value) if wrapped else value
+    builder.where_(builder.field(item, ITEM_ID).eq(operand)).count()
+    typed = builder.build(_authority())
+
+    old = PlanBuilder()
+    old_item = old.exact(Item)
+    old.where_(old.field(old_item, ITEM_ID).eq("0xAb12")).count()
+    assert typed.canonical_bytes() == old.build(_authority()).canonical_bytes()
+
+
+def test_iid_literal_refuses_a_string_payload() -> None:
+    builder = PlanBuilder()
+    item = builder.exact(Item)
+    with pytest.raises(TypeError, match="IID input values require Iid"):
+        builder.where_(builder.field(item, ITEM_ID).eq(literal("iid", "0xAb12")))

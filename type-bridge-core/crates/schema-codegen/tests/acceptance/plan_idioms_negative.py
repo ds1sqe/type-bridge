@@ -1,6 +1,6 @@
 from generated_idioms import Account, Item, Many, ManyItem, Purchase
 
-from type_bridge.plan import Plan
+from type_bridge.plan import Plan, StagedResultRef
 
 with Plan():
     item = Item.match("I1")
@@ -19,3 +19,11 @@ with Plan():
     Item.insert_many([Item.Values(item_id="missing-price")])  # error
     item.set(item_id="immutable-key")  # error
     Item.by_iid("0x1234")  # error
+
+
+builder = Plan.builder()
+text = builder.input("text", "string")
+iid = builder.input("target", "iid")
+iid.value("0x1234")  # error
+builder.by_iid_input(builder.exact(Item), text)  # error
+StagedResultRef(text, 0, 0, [Item])  # error

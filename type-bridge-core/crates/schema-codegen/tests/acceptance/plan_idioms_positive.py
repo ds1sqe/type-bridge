@@ -3,7 +3,16 @@ from typing import assert_type
 from generated_idioms import Account, AccountHandle, Item, ItemHandle, Purchase
 
 from type_bridge import Iid
-from type_bridge.plan import Expr, Matched, Pending, Plan, Transaction, Value
+from type_bridge.plan import (
+    Expr,
+    Matched,
+    Pending,
+    Plan,
+    PlanInput,
+    StagedResultRef,
+    Transaction,
+    Value,
+)
 
 
 def purchase(transaction: Transaction, item_id: str, account_id: str, order_id: str) -> None:
@@ -50,3 +59,14 @@ def mixed_rows(transaction: Transaction) -> None:
         selected = p.returning(item, item.stock)
         assert_type(selected, Plan[list[tuple[Item, int]]])
     assert_type(transaction.stage(selected).result(), list[tuple[Item, int]])
+
+
+def iid_inputs() -> None:
+    builder = Plan.builder()
+    target = builder.input("target", "iid")
+    optional_target = builder.optional_input("optional_target", "iid")
+    assert_type(target, PlanInput[Iid])
+    assert_type(optional_target, PlanInput[Iid])
+    builder.by_iid_input(builder.exact(Item), target)
+    builder.row([target.value(Iid("0x1234")), optional_target.absent()])
+    assert_type(StagedResultRef(target, 0, 0, [Item]).input, PlanInput[Iid])

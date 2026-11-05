@@ -38,6 +38,11 @@ Pass `Iid("0x1234")` (imported from `type_bridge`) to query binding `iid`,
 `iid_in`, and generated model `by_iid` authoring. Plain strings are refused
 before execution. These methods retain their existing query and staged plans.
 
+Declare staged identity inputs with `builder.input("target", "iid")` (or
+`optional_input`) and bind `target.value(Iid("0x1234"))`. Both `by_iid_input`
+and `StagedResultRef` require those `PlanInput[Iid]` columns; ordinary string
+columns are refused. The existing staged wire format remains unchanged.
+
 ## Single-item manager write results
 
 Single-item `insert`, `put`, `update`, and `delete_returning` calls now return

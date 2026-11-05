@@ -30,6 +30,17 @@ use crate::plan_runtime::{PyPlanAuthority, value_error};
 type ModelBulkCell<'py> = Option<(String, Bound<'py, PyAny>)>;
 
 fn plan_scalar(value_type: ValueTypeTag, value: &Bound<'_, PyAny>) -> PyResult<CanonicalValue> {
+    if value_type == ValueTypeTag::String
+        && let Ok(iid) = value.cast::<crate::iid::PyIid>()
+    {
+        return type_bridge_orm::plan_scalar::plan_scalar(
+            value_type,
+            type_bridge_orm::plan_scalar::PlanScalarInput::Text(
+                iid.get().inner.as_str().to_owned(),
+            ),
+        )
+        .map_err(|diagnostic| value_error(&diagnostic));
+    }
     if value_type == ValueTypeTag::Duration && !value.is_instance_of::<pyo3::types::PyString>() {
         return crate::runtime_projection::canonical_plan_duration(value.py(), value);
     }
@@ -1080,6 +1091,27 @@ mod tests {
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    #[test]
+    fn staged_iid_values_marshal_directly_to_canonical_strings() {
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| {
+            let iid = pyo3::Py::new(
+                py,
+                crate::iid::PyIid {
+                    inner: type_bridge_contract::id::Iid::new("0xAb12").unwrap(),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                super::plan_scalar(super::ValueTypeTag::String, iid.bind(py).as_any()).unwrap(),
+                super::CanonicalValue::String(
+                    type_bridge_contract::value::CanonicalString::new("0xAb12").unwrap()
+                ),
+            );
+            assert!(super::plan_scalar(super::ValueTypeTag::Long, iid.bind(py).as_any()).is_err());
+        });
     }
 
     /// The Python golden: the Rust SDK's hand-built purchase under the
