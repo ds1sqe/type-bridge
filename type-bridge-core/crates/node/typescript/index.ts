@@ -79,20 +79,6 @@ export type RuntimeAttributeValue =
   | { Decimal: string }
   | { Duration: string };
 
-export {
-  AggregateSpec,
-  BooleanExpr,
-  ComparisonExpr,
-  NotExpr,
-  QueryExpr,
-  SortExpr,
-  TypedGroupByQuery,
-  TypedQuery,
-  TypedQueryError,
-  agg,
-  type QueryGroupField,
-} from "./query.js";
-
 export interface DynamicEntityRow {
   iid: string | null;
   type_name: string | null;

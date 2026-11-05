@@ -105,3 +105,12 @@ Replace `RemoteDatabase`, `RemoteQueryTransport`, `RemoteConnectionOptions`,
 and `RemoteQueryLimits` with `ProxyDatabase`, `ProxyExchange`,
 `ProxyConnectionPolicy`, and `QueryExecutionResourceLimits`. Caller-owned
 transports implement `ProxyExchange` directly.
+
+## Node query facade
+
+Replace package-root `TypedQuery`, `TypedGroupByQuery`, `QueryExpr`, and `agg`
+with your generated package's `QuerySession`. Use generated query predicates,
+ordering, grouping, and reduction methods instead of `ComparisonExpr`,
+`BooleanExpr`, `NotExpr`, `SortExpr`, `AggregateSpec`, and `QueryGroupField`.
+Read the generated query error’s structured diagnostics instead of catching
+the removed `TypedQueryError`.

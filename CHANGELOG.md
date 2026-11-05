@@ -200,6 +200,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Remove Node `TypedQuery`, `TypedGroupByQuery`, `TypedQueryError`, `QueryExpr`,
+  `ComparisonExpr`, `BooleanExpr`, `NotExpr`, `SortExpr`, `AggregateSpec`,
+  `QueryGroupField`, and `agg`. Use generated `QuerySession` queries and their
+  predicates, ordering, grouping, and reduction methods.
+
 - Remove Rust `RemoteDatabase`, `RemoteQueryTransport`,
   `RemoteConnectionOptions`, and `RemoteQueryLimits`. Use `ProxyDatabase`,
   `ProxyExchange`, `ProxyConnectionPolicy`, and `QueryExecutionResourceLimits`.

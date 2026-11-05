@@ -31,13 +31,22 @@ function verifyInstalledPackage(installedRoot) {
     "PlanAuthority",
     "Database",
     "TransactionContext",
-    "TypedQuery",
     "ensureDatabase",
     "long",
   ]) {
     assert.equal(typeof typeBridge[name], "function", `${name} must remain public`);
   }
   for (const name of [
+    "AggregateSpec",
+    "BooleanExpr",
+    "ComparisonExpr",
+    "NotExpr",
+    "QueryExpr",
+    "SortExpr",
+    "TypedGroupByQuery",
+    "TypedQuery",
+    "TypedQueryError",
+    "agg",
     "DescriptorRegistry",
     "Entity",
     "Relation",

@@ -33,8 +33,9 @@ There are no separate public model-query, match-query, or fetch-query classes.
 | TypeScript | `import { Query, QuerySession } from "./your-generated-package/index.js"` | `Database | TransactionContext` |
 
 Python's package-root `Query` and `QueryBuilder` are removed in 3.0; use
-generated typed queries or `Database.execute_query` for raw TypeQL text. TypeScript's package-root `TypedQuery<T, Row>` remains the separately
-unscheduled mutable compatibility query. Generated model managers provide the
+generated typed queries or `Database.execute_query` for raw TypeQL text.
+TypeScript's package-root `TypedQuery<T, Row>` is also removed; generated
+queries replace it. Generated model managers provide the
 concise single-type CRUD/query path; generated `QuerySession` provides immutable
 multi-binding queries and is Python's only typed query API; the handwritten
 `type_bridge.typed` facade was removed in 2.3.0. None of these retained
@@ -873,9 +874,9 @@ The retained boundary is narrow:
   in 3.0; generated typed queries and `Database.execute_query` replace them;
 - generated Python managers retain concise single-type filters, ordering,
   terminals, aggregates, updates, deletes, and hydration;
-- TypeScript package-root `TypedQuery<T, Row>` retains its two-parameter query
-  behavior for released compatibility artifacts;
-- low-level Python and Node Query V2 authority remains public;
+- TypeScript generated queries replace the removed package-root
+  `TypedQuery<T, Row>` facade;
+- native staged plans replace low-level Python and Node Query V2 authority;
 - the former Node handwritten `/typed` registration surface and root model,
   field, role, attribute, flag, registry, and descriptor declarations are not
   active application paths.

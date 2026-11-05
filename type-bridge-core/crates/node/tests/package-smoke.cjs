@@ -10,9 +10,6 @@ const retainedFunctions = [
   "PlanError",
   "Database",
   "TransactionContext",
-  "TypedGroupByQuery",
-  "TypedQuery",
-  "TypedQueryError",
   "boolean",
   "date",
   "datetime",
@@ -36,6 +33,16 @@ assert.deepEqual(typeBridge.long(9223372036854775807n), {
 assert.throws(() => typeBridge.long(1), /bigint/);
 
 const removedAuthoringNames = [
+  "AggregateSpec",
+  "BooleanExpr",
+  "ComparisonExpr",
+  "NotExpr",
+  "QueryExpr",
+  "SortExpr",
+  "TypedGroupByQuery",
+  "TypedQuery",
+  "TypedQueryError",
+  "agg",
   "queryV2ExecuteLocal",
   "queryV2PrepareRemote",
   "queryV2RemoteCapabilities",

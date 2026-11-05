@@ -66,9 +66,8 @@ those jobs, so a binding cannot pass cross-language parity by being skipped.
 Generated application tests are separate from retained compatibility contracts.
 The following remain independently exercised:
 
-- Node root `TypedQuery` / `TypedGroupByQuery`;
 - Rust match/entity/relation/group-by query facades;
-- low-level Query V2 request, validation, local execution, remote envelopes,
+- native staged-plan validation, local execution, remote envelopes,
   hydration, and diagnostics;
 - raw database/session/transaction lifecycle needed by generated packages; and
 - canonical migration history, checksum, and existing adoption ledger guards.
