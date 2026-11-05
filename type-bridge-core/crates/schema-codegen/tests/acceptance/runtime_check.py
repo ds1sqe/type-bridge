@@ -178,6 +178,9 @@ class FakeCanonicalFilterNative:
     def reject_unissued_field(self) -> "FakeCanonicalFilterNative":
         return FakeCanonicalFilterNative(self.calls, rejected=True)
 
+    def update(self, instance: object) -> object:
+        return instance
+
     def delete(self) -> None:
         self.deletes += 1
 
@@ -217,6 +220,8 @@ assert canonical_filter._native.calls[0][0:2] == (Person, "foo__bar")
 assert canonical_filter._native.calls[0][3] == "gte"
 canonical_manager._hooks.append(object())  # Any instance-hook dispatch would fail.
 canonical_filter.delete()
+replacement_sentinel = object()
+assert canonical_filter.update(replacement_sentinel) is replacement_sentinel
 assert canonical_filter._native.deletes == 1
 canonical_manager._hooks.clear()
 assert (

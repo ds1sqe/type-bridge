@@ -2727,6 +2727,18 @@ pub struct PyProjectedModelManager {
     compatibility_filter: Option<ProjectedManagerFilter>,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Keep the owned filter inline rather than allocating a box for each mutation"
+)]
+enum ProjectedSingleWriteSelection {
+    Crud {
+        operation: ProjectedBatchOperation,
+        iid: Option<String>,
+    },
+    Filter(ProjectedManagerFilter),
+}
+
 /// Persistent canonical filter for one exact generated model.
 #[pyclass]
 pub struct PyProjectedManagerFilter {
@@ -2804,6 +2816,29 @@ impl PyProjectedManagerFilter {
         Err(py_sdk_diagnostic(
             SdkExecutionDiagnostic::generated_token_package_mismatch(),
         ))
+    }
+
+    /// Replace every match without running generated instance CRUD hooks.
+    fn update(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let manager = PyProjectedModelManager {
+            package: Arc::clone(&self.package),
+            type_id: self.filter.model().clone(),
+            target: self.target.clone(),
+            successor_batch_marker: self.successor_batch_marker.clone(),
+            runtime: Arc::clone(&self.runtime),
+            filters: vec![],
+            compatibility_filter: None,
+        };
+        manager.ensure_instance(py, &instance)?;
+        let input = project_create(py, self.package.as_ref(), self.filter.model(), &instance)?;
+        input.validate_native_write().map_err(py_sdk_diagnostic)?;
+        manager.write_single_projected_selected(
+            py,
+            instance,
+            input,
+            ProjectedSingleWriteSelection::Filter(self.filter.clone()),
+            BatchMaterializationProbe::default(),
+        )
     }
 
     /// Delete all matches without running generated instance CRUD hooks.
@@ -3246,6 +3281,23 @@ impl PyProjectedModelManager {
         iid: Option<String>,
         probe: BatchMaterializationProbe,
     ) -> PyResult<Py<PyAny>> {
+        self.write_single_projected_selected(
+            py,
+            instance,
+            input,
+            ProjectedSingleWriteSelection::Crud { operation, iid },
+            probe,
+        )
+    }
+
+    fn write_single_projected_selected(
+        &self,
+        py: Python<'_>,
+        instance: Bound<'_, PyAny>,
+        input: ProjectedCreate,
+        selection: ProjectedSingleWriteSelection,
+        probe: BatchMaterializationProbe,
+    ) -> PyResult<Py<PyAny>> {
         let package = Arc::clone(&self.package);
         let slots = package.batch_slots(&self.type_id)?;
         let staged = StagedBatchFacade {
@@ -3284,44 +3336,76 @@ impl PyProjectedModelManager {
                     snapshot: staged.snapshot,
                     instance: staged.instance,
                 };
-                let row = match operation {
-                    ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put => {
-                        ProjectedBatchRow::Create(input)
+                let binding_error = Mutex::new(None);
+                let mark_invocation = !matches!(&selection,
+                    ProjectedSingleWriteSelection::Filter(filter) if filter.matches_none());
+                let mapper = |result: type_bridge_orm::WriteResult<ProjectedThing>| {
+                    if mark_invocation && let Some(marker) = &marker {
+                        marker.store(true, Ordering::Release);
                     }
-                    ProjectedBatchOperation::Update => ProjectedBatchRow::Update {
-                        iid: iid
-                            .ok_or_else(|| py_runtime_error("projected update omitted its IID"))?,
-                        replacement: input,
-                    },
-                    ProjectedBatchOperation::Delete => {
-                        return Err(py_runtime_error("projected create cannot select deletion"));
+                    let result = BindingWriteAnswers::Single(result.into_items());
+                    materialize_projected_batch_with_output(
+                        py,
+                        Arc::clone(&package),
+                        slots,
+                        vec![facade],
+                        result,
+                        &binding_error,
+                        &pool,
+                        probe,
+                        Some(output),
+                    )
+                    .map(BatchMappedOutput::Publication)
+                };
+                let result = match selection {
+                    ProjectedSingleWriteSelection::Crud { operation, iid } => {
+                        let row = match operation {
+                            ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put => {
+                                ProjectedBatchRow::Create(input)
+                            }
+                            ProjectedBatchOperation::Update => ProjectedBatchRow::Update {
+                                iid: iid.ok_or_else(|| {
+                                    py_runtime_error("projected update omitted its IID")
+                                })?,
+                                replacement: input,
+                            },
+                            ProjectedBatchOperation::Delete => {
+                                return Err(py_runtime_error(
+                                    "projected create cannot select deletion",
+                                ));
+                            }
+                        };
+                        let executor = ProjectedCrudExecutor::new(package.projection.as_ref());
+                        let batch = executor
+                            .single_controlled_write_batch(&model, operation, row, &control)
+                            .map_err(py_sdk_diagnostic)?;
+                        executor
+                            .execute_single_write_on_target(
+                                target.as_target(),
+                                &batch,
+                                control,
+                                mapper,
+                            )
+                            .await
+                    }
+                    ProjectedSingleWriteSelection::Filter(filter) => {
+                        let (limits, deadline, cancellation) = control.into_parts();
+                        let filter_control = ProjectedManagerFilterInvocationControl::from_parts(
+                            limits,
+                            deadline,
+                            cancellation,
+                        );
+                        ProjectedManagerFilterExecutor::new(package.projection.as_ref())
+                            .update_on_target_mapped(
+                                target.as_target(),
+                                &filter,
+                                input,
+                                filter_control,
+                                mapper,
+                            )
+                            .await
                     }
                 };
-                let executor = ProjectedCrudExecutor::new(package.projection.as_ref());
-                let batch = executor
-                    .single_controlled_write_batch(&model, operation, row, &control)
-                    .map_err(py_sdk_diagnostic)?;
-                let binding_error = Mutex::new(None);
-                let result = executor
-                    .execute_single_write_on_target(target.as_target(), &batch, control, |result| {
-                        if let Some(marker) = &marker {
-                            marker.store(true, Ordering::Release);
-                        }
-                        let result = BindingWriteAnswers::Single(result.into_items());
-                        materialize_projected_batch_with_output(
-                            py,
-                            Arc::clone(&package),
-                            slots,
-                            vec![facade],
-                            result,
-                            &binding_error,
-                            &pool,
-                            probe,
-                            Some(output),
-                        )
-                        .map(BatchMappedOutput::Publication)
-                    })
-                    .await;
                 let result = match result {
                     Ok(output) => Ok(output.finish()),
                     Err(error) => Err(projected_write_error(
@@ -14387,6 +14471,113 @@ def public_state(value):
                 assert_eq!(state.queries.len(), 1);
                 assert_eq!(state.commits, 0);
                 assert_eq!(state.rollbacks, 1);
+            }
+        });
+    }
+
+    #[test]
+    fn filter_update_maps_all_roots_inside_the_commit_lease() {
+        Python::initialize();
+        Python::attach(|py| {
+            for count in 0..=2 {
+                for borrowed in [false, true] {
+                    for fail_commit in [false, true] {
+                        if borrowed && fail_commit {
+                            continue;
+                        }
+                        let (_, package) = install_batch(py);
+                        let model = package
+                            .type_by_label("person", TypeKind::Entity)
+                            .unwrap()
+                            .clone();
+                        let documents = (0..count)
+                            .map(|index| {
+                                serde_json::json!({
+                                    "_iid":format!("0x2{index}"), "_type":"person",
+                                    "attributes":{"identifier":"person-0", "tag":["normalized-0"]}
+                                })
+                            })
+                            .collect();
+                        let (database, state) = BatchRecordingBackend::fixture(
+                            vec![BatchResponse::Documents(documents)],
+                            fail_commit,
+                        );
+                        let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                        let transaction = borrowed.then(|| {
+                            runtime
+                                .block_on(database.transaction_context(TxType::Write))
+                                .unwrap()
+                        });
+                        let manager = origin_manager(
+                            Arc::clone(&package),
+                            model,
+                            (!borrowed).then(|| Arc::clone(&database)),
+                            transaction.clone(),
+                            Arc::clone(&runtime),
+                        );
+                        let instance = batch_person(py, &package, "person-0", "authored-0", None);
+                        let prior_values = instance.bind(py).getattr("_values").unwrap().unbind();
+                        let result = manager
+                            .canonical_filter()
+                            .unwrap()
+                            .update(py, instance.bind(py).clone());
+                        if fail_commit {
+                            let error = result.unwrap_err();
+                            assert_eq!(
+                                error
+                                    .value(py)
+                                    .getattr("code")
+                                    .unwrap()
+                                    .extract::<String>()
+                                    .unwrap(),
+                                "commit_definitely_aborted"
+                            );
+                        } else {
+                            let output = result.unwrap();
+                            let output = output.bind(py);
+                            assert_eq!(
+                                output.getattr("count").unwrap().extract::<usize>().unwrap(),
+                                count
+                            );
+                            let items = output
+                                .getattr("items")
+                                .unwrap()
+                                .cast_into::<PyList>()
+                                .unwrap();
+                            assert_eq!(items.len(), count);
+                            assert_eq!(
+                                output.getattr("item").unwrap().is(instance.bind(py)),
+                                count == 1
+                            );
+                            for item in items.iter() {
+                                assert!(matches!(
+                                    package.facade_origins.proof(&item),
+                                    Some(FacadeProjectionProof::Thing(_))
+                                ));
+                            }
+                        }
+                        if fail_commit || count != 1 {
+                            assert!(
+                                instance
+                                    .bind(py)
+                                    .getattr("_values")
+                                    .unwrap()
+                                    .is(prior_values.bind(py))
+                            );
+                            assert!(instance.bind(py).getattr("iid").unwrap().is_none());
+                            assert!(package.facade_origins.proof(instance.bind(py)).is_none());
+                        }
+                        {
+                            let state = state.lock().unwrap();
+                            assert_eq!(state.calls.len(), 1);
+                            assert_eq!(state.commits, usize::from(!borrowed));
+                            assert_eq!(state.legacy_commits, 0);
+                        }
+                        if let Some(transaction) = transaction {
+                            runtime.block_on(transaction.close()).unwrap();
+                        }
+                    }
+                }
             }
         });
     }

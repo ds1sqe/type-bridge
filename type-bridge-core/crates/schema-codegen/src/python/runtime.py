@@ -423,6 +423,10 @@ class ProjectedModelFilter[ModelT: ModelBase]:
             )
         return ProjectedModelFilter(self._model, native)
 
+    def update(self, instance: ModelT) -> WriteResult[ModelT]:
+        """Replace every match without instance hooks; return all written models."""
+        return self._native.update(instance)
+
     def delete(self) -> None:
         """Delete every match without instance hooks; use instance operations for hooks."""
         self._native.delete()

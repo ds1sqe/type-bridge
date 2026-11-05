@@ -510,4 +510,6 @@ async def staged_query_outputs(tx: StagedTransaction) -> None:
     explicit_person = explicit_session.exact(Person)
     assert_type(await explicit_session.query(explicit_person).one(), Pending[Person])
 
+
 canonical_person_filter.delete()
+assert_type(canonical_person_filter.update(person), WriteResult[Person])

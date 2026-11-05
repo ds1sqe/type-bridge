@@ -820,6 +820,20 @@ impl ProjectedBatchInvocationControl {
         }
     }
 
+    /// Transfer an invocation to another shared executor without restarting its
+    /// deadline or cloning its cancellation owner.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        QueryExecutionResourceLimits,
+        QueryExecutionDeadline,
+        AnswerCancellation,
+    ) {
+        (self.limits, self.deadline, self.cancellation)
+    }
+
     /// Return the absolute deadline captured at terminal entry.
     #[must_use]
     pub const fn deadline(&self) -> QueryExecutionDeadline {

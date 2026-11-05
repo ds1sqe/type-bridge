@@ -167,11 +167,12 @@ ordering, grouping, and reduction methods instead of `ComparisonExpr`,
 Read the generated query error’s structured diagnostics instead of catching
 the removed `TypedQueryError`.
 
-## Python canonical filter deletion
+## Python canonical filter mutations
 
 Use `manager.where(field, ProjectedManagerComparison.EQ, value).delete()`
-to delete every matching model in one native mutation. Filter deletion runs
-no instance CRUD hooks. For hooks, read the instances explicitly and call
+to delete every matching model in one native mutation. Use the same selection's
+`update(replacement)` to replace every match and receive a `WriteResult` with
+all written models. Both filter terminals run no instance CRUD hooks. For hooks, read the instances explicitly and call
 `manager.delete_many(instances)`.
 
 Chaining `where()` after a keyword filter preserves its supported scalar

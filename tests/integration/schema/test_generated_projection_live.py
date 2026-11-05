@@ -3206,6 +3206,21 @@ def test_generated_keyword_then_canonical_filter_preserves_scope_live(
     )
     assert selection.count() == 1
     assert [value.iid for value in selection.all()] == [matching.iid]
+    replacement = _make_generated_person(generated, "chain-matching", 11, nickname="selected")
+    updated = selection.update(replacement)
+    assert updated.count == 1
+    assert updated.item is replacement
+    assert updated.item.iid == matching.iid
+    assert updated.item.score.value == 11
+    assert selection.count() == 0
+    assert people.get_by_iid(keyword_excluded.iid).score.value == 20
+    assert people.get_by_iid(canonical_excluded.iid).score.value == 10
+    selection = people.filter(score=generated.Score(11)).where(
+        generated.Person.nickname,
+        generated.ProjectedManagerComparison.EQ,
+        generated.Nickname("selected"),
+    )
+    assert selection.count() == 1
     selection.delete()
     assert selection.count() == 0
     assert people.get_by_iid(matching.iid) is None

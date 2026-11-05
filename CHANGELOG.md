@@ -6,8 +6,9 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Added
 
-- Python canonical manager filters expose `delete()` for all matches through
-  the shared native mutation path. This terminal runs no instance CRUD hooks;
+- Python canonical manager filters expose `delete()` and `update(replacement)`
+  for all matches through the shared native mutation path. These terminals run
+  no instance CRUD hooks;
   use an explicit read followed by instance operations when hooks are needed.
 
 - Read-only V3 plans may match after a validated reduction, retaining typed
