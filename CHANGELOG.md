@@ -5,6 +5,11 @@ All notable changes to TypeBridge will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Node `executeQuery(text, kind)` and `rawTransaction(kind)` expose unchecked
+  TypeQL on direct and proxy connections. Provider answers preserve unsafe
+  integer tokens as `bigint`, with safe integers and doubles as `number`.
+  `RawQueryError` retains provider details and commit certainty. Direct raw
+  contexts support atomic multi-query work; proxy contexts accept one query.
 - Python `raw_transaction(kind)` and `RawTransaction.execute_query` share the
   unchecked core with database-level `execute_query`, including proxy contexts
   and `RawQueryError` provider details/commit certainty. Python integers retain

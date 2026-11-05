@@ -27,6 +27,7 @@ mod proxy_connection_runtime;
 #[path = "../../rust/tests/support/purchase_plan.rs"]
 mod purchase_plan;
 mod query_plan_v3_codec;
+mod raw_runtime;
 mod runtime_projection;
 #[cfg(test)]
 #[path = "../../../../tests/support/sdk_profile_matrix.rs"]

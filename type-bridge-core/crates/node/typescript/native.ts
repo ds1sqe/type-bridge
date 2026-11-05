@@ -1,3 +1,4 @@
+import type { NativeRawTransaction, RawValue } from "./raw-query.js";
 import * as fs from "fs";
 import * as path from "path";
 import type {
@@ -511,6 +512,8 @@ interface NativePlanBuilderModule {
 
 /** Native proxy connection over the built-in HTTP route. */
 export interface NativeProxyConnection {
+  rawTransaction(kind: import("./index.js").TransactionType): NativeRawTransaction;
+  executeQuery(query: string, kind: import("./index.js").TransactionType): Promise<RawValue>;
   readonly admissionWindowMilliseconds: bigint;
   readonly queryLimits: NativeQueryLimits;
   readonly answerLimits: NativeQueryExecutionResources;

@@ -2,6 +2,9 @@
 
 export {
   Iid,
+  RawTransaction,
+  RawQueryError,
+  type RawValue,
   setDebugListener,
   type DebugEvent,
   MigrationApprovalBuilder,

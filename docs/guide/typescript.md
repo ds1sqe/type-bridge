@@ -254,6 +254,46 @@ work and commit it; call `close()` to end it without committing.
 Generated managers never commit a caller-owned transaction. Close read
 transactions after their final query terminal.
 
+## Raw TypeQL
+
+Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+to TypeDB as written, and TypeDB's output comes back as it
+answered, in this SDK's native data types. TypeBridge adds no
+validation, rewriting, hydration, hooks, limits or extra
+queries. It runs in read, write and schema transactions and
+accepts any TypeQL, schema-breaking changes included. The caller
+owns its correctness; TypeBridge makes no promise about its
+effects. On a proxy connection it posts to the server's opt-in
+`/v3/raw` endpoint, which is off by default.
+
+Integer tokens outside the JavaScript safe range become `bigint`; safe integers
+and doubles stay `number`. `RawValue` describes the complete provider answer,
+including its `answerType`, `queryType`, and `answers` fields.
+
+```ts
+const answer = await db.executeQuery("match $p isa person; fetch { 'person': $p };", "read");
+const raw = await db.rawTransaction("write");
+try {
+  await raw.executeQuery("insert $p isa person, has name 'Ada';");
+  await raw.executeQuery("insert $p isa person, has name 'Grace';");
+  await raw.commit();
+} finally {
+  await raw.close();
+}
+```
+
+Direct raw transactions allow multiple statements and atomic rollback. Closing
+without committing discards pending writes. On a proxy connection a raw
+transaction holds one query, because `/v3/raw` runs each request as its own
+transaction. A second query raises `raw_transaction_single_query`; after a
+successful proxy write, `commit()` is a no-op and `rollback()` raises
+`raw_transaction_already_committed`. Use typed staged plans for several
+operations that must commit together through a proxy.
+
+Both connection kinds expose `RawQueryError` with `code`, `status`,
+`providerCode`, and `commitOutcome`. An `unknown` commit outcome means a write
+may have committed; it does not authorize an automatic retry.
+
 ## Staged transactions and plans
 
 A plan is one typed `query-plan/v3` pipeline: a match with comparisons and

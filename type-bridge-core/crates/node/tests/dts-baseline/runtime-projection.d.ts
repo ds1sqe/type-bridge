@@ -1,3 +1,4 @@
+import { RawTransaction, type RawValue } from "./raw-query.js";
 import { PlanAuthority, type NativeRustDatabase, type NativeRustTransactionContext, type Database, type TransactionContext } from "./index.js";
 import { loadNative } from "./native.js";
 import type { NativePlan, NativePendingPlanAnswer, NativeProxyConnection, NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
@@ -404,6 +405,22 @@ export interface ProxyConnectionOptions {
  */
 export declare class ProxyConnection implements RuntimeProjectionRemote {
     #private;
+    /** Open a raw context that accepts one query, committed on the proxy host. */
+    rawTransaction(kind?: import("./index.js").TransactionType): Promise<RawTransaction>;
+    /**
+     * Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+     * to TypeDB as written, and TypeDB's output comes back as it
+     * answered, in this SDK's native data types. TypeBridge adds no
+     * validation, rewriting, hydration, hooks, limits or extra
+     * queries. It runs in read, write and schema transactions and
+     * accepts any TypeQL, schema-breaking changes included. The caller
+     * owns its correctness; TypeBridge makes no promise about its
+     * effects. On a proxy connection it posts to the server's opt-in
+     * `/v3/raw` endpoint, which is off by default.
+     *
+     * Integer tokens outside the JavaScript safe range become bigint; safe integers and doubles stay number.
+     */
+    executeQuery(query: string, kind?: import("./index.js").TransactionType): Promise<RawValue>;
     private constructor();
     /** Configured delivery window, before the server ceiling is applied. */
     get admissionWindowMilliseconds(): bigint;

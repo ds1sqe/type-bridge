@@ -262,3 +262,11 @@ without the old annotation gate. For multiple direct raw statements use
 clean exit commits, exceptions close without committing, and explicit rollback
 prevents an automatic commit. `commit_on_exit=False` leaves completion explicit.
 Proxy raw contexts accept one query and cannot roll back a committed write.
+
+Node raw TypeQL uses `await db.executeQuery(text, kind)` or
+`await db.rawTransaction(kind)` followed by `await tx.executeQuery(text)`.
+The complete provider answer preserves integer tokens outside JavaScript's
+safe range as `bigint`; safe integers and doubles remain `number`. Direct raw
+transactions support multiple queries and atomic rollback. Proxy contexts
+accept one query, commit writes on the host, and refuse a second query or
+rollback of a committed write. Close raw contexts in `finally` blocks.

@@ -1,3 +1,4 @@
+import type { NativeRawTransaction, RawValue } from "./raw-query.js";
 import type { NativeModule, NativeRustDatabase, NativeRustTransactionContext } from "./index.js";
 import type { NativePlanAuthority } from "./plan-internals.js";
 import type { NativeProjectedFacadeProof, NativeProjectedManager, NativeProjectedValueEnvelope, NativeProjectionHandle, NativeAuthoredPlanResult, RuntimeProjectionInstall } from "./runtime-projection.js";
@@ -270,6 +271,8 @@ interface NativePlanBuilderModule {
 }
 /** Native proxy connection over the built-in HTTP route. */
 export interface NativeProxyConnection {
+    rawTransaction(kind: import("./index.js").TransactionType): NativeRawTransaction;
+    executeQuery(query: string, kind: import("./index.js").TransactionType): Promise<RawValue>;
     readonly admissionWindowMilliseconds: bigint;
     readonly queryLimits: NativeQueryLimits;
     readonly answerLimits: NativeQueryExecutionResources;

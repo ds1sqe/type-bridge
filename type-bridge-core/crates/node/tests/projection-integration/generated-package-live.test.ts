@@ -4178,3 +4178,140 @@ test(
     if (failure !== undefined) throw failure;
   },
 );
+
+test("generated raw pair preserves driver values and transaction outcomes", { timeout: 360_000 }, async () => {
+  const stage = await mkdtemp(join(tmpdir(), "type-bridge-node-raw-"));
+  let database: ReturnType<typeof connectIntegration> | undefined;
+  let server: ChildProcess | undefined;
+  let serverStderr = "";
+  const runtime = await import(pathToFileURL(resolve(NODE_RUNTIME_PACKAGE, "dist/public.js")).href);
+  const normalize = (value: any): any => typeof value === "bigint" ? value.toString()
+    : Array.isArray(value) ? value.map(normalize)
+    : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalize(item)])) : value;
+  const driverDocuments = (query: string, kind: "read" | "write"): any => {
+    const script = `import json, os
+from typedb.driver import TypeDB, Credentials, DriverOptions, DriverTlsConfig, TransactionType
+with TypeDB.driver(os.environ["RAW_ADDRESS"], Credentials(os.environ["RAW_USER"], os.environ["RAW_PASSWORD"]), DriverOptions(DriverTlsConfig.disabled())) as driver:
+    with driver.transaction(os.environ["RAW_DATABASE"], TransactionType.WRITE if os.environ["RAW_KIND"] == "write" else TransactionType.READ) as tx:
+        docs = list(tx.query(os.environ["RAW_QUERY"]).resolve().as_concept_documents())
+        if os.environ["RAW_KIND"] == "write": tx.commit()
+def normalize(value):
+    if type(value) is int and abs(value) > 9007199254740991: return str(value)
+    if isinstance(value, list): return [normalize(item) for item in value]
+    if isinstance(value, dict): return {key: normalize(item) for key, item in value.items()}
+    return value
+print(json.dumps(normalize(docs)))`;
+    const result = spawnSync(resolve(ROOT, ".venv/bin/python"), ["-c", script], {
+      encoding: "utf8", env: { ...process.env, RAW_ADDRESS: TYPEDB_ADDRESS, RAW_USER: TYPEDB_USERNAME,
+        RAW_PASSWORD: TYPEDB_PASSWORD, RAW_DATABASE: INTG_DATABASE, RAW_KIND: kind, RAW_QUERY: query },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const integerValues = (answer: any): void => {
+    const row = answer.answers[0];
+    assert.equal(row.min, -9223372036854775808n);
+    assert.equal(row.max, 9223372036854775807n);
+    assert.equal(row.unsafe, 9007199254740993n);
+    assert.equal(row.safe, 7);
+    assert.equal(row.double, 1.25);
+    assert.equal(Object.hasOwn(row, "__proto__"), true);
+    assert.equal(row.__proto__, 1);
+    assert.equal(Object.getPrototypeOf(row), Object.prototype);
+  };
+  const isCode = (code: string) => (error: unknown): boolean => error instanceof runtime.RawQueryError && (error as any).code === code;
+  const stop = async (): Promise<void> => {
+    if (server !== undefined && server.exitCode === null) {
+      const exited = new Promise((done) => server!.once("exit", done));
+      server.kill("SIGKILL"); await exited;
+    }
+    server = undefined;
+  };
+  try {
+    run(resolve(ROOT, "scripts/ci/prepare_generated_live_fixture.sh"), ["node", stage], ROOT);
+    const packageScope = resolve(stage, "node_modules/@type-bridge");
+    await mkdir(packageScope, { recursive: true });
+    await symlink(NODE_RUNTIME_PACKAGE, resolve(packageScope, "node"), process.platform === "win32" ? "junction" : "dir");
+    const generatedDirectory = resolve(stage, "generated_v2");
+    run(resolve(NODE_SOURCE_PACKAGE, "node_modules/.bin/tsc"), ["--project", resolve(generatedDirectory, "tsconfig.json")], generatedDirectory);
+    const generated = await import(pathToFileURL(resolve(generatedDirectory, "dist/index.js")).href);
+    database = connectIntegration();
+    database.resetDatabase();
+    defineSchema(database, await readFile(PROVIDER_SCHEMA, "utf8"));
+    const schema: any = await database.executeQuery("define entity raw-oracle; entity raw-atomic;", "schema");
+    assert.equal(schema.queryType, "schema");
+    const fields = "'min': -9223372036854775808, 'max': 9223372036854775807, 'unsafe': 9007199254740993, 'safe': 7, 'double': 1.25, '__proto__': 1";
+    const insert = `insert $x isa raw-oracle; fetch { ${fields} };`;
+    const fetch = `match $x isa raw-oracle; fetch { ${fields} };`;
+    const oracleInsert = driverDocuments(insert, "write");
+    const inserted: any = await database.executeQuery(insert, "write");
+    integerValues(inserted);
+    assert.deepEqual(normalize(inserted.answers), oracleInsert);
+    const oracleFetch = driverDocuments(fetch, "read");
+    const fetched: any = await database.executeQuery(fetch);
+    integerValues(fetched);
+    assert.deepEqual(normalize(fetched.answers), oracleFetch);
+    const direct = await database.rawTransaction("write");
+    await direct.executeQuery("insert $x isa raw-atomic;");
+    await direct.executeQuery("insert $x isa raw-atomic;");
+    const atomicFetch = "match $x isa raw-atomic; fetch { 'value': 1 };";
+    assert.equal(((await direct.executeQuery(atomicFetch)) as any).answers.length, 2);
+    await direct.rollback();
+    assert.deepEqual(((await database.executeQuery(atomicFetch)) as any).answers, []);
+    const authority = await readFile(resolve(stage, "schema-authority.json"));
+    for (const enabled of [true, false]) {
+      const trace = resolve(stage, `raw-${enabled}.jsonl`);
+      const port = await freePort();
+      const suppliedServer = process.env.TYPE_BRIDGE_V2_SMOKE_SERVER;
+      server = spawn(suppliedServer ?? "cargo", suppliedServer === undefined ? ["run", "--quiet", "-p", "type-bridge-server", "--example", "staged_smoke_server"] : [], {
+        cwd: CORE, env: { ...process.env,
+          SMOKE_TYPEDB_ADDRESS: TYPEDB_ADDRESS, SMOKE_TYPEDB_HTTP_PORT: String(TYPEDB_HTTP_PORT),
+          SMOKE_TYPEDB_USERNAME: TYPEDB_USERNAME, SMOKE_TYPEDB_PASSWORD: TYPEDB_PASSWORD,
+          SMOKE_DATABASE: INTG_DATABASE, SMOKE_AUTHORITY_B64: authority.toString("base64"),
+          SMOKE_PORT: String(port), SMOKE_ALLOW_STAGED_WRITES: "true", SMOKE_ALLOW_RAW: String(enabled), SMOKE_TRACE_FILE: trace,
+          SMOKE_TLS_CERT: undefined, SMOKE_TLS_KEY: undefined,
+        }, stdio: ["ignore", "ignore", "pipe"],
+      });
+      server.stderr?.on("data", (chunk: Buffer) => { serverStderr += chunk.toString(); });
+      await waitForPort(port, server, 300_000);
+      const proxy = await generated.connectProxy(`http://127.0.0.1:${port}`);
+      if (!enabled) {
+        for (const kind of ["read", "write", "schema"] as const) {
+          await assert.rejects(proxy.executeQuery("unchecked text", kind), isCode("raw_disabled"));
+          const transaction = await proxy.rawTransaction(kind);
+          await assert.rejects(transaction.executeQuery("unchecked text"), isCode("raw_disabled"));
+          await assert.rejects(transaction.executeQuery("second"), isCode("raw_transaction_single_query"));
+          await transaction.close();
+        }
+        await stop();
+        continue;
+      }
+      const fetched = await proxy.executeQuery(fetch);
+      integerValues(fetched);
+      assert.deepEqual(normalize(fetched.answers), oracleFetch);
+      const inserted = await proxy.executeQuery(insert, "write");
+      integerValues(inserted);
+      assert.deepEqual(normalize(inserted.answers), oracleInsert);
+      assert.equal((await proxy.executeQuery("define entity raw-proxy-schema;", "schema")).queryType, "schema");
+      const requests = (): number => readFileSync(trace, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((event) => event.event === "raw_request").length;
+      const before = requests();
+      const transaction = await proxy.rawTransaction("write");
+      await transaction.executeQuery("insert $x isa raw-atomic;");
+      await assert.rejects(transaction.executeQuery("insert $x isa raw-atomic;"), isCode("raw_transaction_single_query"));
+      await transaction.commit();
+      await assert.rejects(transaction.rollback(), isCode("raw_transaction_already_committed"));
+      await transaction.close();
+      assert.equal(requests(), before + 1);
+      assert.equal(((await database.executeQuery(atomicFetch)) as any).answers.length, 1);
+      const read = await proxy.rawTransaction("read");
+      await read.executeQuery(atomicFetch); await read.commit(); await read.rollback(); await read.close();
+      await stop();
+    }
+  } catch (error) {
+    process.stderr.write(serverStderr); throw error;
+  } finally {
+    await stop();
+    try { database?.deleteDatabase(); database?.close(); }
+    finally { await rm(stage, { recursive: true, force: true }); }
+  }
+});

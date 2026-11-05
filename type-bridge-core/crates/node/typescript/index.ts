@@ -1,3 +1,5 @@
+import { RawTransaction, rawNativeCall, rawNativePromise, type NativeRawTransaction, type RawValue } from "./raw-query.js";
+export { RawQueryError, RawTransaction, type RawValue } from "./raw-query.js";
 import { loadNative } from "./native.js";
 import type { QueryLimits } from "./runtime-projection.js";
 import type { NativeStagedTransaction, NativeQueryLimits } from "./native.js";
@@ -193,6 +195,8 @@ export function duration(value: string): AttributeValue {
 }
 
 export interface NativeRustDatabase {
+  rawTransaction(kind: TransactionType): Promise<NativeRawTransaction>;
+  executeQuery(query: string, kind: TransactionType): Promise<RawValue>;
   isConnected(): boolean;
   close(): void;
   databaseName(): string;
@@ -733,6 +737,28 @@ function planDatabaseHandle(database: Database): NativeRustDatabase {
 }
 
 export class Database {
+  /** Open an eager raw transaction. The caller commits, rolls back or closes it. */
+  async rawTransaction(kind: TransactionType = "read"): Promise<RawTransaction> {
+    return new RawTransaction(await rawNativePromise(rawNativeCall(() => this.#native.rawTransaction(kind))));
+  }
+
+  /**
+   * Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+   * to TypeDB as written, and TypeDB's output comes back as it
+   * answered, in this SDK's native data types. TypeBridge adds no
+   * validation, rewriting, hydration, hooks, limits or extra
+   * queries. It runs in read, write and schema transactions and
+   * accepts any TypeQL, schema-breaking changes included. The caller
+   * owns its correctness; TypeBridge makes no promise about its
+   * effects. On a proxy connection it posts to the server's opt-in
+   * `/v3/raw` endpoint, which is off by default.
+   *
+   * Integer tokens outside the JavaScript safe range become bigint; safe integers and doubles stay number.
+   */
+  executeQuery(query: string, kind: TransactionType = "read"): Promise<RawValue> {
+    return rawNativePromise(rawNativeCall(() => this.#native.executeQuery(query, kind)));
+  }
+
   readonly #native: NativeRustDatabase;
 
   private constructor(native: NativeRustDatabase) {
