@@ -3036,12 +3036,12 @@ impl PyProjectedModelManager {
         let input = project_create(py, self.package.as_ref(), &self.type_id, &instance)?;
         input.validate_native_write().map_err(py_sdk_diagnostic)?;
         let iid = required_projected_iid(&instance)?;
-        self.write_single_projected(
+        self.write_single_projected_selected(
             py,
             instance,
             input,
-            ProjectedBatchOperation::Update,
-            Some(copy_projected_iid(&iid.get().inner)?),
+            ProjectedSingleWriteSelection::Filter(self.filter_iid(&iid.get().inner)?.filter),
+            BatchMaterializationProbe::default(),
         )
     }
 

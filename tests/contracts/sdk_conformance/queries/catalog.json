@@ -47,7 +47,7 @@
       "python": {
         "algorithm": "sha256",
         "canonicalization": "typebridge.binding-projection/v1",
-        "digest": "1884b5d2ac6cc31c72a67e8342e98c0be88bfee20c39298ff31c01bac4712053",
+        "digest": "169088cb5ff608eff6d6d491babfe71559a4eac928dd628b04169c8cfa9268c2",
         "domain": "typebridge.binding.projection",
         "semantic_profile": "typedb-3.12.1/v1"
       },

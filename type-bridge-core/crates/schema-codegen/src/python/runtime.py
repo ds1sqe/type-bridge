@@ -494,7 +494,11 @@ class ProjectedModelManager[ModelT: ModelBase]:
         return result
 
     def update(self, instance: ModelT) -> WriteResult[ModelT]:
-        """Replace the filtered selection, or update an attached instance with hooks."""
+        """Replace a filter selection, or use an instance's IID with instance hooks.
+
+        An attached instance selects ``filter(iid=instance.iid).update(instance)``.
+        Filtered updates run no instance hooks.
+        """
         if self._filtered:
             return self.where().update(instance)
         self._run_pre(CrudEvent.PRE_UPDATE, instance)
@@ -521,7 +525,10 @@ class ProjectedModelManager[ModelT: ModelBase]:
     def delete(self) -> None: ...
 
     def delete(self, instance_or_iid: ModelT | Iid | None = None) -> ModelT | None:
-        """Delete the filtered selection, or an explicit instance with hooks."""
+        """Delete a filter selection, or an explicit instance with hooks.
+
+        An ``Iid`` argument redirects to ``filter(iid=iid).delete()``.
+        """
         if instance_or_iid is None:
             if not self._filtered:
                 raise TypeError("delete() without an instance requires filter(...)")
@@ -604,6 +611,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
         return self._native.exists()
 
     def get_by_iid(self, iid: Iid) -> ModelT | None:
+        """Permanent redirect to ``filter(iid=iid).first()``."""
         return cast(ModelT | None, self._native.get_by_iid(iid))
 
     def _run_pre(self, event: CrudEvent, instance: ModelT) -> None:

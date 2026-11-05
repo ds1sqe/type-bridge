@@ -3255,6 +3255,21 @@ def test_generated_iid_keyword_selection_live(
         borrowed.filter(iid__in=[excluded.iid]).delete()
     assert people.filter(iid=selected.iid).first().score.value == 11
     assert people.filter(iid=excluded.iid).first() is None
+    events: list[str] = []
+
+    class UpdateHook(generated.CrudHook):
+        def pre_update(self, sender, instance) -> None:
+            events.append("pre_update")
+
+        def post_update(self, sender, instance) -> None:
+            events.append("post_update")
+
+    people.add_hook(UpdateHook())
+    selected.score = generated.Score(12)
+    updated = people.update(selected)
+    assert updated.item is selected
+    assert events == ["pre_update", "post_update"]
+    assert people.get_by_iid(selected.iid).score.value == 12
     people.delete(selected.iid)
     assert people.get_by_iid(selected.iid) is None
 
