@@ -432,6 +432,9 @@ fn ensure_value_bindings_stay_scalar(
             }
             QueryPattern::Has {
                 attribute, owner, ..
+            }
+            | QueryPattern::HasType {
+                attribute, owner, ..
             } => value_bindings.contains_key(attribute) || value_bindings.contains_key(owner),
             QueryPattern::Links {
                 relation, players, ..
@@ -531,6 +534,63 @@ fn refine_pattern(
                 domains.get_mut(binding).expect("declared binding"),
                 &allowed,
             ))
+        }
+        QueryPattern::HasType {
+            attribute,
+            attribute_id,
+            owner,
+            mode,
+        } => {
+            use type_bridge_contract::query_plan::TypeMatchMode;
+            let label = TypeId::new(TypeKind::Attribute, attribute_id.label().as_str())?;
+            let resolved = schema
+                .types()
+                .get(&label)
+                .ok_or_else(|| fail(codes.unknown_attribute))?;
+            if *mode == TypeMatchMode::IsaExact && resolved.is_abstract() {
+                return Err(fail(EngineCode {
+                    code: "query_plan_abstract_exact_ownership",
+                    message: "abstract ownership labels require isa, not isa!",
+                }));
+            }
+            let mut attributes = BTreeSet::from([label]);
+            if *mode == TypeMatchMode::Isa {
+                attributes.extend(resolved.subtypes().iter().cloned());
+            }
+            attributes.retain(|id| {
+                schema
+                    .types()
+                    .get(id)
+                    .is_some_and(|ty| ty.is_constructible())
+                    && domains[attribute].contains(id)
+            });
+            let owners = schema
+                .types()
+                .iter()
+                .filter(|(id, ty)| {
+                    ty.is_constructible()
+                        && domains[owner].contains(*id)
+                        && attributes.iter().any(|attribute| {
+                            ty.owns()
+                                .keys()
+                                .any(|owned| owned.label() == attribute.label())
+                        })
+                })
+                .map(|(id, _)| id.clone())
+                .collect::<BTreeSet<_>>();
+            attributes.retain(|attribute| {
+                owners.iter().any(|owner| {
+                    schema.types()[owner]
+                        .owns()
+                        .keys()
+                        .any(|owned| owned.label() == attribute.label())
+                })
+            });
+            let changed = intersect_mut(domains.get_mut(owner).expect("declared owner"), &owners);
+            Ok(intersect_mut(
+                domains.get_mut(attribute).expect("declared attribute"),
+                &attributes,
+            ) || changed)
         }
         QueryPattern::Has {
             attribute,
@@ -697,6 +757,9 @@ fn collect_scope_topology(
                 positive.insert(*binding);
             }
             QueryPattern::Has {
+                attribute, owner, ..
+            }
+            | QueryPattern::HasType {
                 attribute, owner, ..
             } => {
                 referenced.extend([*owner, *attribute]);
@@ -1108,6 +1171,9 @@ fn collect_references(patterns: &[QueryPattern], output: &mut BTreeSet<BindingId
                 output.insert(*binding);
             }
             QueryPattern::Has {
+                attribute, owner, ..
+            }
+            | QueryPattern::HasType {
                 attribute, owner, ..
             } => {
                 output.extend([*owner, *attribute]);

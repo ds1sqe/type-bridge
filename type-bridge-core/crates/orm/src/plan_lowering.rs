@@ -273,7 +273,20 @@ fn lower_scoped_patterns_inner(
                 attribute,
                 attribute_id,
                 owner,
+            }
+            | QueryPattern::HasType {
+                attribute,
+                attribute_id,
+                owner,
+                ..
             } => {
+                let exact = !matches!(
+                    pattern,
+                    QueryPattern::HasType {
+                        mode: type_bridge_contract::query_plan::TypeMatchMode::Isa,
+                        ..
+                    }
+                );
                 let attribute = local_variable(bindings, *attribute)?;
                 output.push(ast(tql::thing(
                     local_variable(bindings, *owner)?,
@@ -284,7 +297,7 @@ fn lower_scoped_patterns_inner(
                 ))?);
                 output.push(ast(tql::thing(
                     attribute,
-                    vec![ast(tql::isa(attribute_id.label().as_str(), true))?],
+                    vec![ast(tql::isa(attribute_id.label().as_str(), exact))?],
                 ))?);
             }
             QueryPattern::Links {

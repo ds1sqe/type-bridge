@@ -9,6 +9,32 @@ use crate::value::{CanonicalValue, ValueTypeTag};
 use serde::Serialize;
 use std::fmt;
 
+/// Explicit TypeQL type matching semantics for an ownership pattern.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum TypeMatchMode {
+    /// Match the declared type and its subtypes (`isa`).
+    #[serde(rename = "isa")]
+    Isa,
+    /// Match only the declared type (`isa!`).
+    #[serde(rename = "isa!")]
+    IsaExact,
+}
+impl TypeMatchMode {
+    /// Parse an explicit TypeQL type-match form; no implicit default exists.
+    pub fn from_typeql(value: &str) -> Result<Self, crate::diagnostic::Diagnostic> {
+        match value {
+            "isa" => Ok(Self::Isa),
+            "isa!" => Ok(Self::IsaExact),
+            _ => Err(crate::diagnostic::Diagnostic::new(
+                crate::diagnostic::DiagnosticCategory::InvalidContract,
+                crate::diagnostic::DiagnosticCode::new("query_plan_type_match_mode")
+                    .expect("static code"),
+                "type-match mode must be explicit: isa or isa!",
+            )),
+        }
+    }
+}
+
 /// One dense typed input column identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
@@ -143,6 +169,17 @@ pub enum QueryPattern {
         attribute_id: AttributeId,
         /// The owning binding.
         owner: BindingId,
+    },
+    /// Bind an ownership with explicit TypeQL attribute type matching.
+    HasType {
+        /// The bound attribute instance.
+        attribute: BindingId,
+        /// Attribute label, including abstract supertypes in `isa` mode.
+        attribute_id: AttributeId,
+        /// The owning binding.
+        owner: BindingId,
+        /// Required TypeQL form; never inferred from the schema.
+        mode: TypeMatchMode,
     },
     /// Bind a relation and role-qualified players.
     Links {

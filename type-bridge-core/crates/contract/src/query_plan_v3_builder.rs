@@ -257,6 +257,25 @@ impl PlanBuilder {
     /// Bind the value of `owner`'s `attribute` ownership. Owners without
     /// that ownership do not match.
     pub fn field(&mut self, owner: BindingId, attribute: AttributeId) -> BindingId {
+        self.field_pattern(owner, attribute, None)
+    }
+
+    /// Bind an ownership with an explicit `isa` or `isa!` attribute type mode.
+    pub fn field_with_mode(
+        &mut self,
+        owner: BindingId,
+        attribute: AttributeId,
+        mode: TypeMatchMode,
+    ) -> BindingId {
+        self.field_pattern(owner, attribute, Some(mode))
+    }
+
+    fn field_pattern(
+        &mut self,
+        owner: BindingId,
+        attribute: AttributeId,
+        mode: Option<TypeMatchMode>,
+    ) -> BindingId {
         let owner_name = self
             .bindings
             .get(usize::from(owner.get()))
@@ -264,14 +283,20 @@ impl PlanBuilder {
         let stem = format!("{owner_name}_{}", variable_stem(attribute.label().as_str()));
         let name = self.derived_name(&stem);
         let value = self.declare(name);
-        self.patterns.push(
-            QueryPattern::Has {
+        let pattern = match mode {
+            None => QueryPattern::Has {
                 attribute: value,
                 attribute_id: attribute,
                 owner,
-            }
-            .into(),
-        );
+            },
+            Some(mode) => QueryPattern::HasType {
+                attribute: value,
+                attribute_id: attribute,
+                owner,
+                mode,
+            },
+        };
+        self.patterns.push(pattern.into());
         value
     }
 

@@ -2168,6 +2168,47 @@ impl<'a> SchemaIndex<'a> {
         }
         Ok(())
     }
+    fn ownership_mode_label(
+        &self,
+        attribute: &AttributeId,
+        mode: TypeMatchMode,
+    ) -> Result<TypeId, Diagnostic> {
+        let label = TypeId::new(TypeKind::Attribute, attribute.label().as_str())?;
+        self.exists(&label)?;
+        if mode == TypeMatchMode::IsaExact
+            && self.annotation(
+                AnnotationSubjectId::Type(label.clone()),
+                AnnotationKindId::Abstract,
+            )
+        {
+            return Err(invalid(
+                "query_plan_abstract_exact_ownership",
+                "abstract ownership labels require isa, not isa!",
+            ));
+        }
+        Ok(label)
+    }
+    fn scoped_ownership_labels(&self, pattern: &QueryPattern) -> Result<(), Diagnostic> {
+        match pattern {
+            QueryPattern::HasType {
+                attribute_id, mode, ..
+            } => {
+                self.ownership_mode_label(attribute_id, *mode)?;
+            }
+            QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+                for pattern in patterns {
+                    self.scoped_ownership_labels(pattern)?;
+                }
+            }
+            QueryPattern::Or { branches } => {
+                for pattern in branches.iter().flatten() {
+                    self.scoped_ownership_labels(pattern)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
     fn annotation(&self, subject: AnnotationSubjectId, kind: AnnotationKindId) -> bool {
         self.schema
             .fact(&SchemaFactId::Annotation(AnnotationFactId::new(
@@ -2221,6 +2262,68 @@ impl<'a> SchemaIndex<'a> {
                 }
                 constrain(types, *binding, candidates);
             }
+            QueryPattern::HasType {
+                attribute,
+                attribute_id,
+                owner,
+                mode,
+            } => {
+                let label = self.ownership_mode_label(attribute_id, *mode)?;
+                let concrete = |id: &TypeId| {
+                    !self.annotation(
+                        AnnotationSubjectId::Type(id.clone()),
+                        AnnotationKindId::Abstract,
+                    )
+                };
+                let mut attributes = self
+                    .schema
+                    .facts()
+                    .filter_map(|fact| match fact {
+                        SchemaFact::Type(fact)
+                            if concrete(fact.id())
+                                && (fact.id() == &label
+                                    || (*mode == TypeMatchMode::Isa
+                                        && self.ancestors(fact.id()).contains(&label))) =>
+                        {
+                            Some(fact.id().clone())
+                        }
+                        _ => None,
+                    })
+                    .collect::<BTreeSet<_>>();
+                if let Some(previous) = types.get(attribute) {
+                    attributes.retain(|id| previous.contains(id));
+                }
+                let owns = |owner: &TypeId, attribute: &TypeId| {
+                    self.ancestors(owner).iter().any(|ancestor| self.schema.facts().any(|fact| matches!(fact, SchemaFact::Owns(fact) if fact.id().owner() == ancestor && fact.id().attribute().label() == attribute.label())))
+                };
+                let mut owners = self
+                    .schema
+                    .facts()
+                    .filter_map(|fact| match fact {
+                        SchemaFact::Type(fact)
+                            if concrete(fact.id())
+                                && attributes
+                                    .iter()
+                                    .any(|attribute| owns(fact.id(), attribute)) =>
+                        {
+                            Some(fact.id().clone())
+                        }
+                        _ => None,
+                    })
+                    .collect::<BTreeSet<_>>();
+                if let Some(previous) = types.get(owner) {
+                    owners.retain(|id| previous.contains(id));
+                }
+                attributes.retain(|attribute| owners.iter().any(|owner| owns(owner, attribute)));
+                if attributes.is_empty() || owners.is_empty() {
+                    return Err(invalid(
+                        "query_plan_ownership_domain_empty",
+                        "ownership mode and schema leave no compatible owner and attribute types",
+                    ));
+                }
+                constrain(types, *owner, owners);
+                constrain(types, *attribute, attributes);
+            }
             QueryPattern::Has {
                 attribute,
                 attribute_id,
@@ -2251,6 +2354,7 @@ impl<'a> SchemaIndex<'a> {
                 }
                 *types = alternatives;
             }
+            QueryPattern::Not { .. } => self.scoped_ownership_labels(pattern)?,
             QueryPattern::Try { patterns } => {
                 let mut local = types.clone();
                 for pattern in patterns {

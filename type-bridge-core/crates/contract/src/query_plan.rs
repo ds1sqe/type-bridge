@@ -19,7 +19,7 @@ mod types;
 pub use types::{
     DocumentField, DocumentSource, InputColumn, InputColumnId, InputRow, LocalFunction,
     LocalReturn, OrderDirection, OrderTerm, QueryOperand, QueryOutput, QueryPattern,
-    QueryPlanFingerprint, ReadStage, ReduceAssignment, Reducer,
+    QueryPlanFingerprint, ReadStage, ReduceAssignment, Reducer, TypeMatchMode,
 };
 
 /// Native read/write plans.
@@ -719,6 +719,9 @@ fn inspect_pattern(
         }
         QueryPattern::Has {
             owner, attribute, ..
+        }
+        | QueryPattern::HasType {
+            owner, attribute, ..
         } => {
             check_binding(*owner, binding_count)?;
             check_binding(*attribute, binding_count)
@@ -928,6 +931,9 @@ fn collect_pattern_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<Bind
         }
         QueryPattern::Has {
             owner, attribute, ..
+        }
+        | QueryPattern::HasType {
+            owner, attribute, ..
         } => {
             bindings.insert(*owner);
             bindings.insert(*attribute);
@@ -982,6 +988,9 @@ fn collect_direct_positive_bindings(pattern: &QueryPattern, bindings: &mut BTree
             bindings.insert(*binding);
         }
         QueryPattern::Has {
+            owner, attribute, ..
+        }
+        | QueryPattern::HasType {
             owner, attribute, ..
         } => {
             bindings.extend([*owner, *attribute]);
@@ -1040,6 +1049,7 @@ fn collect_negation_positive_bindings(pattern: &QueryPattern, bindings: &mut BTr
         }
         QueryPattern::Isa { .. }
         | QueryPattern::Has { .. }
+        | QueryPattern::HasType { .. }
         | QueryPattern::Links { .. }
         | QueryPattern::Iid { .. }
         | QueryPattern::Value { .. }
@@ -1163,7 +1173,9 @@ fn collect_pattern_capabilities(
                 insert_capability(capabilities, v3::CAP_NEGATED_GIVEN_IID)?;
             }
         }
-        QueryPattern::Has { .. } => insert_capability(capabilities, CAP_HAS)?,
+        QueryPattern::Has { .. } | QueryPattern::HasType { .. } => {
+            insert_capability(capabilities, CAP_HAS)?
+        }
         QueryPattern::Links { .. } => insert_capability(capabilities, CAP_LINKS)?,
         QueryPattern::Value { comparator, .. } => {
             insert_capability(capabilities, CAP_VALUE)?;

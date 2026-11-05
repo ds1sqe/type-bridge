@@ -325,6 +325,12 @@ enum QueryPatternWire<S = CanonicalValue> {
         attribute_id: String,
         owner: u16,
     },
+    HasType {
+        attribute: u16,
+        attribute_id: String,
+        owner: u16,
+        mode: Option<String>,
+    },
     Links {
         players: Vec<AssertionRolePlayerWire>,
         relation: u16,
@@ -370,6 +376,17 @@ impl<S: WireScalar> QueryPatternWire<S> {
                 binding: BindingId::new(binding)?,
                 include_subtypes,
                 type_id: type_id.rebuild()?,
+            },
+            Self::HasType {
+                attribute,
+                attribute_id,
+                owner,
+                mode,
+            } => QueryPattern::HasType {
+                attribute: BindingId::new(attribute)?,
+                attribute_id: AttributeId::new(attribute_id)?,
+                owner: BindingId::new(owner)?,
+                mode: crate::query_plan::TypeMatchMode::from_typeql(mode.as_deref().unwrap_or(""))?,
             },
             Self::Has {
                 attribute,
@@ -458,6 +475,12 @@ enum ReadPatternWire<S = CanonicalValue> {
         attribute_id: String,
         owner: u16,
     },
+    HasType {
+        attribute: u16,
+        attribute_id: String,
+        owner: u16,
+        mode: Option<String>,
+    },
     Links {
         players: Vec<AssertionRolePlayerWire>,
         relation: u16,
@@ -511,6 +534,17 @@ impl<S: WireScalar> ReadPatternWire<S> {
                 binding: BindingId::new(binding)?,
                 include_subtypes,
                 type_id: type_id.rebuild()?,
+            },
+            Self::HasType {
+                attribute,
+                attribute_id,
+                owner,
+                mode,
+            } => QueryPattern::HasType {
+                attribute: BindingId::new(attribute)?,
+                attribute_id: AttributeId::new(attribute_id)?,
+                owner: BindingId::new(owner)?,
+                mode: crate::query_plan::TypeMatchMode::from_typeql(mode.as_deref().unwrap_or(""))?,
             },
             Self::Has {
                 attribute,

@@ -2387,6 +2387,35 @@ mod tests {
     }
 
     #[test]
+    fn explicit_ownership_modes_lower_to_the_named_typeql_forms() {
+        use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+        use type_bridge_contract::query_plan::{TypeMatchMode, v3::PlanBuilder};
+        for (mode, operator) in [
+            (TypeMatchMode::Isa, "isa"),
+            (TypeMatchMode::IsaExact, "isa!"),
+        ] {
+            let mut builder = PlanBuilder::new();
+            let owner = builder.exact(TypeId::new(TypeKind::Entity, "item").unwrap());
+            let value = builder.field_with_mode(owner, AttributeId::new("price").unwrap(), mode);
+            builder.returning(vec![value]);
+            let plan = builder
+                .build(
+                    &race::schema(),
+                    race::purchase_template().managed_semantics().clone(),
+                )
+                .unwrap();
+            let owner = local_variable(plan.bindings(), owner).unwrap();
+            let value = local_variable(plan.bindings(), value).unwrap();
+            assert_same_ast(
+                &typeql(&plan).0,
+                &format!(
+                    "match ${owner} isa! item; ${owner} has price ${value}; ${value} {operator} price; select ${value};"
+                ),
+            );
+        }
+    }
+
+    #[test]
     fn selective_ownership_delete_uses_the_bound_value_without_a_rematch() {
         use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
         use type_bridge_contract::query_plan::v3::PlanBuilder;

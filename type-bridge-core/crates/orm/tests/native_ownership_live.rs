@@ -17,22 +17,7 @@ use type_bridge_schema_compat::typeql_to_declared;
 #[tokio::test]
 #[ignore = "requires TYPE_BRIDGE_OWNERSHIP_LIVE_DATABASE and TYPEDB_ADDRESS"]
 async fn selective_unlink_keeps_other_values_and_shared_attribute() {
-    let name = std::env::var("TYPE_BRIDGE_OWNERSHIP_LIVE_DATABASE").unwrap();
-    let db = Arc::new(
-        Database::connect_with_options(
-            &std::env::var("TYPEDB_ADDRESS").unwrap(),
-            &name,
-            "admin",
-            "password",
-            ConnectOptions {
-                http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-                ..ConnectOptions::default()
-            },
-        )
-        .await
-        .unwrap(),
-    );
-    db.create_database().await.unwrap();
+    let db = database("").await;
     let result = tokio::spawn({
         let db = Arc::clone(&db);
         async move {
@@ -108,6 +93,64 @@ async fn selective_unlink_keeps_other_values_and_shared_attribute() {
         }
     })
     .await;
+    db.delete_database().await.unwrap();
+    result.unwrap();
+}
+
+async fn database(suffix: &str) -> Arc<Database> {
+    let name = format!(
+        "{}{suffix}",
+        std::env::var("TYPE_BRIDGE_OWNERSHIP_LIVE_DATABASE").unwrap()
+    );
+    let db = Arc::new(
+        Database::connect_with_options(
+            &std::env::var("TYPEDB_ADDRESS").unwrap(),
+            &name,
+            "admin",
+            "password",
+            ConnectOptions {
+                http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
+                ..ConnectOptions::default()
+            },
+        )
+        .await
+        .unwrap(),
+    );
+    db.create_database().await.unwrap();
+    db
+}
+
+#[tokio::test]
+#[ignore = "requires TYPE_BRIDGE_OWNERSHIP_LIVE_DATABASE and TYPEDB_ADDRESS"]
+async fn explicit_isa_matches_abstract_attributes_owned_only_by_an_owner_subtype() {
+    use type_bridge_contract::query_plan::TypeMatchMode;
+    let db = database("_mode").await;
+    let result = tokio::spawn({ let db = Arc::clone(&db); async move {
+        let schema_text = "define attribute original @abstract, value string; attribute specialised, sub original; entity base; entity child, sub base, owns specialised;";
+        db.execute_raw(schema_text, TxType::Schema).await.unwrap();
+        db.execute_raw("insert $c isa child, has specialised \"value\";", TxType::Write).await.unwrap();
+        let schema = typeql_to_declared(DocumentId::new("ownership-mode-live.typeql").unwrap(), schema_text).unwrap();
+        for mode in [TypeMatchMode::Isa, TypeMatchMode::IsaExact] {
+            let mut builder = PlanBuilder::new();
+            let owner = builder.subtypes(TypeId::new(TypeKind::Entity, "base").unwrap());
+            let value = builder.field_with_mode(owner, AttributeId::new("original").unwrap(), mode);
+            builder.returning(vec![value]);
+            let plan = builder.build(&schema, ManagedSemanticSchemaFingerprint::compute(SemanticProfileId::new("typedb-3.13.6/v1").unwrap(), b"ownership-mode-live").unwrap());
+            if mode == TypeMatchMode::IsaExact {
+                assert_eq!(plan.unwrap_err().code().as_str(), "query_plan_abstract_exact_ownership");
+                continue;
+            }
+            let plan = plan.unwrap();
+            assert_eq!(plan.statement_counts(), (1,0));
+            let mut tx = db.transaction(TransactionOptions::default());
+            let answer = tx.stage_plan(&plan).unwrap();
+            tx.commit().await.unwrap();
+            let PlanAnswer::Rows(rows) = &*answer.get().unwrap() else { panic!("rows"); };
+            assert_eq!(rows.len(), 1);
+            let QueryResult::Rows(direct) = db.execute_raw("match $o isa base, has original $v; select $v;", TxType::Read).await.unwrap() else { panic!("direct rows"); };
+            assert_eq!(direct.len(), rows.len());
+        }
+    }}).await;
     db.delete_database().await.unwrap();
     result.unwrap();
 }

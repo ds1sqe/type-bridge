@@ -352,3 +352,34 @@ pub fn schema_with_attribute_subtype() -> DeclaredSchema {
     )));
     declare(facts)
 }
+
+#[allow(dead_code)]
+pub fn schema_with_ownership_modes(abstract_attribute: bool) -> DeclaredSchema {
+    let mut facts = schema_facts();
+    let parent = TypeId::new(TypeKind::Attribute, "score").unwrap();
+    let child = TypeId::new(TypeKind::Attribute, "special_score").unwrap();
+    facts.push(SchemaFact::Type(TypeFact::new(child.clone()).unwrap()));
+    facts.push(SchemaFact::Sub(SubFact::new(
+        SubFactId::new(child, parent.clone()).unwrap(),
+    )));
+    facts.push(SchemaFact::Owns(OwnsFact::new(
+        OwnsFactId::new(
+            entity("child_account"),
+            AttributeId::new("special_score").unwrap(),
+        )
+        .unwrap(),
+    )));
+    if abstract_attribute {
+        facts.push(SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Type(parent),
+                    AnnotationKindId::Abstract,
+                ),
+                SchemaAnnotationValue::Presence,
+            )
+            .unwrap(),
+        ));
+    }
+    declare(facts)
+}

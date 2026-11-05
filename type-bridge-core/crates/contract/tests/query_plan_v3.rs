@@ -1250,6 +1250,7 @@ fn shared_plan_v3_fixtures() {
     expected.insert("explain".to_owned());
     // The ownership suite owns additive fixtures outside the frozen manifest.
     expected.insert("delete_has_value.json".to_owned());
+    expected.insert("has_type.json".to_owned());
     assert_eq!(actual, expected);
 }
 
