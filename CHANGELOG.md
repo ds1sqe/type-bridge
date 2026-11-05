@@ -133,7 +133,8 @@ All notable changes to TypeBridge will be documented in this file.
 
 - Python, Node, and Rust expose a nominal `Iid` value validated by the shared
   engine. Construction rejects malformed provider identifiers before I/O and
-  preserves the exact accepted hexadecimal spelling.
+  preserves the exact accepted hexadecimal spelling. Rust entity and relation
+  filters accept `iid(&Iid)` and nonempty `iids(&[Iid])` predicates.
 
 - V3 `DocumentScalar` fetch fields accept bound entities and relations and
   return their canonical IID. Optional thing bindings omit the field when

@@ -184,11 +184,25 @@ let ada = db.entities::<Person>().where_(
 )?.first().await?;
 ```
 
-`where_` returns a sibling and accepts only the six canonical scalar
-comparisons. `first` requires equality evidence for every effective
-reference-key field and proves that at most one exact IID matched. Use an
-explicit read transaction when several manager terminals and typed queries
-must share one snapshot:
+`where_`, `iid`, and `iids` return sibling filters. `where_` accepts the six
+canonical scalar comparisons. IID predicates accept validated `Iid` values;
+`iids` requires a nonempty set and can be combined with field comparisons.
+
+```rust
+use type_bridge::Iid;
+
+let iid = Iid::new("0x1234")?;
+let person = db.entities::<Person>().filter()?.iid(&iid)?.first().await?;
+let people = db.entities::<Person>().filter()?.iids(&[
+    iid,
+    Iid::new("0x5678")?,
+])?.all().await?;
+```
+
+`first` requires a singleton IID predicate or equality evidence for every
+effective reference-key field and proves that at most one exact IID matched.
+Use an explicit read transaction when several manager terminals and typed
+queries must share one snapshot:
 
 ```rust
 let read = db.read().await?;

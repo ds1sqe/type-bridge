@@ -11,7 +11,6 @@ use type_bridge_orm::{
 };
 
 use crate::__codegen::{CompleteModel, EntityModel, FieldToken, Model, QueryValued, RelationModel};
-use crate::Result;
 use crate::entity_codec::resolve_entity_authority;
 use crate::error::{Error, ModelValidationPhase};
 use crate::manager_target::ManagerTarget;
@@ -20,6 +19,7 @@ use crate::projected_codec::{
 };
 use crate::relation_codec::resolve_relation_authority;
 use crate::schema::Schema;
+use crate::{Iid, Result};
 
 struct ProjectedFilterCore<'target> {
     installed: &'target InstalledRuntimeProjection,
@@ -71,6 +71,17 @@ impl<'target> ProjectedFilterCore<'target> {
             installed: self.installed,
             target: self.target,
             filter,
+        })
+    }
+
+    fn try_and_iids(&self, iids: &[Iid]) -> Result<Self> {
+        Ok(Self {
+            installed: self.installed,
+            target: self.target,
+            filter: self
+                .filter
+                .try_and_iids(self.installed, iids)
+                .map_err(manager_filter_error)?,
         })
     }
 
@@ -163,12 +174,25 @@ where
         })
     }
 
+    /// Match one typed IID; combine with `where_` to constrain it further.
+    pub fn iid(&self, iid: &Iid) -> Result<Self> {
+        self.iids(std::slice::from_ref(iid))
+    }
+
+    /// Match any IID in this nonempty set, retaining existing predicates.
+    pub fn iids(&self, iids: &[Iid]) -> Result<Self> {
+        Ok(Self {
+            core: self.core.try_and_iids(iids)?,
+            marker: PhantomData,
+        })
+    }
+
     /// Hydrate every matching exact entity, deduplicated by IID.
     pub async fn all(&self) -> Result<Vec<M>> {
         self.core.all::<M>().await
     }
 
-    /// Hydrate the optional exact entity selected by a complete key equality.
+    /// Hydrate the optional exact entity selected by an IID or complete key equality.
     pub async fn first(&self) -> Result<Option<M>> {
         self.core.first::<M>().await
     }
@@ -233,12 +257,25 @@ where
         })
     }
 
+    /// Match one typed IID; combine with `where_` to constrain it further.
+    pub fn iid(&self, iid: &Iid) -> Result<Self> {
+        self.iids(std::slice::from_ref(iid))
+    }
+
+    /// Match any IID in this nonempty set, retaining existing predicates.
+    pub fn iids(&self, iids: &[Iid]) -> Result<Self> {
+        Ok(Self {
+            core: self.core.try_and_iids(iids)?,
+            marker: PhantomData,
+        })
+    }
+
     /// Hydrate every matching exact relation, deduplicated by IID.
     pub async fn all(&self) -> Result<Vec<M>> {
         self.core.all::<M>().await
     }
 
-    /// Hydrate the optional exact relation selected by a complete key equality.
+    /// Hydrate the optional exact relation selected by an IID or complete key equality.
     pub async fn first(&self) -> Result<Option<M>> {
         self.core.first::<M>().await
     }
