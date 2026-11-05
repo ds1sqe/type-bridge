@@ -951,3 +951,56 @@ async fn subtype_filters_refuse_mutations_without_provider_calls() {
     }
     assert!(queries.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn canonical_reads_refuse_schema_targets_even_for_empty_iid_filters() {
+    use type_bridge_contract::id::Iid;
+    use type_bridge_contract::sdk_diagnostic::SdkProviderOperation;
+    use type_bridge_orm::{ProjectedManagerFilterInvocationControl, QueryTarget, TxType};
+    let installed = installed(BindingTarget::Rust);
+    let base =
+        ProjectedManagerFilter::try_new(&installed, type_id(TypeKind::Entity, "person")).unwrap();
+    let backend = MockBackend::new(vec![]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "schema-filter-refusal");
+    let transaction = db.transaction_context(TxType::Schema).await.unwrap();
+    let target = QueryTarget::Transaction(&transaction);
+    let executor = ProjectedManagerFilterExecutor::new(&installed);
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    for filter in [
+        base.try_and_iid(&installed, &Iid::new("0xa1").unwrap())
+            .unwrap(),
+        base.try_and_iids(&installed, &[]).unwrap(),
+    ] {
+        for result in [
+            executor
+                .all_on_target(target, &filter, control())
+                .await
+                .map(|_| ()),
+            executor
+                .first_on_target(target, &filter, control())
+                .await
+                .map(|_| ()),
+            executor
+                .count_on_target(target, &filter, control())
+                .await
+                .map(|_| ()),
+            executor
+                .exists_on_target(target, &filter, control())
+                .await
+                .map(|_| ()),
+        ] {
+            assert_eq!(
+                result
+                    .unwrap_err()
+                    .into_diagnostic(SdkProviderOperation::Read)
+                    .code()
+                    .as_str(),
+                "borrowed_target_not_read_only"
+            );
+        }
+    }
+    assert!(queries.lock().unwrap().is_empty());
+    transaction.close().await.unwrap();
+}

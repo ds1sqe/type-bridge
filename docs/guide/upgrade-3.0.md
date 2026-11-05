@@ -179,5 +179,6 @@ Chaining `where()` after a keyword filter preserves its supported scalar
 predicates. Wider keyword lookups refuse the canonical path with
 `unsupported_manager_filter`; use `instances = manager.filter(...).all()`
 and then instance operations. Borrowed write transactions may construct
-filters and delete through them; canonical read terminals still require a
-borrowed read transaction.
+filters and mutate through them. Canonical read terminals accept borrowed
+read or write transactions, preserving read-after-write in the caller's
+transaction; borrowed schema transactions are refused.

@@ -475,6 +475,7 @@ impl<'a> SelectedResultExecutor<'a> {
         mut self,
         context: &TransactionContext,
         validated: &ValidatedMatchRequest,
+        allow_write: bool,
     ) -> impl Future<Output = Result<ValidatedMatchResult, OrmError>> {
         use tracing::Instrument;
         let deadline = self
@@ -490,7 +491,7 @@ impl<'a> SelectedResultExecutor<'a> {
             self.check_lifecycle_budget()?;
             let fenced = self.with_registry(&registry);
             fenced
-                .execute_compatible_borrowed_fenced(context, validated)
+                .execute_compatible_borrowed_fenced(context, validated, allow_write)
                 .await
                 .map_err(|error| self.limits.annotate_refusal(error))
         })
@@ -501,6 +502,7 @@ impl<'a> SelectedResultExecutor<'a> {
         &self,
         context: &TransactionContext,
         validated: &ValidatedMatchRequest,
+        allow_write: bool,
     ) -> Result<ValidatedMatchResult, OrmError> {
         self.check_lifecycle_budget()?;
         validated.recheck_schema(self.registry)?;
@@ -516,7 +518,8 @@ impl<'a> SelectedResultExecutor<'a> {
         }
         self.preflight_compatibility(validated)?;
         self.check_lifecycle_budget()?;
-        if context.tx_type() != TxType::Read {
+        if context.tx_type() != TxType::Read && !(allow_write && context.tx_type() == TxType::Write)
+        {
             return Err(MatchError::new(
                 MatchErrorCategory::InvalidPlan,
                 "borrowed_target_not_read_only",

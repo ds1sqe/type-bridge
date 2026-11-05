@@ -3183,6 +3183,37 @@ def test_sdk_serialization_live(
     person_manager.delete(person)
 
 
+def test_generated_filter_reads_uncommitted_writes_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    with clean_db.transaction("write") as transaction:
+        pending = _make_generated_person(generated, "borrowed-filter-read", 17)
+        transaction_people = generated.Person.manager(transaction)
+        transaction_people.insert(pending)
+        selection = transaction_people.where(
+            generated.Person.identifier,
+            generated.ProjectedManagerComparison.EQ,
+            generated.Identifier("borrowed-filter-read"),
+        )
+        assert selection.count() == 1
+        assert selection.exists() is True
+        assert [value.iid for value in selection.all()] == [pending.iid]
+        assert selection.first().iid == pending.iid
+        assert (
+            people.filter(identifier=generated.Identifier("borrowed-filter-read")).exists() is False
+        )
+    assert people.get_by_iid(pending.iid) is not None
+    with clean_db.transaction("schema") as transaction:
+        with pytest.raises(MatchRequestError) as refused:
+            generated.Person.manager(transaction).where().all()
+        assert refused.value.code == "borrowed_target_not_read_only"
+
+
 def test_generated_keyword_then_canonical_filter_preserves_scope_live(
     clean_db: Database,
     generated_package: ModuleType,

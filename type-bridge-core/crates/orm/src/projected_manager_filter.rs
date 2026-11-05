@@ -1223,13 +1223,14 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         let terminal = ManagerTerminal::all(&control, target.manager_item_limit());
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        target.require_manager_read_target()?;
         filter.require_boolean_predicates()?;
         if filter.matches_none {
             return Ok(Vec::new());
         }
         let (registry, request) = self.build_request(filter, terminal)?;
         let (request, result) = target
-            .execute(
+            .execute_manager_match(
                 &registry,
                 request,
                 control.limits,
@@ -1240,7 +1241,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         let roots = manager_roots(&request, &result).map_err(reply_error)?;
         self.materialize_roots(
             &registry,
-            ProjectedQueryOrigin::for_target(&target).map_err(reply_error)?,
+            ProjectedQueryOrigin::for_manager_target(&target).map_err(reply_error)?,
             filter,
             &roots,
             &control,
@@ -1320,6 +1321,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<Option<Arc<ProjectedThing>>, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, true)?;
+        target.require_manager_read_target()?;
         filter.require_boolean_predicates()?;
         if filter.matches_none {
             return Ok(None);
@@ -1350,7 +1352,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         }
         let (registry, request) = self.build_request(filter, ManagerTerminal::first())?;
         let (request, result) = target
-            .execute(
+            .execute_manager_match(
                 &registry,
                 request,
                 control.limits,
@@ -1366,7 +1368,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         let mut projected = self
             .materialize_roots(
                 &registry,
-                ProjectedQueryOrigin::for_target(&target).map_err(reply_error)?,
+                ProjectedQueryOrigin::for_manager_target(&target).map_err(reply_error)?,
                 filter,
                 &roots,
                 &control,
@@ -1447,13 +1449,14 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<u64, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        target.require_manager_read_target()?;
         filter.require_boolean_predicates()?;
         if filter.matches_none {
             return Ok(0);
         }
         let (registry, request) = self.build_request(filter, ManagerTerminal::Count)?;
         let (request, result) = target
-            .execute(
+            .execute_manager_match(
                 &registry,
                 request,
                 control.limits,
@@ -1542,13 +1545,14 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<bool, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
+        target.require_manager_read_target()?;
         filter.require_boolean_predicates()?;
         if filter.matches_none {
             return Ok(false);
         }
         let (registry, request) = self.build_request(filter, ManagerTerminal::Exists)?;
         let (request, result) = target
-            .execute(
+            .execute_manager_match(
                 &registry,
                 request,
                 control.limits,

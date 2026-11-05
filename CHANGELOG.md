@@ -44,6 +44,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- Canonical manager filter reads accept borrowed read or write transactions
+  across SDKs, preserving read-after-write; borrowed schema targets remain
+  refused and transaction ownership is unchanged.
+
 - Python projected single writes hydrate and stage facade publication under
   Core's controlled write mapper. A failed write restores the input facade;
   zero or multiple roots leave it unchanged.

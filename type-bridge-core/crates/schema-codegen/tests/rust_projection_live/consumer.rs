@@ -6388,6 +6388,19 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
             .expect("uncommitted read inside the open transaction")
             .is_some()
     );
+    let uncommitted = tx.entities::<Person>()
+        .filter().expect("borrowed filter")
+        .where_(PersonType::identifier, ProjectedManagerComparison::Eq,
+            &Identifier::new("p-300".to_owned()).expect("borrowed key"))
+        .expect("borrowed key predicate");
+    assert_eq!(uncommitted.count().await.expect("uncommitted count"), 1);
+    assert!(uncommitted.exists().await.expect("uncommitted existence"));
+    let uncommitted_rows = uncommitted.all().await.expect("uncommitted rows");
+    assert_eq!(uncommitted_rows.len(), 1);
+    assert_eq!(uncommitted_rows[0].iid(), committed_worker.iid());
+    assert_eq!(uncommitted.first().await.expect("uncommitted first").unwrap().iid(), committed_worker.iid());
+    assert!(db.entities::<Person>().get_by_iid(committed_worker.iid()).await
+        .expect("uncommitted row remains invisible outside caller transaction").is_none());
     tx.commit().await.expect("multi-operation commit");
     assert!(
         db.entities::<Person>()

@@ -11440,7 +11440,7 @@ class StructBase:
     }
 
     #[test]
-    fn write_transaction_manager_preserves_legacy_reads_and_refuses_canonical_reads_pre_io() {
+    fn write_transaction_manager_supports_canonical_and_keyword_reads() {
         Python::initialize();
         Python::attach(|py| {
             let (_, package) = install_batch(py);
@@ -11452,8 +11452,10 @@ class StructBase:
                 .class(&person_id, ProjectedModelForm::Complete)
                 .unwrap()
                 .clone_ref(py);
-            let (backend, state) =
-                OriginRecordingBackend::new(vec![QueryResult::Documents(vec![])]);
+            let (backend, state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![]),
+                QueryResult::Documents(vec![]),
+            ]);
             let database = Arc::new(Database::with_backend(
                 Box::new(backend),
                 "canonical-write-target",
@@ -11475,29 +11477,8 @@ class StructBase:
                 .expect("released manager should bind to a write transaction");
 
             assert!(manager.compatibility_filter.is_none());
-            let error = manager
-                .canonical_filter()
-                .expect("canonical filters may construct in a borrowed write transaction")
-                .all(py)
-                .expect_err("canonical read terminals require a borrowed read transaction");
-            let diagnostic = error.value(py);
-            assert_eq!(
-                diagnostic
-                    .getattr("sdk_category")
-                    .unwrap()
-                    .extract::<String>()
-                    .unwrap(),
-                "invalid_input",
-            );
-            assert_eq!(
-                diagnostic
-                    .getattr("code")
-                    .unwrap()
-                    .extract::<String>()
-                    .unwrap(),
-                "borrowed_target_not_read_only",
-            );
-            assert!(state.lock().unwrap().queries.is_empty());
+            let canonical = manager.canonical_filter().unwrap().all(py).unwrap();
+            assert_eq!(canonical.bind(py).cast::<PyList>().unwrap().len(), 0);
 
             let values = manager
                 .all(py)
@@ -11506,7 +11487,7 @@ class StructBase:
             {
                 let state = state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.queries.len(), 1);
+                assert_eq!(state.queries.len(), 2);
             }
             runtime
                 .block_on(transaction.close())

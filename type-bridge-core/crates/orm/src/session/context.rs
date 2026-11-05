@@ -901,7 +901,20 @@ impl TransactionContext {
         limits: MatchExecutionLimits,
     ) -> Result<ValidatedMatchResult> {
         SelectedResultExecutor::new(registry, self.match_capabilities.clone(), limits)
-            .execute_compatible_borrowed(self, validated)
+            .execute_compatible_borrowed(self, validated, false)
+            .await
+    }
+
+    /// Generated manager reads share the selected-row executor while allowing
+    /// read-after-write in a caller-owned write transaction.
+    pub(crate) async fn execute_manager_match_with_limits(
+        &self,
+        registry: &DescriptorRegistry,
+        validated: &ValidatedMatchRequest,
+        limits: MatchExecutionLimits,
+    ) -> Result<ValidatedMatchResult> {
+        SelectedResultExecutor::new(registry, self.match_capabilities.clone(), limits)
+            .execute_compatible_borrowed(self, validated, true)
             .await
     }
 

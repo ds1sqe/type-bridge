@@ -956,6 +956,46 @@ impl QueryTarget<'_> {
         }
     }
 
+    pub(crate) fn require_manager_read_target(&self) -> Result<(), QueryTargetError> {
+        if matches!(self, Self::Transaction(transaction) if transaction.tx_type() == crate::TxType::Schema)
+        {
+            return Err(OrmError::from(
+                crate::match_request::MatchError::new(
+                    crate::match_request::MatchErrorCategory::InvalidPlan,
+                    "borrowed_target_not_read_only",
+                    "manager reads require a borrowed read or write transaction",
+                )
+                .at(crate::match_request::MatchErrorPathSegment::Operation),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn execute_manager_match(
+        &self,
+        registry: &DescriptorRegistry,
+        validated: ValidatedMatchRequest,
+        resources: QueryExecutionResourceLimits,
+        cancellation: &AnswerCancellation,
+        deadline: QueryExecutionDeadline,
+    ) -> Result<(ValidatedMatchRequest, ValidatedMatchResult), QueryTargetError> {
+        if let Self::Transaction(transaction) = self {
+            let (resources, deadline) = self.budget(resources, deadline);
+            let result = transaction
+                .execute_manager_match_with_limits(
+                    registry,
+                    &validated,
+                    resources.direct_with_deadline(cancellation.clone(), deadline),
+                )
+                .await?;
+            Ok((validated, result))
+        } else {
+            self.execute(registry, validated, resources, cancellation, deadline)
+                .await
+        }
+    }
+
     /// Run one validated request under `resources` and `deadline`, both of
     /// which this call constrains by the connection's ceiling again, so a
     /// caller cannot exceed it.
