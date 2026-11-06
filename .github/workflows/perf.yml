@@ -123,7 +123,7 @@ jobs:
         working-directory: type-bridge-core
         run: |
           CRITERION_HOME="$PERF_DIR/criterion/core" cargo bench --locked -p type-bridge-core-lib \
-            --bench validation --bench compilation --bench schema -- --noplot
+            --bench validation --bench schema -- --noplot
           CRITERION_HOME="$PERF_DIR/criterion/orm" cargo bench --locked -p type-bridge-orm \
             --bench serde --bench query_building --bench staged -- --noplot
 
@@ -133,7 +133,7 @@ jobs:
           GUNGRAUN_SAVE_SUMMARY: json
         run: |
           GUNGRAUN_HOME="$PERF_DIR/iai/core" cargo bench --locked -p type-bridge-core-lib \
-            --bench validation_iai --bench compilation_iai --bench schema_iai
+            --bench validation_iai --bench schema_iai
           GUNGRAUN_HOME="$PERF_DIR/iai/orm" cargo bench --locked -p type-bridge-orm \
             --bench serde_iai --bench query_building_iai --bench staged_iai
 

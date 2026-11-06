@@ -28,10 +28,10 @@ of the core and ORM bench targets. Instruction counts need valgrind and
 ```bash
 cd type-bridge-core
 CRITERION_HOME=../tmp/perf/criterion/core cargo bench -p type-bridge-core-lib \
-  --bench validation --bench compilation --bench schema -- --noplot
+  --bench validation --bench schema -- --noplot
 GUNGRAUN_SAVE_SUMMARY=json GUNGRAUN_HOME=../tmp/perf/iai/core \
   cargo bench -p type-bridge-core-lib \
-  --bench validation_iai --bench compilation_iai --bench schema_iai
+  --bench validation_iai --bench schema_iai
 cd ..
 uv run python -m perf.harness.micro \
   --criterion-dir tmp/perf/criterion --iai-dir tmp/perf/iai --out tmp/perf/micro.json
