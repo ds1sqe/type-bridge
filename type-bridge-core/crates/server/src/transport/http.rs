@@ -100,7 +100,7 @@ pub(crate) struct HealthBody {
 pub(crate) fn health_response(typedb_connected: bool) -> Json<HealthBody> {
     Json(HealthBody {
         status: "ok",
-        version: "1.5.11",
+        version: env!("CARGO_PKG_VERSION"),
         typedb_connected,
     })
 }

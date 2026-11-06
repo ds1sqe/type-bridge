@@ -246,6 +246,9 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Fixed
 
+- The server `/health` response reports its actual crate version instead of
+  the stale `1.5.11` literal.
+
 - Signed staged proxy cancellations retain their `cancelled` category and
   original diagnostic code when surfaced to callers and pending answers.
 - Server call deadlines remain absolute while plans are staged. Preparing a

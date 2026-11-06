@@ -1612,7 +1612,14 @@ async fn staged_io_traces_use_nonce_without_payload_fingerprints() {
 async fn staged_router_preserves_health_and_names_removed_routes() {
     let fixture = v3_fixture(default_pipeline(), false);
     let health = call(&fixture.router, "GET", "/health", Vec::new()).await;
-    assert_eq!(health, br#"{"status":"ok","version":"1.5.11","typedb_connected":true}"#);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&health).unwrap(),
+        serde_json::json!({
+            "status": "ok",
+            "version": env!("CARGO_PKG_VERSION"),
+            "typedb_connected": true,
+        }),
+    );
     for path in ["/query", "/query/raw", "/query/validate", "/schema", "/v2/query", "/v2/capabilities", "/v2/unknown"] {
         for method in ["GET", "POST"] {
             let response = fixture.router.clone().oneshot(Request::builder()
