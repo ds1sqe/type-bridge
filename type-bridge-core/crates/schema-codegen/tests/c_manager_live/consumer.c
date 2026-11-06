@@ -567,10 +567,14 @@ static int check_manager_networkzhlink_terminal_twins(
 static int check_manager_iid_filters(
     const type_bridge_database_t *database, const manager_person_manager *manager,
     const type_bridge_iid_t *first_iid, const type_bridge_iid_t *second_iid,
+    const manager_person_create *replacement,
     type_bridge_execution_diagnostics_t **diagnostics) {
   const type_bridge_iid_t *iids[] = {first_iid, second_iid};
   manager_person_manager_filter *filter = NULL;
   manager_person *person = NULL;
+  manager_person_update_batch_result *updated = NULL;
+  manager_person_put_batch_result *put = NULL;
+  size_t updated_count = SIZE_MAX;
   uint64_t count = UINT64_MAX;
   uint8_t exists = 1u;
   CHECK(manager_person_manager_filter_iids(manager, manager_person_manager_filter_root(manager),
@@ -583,6 +587,14 @@ static int check_manager_iid_filters(
   CHECK(manager_person_manager_database_first(database, manager, manager_person_manager_filter_ref(filter),
             NULL, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK && person != NULL);
   CHECK(manager_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_database_update(database, manager, manager_person_manager_filter_ref(filter),
+            replacement, NULL, NULL, &updated, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_update_batch_result_count(updated, &updated_count, diagnostics) == TYPE_BRIDGE_STATUS_OK && updated_count == 1u);
+  CHECK(manager_person_update_batch_result_close(&updated) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_database_put(database, manager, replacement, NULL, NULL, &put,
+            diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_put_batch_result_count(put, &updated_count, diagnostics) == TYPE_BRIDGE_STATUS_OK && updated_count == 1u);
+  CHECK(manager_person_put_batch_result_close(&put) == TYPE_BRIDGE_STATUS_OK);
   CHECK(manager_person_manager_filter_close(&filter) == TYPE_BRIDGE_STATUS_OK);
   CHECK(manager_person_manager_filter_iids(manager, manager_person_manager_filter_root(manager),
             iids, 2u, &filter, diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -597,6 +609,12 @@ static int check_manager_iid_filters(
             NULL, NULL, &exists, diagnostics) == TYPE_BRIDGE_STATUS_OK && exists == 0u);
   CHECK(manager_person_manager_database_first(database, manager, manager_person_manager_filter_ref(filter),
             NULL, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK && person == NULL);
+  CHECK(manager_person_manager_database_update(database, manager, manager_person_manager_filter_ref(filter),
+            replacement, NULL, NULL, &updated, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_update_batch_result_count(updated, &updated_count, diagnostics) == TYPE_BRIDGE_STATUS_OK && updated_count == 0u);
+  CHECK(manager_person_update_batch_result_close(&updated) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_database_delete(database, manager, manager_person_manager_filter_ref(filter),
+            NULL, NULL, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(manager_person_manager_filter_close(&filter) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
@@ -770,6 +788,10 @@ int main(void) {
             TYPE_BRIDGE_STATUS_OK &&
         same_text(version, expected_server_version));
 
+  CHECK(manager_person_manager_open(package, &manager, &diagnostics) ==
+            TYPE_BRIDGE_STATUS_OK &&
+        diagnostics == NULL);
+
   limits.items = UINT64_C(100000);
   limits.bytes = UINT64_C(67108864);
   limits.graph_nodes = UINT64_C(1000000);
@@ -780,7 +802,7 @@ int main(void) {
       package, "data-ada", "Ada", 38, 7, 40, 0u, 38, "2026-08-12",
       "2026-08-12T09:30:00", "2026-08-12T09:30:00Z", "38.5",
       UINT64_C(0x4043000000000000), "PT38S", &ada_create, &diagnostics));
-  CHECK(TEST_SINGLE_WRITE(manager_person, insert, manager_person_database_insert(database, ada_create, NULL,&manager_person_insert_result,
+  CHECK(TEST_SINGLE_WRITE(manager_person, insert, manager_person_manager_database_insert(database, &manager, ada_create, NULL, NULL, &manager_person_insert_result,
                                       &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   {
     type_bridge_byte_view_t iid = {0};
@@ -793,7 +815,7 @@ int main(void) {
       package, "data-dana", NULL, 45, 9, 40, 1u, 45, "2026-08-13",
       "2026-08-13T10:45:00", "2026-08-13T10:45:00Z", "45.5",
       UINT64_C(0x4046800000000000), "PT45S", &dana_create, &diagnostics));
-  CHECK(TEST_SINGLE_WRITE(manager_person, insert, manager_person_database_insert(database, dana_create, NULL,&manager_person_insert_result,
+  CHECK(TEST_SINGLE_WRITE(manager_person, insert, manager_person_manager_database_insert(database, &manager, dana_create, NULL, NULL, &manager_person_insert_result,
                                       &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   {
     type_bridge_byte_view_t iid = {0};
@@ -803,9 +825,6 @@ int main(void) {
   }
   CHECK(manager_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(manager_person_manager_open(package, &manager, &diagnostics) ==
-            TYPE_BRIDGE_STATUS_OK &&
-        diagnostics == NULL);
   CHECK(manager_foozuzubar_open(package, 7, &seven, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         manager_foozuzubar_open(package, 9, &nine, &diagnostics) ==
@@ -819,7 +838,7 @@ int main(void) {
         manager_identifier_open(package, view_of("wrong-domain"), &wrong_domain,
                                &diagnostics) == TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(check_manager_iid_filters(database, &manager, ada_iid.typed, dana_iid.typed, &diagnostics) == 0);
+  CHECK(check_manager_iid_filters(database, &manager, ada_iid.typed, dana_iid.typed, ada_create, &diagnostics) == 0);
   CHECK(wrong_owner_hostile_cast_fails_closed(package, &diagnostics));
   CHECK(manager_person_manager_filter_foozuzubar_eq(
             &manager, manager_person_manager_filter_root(&manager),

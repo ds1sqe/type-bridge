@@ -107,6 +107,13 @@ pub(super) fn function_names(
         ] {
             names.insert(generated_symbol(&manager, suffix)?);
         }
+        if model.create().target_name().is_some() {
+            for scope in ["database", "write_transaction", "proxy_connection"] {
+                for operation in ["insert", "put", "update", "delete"] {
+                    names.insert(generated_symbol(&manager, &format!("{scope}_{operation}"))?);
+                }
+            }
+        }
         let result = result_name(model)?;
         for suffix in ["count", "at", "close"] {
             names.insert(generated_symbol(&result, suffix)?);
@@ -219,6 +226,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL {manager}_filter_{suffix}(
                    type_bridge_execution_diagnostics_t **out_diagnostics);\n"
             );
         }
+        render_writes(output, projection, model, prefix, false)?;
         let _ = write!(
             output,
             "type_bridge_status_t TYPE_BRIDGE_CALL {result}_count(\n\
@@ -255,6 +263,11 @@ fn input_fence(
     extra: &str,
     out: &str,
 ) {
+    let out_size = if out == "NULL" {
+        "0u".to_owned()
+    } else {
+        format!("sizeof(*{out})")
+    };
     let _ = write!(
         output,
         r#"
@@ -267,7 +280,7 @@ fn input_fence(
       {source}.value, 1u);
 {extra}
   status = {preflight}(alias_inputs, alias_input_count,
-      {out}, sizeof(*{out}), out_diagnostics, sizeof(*out_diagnostics));
+      {out}, {out_size}, out_diagnostics, sizeof(*out_diagnostics));
   if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}
   if (manager == NULL || manager->reserved[0] != 0u || manager->reserved[1] != 0u ||
       manager->reserved[2] != 0u || manager->reserved[3] != 0u ||
@@ -281,7 +294,7 @@ fn input_fence(
   {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN,
       &{model_token}, 1u);
   status = {preflight}(alias_inputs, alias_input_count,
-      {out}, sizeof(*{out}), out_diagnostics, sizeof(*out_diagnostics));
+      {out}, {out_size}, out_diagnostics, sizeof(*out_diagnostics));
   if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}
 "#
     );
@@ -293,6 +306,7 @@ fn render_manager_definitions(
     model: &ModelProjection,
     prefix: &str,
 ) -> Result<(), Diagnostic> {
+    render_writes(output, projection, model, prefix, true)?;
     let target = model.target_name().as_str();
     let manager = manager_name(model)?;
     let filter = filter_name(model)?;
@@ -620,5 +634,142 @@ type_bridge_status_t TYPE_BRIDGE_CALL {result}_close({result} **result) {{
 }}
 "#
     );
+    Ok(())
+}
+
+fn render_writes(
+    output: &mut String,
+    projection: &RuntimeProjection,
+    model: &ModelProjection,
+    prefix: &str,
+    definitions: bool,
+) -> Result<(), Diagnostic> {
+    let Some(create) = model.create().target_name() else {
+        return Ok(());
+    };
+    let create = create.as_str();
+    let target = model.target_name().as_str();
+    let manager = manager_name(model)?;
+    let filter_ref = filter_ref_name(model)?;
+    let model_token = model_token_symbol(projection, prefix, model.id())?;
+    let add_input = generated_symbol(prefix, "generated_alias_input_v1")?;
+    let preflight = generated_symbol(prefix, "generated_alias_preflight_v1")?;
+    for (scope, owner, owner_kind) in [
+        (
+            "database",
+            "type_bridge_database_t",
+            "TYPE_BRIDGE_GENERATED_INPUT_DATABASE",
+        ),
+        (
+            "write_transaction",
+            "type_bridge_write_transaction_t",
+            "TYPE_BRIDGE_GENERATED_INPUT_WRITE_TRANSACTION",
+        ),
+        (
+            "proxy_connection",
+            "type_bridge_proxy_connection_t",
+            "TYPE_BRIDGE_GENERATED_INPUT_PROXY_CONNECTION",
+        ),
+    ] {
+        for operation in ["insert", "put", "update", "delete"] {
+            let selected = matches!(operation, "update" | "delete");
+            let returns = operation != "delete";
+            let result = format!("{target}_{operation}_batch_result");
+            let _ = write!(
+                output,
+                "\ntype_bridge_status_t TYPE_BRIDGE_CALL {manager}_{scope}_{operation}(\n    const {owner} *owner, const {manager} *manager,"
+            );
+            if selected {
+                let _ = write!(output, " {filter_ref} filter,");
+            }
+            if returns {
+                let _ = write!(output, "\n    const {create} *input,");
+            }
+            output.push_str("\n    const type_bridge_query_execution_limits_v1_t *limits,\n    const type_bridge_cancellation_t *cancellation,");
+            if returns {
+                let _ = write!(output, " {result} **out,");
+            }
+            output.push_str("\n    type_bridge_execution_diagnostics_t **out_diagnostics)");
+            if !definitions {
+                output.push_str(";\n");
+                continue;
+            }
+            output.push_str(" {\n");
+            if returns {
+                output.push_str("  type_bridge_projected_batch_result_t *value = NULL;\n");
+            }
+            // The root pointer is read only after fencing the complete manager below.
+            if !selected {
+                let _ = writeln!(
+                    output,
+                    "  {filter_ref} filter = {{ NULL, {{0u, 0u, 0u, 0u}} }};"
+                );
+            }
+            let mut extra = format!(
+                r#"
+  {add_input}(alias_inputs, &alias_input_count, {owner_kind}, owner, 1u);
+  {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_BYTES, limits, limits == NULL ? 0u : sizeof(*limits));
+  {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION, cancellation, 1u);
+"#
+            );
+            if returns {
+                let _ = writeln!(
+                    extra,
+                    "  {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CREATE, input, 1u);"
+                );
+            }
+            input_fence(
+                output,
+                "filter",
+                &model_token,
+                &add_input,
+                &preflight,
+                &extra,
+                if returns { "out" } else { "NULL" },
+            );
+            if !selected {
+                output.push_str("  filter.value = manager->root_filter;\n");
+            }
+            if returns {
+                output.push_str("  if (out != NULL) { *out = NULL; }\n");
+            }
+            output.push_str("  if (out_diagnostics != NULL) { *out_diagnostics = NULL; }\n");
+            if returns {
+                output.push_str("  if (out == NULL) { return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; }\n");
+            }
+            let _ = write!(
+                output,
+                r#"
+  if (out_diagnostics == NULL) {{ return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; }}
+  status = type_bridge_manager_filter_validate_model(filter.value, manager->root_filter, &{model_token}, out_diagnostics);
+  if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}
+"#
+            );
+            let selection = if selected {
+                "filter.value".to_owned()
+            } else {
+                format!("&{model_token}")
+            };
+            let _ = write!(
+                output,
+                "  status = type_bridge_{scope}_manager_{operation}(owner, {selection},"
+            );
+            if returns {
+                output.push_str(" (const type_bridge_projected_create_t *)input,");
+            }
+            output.push_str(" limits, cancellation,");
+            if returns {
+                output.push_str(" &value,");
+            }
+            output.push_str(" out_diagnostics);\n");
+            if returns {
+                let _ = writeln!(
+                    output,
+                    "  if (status == TYPE_BRIDGE_STATUS_OK) {{ *out = ({result} *)value; }}"
+                );
+            }
+            output.push_str("  return status;\n}\n");
+        }
+    }
     Ok(())
 }

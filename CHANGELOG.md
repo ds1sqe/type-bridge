@@ -14,6 +14,9 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- Generated C managers expose canonical `insert`, `put`, filtered `update`,
+  and filtered `delete` methods for database, write transaction, and proxy
+  targets, preserving complete write results and exact-model validation.
 - Generated C managers expose typed `filter_iid` and `filter_iids` builders.
   IID lists retain empty-list matches-none behavior and fence both the pointer
   array and each IID owner before initializing outputs.
