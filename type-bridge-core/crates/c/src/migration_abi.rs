@@ -119,6 +119,7 @@ const PAIR_ABSENT: u32 = 1;
 const PAIR_STANDALONE_MANAGED: u32 = 2;
 const PAIR_OWNED: u32 = 3;
 const PAIR_OWNED_JOURNAL_ORPHAN: u32 = 4;
+const PAIR_IMPORT_PENDING: u32 = 5;
 const CREATE_CREATED: u32 = 1;
 const CREATE_ALREADY_EXISTS: u32 = 2;
 const DELETE_ALREADY_ABSENT: u32 = 1;
@@ -641,6 +642,9 @@ pub unsafe extern "C" fn type_bridge_database_administration_close(
 fn pair_state(state: type_bridge_schema_migration_typedb::ManagedDatabasePairState) -> u32 {
     match state {
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::Absent => PAIR_ABSENT,
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::ImportPending => {
+            PAIR_IMPORT_PENDING
+        }
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::StandaloneManaged => {
             PAIR_STANDALONE_MANAGED
         }

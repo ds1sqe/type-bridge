@@ -32,8 +32,10 @@ pub async fn execute_catalog_apply_plan(
     let binding = catalog_binding(managed_database, catalog)?;
     let verified =
         VerifiedMigrationCatalog::new(catalog.graph().manifests().map(|(_, value)| value))?;
-    let store = TypeDbMigrationStore::new(&binding, verified)?;
-    let store = store.bind_plan(plan)?;
+    let store = TypeDbMigrationStore::new(&binding, verified)?
+        .with_catalog_import_binding()
+        .await?;
+    let store = store.bind_guarded_bridge_plan(plan)?;
     let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities())?
         .for_replayed_profile_bridge(catalog.graph(), plan);
     execute_verified_migration_apply_plan(&store, &provider, holder, plan).await
@@ -73,9 +75,11 @@ pub async fn execute_catalog_apply_plan_controlled_with_user_steps(
     let binding = catalog_binding(managed_database, catalog)?;
     let verified =
         VerifiedMigrationCatalog::new(catalog.graph().manifests().map(|(_, value)| value))?;
-    let store = TypeDbMigrationStore::new(&binding, verified)?;
+    let store = TypeDbMigrationStore::new(&binding, verified)?
+        .with_catalog_import_binding()
+        .await?;
     control.check()?;
-    let store = store.bind_plan(plan)?;
+    let store = store.bind_guarded_bridge_plan(plan)?;
     let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities())?
         .for_replayed_profile_bridge(catalog.graph(), plan)
         .with_user_steps(user_steps.clone());
@@ -93,8 +97,10 @@ pub async fn execute_catalog_rollback_plan(
     let binding = catalog_binding(managed_database, catalog)?;
     let verified =
         VerifiedMigrationCatalog::new(catalog.graph().manifests().map(|(_, value)| value))?;
-    let store = TypeDbMigrationStore::new(&binding, verified)?;
-    let store = store.bind_rollback_plan(plan)?;
+    let store = TypeDbMigrationStore::new(&binding, verified)?
+        .with_catalog_import_binding()
+        .await?;
+    let store = store.bind_guarded_bridge_rollback_plan(plan)?;
     let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities())?;
     execute_verified_migration_rollback_plan(&store, &provider, holder, plan).await
 }
@@ -133,9 +139,11 @@ pub async fn execute_catalog_rollback_plan_controlled_with_user_steps(
     let binding = catalog_binding(managed_database, catalog)?;
     let verified =
         VerifiedMigrationCatalog::new(catalog.graph().manifests().map(|(_, value)| value))?;
-    let store = TypeDbMigrationStore::new(&binding, verified)?;
+    let store = TypeDbMigrationStore::new(&binding, verified)?
+        .with_catalog_import_binding()
+        .await?;
     control.check()?;
-    let store = store.bind_rollback_plan(plan)?;
+    let store = store.bind_guarded_bridge_rollback_plan(plan)?;
     let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities())?
         .with_user_steps(user_steps.clone());
     execute_verified_migration_rollback_plan_controlled(&store, &provider, holder, plan, control)

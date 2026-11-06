@@ -235,7 +235,8 @@ export type ManagedDatabasePairState =
   | "absent"
   | "standalone_managed"
   | "owned_pair"
-  | "owned_journal_orphan";
+  | "owned_journal_orphan"
+  | "import_pending";
 export type ManagedDatabaseDeleteOutcome =
   | "already_absent"
   | "deleted_standalone_managed"

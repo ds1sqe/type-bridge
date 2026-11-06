@@ -2224,3 +2224,61 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
     drop(proxy);
     drop_database(database).await;
 }
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn staged_reads_use_the_old_fence_until_the_import_publishes_the_new_mirror() {
+    use type_bridge_contract::reserved::{
+        IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL,
+    };
+    let (name, db) = seeded("import_pending").await;
+    let scope = format!("server-live-{name}");
+    db.execute_raw(IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    let old_control = format!(
+        "insert $c isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-control-scope {}, has typebridge-internal-v2-lease-fence \"1\", has typebridge-internal-v2-lease-state \"free\";",
+        serde_json::to_string(&scope).unwrap()
+    );
+    db.execute_raw(&old_control, TxType::Write).await.unwrap();
+    let proxy = proxy(
+        &name,
+        LivePolicy {
+            managed_control: true,
+            ..Default::default()
+        },
+        false,
+    )
+    .await;
+    for phase in 0..3 {
+        if phase == 1 {
+            db.execute_raw(MANAGED_FENCE_SCHEMA_TYPEQL, TxType::Schema)
+                .await
+                .unwrap();
+        } else if phase == 2 {
+            db.execute_raw(
+                &old_control.replace("typebridge-internal-v2-", "typebridge-internal-"),
+                TxType::Write,
+            )
+            .await
+            .unwrap();
+        }
+        let request = request(
+            &proxy,
+            vec![plain_entry(&proxy, &race::stock_read(Operation::Count))],
+        );
+        let reply = verify(&proxy, &request, &post(&proxy, &request).await);
+        assert!(reply.committed(), "phase {phase}: {:?}", reply.diagnostic());
+    }
+    db.execute_raw("match $c isa typebridge-internal-migration-control, has typebridge-internal-lease-state $s; delete has $s of $c; insert $c has typebridge-internal-lease-state \"held\", has typebridge-internal-lease-holder \"migrator\";", TxType::Write).await.unwrap();
+    let request = request(
+        &proxy,
+        vec![plain_entry(&proxy, &race::stock_read(Operation::Count))],
+    );
+    let reply = verify(&proxy, &request, &post(&proxy, &request).await);
+    assert!(
+        !reply.committed(),
+        "a free old mirror must not override a held new mirror"
+    );
+    drop_database(db).await;
+}

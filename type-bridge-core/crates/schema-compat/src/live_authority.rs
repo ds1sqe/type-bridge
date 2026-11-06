@@ -784,6 +784,8 @@ pub struct LiveQueryAuthorityState {
     managed: ManagedSchemaState,
     control_presence: LiveQueryControlPresence,
     legacy_control_present: bool,
+    import_control_present: bool,
+    current_control_present: bool,
 }
 
 impl LiveQueryAuthorityState {
@@ -797,6 +799,16 @@ impl LiveQueryAuthorityState {
     #[must_use]
     pub const fn control_presence(&self) -> LiveQueryControlPresence {
         self.control_presence
+    }
+
+    /// Whether a frozen old control partition needs import-pending row detection.
+    pub const fn import_control_present(&self) -> bool {
+        self.import_control_present
+    }
+
+    /// Whether the current control schema exists, even if import has not published rows.
+    pub const fn current_control_present(&self) -> bool {
+        self.current_control_present
     }
 
     /// Return whether the released V1 migration-ledger schema is installed.
@@ -840,15 +852,10 @@ pub fn rebuild_live_query_authority(
         })?;
     reject_reserved_function_references(&parsed)?;
     let partitioned = partition_declared_schema(parsed.into_declared())?;
-    if partitioned.import_control_present && partitioned.internal.facts().next().is_none() {
-        return Err(failure(
-            DiagnosticCategory::Integrity,
-            "migration_journal_import_pending",
-            "run migration apply to import the legacy journal before using this database",
-        ));
-    }
     let control_presence = if partitioned.internal.facts().next().is_some() {
         verify_fence_mirror_partition(&partitioned.internal)?;
+        LiveQueryControlPresence::ManagedFence
+    } else if partitioned.import_control_present {
         LiveQueryControlPresence::ManagedFence
     } else {
         LiveQueryControlPresence::Absent
@@ -861,6 +868,8 @@ pub fn rebuild_live_query_authority(
         managed,
         control_presence,
         legacy_control_present,
+        import_control_present: partitioned.import_control_present,
+        current_control_present: partitioned.internal.facts().next().is_some(),
     })
 }
 

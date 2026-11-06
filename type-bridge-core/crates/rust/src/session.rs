@@ -34,6 +34,8 @@ pub enum ManagedDatabasePairState {
     Absent,
     /// Only a standalone managed database without TypeBridge control state exists.
     StandaloneManaged,
+    /// The valid old pair remains usable until migration execution imports it.
+    ImportPending,
     /// Both members exist and the journal owns this exact database and scope.
     OwnedPair,
     /// Only the exact owner-verified journal remains.
@@ -628,6 +630,9 @@ fn map_pair_state(
     state: type_bridge_schema_migration_typedb::ManagedDatabasePairState,
 ) -> ManagedDatabasePairState {
     match state {
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::ImportPending => {
+            ManagedDatabasePairState::ImportPending
+        }
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::Absent => {
             ManagedDatabasePairState::Absent
         }

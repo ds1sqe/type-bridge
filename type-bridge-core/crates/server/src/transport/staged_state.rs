@@ -455,8 +455,37 @@ impl StagedQueryState {
                 "the executor could not verify its live schema authority",
             )
         })?;
-        self.verify_live_authority_export_with_permit(export, rebuild_permit)
-            .await
+        let live = self
+            .verify_live_authority_export_with_permit(export, rebuild_permit)
+            .await?;
+        if live.import_control_present() {
+            let mut transaction = self.database.read_transaction().await.map_err(|_| {
+                diagnostic(
+                    DiagnosticCategory::Integrity,
+                    "query_remote_provider_unavailable",
+                    "could not inspect pending migration import authority",
+                )
+            })?;
+            let verified =
+                type_bridge_orm::plan_authority::verify_import_pending_query_control_scope(
+                    &mut transaction,
+                    self.delta_context.scope_id(),
+                    live.current_control_present(),
+                    None,
+                    &self.ceilings.answer.cancellation,
+                )
+                .await;
+            let closed = transaction.close().await;
+            verified?;
+            closed.map_err(|_| {
+                diagnostic(
+                    DiagnosticCategory::Integrity,
+                    "query_remote_transaction_close_failed",
+                    "could not close pending migration import authority transaction",
+                )
+            })?;
+        }
+        Ok(())
     }
 
     fn verify_database_profile(&self) -> Result<(), Diagnostic> {
@@ -492,7 +521,7 @@ impl StagedQueryState {
         &self,
         export: String,
         rebuild_permit: tokio::sync::OwnedSemaphorePermit,
-    ) -> Result<(), Diagnostic> {
+    ) -> Result<type_bridge_schema_compat::LiveQueryAuthorityState, Diagnostic> {
         let document = DocumentId::new("typebridge-staged-request-live-export.typeql")?;
         let declared = self.declared.clone();
         let context = self.delta_context.clone();
@@ -556,7 +585,7 @@ impl StagedQueryState {
                 "the query-only executor database unexpectedly has legacy migration control authority",
             ));
         }
-        Ok(())
+        Ok(live)
     }
 
     /// Prove the configured authority under one bounded schema fence before
@@ -630,7 +659,7 @@ impl StagedQueryState {
                 )
             })?;
         let verified = async {
-            await_before_deadline(
+            let live = await_before_deadline(
                 deadline,
                 self.verify_live_authority_export_with_permit(fenced_schema, rebuild_permit),
             )
@@ -642,7 +671,16 @@ impl StagedQueryState {
                     "provider transaction deadline expired",
                 )
             })??;
-            if matches!(self.control_policy, StagedQueryControlPolicy::Managed) {
+            if live.import_control_present() {
+                type_bridge_orm::plan_authority::verify_import_pending_query_control_scope(
+                    &mut transaction,
+                    self.delta_context.scope_id(),
+                    live.current_control_present(),
+                    Some(deadline),
+                    &self.ceilings.answer.cancellation,
+                )
+                .await?;
+            } else if matches!(self.control_policy, StagedQueryControlPolicy::Managed) {
                 verify_managed_query_control_scope(
                     &mut transaction,
                     self.delta_context.scope_id(),

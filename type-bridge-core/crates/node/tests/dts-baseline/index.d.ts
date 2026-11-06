@@ -169,7 +169,7 @@ export interface AdministrationExecutionOptions {
 }
 export type DatabaseCreateOutcome = "created" | "already_exists";
 export type DatabaseDeleteOutcome = "deleted" | "already_absent";
-export type ManagedDatabasePairState = "absent" | "standalone_managed" | "owned_pair" | "owned_journal_orphan";
+export type ManagedDatabasePairState = "absent" | "standalone_managed" | "owned_pair" | "owned_journal_orphan" | "import_pending";
 export type ManagedDatabaseDeleteOutcome = "already_absent" | "deleted_standalone_managed" | "deleted_owned_pair" | "deleted_owned_journal_orphan";
 export interface MigrationIdentity {
     readonly appLabel: string;

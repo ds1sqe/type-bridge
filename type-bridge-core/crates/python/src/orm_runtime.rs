@@ -585,6 +585,9 @@ fn python_pair_state(
 ) -> &'static str {
     match state {
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::Absent => "absent",
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::ImportPending => {
+            "import_pending"
+        }
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::StandaloneManaged => {
             "standalone_managed"
         }

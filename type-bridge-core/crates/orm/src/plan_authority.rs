@@ -263,9 +263,60 @@ pub async fn verify_managed_query_control_scope(
     deadline: Option<std::time::Instant>,
     cancellation: &crate::session::backend::AnswerCancellation,
 ) -> Result<(), Diagnostic> {
-    let plans = managed_control_plans()?;
+    verify_query_control_scope(
+        transaction,
+        expected_scope,
+        deadline,
+        cancellation,
+        managed_control_plans(false)?,
+        None,
+    )
+    .await
+}
+
+/// Validate retained old authority only while detecting a pending journal import.
+#[doc(hidden)]
+pub async fn verify_import_pending_query_control_scope(
+    transaction: &mut Transaction,
+    expected_scope: &ManagedScopeId,
+    current_schema_present: bool,
+    deadline: Option<std::time::Instant>,
+    cancellation: &crate::session::backend::AnswerCancellation,
+) -> Result<(), Diagnostic> {
+    let old = managed_control_plans(true)?;
+    let (first, fallback) = if current_schema_present {
+        (managed_control_plans(false)?, Some(old))
+    } else {
+        (old, None)
+    };
+    verify_query_control_scope(
+        transaction,
+        expected_scope,
+        deadline,
+        cancellation,
+        first,
+        fallback,
+    )
+    .await
+}
+
+async fn verify_query_control_scope(
+    transaction: &mut Transaction,
+    expected_scope: &ManagedScopeId,
+    deadline: Option<std::time::Instant>,
+    cancellation: &crate::session::backend::AnswerCancellation,
+    mut plans: &[type_bridge_contract::query_plan::QueryPlan; 2],
+    fallback: Option<&[type_bridge_contract::query_plan::QueryPlan; 2]>,
+) -> Result<(), Diagnostic> {
     let answer = managed_control_answer(transaction, &plans[0], deadline, cancellation).await?;
-    let documents = managed_control_documents(&answer, &plans[0])?;
+    let mut documents = managed_control_documents(&answer, &plans[0])?;
+    if documents.is_empty()
+        && let Some(old) = fallback
+    {
+        plans = old;
+        let answer = managed_control_answer(transaction, &plans[0], deadline, cancellation).await?;
+        documents = managed_control_documents(&answer, &plans[0])?;
+    }
     if documents.len() != 1 {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -423,8 +474,9 @@ pub(crate) fn deadline_exceeded() -> Diagnostic {
     )
 }
 
-fn managed_control_plans()
--> Result<&'static [type_bridge_contract::query_plan::QueryPlan; 2], Diagnostic> {
+fn build_managed_control_plans(
+    legacy: bool,
+) -> Result<[type_bridge_contract::query_plan::QueryPlan; 2], Diagnostic> {
     use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
     use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
     use type_bridge_contract::query_plan::{Operation, PlanSpec, QueryPlan, Stage};
@@ -437,90 +489,115 @@ fn managed_control_plans()
     use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
     use type_bridge_schema_compat::MANAGED_FENCE_SCHEMA_TYPEQL;
 
-    static PLANS: LazyLock<Result<[QueryPlan; 2], Diagnostic>> = LazyLock::new(|| {
-        let schema = type_bridge_schema_compat::typeql_to_declared(
-            DocumentId::new("managed-control-plans.typeql")?,
-            MANAGED_FENCE_SCHEMA_TYPEQL,
-        )
-        .map_err(|_| {
-            failure(
-                DiagnosticCategory::InvalidContract,
-                "query_prepared_control_invalid",
-                "the frozen managed control schema is invalid",
+    let source = if legacy {
+        type_bridge_contract::reserved::IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL
+    } else {
+        MANAGED_FENCE_SCHEMA_TYPEQL
+    };
+    let label = |value: &str| {
+        if legacy {
+            value.replacen(
+                type_bridge_contract::reserved::TYPEBRIDGE_INTERNAL_PREFIX,
+                type_bridge_contract::reserved::IMPORT_LEGACY_INTERNAL_PREFIX,
+                1,
             )
-        })?;
-        let semantics = ManagedSemanticSchemaFingerprint::compute(
-            SemanticProfileId::new("typedb-3.12.1/v1")?,
-            MANAGED_FENCE_SCHEMA_TYPEQL.as_bytes(),
-        )?;
-        let read = |columns: &[(&str, &str)], limit: Option<u64>| {
-            let root = BindingId::new(0)?;
-            let mut bindings = vec![AssertionBinding::new(root, QueryVariable::new("control")?)];
-            let mut patterns = vec![
-                QueryPattern::Isa {
-                    binding: root,
-                    type_id: TypeId::new(TypeKind::Entity, MANAGED_CONTROL_ENTITY)?,
-                    include_subtypes: true,
+        } else {
+            value.to_owned()
+        }
+    };
+    let schema = type_bridge_schema_compat::typeql_to_declared(
+        DocumentId::new("managed-control-plans.typeql")?,
+        source,
+    )
+    .map_err(|_| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "query_prepared_control_invalid",
+            "the frozen managed control schema is invalid",
+        )
+    })?;
+    let semantics = ManagedSemanticSchemaFingerprint::compute(
+        SemanticProfileId::new("typedb-3.12.1/v1")?,
+        source.as_bytes(),
+    )?;
+    let read = |columns: &[(&str, &str)], limit: Option<u64>| {
+        let root = BindingId::new(0)?;
+        let mut bindings = vec![AssertionBinding::new(root, QueryVariable::new("control")?)];
+        let mut patterns = vec![
+            QueryPattern::Isa {
+                binding: root,
+                type_id: TypeId::new(TypeKind::Entity, label(MANAGED_CONTROL_ENTITY))?,
+                include_subtypes: true,
+            }
+            .into(),
+        ];
+        let mut output = Vec::new();
+        for (index, (attribute, alias)) in columns.iter().enumerate() {
+            let binding = BindingId::new((index + 1) as u16)?;
+            bindings.push(AssertionBinding::new(binding, QueryVariable::new(*alias)?));
+            patterns.push(
+                QueryPattern::Has {
+                    owner: root,
+                    attribute: binding,
+                    attribute_id: AttributeId::new(label(attribute))?,
                 }
                 .into(),
-            ];
-            let mut output = Vec::new();
-            for (index, (attribute, alias)) in columns.iter().enumerate() {
-                let binding = BindingId::new((index + 1) as u16)?;
-                bindings.push(AssertionBinding::new(binding, QueryVariable::new(*alias)?));
-                patterns.push(
-                    QueryPattern::Has {
-                        owner: root,
-                        attribute: binding,
-                        attribute_id: AttributeId::new(*attribute)?,
-                    }
-                    .into(),
-                );
-                output.push(binding);
-            }
-            let mut pipeline = vec![Stage::Match { patterns }];
-            if let Some(rows) = limit {
-                // Native truncation requires ordering. Sorting scope preserves the
-                // duplicate-row check; a valid control table has only one row.
-                pipeline.push(Stage::Sort {
-                    terms: vec![OrderTerm::new(
-                        BindingId::new(1)?,
-                        OrderDirection::Ascending,
-                    )],
-                });
-                pipeline.push(Stage::Limit { rows });
-            }
-            QueryPlan::new(
-                PlanSpec {
-                    bindings,
-                    inputs: vec![],
-                    given_rows: None,
-                    operation: if limit.is_some() {
-                        Operation::Rows
-                    } else {
-                        Operation::Exists
-                    },
-                    pipeline,
-                    output: QueryOutput::Rows { columns: output },
-                    managed_semantics: semantics.clone(),
-                    functions: vec![],
+            );
+            output.push(binding);
+        }
+        let mut pipeline = vec![Stage::Match { patterns }];
+        if let Some(rows) = limit {
+            // Native truncation requires ordering. Sorting scope preserves the
+            // duplicate-row check; a valid control table has only one row.
+            pipeline.push(Stage::Sort {
+                terms: vec![OrderTerm::new(
+                    BindingId::new(1)?,
+                    OrderDirection::Ascending,
+                )],
+            });
+            pipeline.push(Stage::Limit { rows });
+        }
+        QueryPlan::new(
+            PlanSpec {
+                bindings,
+                inputs: vec![],
+                given_rows: None,
+                operation: if limit.is_some() {
+                    Operation::Rows
+                } else {
+                    Operation::Exists
                 },
-                &schema,
-            )
-        };
-        Ok([
-            read(
-                &[
-                    (MANAGED_CONTROL_SCOPE, "scope"),
-                    (MANAGED_CONTROL_LEASE_FENCE, "fence"),
-                    (MANAGED_CONTROL_LEASE_STATE, "state"),
-                ],
-                Some(2),
-            )?,
-            read(&[(MANAGED_CONTROL_LEASE_HOLDER, "holder")], None)?,
-        ])
-    });
-    PLANS.as_ref().map_err(Clone::clone)
+                pipeline,
+                output: QueryOutput::Rows { columns: output },
+                managed_semantics: semantics.clone(),
+                functions: vec![],
+            },
+            &schema,
+        )
+    };
+    Ok([
+        read(
+            &[
+                (MANAGED_CONTROL_SCOPE, "scope"),
+                (MANAGED_CONTROL_LEASE_FENCE, "fence"),
+                (MANAGED_CONTROL_LEASE_STATE, "state"),
+            ],
+            Some(2),
+        )?,
+        read(&[(MANAGED_CONTROL_LEASE_HOLDER, "holder")], None)?,
+    ])
+}
+
+fn managed_control_plans(
+    legacy: bool,
+) -> Result<&'static [type_bridge_contract::query_plan::QueryPlan; 2], Diagnostic> {
+    static CURRENT: LazyLock<Result<[type_bridge_contract::query_plan::QueryPlan; 2], Diagnostic>> =
+        LazyLock::new(|| build_managed_control_plans(false));
+    static OLD: LazyLock<Result<[type_bridge_contract::query_plan::QueryPlan; 2], Diagnostic>> =
+        LazyLock::new(|| build_managed_control_plans(true));
+    (if legacy { &OLD } else { &CURRENT })
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 #[cfg(test)]

@@ -84,151 +84,249 @@ async fn legacy_read(
     query_documents(transaction, &query).await
 }
 
+/// Inspect an old journal through the same owner/schema validation as import.
+pub(super) async fn legacy_journal_present(
+    managed_database: &Database,
+    scope: &ManagedScopeId,
+) -> Result<bool, Diagnostic> {
+    Ok(
+        read_import_source(managed_database, &ExecutionScope::new(scope.clone()), false)
+            .await?
+            .database
+            .is_some(),
+    )
+}
+
+async fn read_import_source(
+    managed_database: &Database,
+    scope: &ExecutionScope,
+    include_rows: bool,
+) -> Result<ImportSource, Diagnostic> {
+    let old = managed_database.derived_legacy_journal_database();
+    if !old.database_exists().await.map_err(map_orm_error)? {
+        return Ok(ImportSource {
+            database: None,
+            control: ControlSnapshot {
+                fence: 0,
+                next_sequence: 0,
+            },
+            rows: vec![],
+        });
+    }
+    let export = old.schema_text().await.map_err(map_orm_error)?;
+    let actual = type_bridge_schema_compat::released_typeql_to_declared_lossless_projection(
+        DocumentId::new("import-journal-export.typeql")?,
+        &export,
+    )
+    .map_err(|_| invalid("old journal schema cannot be decoded losslessly"))?;
+    let expected = typeql_to_declared(
+        DocumentId::new("import-journal-schema.typeql")?,
+        IMPORT_LEGACY_JOURNAL_CONTROL_SCHEMA_TYPEQL,
+    )
+    .map_err(|_| invalid("frozen journal schema cannot be decoded"))?;
+    if actual.declared_identity_fingerprint() != expected.declared_identity_fingerprint() {
+        return Err(invalid(
+            "old journal schema is not the exact frozen journal contract",
+        ));
+    }
+    let mut tx = open_read(&old).await?;
+    let result = async {
+        let owners = legacy_read(
+            &mut tx,
+            JOURNAL_OWNER_ENTITY,
+            &[],
+            &[
+                (JOURNAL_OWNER_KEY, "key"),
+                (JOURNAL_OWNER_MANAGED_DATABASE, "database"),
+                (JOURNAL_OWNER_MANAGED_SCOPE, "scope"),
+            ],
+        )
+        .await?;
+        if owners.len() != 1
+            || required_scalar(&owners[0], "key")? != JOURNAL_OWNER_SINGLETON_KEY
+            || required_scalar(&owners[0], "database")? != managed_database.database_name()
+            || required_scalar(&owners[0], "scope")? != scope.managed_scope_id().as_str()
+        {
+            return Err(invalid(
+                "old journal owner differs from the managed database and scope",
+            ));
+        }
+        let controls = legacy_read(
+            &mut tx,
+            CONTROL_ENTITY,
+            &[],
+            &[
+                (CONTROL_SCOPE, "scope"),
+                (LEASE_FENCE, "fence"),
+                (NEXT_SEQUENCE, "next"),
+            ],
+        )
+        .await?;
+        if controls.len() > 1
+            || controls.iter().any(|row| {
+                required_scalar(row, "scope")
+                    .map_or(true, |value| value != scope.managed_scope_id().as_str())
+            })
+        {
+            return Err(invalid(
+                "old journal contains foreign or multiple control scopes",
+            ));
+        }
+        let control = parse_control_documents(controls)?.unwrap_or(ControlSnapshot {
+            fence: 0,
+            next_sequence: 0,
+        });
+        let mut rows = Vec::new();
+        if include_rows {
+            for row in legacy_read(
+                &mut tx,
+                JOURNAL_ENTITY,
+                &[],
+                &[
+                    (CONTROL_SCOPE, "scope"),
+                    (RECORD_KEY, "key"),
+                    (RECORD_SEQUENCE, "sequence"),
+                    (RECORD_KIND, "kind"),
+                    (RECORD_PAYLOAD, "payload"),
+                    (RECORD_PAYLOAD_DIGEST, "digest"),
+                ],
+            )
+            .await?
+            {
+                let checked = parse_stored_row(row.clone())?;
+                let sequence = checked.sequence.get();
+                let kind = required_scalar(&row, "kind")?;
+                if matches!(
+                    kind.as_str(),
+                    IMPORT_COMPLETE_RECORD_KIND
+                        | LEGACY_IMPORT_RECORD_KIND
+                        | DATA_STEP_EVENT_RECORD_KIND
+                ) {
+                    return Err(invalid("an old journal cannot contain new import records"));
+                }
+                if required_scalar(&row, "scope")? != scope.managed_scope_id().as_str()
+                    || checked.key != format!("{}#{sequence}", scope.managed_scope_id().as_str())
+                    || sequence > control.next_sequence
+                    || persisted_fence(&checked.payload, &kind)?.get() > control.fence
+                {
+                    return Err(invalid(
+                        "old journal record lies outside its scope, sequence or fence",
+                    ));
+                }
+                rows.push(ImportRow {
+                    key: checked.key,
+                    sequence,
+                    kind,
+                    payload: required_scalar(&row, "payload")?,
+                    digest: required_scalar(&row, "digest")?,
+                });
+            }
+            rows.sort_by_key(|row| row.sequence);
+            if rows
+                .windows(2)
+                .any(|pair| pair[0].sequence == pair[1].sequence)
+            {
+                return Err(invalid(
+                    "old journal contains duplicate sequence identities",
+                ));
+            }
+        }
+        Ok(ImportSource {
+            database: Some(old.database_name().to_owned()),
+            control,
+            rows,
+        })
+    }
+    .await;
+    finish_read(&mut tx, result).await
+}
+
 impl TypeDbMigrationStore<'_> {
-    /// Discover the old journal read-only, using one snapshot for owner, control and rows.
+    /// SDK bundles retain the adopted bridge, while the old owned journal proves
+    /// that the CLI already checked the lossless adopted-genesis identity.
+    pub(crate) async fn with_catalog_import_binding(mut self) -> Result<Self, Diagnostic> {
+        let Some(bridge) = self
+            .catalog
+            .values()
+            .find(|manifest| manifest.is_legacy_bridge())
+        else {
+            return Ok(self);
+        };
+        let applied_set = bridge
+            .legacy_applied_set()
+            .cloned()
+            .ok_or_else(|| invalid("legacy bridge has no applied-set binding"))?;
+        let scope = ExecutionScope::new(self.managed_scope_id.clone());
+        let fingerprint = if let Some(complete) = self.import_complete(&scope).await? {
+            complete
+                .legacy
+                .ok_or_else(|| invalid("import-complete has no legacy bridge evidence"))?
+                .sentinel_fingerprint
+        } else {
+            let source = self.import_source(&scope, true).await?;
+            let mut found = false;
+            for row in source
+                .rows
+                .iter()
+                .filter(|row| row.kind == APPLIED_RECORD_KIND)
+            {
+                let fence = persisted_fence(row.payload.as_bytes(), APPLIED_RECORD_KIND)?;
+                let lease = MigrationLease::new(
+                    scope.clone(),
+                    LeaseHolderId::new("catalog-import-proof")?,
+                    fence,
+                );
+                let expected = AppliedRecord::from_verified_manifest_contract(&lease, bridge)?;
+                if decode_applied(row.payload.as_bytes(), expected).is_ok() {
+                    found = true;
+                }
+            }
+            if !found {
+                return Err(invalid(
+                    "old owned journal has no exact applied bridge manifest",
+                ));
+            }
+            let mut tx = self
+                .managed_database
+                .read_transaction()
+                .await
+                .map_err(map_orm_error)?;
+            let query = data_plan::read_import_legacy(
+                LEGACY_CUTOVER_ENTITY,
+                &[(LEGACY_CUTOVER_KEY, LEGACY_CUTOVER_SINGLETON_KEY)],
+                &[
+                    (LEGACY_CUTOVER_SCOPE, "scope"),
+                    (LEGACY_CUTOVER_FINGERPRINT, "fingerprint"),
+                ],
+            )?;
+            let result = crate::runner::legacy_anchor_plan_values(&mut tx, query).await;
+            let close = tx.close().await;
+            let anchors = result?;
+            close.map_err(map_orm_error)?;
+            if anchors.len() != 1
+                || required_scalar(&anchors[0], "scope")? != self.managed_scope_id.as_str()
+            {
+                return Err(invalid("legacy anchor does not match its verified scope"));
+            }
+            required_scalar(&anchors[0], "fingerprint")?
+        };
+        self.import_binding = Some(crate::runner::LegacyBridgeBinding::from_import_evidence(
+            applied_set,
+            self.managed_scope_id.as_str().to_owned(),
+            fingerprint,
+        ));
+        if self.import_complete(&scope).await?.is_none() {
+            self.legacy_evidence().await?;
+        }
+        Ok(self)
+    }
+
     async fn import_source(
         &self,
         scope: &ExecutionScope,
         include_rows: bool,
     ) -> Result<ImportSource, Diagnostic> {
-        let old = self.managed_database.derived_legacy_journal_database();
-        if !old.database_exists().await.map_err(map_orm_error)? {
-            return Ok(ImportSource {
-                database: None,
-                control: ControlSnapshot {
-                    fence: 0,
-                    next_sequence: 0,
-                },
-                rows: vec![],
-            });
-        }
-        let export = old.schema_text().await.map_err(map_orm_error)?;
-        let actual = type_bridge_schema_compat::released_typeql_to_declared_lossless_projection(
-            DocumentId::new("import-journal-export.typeql")?,
-            &export,
-        )
-        .map_err(|_| invalid("old journal schema cannot be decoded losslessly"))?;
-        let expected = typeql_to_declared(
-            DocumentId::new("import-journal-schema.typeql")?,
-            IMPORT_LEGACY_JOURNAL_CONTROL_SCHEMA_TYPEQL,
-        )
-        .map_err(|_| invalid("frozen journal schema cannot be decoded"))?;
-        if actual.declared_identity_fingerprint() != expected.declared_identity_fingerprint() {
-            return Err(invalid(
-                "old journal schema is not the exact frozen journal contract",
-            ));
-        }
-        let mut tx = open_read(&old).await?;
-        let result = async {
-            let owners = legacy_read(
-                &mut tx,
-                JOURNAL_OWNER_ENTITY,
-                &[],
-                &[
-                    (JOURNAL_OWNER_KEY, "key"),
-                    (JOURNAL_OWNER_MANAGED_DATABASE, "database"),
-                    (JOURNAL_OWNER_MANAGED_SCOPE, "scope"),
-                ],
-            )
-            .await?;
-            if owners.len() != 1
-                || required_scalar(&owners[0], "key")? != JOURNAL_OWNER_SINGLETON_KEY
-                || required_scalar(&owners[0], "database")? != self.managed_database.database_name()
-                || required_scalar(&owners[0], "scope")? != scope.managed_scope_id().as_str()
-            {
-                return Err(invalid(
-                    "old journal owner differs from the managed database and scope",
-                ));
-            }
-            let controls = legacy_read(
-                &mut tx,
-                CONTROL_ENTITY,
-                &[],
-                &[
-                    (CONTROL_SCOPE, "scope"),
-                    (LEASE_FENCE, "fence"),
-                    (NEXT_SEQUENCE, "next"),
-                ],
-            )
-            .await?;
-            if controls.len() > 1
-                || controls.iter().any(|row| {
-                    required_scalar(row, "scope")
-                        .map_or(true, |value| value != scope.managed_scope_id().as_str())
-                })
-            {
-                return Err(invalid(
-                    "old journal contains foreign or multiple control scopes",
-                ));
-            }
-            let control = parse_control_documents(controls)?.unwrap_or(ControlSnapshot {
-                fence: 0,
-                next_sequence: 0,
-            });
-            let mut rows = Vec::new();
-            if include_rows {
-                for row in legacy_read(
-                    &mut tx,
-                    JOURNAL_ENTITY,
-                    &[],
-                    &[
-                        (CONTROL_SCOPE, "scope"),
-                        (RECORD_KEY, "key"),
-                        (RECORD_SEQUENCE, "sequence"),
-                        (RECORD_KIND, "kind"),
-                        (RECORD_PAYLOAD, "payload"),
-                        (RECORD_PAYLOAD_DIGEST, "digest"),
-                    ],
-                )
-                .await?
-                {
-                    let checked = parse_stored_row(row.clone())?;
-                    let sequence = checked.sequence.get();
-                    let kind = required_scalar(&row, "kind")?;
-                    if matches!(
-                        kind.as_str(),
-                        IMPORT_COMPLETE_RECORD_KIND
-                            | LEGACY_IMPORT_RECORD_KIND
-                            | DATA_STEP_EVENT_RECORD_KIND
-                    ) {
-                        return Err(invalid("an old journal cannot contain new import records"));
-                    }
-                    if required_scalar(&row, "scope")? != scope.managed_scope_id().as_str()
-                        || checked.key
-                            != format!("{}#{sequence}", scope.managed_scope_id().as_str())
-                        || sequence > control.next_sequence
-                        || persisted_fence(&checked.payload, &kind)?.get() > control.fence
-                    {
-                        return Err(invalid(
-                            "old journal record lies outside its scope, sequence or fence",
-                        ));
-                    }
-                    rows.push(ImportRow {
-                        key: checked.key,
-                        sequence,
-                        kind,
-                        payload: required_scalar(&row, "payload")?,
-                        digest: required_scalar(&row, "digest")?,
-                    });
-                }
-                rows.sort_by_key(|row| row.sequence);
-                if rows
-                    .windows(2)
-                    .any(|pair| pair[0].sequence == pair[1].sequence)
-                {
-                    return Err(invalid(
-                        "old journal contains duplicate sequence identities",
-                    ));
-                }
-            }
-            Ok(ImportSource {
-                database: Some(old.database_name().to_owned()),
-                control,
-                rows,
-            })
-        }
-        .await;
-        finish_read(&mut tx, result).await
+        read_import_source(&self.managed_database, scope, include_rows).await
     }
 
     async fn import_complete(
@@ -349,24 +447,14 @@ impl TypeDbMigrationStore<'_> {
         if complete.source_database.as_deref() != Some(old.database_name()) {
             return Err(invalid("an unexpected old journal appeared after import"));
         }
-        let mut tx = open_read(&old).await?;
-        let read = legacy_read(
-            &mut tx,
-            CONTROL_ENTITY,
-            &[(CONTROL_SCOPE, scope.managed_scope_id().as_str())],
-            &[(LEASE_FENCE, "fence"), (NEXT_SEQUENCE, "next")],
-        )
-        .await;
-        let rows = finish_read(&mut tx, read).await?;
-        let current = parse_control_documents(rows)?.unwrap_or(ControlSnapshot {
-            fence: 0,
-            next_sequence: 0,
-        });
-        if current.next_sequence > complete.source_next_sequence {
+        let source = self.import_source(scope, true).await?;
+        if source.control.next_sequence != complete.source_next_sequence
+            || import_rows_digest(&source.rows) != complete.source_records_digest
+        {
             return Err(failure(
                 DiagnosticCategory::Integrity,
                 "migration_old_writer_after_import",
-                "the old journal advanced after import; stop old migration runners and reconcile history",
+                "the old journal changed after import; stop old migration runners and reconcile history",
             ));
         }
         Ok(())

@@ -601,12 +601,12 @@ class Database:
 
     def inspect_database_pair(
         self,
-    ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"]:
+    ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan", "import_pending"]:
         """Inspect the managed database and its package-owned journal as one pair."""
         from type_bridge._native import core_database_for
 
         return cast(
-            Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"],
+            Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan", "import_pending"],
             core_database_for(self).inspect_database_pair(),
         )
 
@@ -615,12 +615,12 @@ class Database:
         *,
         timeout_milliseconds: int | None = None,
         cancellation: Any | None = None,
-    ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"]:
+    ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan", "import_pending"]:
         """Inspect the managed database pair under explicit execution controls."""
         from type_bridge._native import core_database_for
 
         return cast(
-            Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"],
+            Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan", "import_pending"],
             core_database_for(self).inspect_database_pair_controlled(
                 timeout_milliseconds=timeout_milliseconds,
                 cancellation=cancellation,

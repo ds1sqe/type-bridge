@@ -83,6 +83,8 @@ pub enum ManagedDatabasePairState {
     Absent,
     /// Only a standalone managed database without TypeBridge control schema exists.
     StandaloneManaged,
+    /// An exact old pair is usable; migration writes must first import its journal.
+    ImportPending,
     /// Both databases exist and the journal owner binds this exact pair and scope.
     OwnedPair,
     /// Only the exact owner-verified journal remains.
@@ -163,8 +165,16 @@ impl ManagedDatabasePairAdministrator {
             .database_exists()
             .await
             .map_err(map_orm_error)?;
+        let legacy_exists = import::legacy_journal_present(
+            &self.inner.managed_database,
+            &self.inner.managed_scope_id,
+        )
+        .await?;
         if !journal_exists {
             if !managed_exists {
+                if legacy_exists {
+                    return Ok(ManagedDatabasePairState::OwnedJournalOrphan);
+                }
                 return Ok(ManagedDatabasePairState::Absent);
             }
             let export = self
@@ -173,6 +183,14 @@ impl ManagedDatabasePairAdministrator {
                 .schema_text()
                 .await
                 .map_err(map_orm_error)?;
+            if legacy_exists
+                && matches!(
+                    type_bridge_schema_compat::import_legacy_fence_schema_presence(&export),
+                    Ok(type_bridge_schema_compat::LiveQueryControlPresence::ManagedFence)
+                )
+            {
+                return Ok(ManagedDatabasePairState::ImportPending);
+            }
             if export.contains(crate::TYPEBRIDGE_INTERNAL_PREFIX) {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
@@ -220,7 +238,9 @@ impl ManagedDatabasePairAdministrator {
         &self,
     ) -> Result<ManagedDatabasePairCreateOutcome, Diagnostic> {
         match self.inspect().await? {
-            ManagedDatabasePairState::StandaloneManaged | ManagedDatabasePairState::OwnedPair => {
+            ManagedDatabasePairState::StandaloneManaged
+            | ManagedDatabasePairState::OwnedPair
+            | ManagedDatabasePairState::ImportPending => {
                 Ok(ManagedDatabasePairCreateOutcome::AlreadyExists)
             }
             ManagedDatabasePairState::Absent | ManagedDatabasePairState::OwnedJournalOrphan => self
@@ -244,7 +264,9 @@ impl ManagedDatabasePairAdministrator {
         control: &MigrationExecutionControl,
     ) -> Result<ManagedDatabasePairCreateOutcome, Diagnostic> {
         match self.inspect_controlled(control).await? {
-            ManagedDatabasePairState::StandaloneManaged | ManagedDatabasePairState::OwnedPair => {
+            ManagedDatabasePairState::StandaloneManaged
+            | ManagedDatabasePairState::OwnedPair
+            | ManagedDatabasePairState::ImportPending => {
                 Ok(ManagedDatabasePairCreateOutcome::AlreadyExists)
             }
             ManagedDatabasePairState::Absent | ManagedDatabasePairState::OwnedJournalOrphan => {
@@ -283,6 +305,23 @@ impl ManagedDatabasePairAdministrator {
             administrator: self.clone(),
             inspected,
         })
+    }
+
+    async fn delete_legacy_journal(&self) -> Result<(), Diagnostic> {
+        if import::legacy_journal_present(
+            &self.inner.managed_database,
+            &self.inner.managed_scope_id,
+        )
+        .await?
+        {
+            self.inner
+                .managed_database
+                .derived_legacy_journal_database()
+                .delete_database_outcome()
+                .await
+                .map_err(map_orm_error)?;
+        }
+        Ok(())
     }
 
     async fn require_exact_journal_owner(&self) -> Result<(), Diagnostic> {
@@ -343,7 +382,17 @@ impl ManagedDatabasePairDeletionPlan {
                 "database pair changed after destructive admission; inspect and approve again",
             ));
         }
+        self.administrator.delete_legacy_journal().await?;
         match current {
+            ManagedDatabasePairState::ImportPending => {
+                self.administrator
+                    .inner
+                    .managed_database
+                    .delete_database_outcome()
+                    .await
+                    .map_err(map_orm_error)?;
+                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedPair)
+            }
             ManagedDatabasePairState::Absent => Ok(ManagedDatabasePairDeleteOutcome::AlreadyAbsent),
             ManagedDatabasePairState::StandaloneManaged => {
                 self.administrator
@@ -396,7 +445,17 @@ impl ManagedDatabasePairDeletionPlan {
             ));
         }
         control.check()?;
+        self.administrator.delete_legacy_journal().await?;
         match current {
+            ManagedDatabasePairState::ImportPending => {
+                self.administrator
+                    .inner
+                    .managed_database
+                    .delete_database_outcome()
+                    .await
+                    .map_err(map_orm_error)?;
+                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedPair)
+            }
             ManagedDatabasePairState::Absent => Ok(ManagedDatabasePairDeleteOutcome::AlreadyAbsent),
             ManagedDatabasePairState::StandaloneManaged => {
                 self.administrator
@@ -3536,6 +3595,7 @@ pub(crate) mod tests {
     }
 
     struct AdministrationBackend {
+        database: String,
         exists: Arc<AtomicBool>,
         schema: String,
         deletes: Arc<AtomicUsize>,
@@ -3562,8 +3622,8 @@ pub(crate) mod tests {
             Ok(())
         }
 
-        fn database_exists(&self, _database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
-            let exists = self.exists.load(Ordering::SeqCst);
+        fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
+            let exists = database == self.database && self.exists.load(Ordering::SeqCst);
             Box::pin(async move { Ok(exists) })
         }
 
@@ -3591,8 +3651,10 @@ pub(crate) mod tests {
         schema: impl Into<String>,
         deletes: Arc<AtomicUsize>,
     ) -> Arc<Database> {
+        let name = name.into();
         Arc::new(Database::with_backend_authority(
             Box::new(AdministrationBackend {
+                database: name.clone(),
                 exists,
                 schema: schema.into(),
                 deletes,

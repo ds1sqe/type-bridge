@@ -54,6 +54,7 @@ pub type CommitRecord = (
 /// records every commit outcome.
 #[derive(Default)]
 pub struct LivePolicy {
+    pub managed_control: bool,
     pub vouch: bool,
     pub refuse: Option<&'static str>,
     pub query_limits: Option<type_bridge_contract::limits::QueryLimits>,
@@ -294,7 +295,12 @@ pub async fn proxy_with_database(
         CapabilitySet::new(),
     );
     let managed = managed_schema_state(&declared, &delta_context).expect("managed");
-    let mut state = StagedQueryState::new_query_only(
+    let constructor = if policy.managed_control {
+        StagedQueryState::new
+    } else {
+        StagedQueryState::new_query_only
+    };
+    let mut state = constructor(
         CapabilitySet::new(),
         AnswerLimits::default(),
         database,

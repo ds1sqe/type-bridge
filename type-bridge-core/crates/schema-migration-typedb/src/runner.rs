@@ -252,6 +252,18 @@ impl LegacyExecutionBinding {
 }
 
 impl LegacyBridgeBinding {
+    pub(crate) fn from_import_evidence(
+        expected_applied_set: type_bridge_schema_migration::LegacyAppliedSetDigest,
+        managed_scope: String,
+        anchor_fingerprint: String,
+    ) -> Self {
+        Self {
+            expected_applied_set,
+            managed_scope,
+            anchor_fingerprint,
+        }
+    }
+
     fn from_bridge(
         bridge: &VerifiedSchemaMigrationManifest,
         authority: &AdoptedGenesisAuthority,

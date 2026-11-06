@@ -1004,7 +1004,13 @@ async fn runner_applies_a_completed_legacy_frontier() {
         .unwrap();
     runner.verify(directory.path(), None).await.unwrap();
     // A restarted old runner is detected without reading its applied ledger.
-    old.execute_raw("match $c isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-next-sequence $n; delete has $n of $c; insert $c has typebridge-internal-v2-next-sequence \"2\";", TxType::Write).await.unwrap();
+    // A record edit is detected even when the old sequence counter is unchanged.
+    old.execute_raw(
+        "match $r isa typebridge-internal-v2-migration-journal; delete $r;",
+        TxType::Write,
+    )
+    .await
+    .unwrap();
     let error = runner.verify(directory.path(), None).await.unwrap_err();
     assert!(
         error
@@ -1736,4 +1742,168 @@ async fn mixed_data_history_recovers_after_a_retired_rollback_prefix() {
     }
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB server"]
+async fn catalog_import_checks_adoption_evidence_before_any_new_journal_write() {
+    use type_bridge_schema_migration::{
+        MigrationCatalog, VerifiedMigrationHistoryBundle, discover_verified_migration_chain,
+        encode_verified_migration_history_bundle,
+    };
+    use type_bridge_schema_migration_typedb::{
+        ManagedDatabasePairAdministrator, ManagedDatabasePairCreateOutcome,
+        ManagedDatabasePairState, execute_catalog_apply_plan,
+    };
+    for mismatch in [
+        None,
+        Some("anchor"),
+        Some("sentinel"),
+        Some("applied-set"),
+        Some("bridge"),
+    ] {
+        let (managed, journal) = databases().await;
+        journal.delete_database().await.unwrap();
+        let context = context();
+        let source = "define entity person;\n";
+        let head = type_bridge_schema_compat::parse_adopted_genesis(
+            DocumentId::new("catalog-adopted.typeql").unwrap(),
+            source,
+        )
+        .unwrap();
+        let target = type_bridge_schema_compat::parse_adopted_genesis(
+            DocumentId::new("catalog-target.typeql").unwrap(),
+            "define entity person; entity company;\n",
+        )
+        .unwrap();
+        let bridge = adopted_history::bridge(&context, source);
+        adopted_history::seed(&managed, &journal, &context, &bridge, source).await;
+        let old = managed.derived_legacy_journal_database();
+        let administrator = ManagedDatabasePairAdministrator::new(
+            Arc::clone(&managed),
+            Arc::clone(&journal),
+            context.scope_id().clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            administrator.inspect().await.unwrap(),
+            ManagedDatabasePairState::ImportPending
+        );
+        assert_eq!(
+            administrator.create_database_outcome().await.unwrap(),
+            ManagedDatabasePairCreateOutcome::AlreadyExists
+        );
+        let mut tx = managed.read_transaction().await.unwrap();
+        type_bridge_orm::plan_authority::verify_import_pending_query_control_scope(
+            &mut tx,
+            context.scope_id(),
+            false,
+            None,
+            &type_bridge_orm::session::backend::AnswerCancellation::default(),
+        )
+        .await
+        .unwrap();
+        tx.close().await.unwrap();
+        let tamper = match mismatch {
+            Some("anchor") => Some((
+                managed.as_ref(),
+                "match $a isa typebridge-internal-v2-legacy-cutover; delete $a;",
+            )),
+            Some("sentinel") => Some((
+                managed.as_ref(),
+                "match $a isa type_bridge_migration, has migration_name \"__legacy_writer_cutover__\"; delete $a;",
+            )),
+            Some("applied-set") => Some((
+                managed.as_ref(),
+                "match $a isa type_bridge_migration, has migration_name \"0001_initial\", has migration_checksum $checksum; delete has $checksum of $a; insert $a has migration_checksum \"2222222222222222\";",
+            )),
+            Some("bridge") => Some((
+                &old,
+                "match $a isa typebridge-internal-v2-migration-journal; delete $a;",
+            )),
+            None => None,
+            _ => unreachable!(),
+        };
+        if let Some((database, query)) = tamper {
+            database.execute_raw(query, TxType::Write).await.unwrap();
+        }
+        let directory = TempDirectory::new();
+        write_manifest(directory.path(), &bridge);
+        write_manifest(
+            directory.path(),
+            &manifest_with_derived_assertions(
+                "0001_company",
+                vec![bridge.id().clone()],
+                &head,
+                &target,
+                &context,
+            ),
+        );
+        let graph = discover_verified_migration_chain(directory.path(), &head, &context).unwrap();
+        let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).unwrap();
+        let catalog = MigrationCatalog::open(
+            &encode_verified_migration_history_bundle(&bundle).unwrap(),
+            &context,
+        )
+        .unwrap();
+        let plan = catalog
+            .authorize_apply(
+                &BTreeSet::from([bridge.id().clone()]),
+                &MigrationApplyTarget::DefaultHead,
+                &MigrationSafetyPolicy::default_policy(),
+                &[],
+            )
+            .unwrap();
+        let result = execute_catalog_apply_plan(
+            Arc::clone(&managed),
+            &catalog,
+            &LeaseHolderId::new("sdk-first-import").unwrap(),
+            &plan,
+        )
+        .await;
+        if let Some(mismatch) = mismatch {
+            let error = result.expect_err(mismatch);
+            assert_eq!(
+                error.code().as_str(),
+                "migration_journal_import_invalid",
+                "{mismatch}: {error}"
+            );
+            assert!(
+                !journal.database_exists().await.unwrap(),
+                "{mismatch} wrote a new journal"
+            );
+        } else {
+            assert!(matches!(
+                result.unwrap(),
+                MigrationExecutionOutcome::Applied { .. }
+            ));
+            assert_eq!(
+                administrator.inspect().await.unwrap(),
+                ManagedDatabasePairState::OwnedPair
+            );
+            assert!(
+                managed
+                    .schema_text()
+                    .await
+                    .unwrap()
+                    .contains("entity company")
+            );
+        }
+        administrator
+            .plan_delete()
+            .await
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+        assert!(!old.database_exists().await.unwrap());
+        assert!(!managed.database_exists().await.unwrap());
+        assert!(!journal.database_exists().await.unwrap());
+        administrator.create_database_outcome().await.unwrap();
+        assert_eq!(
+            administrator.inspect().await.unwrap(),
+            ManagedDatabasePairState::StandaloneManaged
+        );
+        managed.delete_database().await.unwrap();
+    }
 }
