@@ -31,28 +31,7 @@ use crate::{
     released_typeql_to_declared_lossless_projection_with_references, typeql_to_declared,
 };
 
-/// Exact TypeDB 3 fence-mirror schema installed in a managed database.
-///
-/// Query-only databases may omit this partition. If any reserved V2 fact is
-/// present, however, the complete partition must equal these frozen bytes.
-pub const MANAGED_FENCE_SCHEMA_TYPEQL: &str = r#"define
-attribute typebridge-internal-v2-control-scope, value string;
-attribute typebridge-internal-v2-lease-holder, value string;
-attribute typebridge-internal-v2-lease-fence, value string;
-attribute typebridge-internal-v2-lease-state, value string;
-attribute typebridge-internal-v2-legacy-cutover-key, value string;
-attribute typebridge-internal-v2-legacy-cutover-scope, value string;
-attribute typebridge-internal-v2-legacy-cutover-fingerprint, value string;
-entity typebridge-internal-v2-migration-control,
-    owns typebridge-internal-v2-control-scope @key,
-    owns typebridge-internal-v2-lease-holder @card(0..1),
-    owns typebridge-internal-v2-lease-fence @card(1..1),
-    owns typebridge-internal-v2-lease-state @card(1..1);
-entity typebridge-internal-v2-legacy-cutover,
-    owns typebridge-internal-v2-legacy-cutover-key @key,
-    owns typebridge-internal-v2-legacy-cutover-scope @card(1..1),
-    owns typebridge-internal-v2-legacy-cutover-fingerprint @card(1..1);
-"#;
+pub use type_bridge_contract::reserved::MANAGED_FENCE_SCHEMA_TYPEQL;
 
 struct QueryAuthorityPartitions {
     user: DeclaredSchema,

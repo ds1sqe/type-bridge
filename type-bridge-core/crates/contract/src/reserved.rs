@@ -75,3 +75,129 @@ pub const LEGACY_WRITER_GUARD_QUERY_TAG: &str = "# typebridge-internal-legacy-wr
 pub fn is_typebridge_internal_label(label: &str) -> bool {
     label.starts_with(TYPEBRIDGE_INTERNAL_PREFIX)
 }
+
+/// Migration journal/control vocabulary: control entity.
+pub const CONTROL_ENTITY: &str = MANAGED_CONTROL_ENTITY;
+/// Migration journal/control vocabulary: journal entity.
+pub const JOURNAL_ENTITY: &str = "typebridge-internal-v2-migration-journal";
+/// Migration journal/control vocabulary: journal owner entity.
+pub const JOURNAL_OWNER_ENTITY: &str = "typebridge-internal-v2-journal-owner";
+/// Migration journal/control vocabulary: journal owner key.
+pub const JOURNAL_OWNER_KEY: &str = "typebridge-internal-v2-journal-owner-key";
+/// Migration journal/control vocabulary: journal owner managed database.
+pub const JOURNAL_OWNER_MANAGED_DATABASE: &str =
+    "typebridge-internal-v2-journal-owner-managed-database";
+/// Migration journal/control vocabulary: journal owner managed scope.
+pub const JOURNAL_OWNER_MANAGED_SCOPE: &str = "typebridge-internal-v2-journal-owner-managed-scope";
+/// Migration journal/control vocabulary: control scope.
+pub const CONTROL_SCOPE: &str = MANAGED_CONTROL_SCOPE;
+/// Migration journal/control vocabulary: lease holder.
+pub const LEASE_HOLDER: &str = MANAGED_CONTROL_LEASE_HOLDER;
+/// Migration journal/control vocabulary: lease fence.
+pub const LEASE_FENCE: &str = MANAGED_CONTROL_LEASE_FENCE;
+/// Migration journal/control vocabulary: lease state.
+pub const LEASE_STATE: &str = MANAGED_CONTROL_LEASE_STATE;
+/// Migration journal/control vocabulary: next sequence.
+pub const NEXT_SEQUENCE: &str = "typebridge-internal-v2-next-sequence";
+/// Migration journal/control vocabulary: record key.
+pub const RECORD_KEY: &str = "typebridge-internal-v2-record-key";
+/// Migration journal/control vocabulary: record sequence.
+pub const RECORD_SEQUENCE: &str = "typebridge-internal-v2-record-sequence";
+/// Migration journal/control vocabulary: record kind.
+pub const RECORD_KIND: &str = "typebridge-internal-v2-record-kind";
+/// Migration journal/control vocabulary: record payload.
+pub const RECORD_PAYLOAD: &str = "typebridge-internal-v2-record-payload";
+/// Migration journal/control vocabulary: record payload digest.
+pub const RECORD_PAYLOAD_DIGEST: &str = "typebridge-internal-v2-record-payload-digest";
+/// Migration journal/control vocabulary: legacy cutover entity.
+pub const LEGACY_CUTOVER_ENTITY: &str = LEGACY_CUTOVER_ANCHOR_ENTITY;
+/// Migration journal/control vocabulary: legacy cutover key.
+pub const LEGACY_CUTOVER_KEY: &str = LEGACY_CUTOVER_ANCHOR_KEY;
+/// Migration journal/control vocabulary: legacy cutover scope.
+pub const LEGACY_CUTOVER_SCOPE: &str = LEGACY_CUTOVER_ANCHOR_SCOPE;
+/// Migration journal/control vocabulary: legacy cutover fingerprint.
+pub const LEGACY_CUTOVER_FINGERPRINT: &str = LEGACY_CUTOVER_ANCHOR_FINGERPRINT;
+/// Migration journal/control vocabulary: legacy cutover singleton key.
+pub const LEGACY_CUTOVER_SINGLETON_KEY: &str = LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY;
+
+/// Migration journal/control vocabulary: lease held.
+pub const LEASE_HELD: &str = MANAGED_CONTROL_LEASE_HELD;
+/// Migration journal/control vocabulary: lease free.
+pub const LEASE_FREE: &str = MANAGED_CONTROL_LEASE_FREE;
+/// Migration journal/control vocabulary: plan record kind.
+pub const PLAN_RECORD_KIND: &str = "plan";
+/// Migration journal/control vocabulary: event record kind.
+pub const EVENT_RECORD_KIND: &str = "event";
+/// Migration journal/control vocabulary: backfill event record kind.
+pub const BACKFILL_EVENT_RECORD_KIND: &str = "backfill-event";
+/// Migration journal/control vocabulary: applied record kind.
+pub const APPLIED_RECORD_KIND: &str = "applied";
+/// Migration journal/control vocabulary: rollback plan record kind.
+pub const ROLLBACK_PLAN_RECORD_KIND: &str = "rollback-plan";
+/// Migration journal/control vocabulary: rollback event record kind.
+pub const ROLLBACK_EVENT_RECORD_KIND: &str = "rollback-event";
+/// Migration journal/control vocabulary: rolled back record kind.
+pub const ROLLED_BACK_RECORD_KIND: &str = "rolled-back";
+/// Migration journal/control vocabulary: journal owner singleton key.
+pub const JOURNAL_OWNER_SINGLETON_KEY: &str = "typebridge-journal-owner/v1";
+
+/// Exact TypeDB 3 authoritative lease and journal schema.
+///
+/// This schema is installed only in the one-to-one paired journal database.
+/// Fence and sequence values use canonical decimal strings rather than TypeDB
+/// `long`, preserving the provider-neutral full nonzero `u64` domains.
+pub const JOURNAL_CONTROL_SCHEMA_TYPEQL: &str = r#"define
+attribute typebridge-internal-v2-journal-owner-key, value string;
+attribute typebridge-internal-v2-journal-owner-managed-database, value string;
+attribute typebridge-internal-v2-journal-owner-managed-scope, value string;
+attribute typebridge-internal-v2-control-scope, value string;
+attribute typebridge-internal-v2-lease-holder, value string;
+attribute typebridge-internal-v2-lease-fence, value string;
+attribute typebridge-internal-v2-lease-state, value string;
+attribute typebridge-internal-v2-next-sequence, value string;
+attribute typebridge-internal-v2-record-key, value string;
+attribute typebridge-internal-v2-record-sequence, value string;
+attribute typebridge-internal-v2-record-kind, value string;
+attribute typebridge-internal-v2-record-payload, value string;
+attribute typebridge-internal-v2-record-payload-digest, value string;
+entity typebridge-internal-v2-journal-owner,
+    owns typebridge-internal-v2-journal-owner-key @key,
+    owns typebridge-internal-v2-journal-owner-managed-database @card(1..1),
+    owns typebridge-internal-v2-journal-owner-managed-scope @card(1..1);
+entity typebridge-internal-v2-migration-control,
+    owns typebridge-internal-v2-control-scope @key,
+    owns typebridge-internal-v2-lease-holder @card(0..1),
+    owns typebridge-internal-v2-lease-fence @card(1..1),
+    owns typebridge-internal-v2-lease-state @card(1..1),
+    owns typebridge-internal-v2-next-sequence @card(1..1);
+entity typebridge-internal-v2-migration-journal,
+    owns typebridge-internal-v2-record-key @key,
+    owns typebridge-internal-v2-control-scope @card(1..1),
+    owns typebridge-internal-v2-record-sequence @card(1..1),
+    owns typebridge-internal-v2-record-kind @card(1..1),
+    owns typebridge-internal-v2-record-payload @card(1..1),
+    owns typebridge-internal-v2-record-payload-digest @card(1..1);
+"#;
+
+/// Exact TypeDB 3 fence-mirror schema installed in a managed database.
+///
+/// Query-only databases may omit this partition. If any reserved V2 fact is
+/// present, however, the complete partition must equal these frozen bytes.
+pub const MANAGED_FENCE_SCHEMA_TYPEQL: &str = r#"define
+attribute typebridge-internal-v2-control-scope, value string;
+attribute typebridge-internal-v2-lease-holder, value string;
+attribute typebridge-internal-v2-lease-fence, value string;
+attribute typebridge-internal-v2-lease-state, value string;
+attribute typebridge-internal-v2-legacy-cutover-key, value string;
+attribute typebridge-internal-v2-legacy-cutover-scope, value string;
+attribute typebridge-internal-v2-legacy-cutover-fingerprint, value string;
+entity typebridge-internal-v2-migration-control,
+    owns typebridge-internal-v2-control-scope @key,
+    owns typebridge-internal-v2-lease-holder @card(0..1),
+    owns typebridge-internal-v2-lease-fence @card(1..1),
+    owns typebridge-internal-v2-lease-state @card(1..1);
+entity typebridge-internal-v2-legacy-cutover,
+    owns typebridge-internal-v2-legacy-cutover-key @key,
+    owns typebridge-internal-v2-legacy-cutover-scope @card(1..1),
+    owns typebridge-internal-v2-legacy-cutover-fingerprint @card(1..1);
+"#;
