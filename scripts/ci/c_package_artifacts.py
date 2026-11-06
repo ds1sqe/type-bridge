@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build, validate, and consume frozen ABI 1.6 C package artifacts."""
+"""Build, validate, and consume ABI 2.0 C package artifacts."""
 
 from __future__ import annotations
 
@@ -36,8 +36,8 @@ RUNTIME_LIBRARY = "libtype_bridge_c.so"
 # generator emits the tb_sdkv3 prefix this name and the release record use.
 PACKAGE_NAME = "tb_sdkv3"
 PACKAGE_VERSION = "1.0.0"
-# Installed package metadata stays at ABI 1.6 while the runtime ABI is 1.9.
-ABI_VERSION = "1.6.0"
+# Installed package metadata matches the native runtime ABI.
+ABI_VERSION = "2.0.0"
 PUBLICATION_DISPOSITION = "artifact-only-unpublished-unsupported"
 RUNTIME_FORMAT = "typebridge.c-runtime-artifact/v1"
 PACKAGE_FORMAT = "typebridge.generated-c-package-artifact/v1"
@@ -342,7 +342,7 @@ def runtime_manifest(
         "abi": ABI_VERSION,
         "artifact-id": f"sha256:{identity}",
         "dependencies": inspect_shared_elf(library_path),
-        "filename": f"type-bridge-c-runtime-abi-1.6-{TARGET}.tar.gz",
+        "filename": f"type-bridge-c-runtime-abi-2.0-{TARGET}.tar.gz",
         "format": RUNTIME_FORMAT,
         "members": payload_members,
         "name": RUNTIME_NAME,
@@ -408,7 +408,7 @@ def build_runtime(output: Path, build_root: Path, *, commit: str, tree: str) -> 
 def generated_config() -> bytes:
     return f'''# Generated TypeBridge C schema source-package config.
 include(CMakeFindDependencyMacro)
-find_dependency(TypeBridge 1.11.0 EXACT CONFIG)
+find_dependency(TypeBridge 2.0.0 EXACT CONFIG)
 get_filename_component(_tb_package_prefix "${{CMAKE_CURRENT_LIST_DIR}}/../../.." ABSOLUTE)
 if(NOT TARGET {PACKAGE_NAME}::schema)
   add_library({PACKAGE_NAME}_schema STATIC "${{_tb_package_prefix}}/src/{PACKAGE_NAME}.c")
@@ -441,7 +441,7 @@ generated_source=${{prefix}}/src/{PACKAGE_NAME}.c
 Name: {PACKAGE_NAME} schema
 Description: Generated TypeBridge C schema source package
 Version: {PACKAGE_VERSION}
-Requires: type-bridge-abi >= 1.11.0
+Requires: type-bridge-abi >= 2.0.0
 Cflags: -I${{includedir}}
 """.encode()
 
@@ -549,7 +549,7 @@ def build_generated(output: Path, build_root: Path, *, commit: str, tree: str) -
         "payload-sha256": payload_digest,
         "projection-fingerprint": projection,
         "publication-disposition": PUBLICATION_DISPOSITION,
-        "required-runtime-abi": {"exact": "1.6.0"},
+        "required-runtime-abi": {"exact": "2.0.0"},
         "semantic-fingerprint": semantic,
         "source-commit": commit,
         "source-generated": {
@@ -647,9 +647,9 @@ def validate_generated(archive: Path) -> dict[str, Any]:
         raise ArtifactError("generated license template drifted")
     config = files[PACKAGE_MEMBERS[2]].decode("utf-8")
     pc = files[PACKAGE_MEMBERS[4]].decode("utf-8")
-    if "find_dependency(TypeBridge 1.11.0 EXACT CONFIG)" not in config:
+    if "find_dependency(TypeBridge 2.0.0 EXACT CONFIG)" not in config:
         raise ArtifactError("generated CMake runtime ABI fence drifted")
-    if "type-bridge-abi >= 1.11.0" not in pc:
+    if "type-bridge-abi >= 2.0.0" not in pc:
         raise ArtifactError("generated pkg-config runtime ABI fence drifted")
     if manifest.get("publication-disposition") != PUBLICATION_DISPOSITION:
         raise ArtifactError("generated publication disposition widened")
@@ -659,7 +659,7 @@ def validate_generated(archive: Path) -> dict[str, Any]:
 def cmake_consumer_source() -> tuple[bytes, bytes, bytes]:
     cmake = f"""cmake_minimum_required(VERSION 3.20)
 project(type_bridge_artifact_consumer LANGUAGES C CXX)
-find_package(TypeBridge 1.11.0 EXACT CONFIG REQUIRED)
+find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)
 find_package({PACKAGE_NAME} 1.0.0 EXACT CONFIG REQUIRED)
 add_executable(consumer main.c)
 add_library(cpp_header OBJECT header.cpp)

@@ -29,8 +29,8 @@
  * Native layout/behavior compatibility, independent from the TypeBridge
  * product version returned by type_bridge_runtime_version().
  */
-#define TYPE_BRIDGE_C_ABI_MAJOR 1u
-#define TYPE_BRIDGE_C_ABI_MINOR 11u
+#define TYPE_BRIDGE_C_ABI_MAJOR 2u
+#define TYPE_BRIDGE_C_ABI_MINOR 0u
 #define TYPE_BRIDGE_CHUNKED_BYTE_VIEW_VERSION 1u
 #define TYPE_BRIDGE_PROJECTED_TOKEN_VERSION 1u
 
@@ -175,7 +175,7 @@ typedef struct type_bridge_query_remote_claim type_bridge_query_remote_claim_t;
 #define TYPE_BRIDGE_QUERY_FUNCTION_ARGUMENT_MAX 256u
 #define TYPE_BRIDGE_QUERY_FUNCTION_ARGUMENTS_BYTES_MAX 65535u
 #define TYPE_BRIDGE_QUERY_OUTPUT_NAME_BYTES_MAX 128u
-#define TYPE_BRIDGE_QUERY_DEFAULT_TIMEOUT_MILLISECONDS UINT64_C(30000)
+#define TYPE_BRIDGE_QUERY_DEFAULT_TIMEOUT_MILLISECONDS UINT64_C(60000)
 #define TYPE_BRIDGE_QUERY_DEFAULT_ITEMS UINT64_C(65536)
 #define TYPE_BRIDGE_QUERY_DEFAULT_BYTES UINT64_C(33554432)
 #define TYPE_BRIDGE_QUERY_DEFAULT_GRAPH_NODES UINT64_C(65536)
@@ -184,7 +184,7 @@ typedef struct type_bridge_query_remote_claim type_bridge_query_remote_claim_t;
 #define TYPE_BRIDGE_QUERY_DEFAULT_ROLE_PLAYERS UINT64_C(65536)
 #define TYPE_BRIDGE_QUERY_DEFAULT_STATEMENTS 3u
 /* ABI 1.7: the per-transport defaults. */
-#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_TIMEOUT_MILLISECONDS UINT64_C(30000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_TIMEOUT_MILLISECONDS UINT64_C(60000)
 #define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_ITEMS UINT64_C(100000)
 #define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_BYTES UINT64_C(67108864)
 #define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_GRAPH_NODES UINT64_C(1000000)
@@ -192,7 +192,7 @@ typedef struct type_bridge_query_remote_claim type_bridge_query_remote_claim_t;
 #define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_COLLECTION_MEMBERS UINT64_C(1000000)
 #define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_ROLE_PLAYERS UINT64_C(1000000)
 #define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_STATEMENTS 3u
-#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_TIMEOUT_MILLISECONDS UINT64_C(30000)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_TIMEOUT_MILLISECONDS UINT64_C(60000)
 #define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_ITEMS UINT64_C(65536)
 #define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_BYTES UINT64_C(33554432)
 #define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_GRAPH_NODES UINT64_C(65536)
@@ -476,7 +476,8 @@ typedef struct type_bridge_query_limit_override_v1 {
 typedef struct type_bridge_query_execution_limits_v1 {
   uint32_t struct_size;
   uint32_t version;
-  uint64_t timeout_milliseconds;
+  /* Per-call timeout; zero or negative means no execution deadline. */
+  int64_t timeout_milliseconds;
   uint64_t items;
   uint64_t bytes;
   uint64_t graph_nodes;
@@ -484,7 +485,8 @@ typedef struct type_bridge_query_execution_limits_v1 {
   uint64_t collection_members;
   uint64_t role_players;
   uint32_t statements;
-  uint32_t reserved0;
+  /* 0 disables collection, 1 collects phases without a subscriber. */
+  uint32_t collect_phase_timestamps;
   uint64_t reserved[4];
 } type_bridge_query_execution_limits_v1_t;
 
@@ -496,10 +498,10 @@ typedef struct type_bridge_query_execution_limits_v1 {
  * initializer keep their 2.2 values, which are the proxy defaults. A
  * non-NULL descriptor's values are kept as given, never clamped: a
  * dimension may tighten or raise its default, and a value past its
- * supported maximum (a timeout past one day, more than 4,096 statements) is
+ * supported maximum (more than 4,096 statements) is
  * refused. A connection's answer limits are a ceiling every call on it is
- * constrained by. Every zero field is an actual zero ceiling, never a
- * request to substitute a default.
+ * constrained by. Timeout zero or negative means no deadline; other zero
+ * resource fields are actual zero ceilings, never requests for defaults.
  * Direct execution reports the shared statement-limit diagnostic before its
  * first provider statement. Remote preparation preserves zero through the
  * authenticated request when the executor advertises that capability.
@@ -871,8 +873,36 @@ typedef int32_t type_bridge_execution_diagnostic_detail_kind_t;
   ((type_bridge_execution_diagnostic_detail_kind_t)13)
 #define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_TEXT_LIST                      \
   ((type_bridge_execution_diagnostic_detail_kind_t)14)
+#define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_EXECUTION_TIMELINE ((type_bridge_execution_diagnostic_detail_kind_t)15)
 #define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_UNKNOWN                        \
   ((type_bridge_execution_diagnostic_detail_kind_t)255)
+
+/* Read-only diagnostic timeline. Phase text remains valid until diagnostics closes. */
+typedef struct type_bridge_execution_timeline_view_v1 {
+  uint32_t struct_size;
+  uint32_t reserved0;
+  uint64_t anchor_unix_milliseconds;
+  size_t stamp_count;
+} type_bridge_execution_timeline_view_v1_t;
+typedef struct type_bridge_execution_phase_view_v1 {
+  uint32_t struct_size;
+  uint32_t has_statement_index;
+  uint64_t offset_milliseconds;
+  uint32_t statement_index;
+  uint32_t reserved0;
+  type_bridge_byte_view_t phase;
+  type_bridge_byte_view_t failing_phase;
+} type_bridge_execution_phase_view_v1_t;
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_execution_diagnostics_timeline_get_v1(
+    const type_bridge_execution_diagnostics_t *diagnostics,
+    size_t diagnostic_index, size_t detail_index,
+    type_bridge_execution_timeline_view_v1_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_execution_diagnostics_phase_get_v1(
+    const type_bridge_execution_diagnostics_t *diagnostics,
+    size_t diagnostic_index, size_t detail_index, size_t stamp_index,
+    type_bridge_execution_phase_view_v1_t *out_value);
 
 typedef struct type_bridge_execution_diagnostic_view_v1 {
   uint32_t struct_size;
@@ -1273,6 +1303,24 @@ type_bridge_plan_v3_canonical_bytes(
     size_t *out_len);
 TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
 type_bridge_plan_free(type_bridge_plan_t **plan);
+
+/* Deferred commit policy. Null options: 60000 ms, collection off.
+ * Otherwise size/version must be exact; timeout <= 0 disables the deadline. */
+#define TYPE_BRIDGE_STAGED_TRANSACTION_OPTIONS_V1 UINT32_C(1)
+typedef struct type_bridge_staged_transaction_options_v1 {
+    uint32_t struct_size;
+    uint32_t version;
+    int64_t timeout_milliseconds;
+    uint32_t collect_phase_timestamps;
+} type_bridge_staged_transaction_options_v1_t;
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_transaction_with_options_v1(
+    const type_bridge_database_t *database, uint32_t kind,
+    const type_bridge_staged_transaction_options_v1_t *options,
+    type_bridge_staged_transaction_t **out_transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
 
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_database_transaction(
@@ -2431,6 +2479,8 @@ typedef struct type_bridge_proxy_connection_options_v1 {
   type_bridge_byte_view_t pinned_advertisement;
   const type_bridge_query_execution_limits_v1_t *connection_limits;
   const type_bridge_query_execution_limits_v1_t *answer_limits;
+  /* Finite delivery window; zero selects 60000 ms, independent of execution. */
+  uint64_t admission_window_milliseconds;
   uint64_t reserved[4];
 } type_bridge_proxy_connection_options_v1_t;
 
@@ -2459,6 +2509,13 @@ type_bridge_proxy_connection_close(type_bridge_proxy_connection_t **connection);
  * staged plan. The transaction may outlive the connection; stage, commit,
  * rollback and close are those of
  * type_bridge_database_transaction. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_transaction_with_options_v1(
+    const type_bridge_proxy_connection_t *proxy, uint32_t kind,
+    const type_bridge_staged_transaction_options_v1_t *options,
+    type_bridge_staged_transaction_t **out_transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_proxy_connection_transaction(
     const type_bridge_proxy_connection_t *proxy, uint32_t kind,

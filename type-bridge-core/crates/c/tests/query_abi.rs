@@ -24,8 +24,8 @@ fn public_query_abi_compiles_under_strict_c_and_cpp() {
 #define QUERY_STATIC_ASSERT(value, message) _Static_assert(value, message)
 #endif
 
-QUERY_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "query ABI major drifted");
-QUERY_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 11u, "query ABI minor drifted");
+QUERY_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 2u, "query ABI major drifted");
+QUERY_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 0u, "query ABI minor drifted");
 QUERY_STATIC_ASSERT(TYPE_BRIDGE_QUERY_DESCRIPTOR_VERSION == 1u,
                     "query descriptor version drifted");
 QUERY_STATIC_ASSERT(TYPE_BRIDGE_QUERY_TERMINAL_FIRST == 8u,

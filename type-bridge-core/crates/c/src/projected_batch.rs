@@ -713,9 +713,6 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_open_v1_impl
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
         let cancellation = cancellation_owner(cancellation);
-        if let Err(diagnostic) = crate::policy::capture_deadline(limits).check(&cancellation) {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
         let control = match ProjectedBatchConstructionControl::try_new(
             &package.state.installed_projection,
             model.clone(),
@@ -966,15 +963,9 @@ unsafe fn execute_impl(
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
-        let effective_limits = crate::policy::constrain_limits(
-            crate::policy::constrain_limits(call_limits, batch.value.resource_ceiling()),
-            target.answer_ceiling(),
-        );
-        if let Err(diagnostic) = crate::policy::capture_deadline(effective_limits)
-            .check(&cancellation_owner(cancellation))
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
+        let effective_limits = call_limits
+            .constrained_by(batch.value.resource_ceiling())
+            .constrained_by(target.answer_ceiling());
         let control = ProjectedBatchInvocationControl::capture(
             effective_limits,
             cancellation_owner(cancellation),
@@ -1716,7 +1707,12 @@ plays:
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: 1,
-            timeout_milliseconds: limits.timeout_milliseconds.milliseconds().unwrap_or(0),
+            timeout_milliseconds: limits
+                .timeout_milliseconds
+                .milliseconds()
+                .map_or(0, |value| {
+                    i64::try_from(value).expect("test timeout fits i64")
+                }),
             items: limits.items,
             bytes: limits.bytes,
             graph_nodes: limits.graph_nodes,
@@ -1724,7 +1720,7 @@ plays:
             collection_members: limits.collection_members,
             role_players: limits.role_players,
             statements: limits.statement_limit(),
-            reserved0: 0,
+            collect_phase_timestamps: 0,
             reserved: [0; 4],
         }
     }
@@ -2195,7 +2191,7 @@ plays:
         assert_eq!(
             unsafe { &*batch }.value.resource_ceiling(),
             // An omitted C descriptor on a direct batch carries the direct defaults.
-            crate::policy::default_limits(type_bridge_orm::AnswerTransport::Direct).effective()
+            QueryExecutionResourceLimits::default().effective()
         );
         close_batch(&mut batch);
         assert_eq!(

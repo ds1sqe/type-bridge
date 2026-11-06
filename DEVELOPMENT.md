@@ -10,7 +10,7 @@ through:
 - the `type-bridge` Python package;
 - the `@type-bridge/node` TypeScript/Node package;
 - the crates.io-distributed generated Rust SDK;
-- the generated C SDK and ABI 1.6.0 shared runtime for Ubuntu 24.04 x86_64;
+- the generated C SDK and ABI 2.0.0 shared runtime for Ubuntu 24.04 x86_64;
 - the `type-bridge` workspace and migration CLI;
 - the `type-bridge-server` container.
 
@@ -66,7 +66,7 @@ duplicated directory snapshot here.
 - Python and Node bindings marshal typed values and expose language-native
   facades; they do not reimplement schema, query, migration, or ORM rules.
 - The generated C package and native C ABI share the same semantic engine.
-  ABI 1.6 is the single supported build target, with one header
+  ABI 2.0 is the single supported build target, with one header
   and exact runtime dependencies. Rust owns schema admission, projected
   values, transactions, CRUD, queries, migration, canonical serialization,
   diagnostics, resource limits, and cancellation. Generated nominal models

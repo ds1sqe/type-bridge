@@ -227,12 +227,6 @@ impl TypeBridgeDatabase {
         ),
         SdkExecutionDiagnostic,
     > {
-        let options =
-            if crate::policy::ExpiredPolicy::from_limits(self.answer_ceiling()).is_expired() {
-                options.with_answer_timeout(std::time::Duration::ZERO)
-            } else {
-                options
-            };
         increment_child(&self.state.transaction_children)?;
         Ok((
             self.state.database.transaction(options),
@@ -316,9 +310,7 @@ impl TypeBridgeDatabase {
     /// The answer ceiling for C V2 entry points; a V1-origin handle has
     /// none and falls back to the default policy.
     pub(crate) fn answer_ceiling(&self) -> QueryExecutionResourceLimits {
-        self.answer_limits().unwrap_or_else(|| {
-            crate::policy::default_limits(type_bridge_orm::AnswerTransport::Direct)
-        })
+        self.answer_limits().unwrap_or_default()
     }
 
     /// The orm connection's immutable answer ceiling; `Some` exactly for a
@@ -433,9 +425,7 @@ impl TypeBridgeReadTransaction {
     }
 
     pub(crate) fn answer_ceiling(&self) -> QueryExecutionResourceLimits {
-        self.answer_limits().unwrap_or_else(|| {
-            crate::policy::default_limits(type_bridge_orm::AnswerTransport::Direct)
-        })
+        self.answer_limits().unwrap_or_default()
     }
 
     pub(crate) fn answer_limits(&self) -> Option<QueryExecutionResourceLimits> {
@@ -481,9 +471,7 @@ impl TypeBridgeWriteTransaction {
     }
 
     pub(crate) fn answer_ceiling(&self) -> QueryExecutionResourceLimits {
-        self.answer_limits().unwrap_or_else(|| {
-            crate::policy::default_limits(type_bridge_orm::AnswerTransport::Direct)
-        })
+        self.answer_limits().unwrap_or_default()
     }
 
     pub(crate) fn answer_limits(&self) -> Option<QueryExecutionResourceLimits> {
@@ -1164,7 +1152,7 @@ unsafe fn preflight_database_config_v2(
         Some(config.answer_limits),
         type_bridge_orm::AnswerTransport::Direct,
     )?;
-    let deadline = crate::policy::capture_deadline(connection_limits);
+    let deadline = QueryExecutionDeadline::for_limits(connection_limits);
     Ok(DatabaseConfigV2Preflight {
         config,
         connection_limits,
@@ -2092,8 +2080,8 @@ pub(crate) unsafe extern "C" fn type_bridge_read_transaction_open_v2_impl(
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
-        let effective = crate::policy::constrain_limits(call_limits, database.answer_ceiling());
-        let deadline = crate::policy::capture_deadline(effective);
+        let effective = call_limits.constrained_by(database.answer_ceiling());
+        let deadline = QueryExecutionDeadline::for_limits(effective);
         let cancellation = invocation_cancellation(cancellation);
         if let Err(diagnostic) = check_control(deadline, &cancellation)
             .and_then(|()| require_lifecycle_dispatch(effective))
@@ -2183,8 +2171,8 @@ pub(crate) unsafe extern "C" fn type_bridge_write_transaction_open_v2_impl(
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
-        let effective = crate::policy::constrain_limits(call_limits, database.answer_ceiling());
-        let deadline = crate::policy::capture_deadline(effective);
+        let effective = call_limits.constrained_by(database.answer_ceiling());
+        let deadline = QueryExecutionDeadline::for_limits(effective);
         let cancellation = invocation_cancellation(cancellation);
         if let Err(diagnostic) = check_control(deadline, &cancellation)
             .and_then(|()| require_lifecycle_dispatch(effective))
@@ -2259,7 +2247,7 @@ pub unsafe extern "C" fn type_bridge_read_transaction_open(
             return cancellation_error(out_diagnostics);
         }
         let (context, handle_reservation) = if let Some(limits) = database.answer_limits() {
-            let deadline = crate::policy::capture_deadline(limits);
+            let deadline = QueryExecutionDeadline::for_limits(limits);
             // Cancellation is checked before dispatch; an inherited
             // V2 timeout still bounds the provider await for every operation.
             let in_flight_cancellation = AnswerCancellation::default();
@@ -2353,7 +2341,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_open(
             return cancellation_error(out_diagnostics);
         }
         let (context, handle_reservation) = if let Some(limits) = database.answer_limits() {
-            let deadline = crate::policy::capture_deadline(limits);
+            let deadline = QueryExecutionDeadline::for_limits(limits);
             // Cancellation is checked before dispatch; an inherited
             // V2 timeout still bounds the provider await for every operation.
             let in_flight_cancellation = AnswerCancellation::default();
@@ -2521,7 +2509,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_commit(
             return cancellation_error(out_diagnostics);
         }
         let policy_deadline = if let Some(limits) = live.answer_limits() {
-            let deadline = crate::policy::capture_deadline(limits);
+            let deadline = QueryExecutionDeadline::for_limits(limits);
             let cancellation = invocation_cancellation(cancellation);
             if let Err(diagnostic) = check_control(deadline, &cancellation)
                 .and_then(|()| require_lifecycle_dispatch(limits))
@@ -2637,8 +2625,8 @@ pub(crate) unsafe extern "C" fn type_bridge_write_transaction_commit_v2_impl(
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
-        let effective = crate::policy::constrain_limits(call_limits, live.answer_ceiling());
-        let deadline = crate::policy::capture_deadline(effective);
+        let effective = call_limits.constrained_by(live.answer_ceiling());
+        let deadline = QueryExecutionDeadline::for_limits(effective);
         let cancellation = invocation_cancellation(cancellation);
         if let Err(diagnostic) = check_control(deadline, &cancellation)
             .and_then(|()| require_lifecycle_dispatch(effective))
@@ -3296,7 +3284,12 @@ entities:
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: 1,
-            timeout_milliseconds: limits.timeout_milliseconds.milliseconds().unwrap_or(0),
+            timeout_milliseconds: limits
+                .timeout_milliseconds
+                .milliseconds()
+                .map_or(0, |value| {
+                    i64::try_from(value).expect("test timeout fits i64")
+                }),
             items: limits.items,
             bytes: limits.bytes,
             graph_nodes: limits.graph_nodes,
@@ -3304,7 +3297,7 @@ entities:
             collection_members: limits.collection_members,
             role_players: limits.role_players,
             statements: limits.statement_limit(),
-            reserved0: 0,
+            collect_phase_timestamps: 0,
             reserved: [0; 4],
         }
     }
@@ -3547,7 +3540,7 @@ entities:
         assert!(diagnostics.is_null());
 
         let zero_timeout = QueryExecutionResourceLimits {
-            timeout_milliseconds: type_bridge_orm::QueryTimeout::NONE,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
             ..QueryExecutionResourceLimits::default()
         };
         let expired_but_provider_free = DatabaseConfigV2Fixture::new(
@@ -3630,26 +3623,27 @@ entities:
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2allocation")));
         let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
 
-        let expired_connection_limits = QueryExecutionResourceLimits {
+        let unbounded_connection_limits = QueryExecutionResourceLimits {
             timeout_milliseconds: type_bridge_orm::QueryTimeout::NONE,
             ..QueryExecutionResourceLimits::default()
         };
-        let expired_connection = DatabaseConfigV2Fixture::new(
+        let unbounded_connection = DatabaseConfigV2Fixture::new(
             TLS_DISABLED,
             Vec::new(),
-            expired_connection_limits,
+            unbounded_connection_limits,
             QueryExecutionResourceLimits::default(),
         );
-        let (database, mut diagnostics, status) =
-            unsafe { open_database_v2(runtime, package, &expired_connection.config, ptr::null()) };
-        assert_eq!(status, TypeBridgeStatus::ResourceLimit);
-        assert!(database.is_null());
-        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+        let (mut database, mut diagnostics, status) = unsafe {
+            open_database_v2(runtime, package, &unbounded_connection.config, ptr::null())
+        };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        assert!(!database.is_null());
+        assert!(diagnostics.is_null());
+        assert_eq!(state.connects.load(Ordering::Acquire), 1);
         assert_eq!(
-            unsafe { diagnostic_code(diagnostics) },
-            "transaction_deadline_exceeded"
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
         );
-        unsafe { close_diagnostics(&mut diagnostics) };
 
         let zero_statement_connection_limits = QueryExecutionResourceLimits {
             statements: Some(0),
@@ -3671,7 +3665,7 @@ entities:
         };
         assert_eq!(status, TypeBridgeStatus::ResourceLimit);
         assert!(database.is_null());
-        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+        assert_eq!(state.connects.load(Ordering::Acquire), 1);
         assert_eq!(
             unsafe { diagnostic_code(diagnostics) },
             "provider_statement_limit"
@@ -3684,7 +3678,7 @@ entities:
         };
         assert_eq!(status, TypeBridgeStatus::ResourceLimit);
         assert!(database.is_null());
-        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+        assert_eq!(state.connects.load(Ordering::Acquire), 1);
         assert_eq!(
             unsafe { diagnostic_code(diagnostics) },
             "c_allocation_exhausted"
@@ -4800,7 +4794,7 @@ entities:
         );
 
         let zero_timeout = QueryExecutionResourceLimits {
-            timeout_milliseconds: type_bridge_orm::QueryTimeout::NONE,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
             ..QueryExecutionResourceLimits::default()
         };
         let context = unsafe { &*database }
@@ -4810,20 +4804,15 @@ entities:
             unsafe { &*database },
             context,
         )));
-        let inherited_before = inherited;
         assert_eq!(
             unsafe {
                 type_bridge_write_transaction_commit(&mut inherited, ptr::null(), &mut diagnostics)
             },
-            TypeBridgeStatus::ResourceLimit
+            TypeBridgeStatus::Ok
         );
-        assert_eq!(inherited, inherited_before);
-        assert_eq!(state.commits.load(Ordering::Acquire), 0);
-        assert_eq!(
-            unsafe { diagnostic_code(diagnostics) },
-            "transaction_deadline_exceeded"
-        );
-        unsafe { close_diagnostics(&mut diagnostics) };
+        assert!(inherited.is_null());
+        assert_eq!(state.commits.load(Ordering::Acquire), 1);
+        assert!(diagnostics.is_null());
         assert_eq!(
             unsafe { type_bridge_write_transaction_close(&mut inherited, &mut diagnostics) },
             TypeBridgeStatus::Ok
@@ -4855,7 +4844,7 @@ entities:
             TypeBridgeStatus::ResourceLimit
         );
         assert_eq!(write, write_before);
-        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(state.commits.load(Ordering::Acquire), 1);
         unsafe { close_diagnostics(&mut diagnostics) };
 
         let zero_timeout_descriptor = limits_descriptor(zero_timeout);
@@ -4868,14 +4857,11 @@ entities:
                     &mut diagnostics,
                 )
             },
-            TypeBridgeStatus::ResourceLimit
+            TypeBridgeStatus::Ok
         );
-        assert_eq!(write, write_before);
-        assert_eq!(
-            unsafe { diagnostic_code(diagnostics) },
-            "transaction_deadline_exceeded"
-        );
-        unsafe { close_diagnostics(&mut diagnostics) };
+        assert!(write.is_null());
+        assert!(diagnostics.is_null());
+        assert_eq!(state.commits.load(Ordering::Acquire), 2);
         assert_eq!(
             unsafe { type_bridge_write_transaction_close(&mut write, &mut diagnostics) },
             TypeBridgeStatus::Ok
@@ -4929,7 +4915,7 @@ entities:
         requester.join().unwrap();
         assert!(write.is_null());
         assert!(diagnostics.is_null());
-        assert_eq!(state.commits.load(Ordering::Acquire), 1);
+        assert_eq!(state.commits.load(Ordering::Acquire), 3);
         assert_eq!(
             unsafe { type_bridge_cancellation_close(&mut cancellation) },
             TypeBridgeStatus::Ok

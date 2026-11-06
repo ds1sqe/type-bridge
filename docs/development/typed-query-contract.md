@@ -706,7 +706,7 @@ exchanged only between peers that both raised the limit.
 
 Execution timeouts start when the call executes, not when its plan is built.
 Rust represents them with `QueryTimeout`, either no deadline or a positive
-millisecond duration. Python and Node accept signed 64-bit milliseconds;
+millisecond duration. Python, Node and C accept signed 64-bit milliseconds;
 zero and negative inputs select no deadline. A connection or server ceiling
 still tightens an unbounded request. Commit is never interrupted: a deadline
 observed before commit rolls back, and a dispatched commit runs to its outcome.
@@ -986,18 +986,18 @@ identity after admission.
 
 `QueryExecutionResourceLimits.collect_phase_timestamps` (Node:
 `collectPhaseTimestamps`) defaults to `false`. Set it to `true` to retain a
-full diagnostic phase timeline without a tracing subscriber. Rust
+full diagnostic phase timeline without a tracing subscriber. C uses the
+`collect_phase_timestamps` word in its query execution limits descriptor:
+0 disables collection, 1 enables it, and other values are refused. Rust
 transactions also expose `TransactionOptions::with_collect_phase_timestamps`.
 Python's `Database.staged_transaction` accepts keyword `timeout_milliseconds`
 and `collect_phase_timestamps`. Node's `Database.stagedTransaction(kind, options)`
 accepts `timeoutMilliseconds` (a signed bigint) and `collectPhaseTimestamps`.
 Omitting these options preserves 60000 ms and collection off; zero or a negative
-timeout disables the deadline. The C ABI retains its existing unsigned fields
-and staged transaction defaults. Its omitted policies remain 30000 ms, a zero
-policy expires before execution, and values above 24 hours are refused. A
-zero-timeout context can still be created; executing through it returns a
-resource-limit diagnostic before opening a transaction. Signed timeouts,
-60000 ms defaults, admission and timeline options move with ABI 2.0.
+timeout disables the deadline. C's `*_transaction_with_options_v1` factories
+accept `type_bridge_staged_transaction_options_v1_t`; a null options pointer
+keeps those defaults. Explicit options require version 1 and the exact struct
+size, a signed timeout, and collection 0 or 1.
 This is a diagnostic option, not another resource ceiling or deadline.
 With collection disabled and no enabled plan tracing span, phase observation
 adds no heap allocation or per-phase clock reads. Full collection allocates

@@ -98,7 +98,7 @@ async fn sdk_deadline_fixture_serves_until_stopped() {
     let mut held = Vec::new();
     let mut relays = Vec::new();
     let mut entries = serde_json::Map::new();
-    for (index, (sdk, transport)) in ["python", "node", "rust"]
+    for (index, (sdk, transport)) in ["python", "node", "rust", "c"]
         .into_iter()
         .flat_map(|sdk| ["direct", "proxy"].map(|transport| (sdk, transport)))
         .enumerate()

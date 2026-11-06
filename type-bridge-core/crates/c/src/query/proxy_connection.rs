@@ -51,13 +51,14 @@ pub struct TypeBridgeProxyConnectionOptionsV1 {
     pub connection_limits: *const TypeBridgeQueryExecutionLimitsV1,
     /// Ceiling for every terminal on the connection; null selects defaults.
     pub answer_limits: *const TypeBridgeQueryExecutionLimitsV1,
+    /// Finite delivery window; zero selects 60000 ms. Does not limit execution.
+    pub admission_window_milliseconds: u64,
     /// Must be zero.
     pub reserved: [u64; 4],
 }
 
 /// Opaque connection to a TypeBridge server bound to one schema package.
 pub struct TypeBridgeProxyConnection {
-    expired_policy: crate::policy::ExpiredPolicy,
     package: Arc<SchemaPackageState>,
     connection: ProxyQueryConnection,
     // Shared with the staged transactions opened on this connection, which
@@ -93,10 +94,8 @@ impl TypeBridgeProxyConnection {
         package: Arc<SchemaPackageState>,
         connection: ProxyQueryConnection,
         runtime: Arc<tokio::runtime::Runtime>,
-        expired_policy: crate::policy::ExpiredPolicy,
     ) -> Self {
         Self {
-            expired_policy,
             package,
             connection,
             runtime,
@@ -122,11 +121,6 @@ impl TypeBridgeProxyConnection {
         ),
         SdkExecutionDiagnostic,
     > {
-        let options = if self.expired_policy.is_expired() {
-            options.with_answer_timeout(std::time::Duration::ZERO)
-        } else {
-            options
-        };
         let cancellation = type_bridge_orm::AnswerCancellation::default();
         let transaction = self
             .runtime
@@ -146,6 +140,7 @@ struct CopiedOptions {
     advertisement: Option<Vec<u8>>,
     connection_limits: QueryExecutionResourceLimits,
     answer_limits: QueryExecutionResourceLimits,
+    admission_window_milliseconds: std::num::NonZeroU64,
     caller_item_limit: Option<u64>,
 }
 
@@ -294,6 +289,15 @@ unsafe fn copy_options(
         advertisement,
         connection_limits,
         answer_limits,
+        admission_window_milliseconds: std::num::NonZeroU64::new(
+            options.admission_window_milliseconds,
+        )
+        .unwrap_or(
+            std::num::NonZeroU64::new(
+                type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
+            )
+            .unwrap(),
+        ),
         caller_item_limit: (!options.answer_limits.is_null()).then_some(answer_limits.items),
     })
 }
@@ -475,11 +479,6 @@ unsafe fn proxy_connection_open_with_query_limits(
             Ok(value) => value,
             Err(error) => return return_execution_error(error, out_diagnostics),
         };
-        if let Err(error) = crate::policy::capture_deadline(copied.connection_limits).check(&answer)
-        {
-            return return_execution_error(error, out_diagnostics);
-        }
-        let expired_policy = crate::policy::ExpiredPolicy::from_limits(copied.answer_limits);
         // SAFETY: caller retains the immutable package for the call.
         let package = unsafe { &*package }.state();
         let (authority, _registry) = match remote_authority(package) {
@@ -505,7 +504,9 @@ unsafe fn proxy_connection_open_with_query_limits(
             ))
         }));
         let connection = match outcome {
-            Ok(Ok(value)) => value.with_caller_item_limit(copied.caller_item_limit),
+            Ok(Ok(value)) => value
+                .with_caller_item_limit(copied.caller_item_limit)
+                .with_admission_window_milliseconds(copied.admission_window_milliseconds),
             Ok(Err(error)) => return return_execution_error(error, out_diagnostics),
             Err(_) => return TypeBridgeStatus::Panic,
         };
@@ -522,7 +523,6 @@ unsafe fn proxy_connection_open_with_query_limits(
             Arc::clone(package),
             connection,
             Arc::new(runtime),
-            expired_policy,
         ));
         // SAFETY: the output slot was preflighted and initialized.
         unsafe { out_connection.write_unaligned(Box::into_raw(handle)) };
@@ -584,11 +584,10 @@ pub unsafe extern "C" fn type_bridge_proxy_query_execute_v1(
         let proxy = unsafe { &*proxy };
         // SAFETY: caller retains the immutable terminal.
         let terminal = unsafe { &*terminal };
-        let mut parsed = match parsed {
+        let parsed = match parsed {
             Ok(value) => value,
             Err(error) => return return_execution_error(error, out_diagnostics),
         };
-        parsed.deadline = proxy.expired_policy.tighten(parsed.deadline);
         if let Err(error) = parsed.deadline.check(&answer) {
             return return_execution_error(error, out_diagnostics);
         }
@@ -723,6 +722,56 @@ mod query_policy_tests {
         assert_eq!(
             unsafe { type_bridge_proxy_connection_close(&mut connection) },
             TypeBridgeStatus::Ok
+        );
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn admission_window_defaults_and_round_trips() {
+        let endpoint = b"http://127.0.0.1:41650";
+        let mut options = TypeBridgeProxyConnectionOptionsV1 {
+            struct_size: size_of::<TypeBridgeProxyConnectionOptionsV1>() as u32,
+            version: PROXY_CONNECTION_OPTIONS_VERSION,
+            endpoint: TypeBridgeByteView {
+                data: endpoint.as_ptr(),
+                length: endpoint.len(),
+            },
+            tls_mode: TLS_DISABLED,
+            reserved0: 0,
+            custom_root_ca_path: TypeBridgeByteView {
+                data: std::ptr::null(),
+                length: 0,
+            },
+            headers: std::ptr::null(),
+            header_count: 0,
+            pinned_advertisement: TypeBridgeByteView {
+                data: std::ptr::null(),
+                length: 0,
+            },
+            connection_limits: std::ptr::null(),
+            answer_limits: std::ptr::null(),
+            admission_window_milliseconds: 0,
+            reserved: [0; 4],
+        };
+        // SAFETY: all views are immutable and live until the copies finish.
+        assert_eq!(
+            unsafe { copy_options(&options) }
+                .unwrap()
+                .admission_window_milliseconds
+                .get(),
+            60_000
+        );
+        options.admission_window_milliseconds = 1234;
+        assert_eq!(
+            unsafe { copy_options(&options) }
+                .unwrap()
+                .admission_window_milliseconds
+                .get(),
+            1234
         );
     }
 }

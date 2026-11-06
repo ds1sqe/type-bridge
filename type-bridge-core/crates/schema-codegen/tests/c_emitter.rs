@@ -441,8 +441,8 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(header.contains("acme_v3_migration_catalog_open("));
     assert!(
         source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  11u,"),
-        "ordered descriptor must require literal ABI 1.11",
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  2u,\n  0u,"),
+        "ordered descriptor must require literal ABI 2.0",
     );
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MINOR"));
     assert!(source.contains("type_bridge_schema_package_open_chunked_v1("));
@@ -451,9 +451,9 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(header.contains("acme_v3_schema_package_open("));
     assert!(header.contains("acme_v3_schema_package_open_v2("));
     assert!(header.contains("type_bridge_execution_diagnostics_t **out_diagnostics"));
-    assert!(cmake.contains("find_package(TypeBridge 1.11.0 EXACT CONFIG REQUIRED)"));
-    assert!(package_config.contains("find_dependency(TypeBridge 1.11.0 EXACT CONFIG)"));
-    assert!(pkg_config.contains("Requires: type-bridge-abi >= 1.11.0"));
+    assert!(cmake.contains("find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)"));
+    assert!(package_config.contains("find_dependency(TypeBridge 2.0.0 EXACT CONFIG)"));
+    assert!(pkg_config.contains("Requires: type-bridge-abi >= 2.0.0"));
     assert!(!cmake.contains("TypeBridge 1.3"));
     assert!(!package_config.contains("TypeBridge 1.3"));
     assert!(!pkg_config.contains("type-bridge >= 1.3.0"));
@@ -930,26 +930,26 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
     );
 
     let cmake = std::str::from_utf8(first.get("CMakeLists.txt").unwrap()).unwrap();
-    assert!(cmake.contains("find_package(TypeBridge 1.11.0 EXACT CONFIG REQUIRED)"));
+    assert!(cmake.contains("find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)"));
     assert!(cmake.contains("RELATIVE_PATH TYPE_BRIDGE_PC_PREFIX_FROM_PCDIR"));
     assert!(cmake.contains("CMAKE_INSTALL_LIBDIR must be a non-empty relative path"));
     assert!(cmake.contains("PROPERTIES EXPORT_NAME schema POSITION_INDEPENDENT_CODE ON"));
     assert!(cmake.contains("configure_package_config_file("));
     assert!(cmake.contains("install(\n  EXPORT acmeTargets"));
     let package_config = std::str::from_utf8(first.get("acmeConfig.cmake.in").unwrap()).unwrap();
-    assert!(package_config.contains("find_dependency(TypeBridge 1.11.0 EXACT CONFIG)"));
+    assert!(package_config.contains("find_dependency(TypeBridge 2.0.0 EXACT CONFIG)"));
     assert!(package_config.contains("acmeTargets.cmake"));
     let pkg_config = std::str::from_utf8(first.get("acme.pc.in").unwrap()).unwrap();
     assert!(pkg_config.contains("prefix=${pcfiledir}/@TYPE_BRIDGE_PC_PREFIX_FROM_PCDIR@"));
     assert!(pkg_config.contains("includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@"));
-    assert!(pkg_config.contains("Requires: type-bridge-abi >= 1.11.0"));
+    assert!(pkg_config.contains("Requires: type-bridge-abi >= 2.0.0"));
     assert!(pkg_config.contains("Libs: -L${libdir} -lacme_schema"));
 
     let source = std::str::from_utf8(first.get("src/models.c").expect("C source is emitted"))
         .expect("generated C source is UTF-8");
     assert!(
         source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  11u,")
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  2u,\n  0u,")
     );
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MAJOR"));
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MINOR"));
@@ -2527,7 +2527,7 @@ fn supported_c_preprocessors_fit_the_frozen_implementation_macro_reserve() {
     let runtime_macros = runtime_header_macro_names();
     assert_eq!(
         runtime_macros.len(),
-        353,
+        355,
         "runtime-header macro reserve drifted"
     );
     let mut invocations = 0;
@@ -2641,8 +2641,8 @@ fn generated_header_and_source_are_strict_c11_and_c17_for_installed_compilers() 
         &consumer,
         r#"#include <acme/models.h>
 
-_Static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "C ABI major changed");
-_Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 11u, "C ABI minor changed");
+_Static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 2u, "C ABI major changed");
+_Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 0u, "C ABI minor changed");
 _Static_assert(sizeof(acme_membership_member_player_kind_t) == sizeof(uint32_t),
                "role-player kind ABI is not fixed-width");
 
@@ -2813,7 +2813,7 @@ int main(void) {
   (void)type_bridge_schema_package_close(&opened_package);
 
   return person != 0 || display_name != 0 || text.length != 0 ||
-      TYPE_BRIDGE_C_ABI_MAJOR != 1u;
+      TYPE_BRIDGE_C_ABI_MAJOR != 2u;
 }
 "#,
     )
@@ -2988,7 +2988,7 @@ fn assert_generated_runtime_floor(package: &GeneratedPackage, cases: &[(&str, bo
                  if(PACKAGE_FIND_VERSION VERSION_GREATER PACKAGE_VERSION)\n\
                    set(PACKAGE_VERSION_COMPATIBLE FALSE)\n\
                    set(PACKAGE_VERSION_UNSUITABLE TRUE)\n\
-                 elseif(PACKAGE_FIND_VERSION_MAJOR STREQUAL \"1\")\n\
+                 elseif(PACKAGE_FIND_VERSION_MAJOR STREQUAL \"2\")\n\
                    set(PACKAGE_VERSION_COMPATIBLE TRUE)\n\
                  if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)\n\
                    set(PACKAGE_VERSION_EXACT TRUE)\n\
@@ -2999,7 +2999,7 @@ fn assert_generated_runtime_floor(package: &GeneratedPackage, cases: &[(&str, bo
             ),
         )
         .expect("fake runtime version config is written");
-        if ["1.10.0", "1.11.0"].contains(version) {
+        if ["1.10.0", "2.0.0"].contains(version) {
             let (_, template) = package
                 .files()
                 .iter()
@@ -3022,7 +3022,7 @@ fn assert_generated_runtime_floor(package: &GeneratedPackage, cases: &[(&str, bo
             assert_eq!(
                 output.status.success(),
                 *should_succeed,
-                "generated 1.11 package pkg-config runtime floor for {version}: {}",
+                "generated 2.0 package pkg-config runtime floor for {version}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }
@@ -3066,7 +3066,7 @@ fn generated_cmake_requires_the_current_abi() {
             ("1.8.0", false),
             ("1.9.0", false),
             ("1.10.0", false),
-            ("1.11.0", true),
+            ("2.0.0", true),
             ("1.12.0", false),
         ],
     );
@@ -3091,7 +3091,7 @@ fn ordered_generated_cmake_requires_the_current_abi() {
             ("1.8.0", false),
             ("1.9.0", false),
             ("1.10.0", false),
-            ("1.11.0", true),
+            ("2.0.0", true),
             ("1.12.0", false),
         ],
     );
@@ -4920,8 +4920,8 @@ fn generated_header_is_strict_cpp17_for_installed_compilers() {
         &consumer,
         r#"#include <acme/models.h>
 
-static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "C ABI major changed");
-static_assert(TYPE_BRIDGE_C_ABI_MINOR == 11u, "C ABI minor changed");
+static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 2u, "C ABI major changed");
+static_assert(TYPE_BRIDGE_C_ABI_MINOR == 0u, "C ABI minor changed");
 static_assert(sizeof(acme_membership_member_player_kind_t) == sizeof(uint32_t),
               "role-player kind ABI is not fixed-width");
 
@@ -5092,7 +5092,7 @@ int main() {
   (void)type_bridge_diagnostics_close(&package_diagnostics);
   (void)type_bridge_schema_package_close(&opened_package);
   return person != nullptr || display_name != nullptr || text.length != 0u ||
-      TYPE_BRIDGE_C_ABI_MAJOR != 1u;
+      TYPE_BRIDGE_C_ABI_MAJOR != 2u;
 }
 "#,
     )

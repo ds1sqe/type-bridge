@@ -37,6 +37,36 @@ use crate::runtime::{
     poisoned_transaction_diagnostic,
 };
 
+/// Configuration for a deferred transaction. A null options pointer keeps defaults.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TypeBridgeStagedTransactionOptionsV1 {
+    /// Exact size of this struct.
+    pub struct_size: u32,
+    /// Must equal 1.
+    pub version: u32,
+    /// Positive execution duration; zero or negative means no deadline.
+    pub timeout_milliseconds: i64,
+    /// Exactly zero (off) or one (on).
+    pub collect_phase_timestamps: u32,
+}
+
+impl TypeBridgeStagedTransactionOptionsV1 {
+    fn options(self) -> Result<TransactionOptions, TypeBridgeStatus> {
+        if self.struct_size as usize != size_of::<Self>()
+            || self.version != 1
+            || self.collect_phase_timestamps > 1
+        {
+            return Err(TypeBridgeStatus::InvalidArgument);
+        }
+        Ok(TransactionOptions::default()
+            .with_timeout(type_bridge_orm::QueryTimeout::from_signed_milliseconds(
+                self.timeout_milliseconds,
+            ))
+            .with_collect_phase_timestamps(self.collect_phase_timestamps == 1))
+    }
+}
+
 /// Opaque validated `query-plan/v3` plan.
 pub struct TypeBridgePlan {
     pub(crate) source: Arc<CompiledRawPlan>,
@@ -530,7 +560,30 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
     out_transaction: *mut *mut TypeBridgeStagedTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: forwards the same handle/output contracts with default options.
+    unsafe {
+        type_bridge_database_transaction_with_options_v1(
+            database,
+            kind,
+            ptr::null(),
+            out_transaction,
+            out_diagnostics,
+        )
+    }
+}
+
+/// Open a deferred transaction with an explicit timeout and phase collection policy.
+/// A null options pointer preserves the default 60000 ms and collection off.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_database_transaction_with_options_v1(
+    database: *const TypeBridgeDatabase,
+    kind: u32,
+    options: *const TypeBridgeStagedTransactionOptionsV1,
+    out_transaction: *mut *mut TypeBridgeStagedTransaction,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
     let inputs = |outputs: &DirectOutputPreflight| {
+        check_object(outputs, options)?;
         check_object(outputs, database)?;
         if !database.is_null() {
             // SAFETY: the complete database handle was fenced above.
@@ -545,6 +598,15 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
         return status;
     }
     guarded(|| {
+        let options = if options.is_null() {
+            TransactionOptions::default()
+        } else {
+            // SAFETY: the options were fenced against both outputs above.
+            match unsafe { options.read_unaligned() }.options() {
+                Ok(options) => options,
+                Err(status) => return status,
+            }
+        };
         let kind = match kind {
             TYPE_BRIDGE_TRANSACTION_READ => TransactionKind::Read,
             TYPE_BRIDGE_TRANSACTION_WRITE => TransactionKind::Write,
@@ -555,11 +617,7 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
         }
         // SAFETY: a non-null database is a live handle by contract.
         let database = unsafe { &*database };
-        let (transaction, database) = match database.staged_transaction(
-            TransactionOptions::default()
-                .with_timeout(type_bridge_orm::QueryTimeout::NONE)
-                .with_kind(kind),
-        ) {
+        let (transaction, database) = match database.staged_transaction(options.with_kind(kind)) {
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
@@ -587,7 +645,30 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
     out_transaction: *mut *mut TypeBridgeStagedTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: forwards the same handle/output contracts with default options.
+    unsafe {
+        type_bridge_proxy_connection_transaction_with_options_v1(
+            proxy,
+            kind,
+            ptr::null(),
+            out_transaction,
+            out_diagnostics,
+        )
+    }
+}
+
+/// Open a deferred transaction with an explicit timeout and phase collection policy.
+/// A null options pointer preserves the default 60000 ms and collection off.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_proxy_connection_transaction_with_options_v1(
+    proxy: *const TypeBridgeProxyConnection,
+    kind: u32,
+    options: *const TypeBridgeStagedTransactionOptionsV1,
+    out_transaction: *mut *mut TypeBridgeStagedTransaction,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
     let inputs = |outputs: &DirectOutputPreflight| {
+        check_object(outputs, options)?;
         check_object(outputs, proxy)?;
         if !proxy.is_null() {
             // SAFETY: the complete connection handle was fenced above.
@@ -602,6 +683,15 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
         return status;
     }
     guarded(|| {
+        let options = if options.is_null() {
+            TransactionOptions::default()
+        } else {
+            // SAFETY: the options were fenced against both outputs above.
+            match unsafe { options.read_unaligned() }.options() {
+                Ok(options) => options,
+                Err(status) => return status,
+            }
+        };
         let kind = match kind {
             TYPE_BRIDGE_TRANSACTION_READ => TransactionKind::Read,
             TYPE_BRIDGE_TRANSACTION_WRITE => TransactionKind::Write,
@@ -612,11 +702,7 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
         }
         // SAFETY: a non-null connection is a live handle by contract.
         let proxy = unsafe { &*proxy };
-        let (transaction, guard) = match proxy.staged_transaction(
-            TransactionOptions::default()
-                .with_timeout(type_bridge_orm::QueryTimeout::NONE)
-                .with_kind(kind),
-        ) {
+        let (transaction, guard) = match proxy.staged_transaction(options.with_kind(kind)) {
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
@@ -2277,5 +2363,70 @@ mod pending_diagnostic_redaction_tests {
                 .contains("signed-server-secret")
         );
         assert_eq!(surfaced.code().as_str(), "commit_outcome_unknown");
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn staged_policy_defaults_and_signed_timeouts() {
+        let defaults = TransactionOptions::default();
+        assert_eq!(
+            defaults.timeout.unwrap_or_default().milliseconds(),
+            Some(60_000)
+        );
+        assert!(!defaults.collect_phase_timestamps);
+        let mut value = TypeBridgeStagedTransactionOptionsV1 {
+            struct_size: size_of::<TypeBridgeStagedTransactionOptionsV1>() as u32,
+            version: 1,
+            timeout_milliseconds: 0,
+            collect_phase_timestamps: 1,
+        };
+        for (input, expected) in [(0, None), (-1, None), (86_400_001, Some(86_400_001))] {
+            value.timeout_milliseconds = input;
+            let options = value.options().unwrap();
+            assert_eq!(options.timeout.unwrap().milliseconds(), expected);
+            assert!(options.collect_phase_timestamps);
+        }
+        value.collect_phase_timestamps = 2;
+        assert!(matches!(
+            value.options(),
+            Err(TypeBridgeStatus::InvalidArgument)
+        ));
+        value.collect_phase_timestamps = 0;
+        value.version = 2;
+        assert!(matches!(
+            value.options(),
+            Err(TypeBridgeStatus::InvalidArgument)
+        ));
+    }
+
+    #[test]
+    fn staged_options_are_fenced_before_output_initialization() {
+        let mut value = TypeBridgeStagedTransactionOptionsV1 {
+            struct_size: size_of::<TypeBridgeStagedTransactionOptionsV1>() as u32,
+            version: 1,
+            timeout_milliseconds: 60_000,
+            collect_phase_timestamps: 0,
+        };
+        let alias = (&mut value as *mut TypeBridgeStagedTransactionOptionsV1).cast();
+        // SAFETY: the call must refuse the output overlapping the complete options.
+        let status = unsafe {
+            type_bridge_database_transaction_with_options_v1(
+                ptr::null(),
+                TYPE_BRIDGE_TRANSACTION_WRITE,
+                &value,
+                alias,
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::InvalidArgument);
+        assert_eq!(value.version, 1);
+        assert_eq!(
+            value.struct_size as usize,
+            size_of::<TypeBridgeStagedTransactionOptionsV1>()
+        );
     }
 }

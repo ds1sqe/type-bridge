@@ -444,6 +444,27 @@ fn cpp_compilers() -> Vec<&'static str> {
         .collect()
 }
 
+/// Regenerate evidence from the same native emitter used by live consumers.
+#[test]
+#[ignore = "invoked by scripts/ci/refresh_c_projection_fingerprints.py"]
+fn produce_c_projection_fingerprints() {
+    let destination = env::var_os("TYPE_BRIDGE_C_PROJECTION_FINGERPRINT_OUTPUT")
+        .expect("the refresh tool supplies an output path");
+    let mut profiles = serde_json::Map::new();
+    for profile in ["typedb-3.12.1/v1", "typedb-3.13.6/v1"] {
+        let (_, _, query_semantic, queries) = emitted_package_authority_and_fingerprints(profile);
+        let (model_semantic, models) = sdk_models_fingerprints(profile);
+        profiles.insert(
+            profile.to_owned(),
+            json!({
+                "queries": {"semantic": query_semantic, "c": queries},
+                "models": {"semantic": model_semantic, "c": models},
+            }),
+        );
+    }
+    fs::write(destination, serde_json::to_vec_pretty(&profiles).unwrap()).unwrap();
+}
+
 #[test]
 fn c_projection_fingerprints_match_each_committed_profile() {
     let mut actual = serde_json::Map::new();

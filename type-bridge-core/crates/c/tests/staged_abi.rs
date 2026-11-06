@@ -21,8 +21,8 @@ const STAGED_CONSUMER: &str = r#"#include <stddef.h>
 #define STAGED_STATIC_ASSERT(value, message) _Static_assert(value, message)
 #endif
 
-STAGED_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "staged ABI major drifted");
-STAGED_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 11u, "staged ABI minor drifted");
+STAGED_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 2u, "staged ABI major drifted");
+STAGED_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 0u, "staged ABI minor drifted");
 STAGED_STATIC_ASSERT(TYPE_BRIDGE_TRANSACTION_READ == 1u, "read kind drifted");
 STAGED_STATIC_ASSERT(TYPE_BRIDGE_TRANSACTION_WRITE == 2u, "write kind drifted");
 STAGED_STATIC_ASSERT(TYPE_BRIDGE_PLAN_ANSWER_ROWS == 1, "rows answer drifted");

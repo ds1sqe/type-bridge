@@ -49,7 +49,8 @@ pub use execution_diagnostic::{
     TypeBridgeExecutionDiagnosticCategory, TypeBridgeExecutionDiagnosticDetailKind,
     TypeBridgeExecutionDiagnosticDetailViewV1, TypeBridgeExecutionDiagnosticPathKind,
     TypeBridgeExecutionDiagnosticPathViewV1, TypeBridgeExecutionDiagnosticViewV1,
-    TypeBridgeExecutionDiagnostics, TypeBridgeExecutionFailureV1,
+    TypeBridgeExecutionDiagnostics, TypeBridgeExecutionFailureV1, TypeBridgeExecutionPhaseViewV1,
+    TypeBridgeExecutionTimelineViewV1,
 };
 pub use generated_preflight::{
     GENERATED_CREATE_GRAPH_VERSION, GENERATED_CREATE_HOSTED_OBJECT_BYTES_MAX,
@@ -109,7 +110,7 @@ pub use runtime::{
 
 pub use runtime::{TypeBridgeDebugListener, type_bridge_debug_listener_set};
 
-pub use staged::type_bridge_plan_explain;
+pub use staged::{TypeBridgeStagedTransactionOptionsV1, type_bridge_plan_explain};
 
 pub use plan_builder::idioms::{
     TypeBridgePlanBoolean, TypeBridgePlanCondition, TypeBridgePlanDate, TypeBridgePlanDateTime,

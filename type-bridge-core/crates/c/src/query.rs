@@ -266,7 +266,7 @@ pub struct TypeBridgeQueryTerminalDescriptorV1 {
 pub struct TypeBridgeQueryExecutionLimitsV1 {
     pub struct_size: u32,
     pub version: u32,
-    pub timeout_milliseconds: u64,
+    pub timeout_milliseconds: i64,
     pub items: u64,
     pub bytes: u64,
     pub graph_nodes: u64,
@@ -274,7 +274,7 @@ pub struct TypeBridgeQueryExecutionLimitsV1 {
     pub collection_members: u64,
     pub role_players: u64,
     pub statements: u32,
-    pub reserved0: u32,
+    pub collect_phase_timestamps: u32,
     pub reserved: [u64; 4],
 }
 
@@ -552,7 +552,7 @@ impl StagedQueryPending {
         &self,
         result: &type_bridge_orm::ValidatedMatchResult,
     ) -> Result<TypeBridgeQueryResult, SdkExecutionDiagnostic> {
-        let deadline = crate::policy::capture_deadline(self.resources);
+        let deadline = QueryExecutionDeadline::for_limits(self.resources);
         deadline.check(&self.cancellation)?;
         let projected = self.materialize(result, deadline)?;
         Ok(TypeBridgeQueryResult {
@@ -589,7 +589,6 @@ impl StagedQueryPending {
 }
 
 struct QueryRemoteContextState {
-    expired_policy: crate::policy::ExpiredPolicy,
     package: Arc<SchemaPackageState>,
     registry: Arc<DescriptorRegistry>,
     connection: type_bridge_orm::ProxyQueryConnection,
@@ -4587,11 +4586,9 @@ fn build_remote_context_state(
     let (authority, registry) = remote_authority(package)?;
     // The connection validates the advertisement and owns the ceiling that
     // every prepared request on this context is constrained by.
-    let expired_policy = crate::policy::ExpiredPolicy::from_limits(limits);
     let connection =
         type_bridge_orm::ProxyQueryConnection::with_exchange(advertisement, authority, limits)?;
     Ok(QueryRemoteContextState {
-        expired_policy,
         package: Arc::clone(package),
         registry,
         connection,
@@ -4844,12 +4841,10 @@ pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
         let database = unsafe { &*database };
         // SAFETY: caller retains the immutable terminal.
         let terminal = unsafe { &*terminal };
-        let mut parsed = match parsed {
+        let parsed = match parsed {
             Ok(value) => value,
             Err(error) => return return_execution_error(error, out_diagnostics),
         };
-        parsed.deadline = crate::policy::ExpiredPolicy::from_limits(database.answer_ceiling())
-            .tighten(parsed.deadline);
         if let Err(error) = parsed.deadline.check(&answer) {
             return return_execution_error(error, out_diagnostics);
         }
@@ -4978,12 +4973,10 @@ pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
         let transaction = unsafe { &*transaction };
         // SAFETY: caller retains the immutable terminal.
         let terminal = unsafe { &*terminal };
-        let mut parsed = match parsed {
+        let parsed = match parsed {
             Ok(value) => value,
             Err(error) => return return_execution_error(error, out_diagnostics),
         };
-        parsed.deadline = crate::policy::ExpiredPolicy::from_limits(transaction.answer_ceiling())
-            .tighten(parsed.deadline);
         if let Err(error) = parsed.deadline.check(&answer) {
             return return_execution_error(error, out_diagnostics);
         }
@@ -5200,9 +5193,9 @@ pub unsafe extern "C" fn type_bridge_query_remote_prepare_v1(
         None
     } else {
         // SAFETY: the complete context outer object was fenced above.
-        let deadline =
-            crate::policy::capture_deadline(unsafe { &*context }.state.connection.answer_limits());
-        let deadline = unsafe { &*context }.state.expired_policy.tighten(deadline);
+        let deadline = QueryExecutionDeadline::for_limits(
+            unsafe { &*context }.state.connection.answer_limits(),
+        );
         let check = deadline.check(&answer);
         Some((deadline, check))
     };
@@ -8581,7 +8574,7 @@ mod tests {
         let ceiling = unsafe { &*context }.state.connection.answer_limits();
         assert_eq!(
             ceiling,
-            crate::policy::default_limits(type_bridge_orm::AnswerTransport::Proxy),
+            QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy),
         );
         assert_ne!(ceiling, QueryExecutionResourceLimits::default());
         assert_eq!(
@@ -9455,7 +9448,7 @@ mod tests {
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: DESCRIPTOR_VERSION,
-            timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+            timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS as i64,
             items: DEFAULT_PROXY_QUERY_ITEMS,
             bytes: DEFAULT_PROXY_QUERY_BYTES,
             graph_nodes: DEFAULT_PROXY_QUERY_GRAPH_NODES,
@@ -9463,7 +9456,7 @@ mod tests {
             collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
             role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
             statements: DEFAULT_PROXY_QUERY_STATEMENTS,
-            reserved0: 0,
+            collect_phase_timestamps: 0,
             reserved: [0; 4],
         }
     }
@@ -13077,7 +13070,8 @@ mod tests {
             TypeBridgeStatus::Ok,
         );
         let mut interruption_limits = default_limits();
-        interruption_limits.timeout_milliseconds = 0;
+        interruption_limits.timeout_milliseconds = 1;
+        QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| delay.set(5));
         let deadline_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
@@ -13326,7 +13320,7 @@ mod tests {
         };
 
         // Without a ceiling the raised call runs, and the call's own
-        // one-item or zero-timeout limit fixes the refusal codes.
+        // one-item limit refuses, while a zero timeout is unbounded.
         let (queries, hydrations) = rows();
         let unbounded = fake_database(&package, queries, hydrations);
         assert_eq!(manager_all_refusal(&unbounded, &all, &raised), None);
@@ -13334,13 +13328,13 @@ mod tests {
         let unbounded = fake_database(&package, queries, hydrations);
         let item_code =
             manager_all_refusal(&unbounded, &all, &one_item).expect("one item refuses two rows");
-        let unbounded = fake_database(&package, Vec::new(), Vec::new());
-        let timeout_code =
-            manager_all_refusal(&unbounded, &all, &zero_timeout).expect("a zero timeout refuses");
-        assert_eq!(unbounded.events.opens.load(Ordering::Acquire), 0);
+        let (queries, hydrations) = rows();
+        let unbounded = fake_database(&package, queries, hydrations);
+        assert_eq!(manager_all_refusal(&unbounded, &all, &zero_timeout), None);
+        assert_eq!(unbounded.events.opens.load(Ordering::Acquire), 1);
 
         // The same raised call on a connection whose orm ceiling is one item,
-        // or a zero timeout, refuses exactly as the narrow call did.
+        // refuses exactly as the narrow call did; no deadline stays unbounded.
         let (queries, hydrations) = rows();
         let one_item_ceiling = QueryExecutionResourceLimits {
             items: 1,
@@ -13353,20 +13347,14 @@ mod tests {
             Some(item_code)
         );
         let zero_timeout_ceiling = QueryExecutionResourceLimits {
-            timeout_milliseconds: type_bridge_orm::QueryTimeout::NONE,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
             ..QueryExecutionResourceLimits::default()
         };
-        let bounded = fake_database_with_answer_ceiling(
-            &package,
-            Vec::new(),
-            Vec::new(),
-            zero_timeout_ceiling,
-        );
-        assert_eq!(
-            manager_all_refusal(&bounded, &all, &raised),
-            Some(timeout_code)
-        );
-        assert_eq!(bounded.events.opens.load(Ordering::Acquire), 0);
+        let (queries, hydrations) = rows();
+        let bounded =
+            fake_database_with_answer_ceiling(&package, queries, hydrations, zero_timeout_ceiling);
+        assert_eq!(manager_all_refusal(&bounded, &all, &raised), None);
+        assert_eq!(bounded.events.opens.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -13403,7 +13391,7 @@ mod tests {
         // A dimension may be raised past its default and is kept as given.
         let raised = {
             let mut value = default_limits();
-            value.timeout_milliseconds = DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS + 1;
+            value.timeout_milliseconds = DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS as i64 + 1;
             value.items = DEFAULT_PROXY_QUERY_ITEMS + 1;
             value.bytes = DEFAULT_PROXY_QUERY_BYTES + 1;
             value.graph_nodes = DEFAULT_PROXY_QUERY_GRAPH_NODES + 1;
@@ -13416,10 +13404,10 @@ mod tests {
             parse_common_limits(Some(raised), type_bridge_orm::AnswerTransport::Direct)
                 .expect("a raised policy is admitted"),
             QueryExecutionResourceLimits {
+                collect_phase_timestamps: false,
                 timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
                     DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS + 1
                 ),
-                collect_phase_timestamps: false,
                 items: DEFAULT_PROXY_QUERY_ITEMS + 1,
                 bytes: DEFAULT_PROXY_QUERY_BYTES + 1,
                 graph_nodes: DEFAULT_PROXY_QUERY_GRAPH_NODES + 1,
@@ -13430,18 +13418,11 @@ mod tests {
             },
         );
         // Past a supported maximum it is refused, never clamped.
-        let unsupported = [
-            {
-                let mut value = default_limits();
-                value.timeout_milliseconds = crate::policy::C_MAX_TIMEOUT_MILLISECONDS + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.statements = type_bridge_orm::MAX_QUERY_STATEMENTS + 1;
-                value
-            },
-        ];
+        let unsupported = [{
+            let mut value = default_limits();
+            value.statements = type_bridge_orm::MAX_QUERY_STATEMENTS + 1;
+            value
+        }];
         for refused in &unsupported {
             assert_eq!(
                 parse_common_limits(Some(*refused), type_bridge_orm::AnswerTransport::Direct)
@@ -13639,7 +13620,8 @@ mod tests {
 
         let deadline_database = fake_database(&package, Vec::new(), Vec::new());
         let mut limits = default_limits();
-        limits.timeout_milliseconds = 0;
+        limits.timeout_milliseconds = 1;
+        QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| delay.set(5));
         let deadline_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
@@ -14203,17 +14185,18 @@ mod tests {
     }
 
     #[test]
-    fn remote_prepare_zero_deadline_precedes_kind_and_pending_reservation() {
+    fn remote_prepare_expired_deadline_precedes_kind_and_pending_reservation() {
         let package = package("queryremotezero");
         // SAFETY: fixture owns exact generated handles and copied advertisement.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
         let remote = remote_fixture(0x32);
         let mut limits = default_limits();
-        limits.timeout_milliseconds = 0;
+        limits.timeout_milliseconds = 1;
         let mut context =
             unsafe { open_remote_context_with_limits(&package, &remote.advertisement, &limits) };
         let mut pending = ptr::null_mut();
         let mut diagnostics = ptr::null_mut();
+        QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| delay.set(5));
         let pending_failure = inject_failure(AllocationSite::QueryRemotePendingHandle, 0);
         assert_eq!(
             unsafe {
@@ -15152,6 +15135,7 @@ mod tests {
             },
             connection_limits: ptr::null(),
             answer_limits: ptr::null(),
+            admission_window_milliseconds: 0,
             reserved: [0; 4],
         }
     }
@@ -15281,14 +15265,8 @@ mod tests {
                 .build()
                 .unwrap(),
         );
-        let proxy = TypeBridgeProxyConnection::new(
-            Arc::clone(package.state()),
-            connection,
-            runtime,
-            crate::policy::ExpiredPolicy::from_limits(crate::policy::default_limits(
-                type_bridge_orm::AnswerTransport::Proxy,
-            )),
-        );
+        let proxy =
+            TypeBridgeProxyConnection::new(Arc::clone(package.state()), connection, runtime);
         for operation in [
             ManagerTerminalKind::All,
             ManagerTerminalKind::First,

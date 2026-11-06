@@ -20,8 +20,8 @@ ABI_ASSERT(ABI_ALIGNOF(type_bridge_projected_codec_options_v1_t) == 8u, "codec o
 ABI_ASSERT(offsetof(type_bridge_projected_codec_options_v1_t, cancellation) == 64u, "codec cancellation offset");
 #endif
 
-ABI_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "ABI major drifted");
-ABI_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 11u, "C ABI is no longer supported");
+ABI_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 2u, "ABI major drifted");
+ABI_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 0u, "C ABI is no longer supported");
 ABI_ASSERT(TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION == 2u,
                     "database config version drifted");
 ABI_ASSERT(TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX == 1048576u,

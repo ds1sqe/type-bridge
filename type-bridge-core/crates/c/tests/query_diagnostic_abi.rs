@@ -6,7 +6,9 @@ use std::process::Command;
 use type_bridge_c::{
     TypeBridgeExecutionDiagnosticDetailKind, TypeBridgeExecutionDiagnosticDetailViewV1,
     TypeBridgeExecutionDiagnosticPathKind, TypeBridgeExecutionDiagnosticPathViewV1,
-    TypeBridgeExecutionDiagnosticViewV1, TypeBridgeQueryExecutionLimitsV1,
+    TypeBridgeExecutionDiagnosticViewV1, TypeBridgeExecutionPhaseViewV1,
+    TypeBridgeExecutionTimelineViewV1, TypeBridgeQueryExecutionLimitsV1,
+    TypeBridgeStagedTransactionOptionsV1,
 };
 
 #[path = "support/temp.rs"]
@@ -24,13 +26,37 @@ fn parse_layout(output: &[u8]) -> Vec<usize> {
 fn expected_layout() -> Vec<usize> {
     let mut values = vec![
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 255, 1, 2, 3, 4, 5,
-        6, 7, 8, 9, 10, 11, 12, 13, 14, 255, 1, 30_000, 65_536, 33_554_432, 65_536, 65_536, 65_536,
+        6, 7, 8, 9, 10, 11, 12, 13, 14, 255, 1, 60_000, 65_536, 33_554_432, 65_536, 65_536, 65_536,
         65_536, 3, // direct defaults
-        30_000, 100_000, 67_108_864, 1_000_000, 4_000_000, 1_000_000, 1_000_000, 3,
+        60_000, 100_000, 67_108_864, 1_000_000, 4_000_000, 1_000_000, 1_000_000, 3,
         // proxy defaults
-        30_000, 65_536, 33_554_432, 65_536, 65_536, 65_536, 65_536, 3,
+        60_000, 65_536, 33_554_432, 65_536, 65_536, 65_536, 65_536, 3,
     ];
     values.extend([
+        size_of::<TypeBridgeExecutionTimelineViewV1>(),
+        align_of::<TypeBridgeExecutionTimelineViewV1>(),
+        offset_of!(TypeBridgeExecutionTimelineViewV1, struct_size),
+        offset_of!(TypeBridgeExecutionTimelineViewV1, reserved0),
+        offset_of!(TypeBridgeExecutionTimelineViewV1, anchor_unix_milliseconds),
+        offset_of!(TypeBridgeExecutionTimelineViewV1, stamp_count),
+        size_of::<TypeBridgeExecutionPhaseViewV1>(),
+        align_of::<TypeBridgeExecutionPhaseViewV1>(),
+        offset_of!(TypeBridgeExecutionPhaseViewV1, struct_size),
+        offset_of!(TypeBridgeExecutionPhaseViewV1, has_statement_index),
+        offset_of!(TypeBridgeExecutionPhaseViewV1, offset_milliseconds),
+        offset_of!(TypeBridgeExecutionPhaseViewV1, statement_index),
+        offset_of!(TypeBridgeExecutionPhaseViewV1, reserved0),
+        offset_of!(TypeBridgeExecutionPhaseViewV1, phase),
+        offset_of!(TypeBridgeExecutionPhaseViewV1, failing_phase),
+        size_of::<TypeBridgeStagedTransactionOptionsV1>(),
+        align_of::<TypeBridgeStagedTransactionOptionsV1>(),
+        offset_of!(TypeBridgeStagedTransactionOptionsV1, struct_size),
+        offset_of!(TypeBridgeStagedTransactionOptionsV1, version),
+        offset_of!(TypeBridgeStagedTransactionOptionsV1, timeout_milliseconds),
+        offset_of!(
+            TypeBridgeStagedTransactionOptionsV1,
+            collect_phase_timestamps
+        ),
         size_of::<TypeBridgeQueryExecutionLimitsV1>(),
         align_of::<TypeBridgeQueryExecutionLimitsV1>(),
         offset_of!(TypeBridgeQueryExecutionLimitsV1, struct_size),
@@ -43,7 +69,7 @@ fn expected_layout() -> Vec<usize> {
         offset_of!(TypeBridgeQueryExecutionLimitsV1, collection_members),
         offset_of!(TypeBridgeQueryExecutionLimitsV1, role_players),
         offset_of!(TypeBridgeQueryExecutionLimitsV1, statements),
-        offset_of!(TypeBridgeQueryExecutionLimitsV1, reserved0),
+        offset_of!(TypeBridgeQueryExecutionLimitsV1, collect_phase_timestamps),
         offset_of!(TypeBridgeQueryExecutionLimitsV1, reserved),
         size_of::<TypeBridgeExecutionDiagnosticViewV1>(),
         align_of::<TypeBridgeExecutionDiagnosticViewV1>(),
@@ -343,6 +369,27 @@ int main(void) {
   PRINT_VALUE(TYPE_BRIDGE_QUERY_PROXY_DEFAULT_COLLECTION_MEMBERS);
   PRINT_VALUE(TYPE_BRIDGE_QUERY_PROXY_DEFAULT_ROLE_PLAYERS);
   PRINT_VALUE(TYPE_BRIDGE_QUERY_PROXY_DEFAULT_STATEMENTS);
+  PRINT_VALUE(sizeof(type_bridge_execution_timeline_view_v1_t));
+  PRINT_VALUE(TYPE_BRIDGE_ALIGNOF(type_bridge_execution_timeline_view_v1_t));
+  PRINT_VALUE(offsetof(type_bridge_execution_timeline_view_v1_t, struct_size));
+  PRINT_VALUE(offsetof(type_bridge_execution_timeline_view_v1_t, reserved0));
+  PRINT_VALUE(offsetof(type_bridge_execution_timeline_view_v1_t, anchor_unix_milliseconds));
+  PRINT_VALUE(offsetof(type_bridge_execution_timeline_view_v1_t, stamp_count));
+  PRINT_VALUE(sizeof(type_bridge_execution_phase_view_v1_t));
+  PRINT_VALUE(TYPE_BRIDGE_ALIGNOF(type_bridge_execution_phase_view_v1_t));
+  PRINT_VALUE(offsetof(type_bridge_execution_phase_view_v1_t, struct_size));
+  PRINT_VALUE(offsetof(type_bridge_execution_phase_view_v1_t, has_statement_index));
+  PRINT_VALUE(offsetof(type_bridge_execution_phase_view_v1_t, offset_milliseconds));
+  PRINT_VALUE(offsetof(type_bridge_execution_phase_view_v1_t, statement_index));
+  PRINT_VALUE(offsetof(type_bridge_execution_phase_view_v1_t, reserved0));
+  PRINT_VALUE(offsetof(type_bridge_execution_phase_view_v1_t, phase));
+  PRINT_VALUE(offsetof(type_bridge_execution_phase_view_v1_t, failing_phase));
+  PRINT_VALUE(sizeof(type_bridge_staged_transaction_options_v1_t));
+  PRINT_VALUE(TYPE_BRIDGE_ALIGNOF(type_bridge_staged_transaction_options_v1_t));
+  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_v1_t, struct_size));
+  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_v1_t, version));
+  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_v1_t, timeout_milliseconds));
+  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_v1_t, collect_phase_timestamps));
   PRINT_VALUE(sizeof(type_bridge_query_execution_limits_v1_t));
   PRINT_VALUE(TYPE_BRIDGE_ALIGNOF(type_bridge_query_execution_limits_v1_t));
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, struct_size));
@@ -355,7 +402,7 @@ int main(void) {
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, collection_members));
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, role_players));
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, statements));
-  PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, reserved0));
+  PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, collect_phase_timestamps));
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, reserved));
   PRINT_VALUE(sizeof(type_bridge_execution_diagnostic_view_v1_t));
   PRINT_VALUE(TYPE_BRIDGE_ALIGNOF(type_bridge_execution_diagnostic_view_v1_t));

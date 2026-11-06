@@ -1480,17 +1480,14 @@ unsafe fn controlled_crud_call(
         // every output before delegating to the shared implementation.
         Some(unsafe { limits.read_unaligned() })
     };
-    let limits = crate::policy::constrain_limits(
-        parse_common_limits(descriptor, type_bridge_orm::AnswerTransport::Direct)?,
-        ceiling,
-    );
+    let limits = parse_common_limits(descriptor, type_bridge_orm::AnswerTransport::Direct)?
+        .constrained_by(ceiling);
     let cancellation = if cancellation.is_null() {
         AnswerCancellation::default()
     } else {
         // SAFETY: the exported caller fenced this complete immutable handle.
         unsafe { &*cancellation }.answer_cancellation()
     };
-    crate::policy::capture_deadline(limits).check(&cancellation)?;
     Ok(ControlledCrudCall {
         limits,
         cancellation,
@@ -1805,11 +1802,6 @@ pub(crate) unsafe fn run_write_thing_call(
             return return_failure(failure, out_diagnostics);
         }
         delay_controlled_crud_checkpoint();
-        if let Some(limits) = target.answer_limits()
-            && let Err(diagnostic) = crate::policy::ExpiredPolicy::from_limits(limits).check()
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
         if let Some(control) = &policy_control
             && let Err(diagnostic) = control.checkpoint()
         {
@@ -1874,11 +1866,6 @@ pub(crate) unsafe fn run_put_call(
             return return_failure(failure, out_diagnostics);
         }
         delay_controlled_crud_checkpoint();
-        if let Some(limits) = target.answer_limits()
-            && let Err(diagnostic) = crate::policy::ExpiredPolicy::from_limits(limits).check()
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
         if let Some(control) = &policy_control
             && let Err(diagnostic) = control.checkpoint()
         {
@@ -1937,11 +1924,6 @@ pub(crate) unsafe fn run_get_call(
             return return_failure(failure, out_diagnostics);
         }
         delay_controlled_crud_checkpoint();
-        if let Some(limits) = target.answer_limits()
-            && let Err(diagnostic) = crate::policy::ExpiredPolicy::from_limits(limits).check()
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
         if let Some(control) = &policy_control
             && let Err(diagnostic) = control.checkpoint(&type_id)
         {
@@ -1993,11 +1975,6 @@ pub(crate) unsafe fn run_delete_call(
             return return_execution_error(diagnostic, out_diagnostics);
         }
         delay_controlled_crud_checkpoint();
-        if let Some(limits) = target.answer_limits()
-            && let Err(diagnostic) = crate::policy::ExpiredPolicy::from_limits(limits).check()
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
         if let Some(control) = &policy_control
             && let Err(diagnostic) = control.checkpoint()
         {
@@ -2038,11 +2015,6 @@ pub(crate) unsafe fn run_count_call(
             return return_execution_error(diagnostic, out_diagnostics);
         }
         delay_controlled_crud_checkpoint();
-        if let Some(limits) = target.answer_limits()
-            && let Err(diagnostic) = crate::policy::ExpiredPolicy::from_limits(limits).check()
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
         if let Some(control) = &policy_control
             && let Err(diagnostic) = control.checkpoint(&type_id)
         {

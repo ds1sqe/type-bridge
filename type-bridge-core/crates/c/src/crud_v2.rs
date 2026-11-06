@@ -1060,7 +1060,12 @@ mod tests {
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: 1,
-            timeout_milliseconds: limits.timeout_milliseconds.milliseconds().unwrap_or(0),
+            timeout_milliseconds: limits
+                .timeout_milliseconds
+                .milliseconds()
+                .map_or(0, |value| {
+                    i64::try_from(value).expect("test timeout fits i64")
+                }),
             items: limits.items,
             bytes: limits.bytes,
             graph_nodes: limits.graph_nodes,
@@ -1068,7 +1073,7 @@ mod tests {
             collection_members: limits.collection_members,
             role_players: limits.role_players,
             statements: limits.statement_limit(),
-            reserved0: 0,
+            collect_phase_timestamps: 0,
             reserved: [0; 4],
         }
     }
@@ -1579,8 +1584,9 @@ mod tests {
 
         let deadline = fixture(vec![], COMMIT_SUCCESS);
         let mut deadline_limits = default_limits();
-        deadline_limits.timeout_milliseconds = 0;
-        // SAFETY: a zero timeout is a valid real ceiling.
+        deadline_limits.timeout_milliseconds = 1;
+        crate::thing_crud::delay_next_controlled_crud_checkpoint(20);
+        // SAFETY: inputs remain live while the explicit deadline expires.
         assert_eq!(
             unsafe {
                 type_bridge_database_entity_insert_v2_impl(

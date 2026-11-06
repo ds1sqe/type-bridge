@@ -272,8 +272,8 @@ impl EmittedDescriptorBytes {
             struct_size: size_of::<TypeBridgeSchemaPackageDescriptorV1>()
                 .try_into()
                 .expect("C descriptor size fits u32"),
-            abi_major: 1,
-            abi_minor: 6,
+            abi_major: 2,
+            abi_minor: 0,
             schema_authority_json: view(&self.authority),
             declared_schema_json: view(&self.declared),
             runtime_projection_json: view(&self.projection),
@@ -325,8 +325,8 @@ impl ChunkedDescriptorParts {
         }
         TypeBridgeSchemaPackageChunkedDescriptorV1 {
             struct_size: size_of::<TypeBridgeSchemaPackageChunkedDescriptorV1>() as u32,
-            abi_major: 1,
-            abi_minor: 6,
+            abi_major: 2,
+            abi_minor: 0,
             reserved0: 0,
             schema_authority_json: scatter(&self.authority),
             declared_schema_json: scatter(&self.declared),
@@ -754,7 +754,7 @@ fn native_import_library(native_library: &Path) -> PathBuf {
 
 fn rust_abi_layout() -> Vec<usize> {
     let mut layout = vec![
-        1,
+        2,
         TYPE_BRIDGE_C_ABI_MINOR as usize,
         TypeBridgeStatus::Ok as usize,
         TypeBridgeStatus::InvalidArgument as usize,
@@ -820,7 +820,7 @@ fn rust_abi_layout() -> Vec<usize> {
         256,
         65_535,
         128,
-        30_000,
+        60_000,
         65_536,
         33_554_432,
         65_536,
@@ -829,7 +829,7 @@ fn rust_abi_layout() -> Vec<usize> {
         65_536,
         3,
         // direct defaults
-        30_000,
+        60_000,
         100_000,
         67_108_864,
         1_000_000,
@@ -838,7 +838,7 @@ fn rust_abi_layout() -> Vec<usize> {
         1_000_000,
         3,
         // proxy defaults
-        30_000,
+        60_000,
         65_536,
         33_554_432,
         65_536,
@@ -1267,7 +1267,7 @@ fn rust_abi_layout() -> Vec<usize> {
         offset_of!(TypeBridgeQueryExecutionLimitsV1, collection_members),
         offset_of!(TypeBridgeQueryExecutionLimitsV1, role_players),
         offset_of!(TypeBridgeQueryExecutionLimitsV1, statements),
-        offset_of!(TypeBridgeQueryExecutionLimitsV1, reserved0),
+        offset_of!(TypeBridgeQueryExecutionLimitsV1, collect_phase_timestamps),
         offset_of!(TypeBridgeQueryExecutionLimitsV1, reserved),
         size_of::<TypeBridgeQueryPageMetadataV1>(),
         align_of::<TypeBridgeQueryPageMetadataV1>(),
@@ -2229,7 +2229,7 @@ int main(void) {
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, collection_members));
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, role_players));
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, statements));
-  PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, reserved0));
+  PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, collect_phase_timestamps));
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, reserved));
   PRINT_VALUE(sizeof(type_bridge_query_page_metadata_v1_t));
   PRINT_VALUE(TYPE_BRIDGE_ALIGNOF(type_bridge_query_page_metadata_v1_t));
@@ -2658,13 +2658,13 @@ fn clean_staged_cmake_consumer_finds_links_and_runs_generated_package() {
     assert!(
         fs::read_to_string(&installed_config)
             .expect("CMake metadata is UTF-8")
-            .contains("set(TypeBridge_C_ABI_VERSION \"1.11.0\")")
+            .contains("set(TypeBridge_C_ABI_VERSION \"2.0.0\")")
     );
     assert!(
         fs::read_to_string(&installed_pkg_config)
             .expect("pkg-config metadata is UTF-8")
             .lines()
-            .any(|line| line == "Version: 1.6.0")
+            .any(|line| line == "Version: 2.0.0")
     );
     for metadata in [&installed_config, &installed_pkg_config] {
         let contents = fs::read_to_string(metadata).expect("installed metadata is UTF-8");
@@ -2700,32 +2700,16 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         "the installed package incorrectly satisfied an incompatible ABI request"
     );
 
-    // ABI 1.11 serves 1.6 through 1.10 exact pins; new consumers can require 1.11.
+    // ABI 2.0 refuses all previous-major packages.
     for (request, accepted) in [
-        ("1.6.0 EXACT", true),
-        ("1.6", true),
-        ("1.7", true),
-        ("1.7.0 EXACT", true),
-        ("1.8.0 EXACT", true),
-        ("1.6...1.7", false),
-        ("1.5", false),
-        ("1.6.1 EXACT", false),
-        ("1.7.1 EXACT", false),
-        ("1.8.1 EXACT", false),
-        ("1.8", true),
-        ("1.9.0 EXACT", true),
-        ("1.6...1.8", false),
-        ("1.6...1.9", false),
-        ("1.6...1.11", true),
-        ("1.11.0 EXACT", true),
-        ("1.11.1 EXACT", false),
-        ("1.12", false),
-        ("1.11", true),
-        ("1.10.0 EXACT", true),
-        ("1.10", true),
-        ("1.9", true),
-        ("2.0", false),
-        ("1.9...2.0", true),
+        ("1.6.0 EXACT", false),
+        ("1.11.0 EXACT", false),
+        ("1.6...1.11", false),
+        ("2.0.0 EXACT", true),
+        ("2.0", true),
+        ("2.0.1 EXACT", false),
+        ("2.1", false),
+        ("2.0...2.1", true),
     ] {
         let source = stage.path().join("version-request");
         let build = stage.path().join("version-request-build");
@@ -2768,16 +2752,16 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
                 .success()
         };
         assert!(
-            pkg_config("type-bridge = 1.6.0"),
-            "legacy exact pins resolve"
+            pkg_config("type-bridge = 2.0.0"),
+            "current exact pins resolve"
         );
         assert!(
             pkg_config("type-bridge-abi >= 1.8.0"),
             "current consumers resolve"
         );
         assert!(pkg_config("type-bridge-abi >= 1.9.0"));
-        assert!(pkg_config("type-bridge-abi >= 1.11.0"));
-        assert!(!pkg_config("type-bridge-abi >= 1.12.0"));
+        assert!(pkg_config("type-bridge-abi >= 2.0.0"));
+        assert!(!pkg_config("type-bridge-abi >= 2.1.0"));
     }
 
     let output = Command::new("cmake")
@@ -2861,7 +2845,7 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         r#"cmake_minimum_required(VERSION 3.20)
 project(type_bridge_clean_consumer LANGUAGES C CXX)
 
-find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)
+find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)
 find_package(fixture 1.0.0 EXACT CONFIG REQUIRED)
 
 add_executable(type_bridge_clean_consumer main.c migration_smoke.c)
@@ -3326,7 +3310,7 @@ fn clean_staged_pkg_config_consumer_supports_nested_library_directories() {
         );
     }
 
-    for (package, expected_version) in [("type-bridge", "1.6.0"), ("fixture", "1.0.0")] {
+    for (package, expected_version) in [("type-bridge", "2.0.0"), ("fixture", "1.0.0")] {
         let output = Command::new("pkg-config")
             .args(["--modversion", package])
             .env("PKG_CONFIG_LIBDIR", &pkg_config_directory)
@@ -3493,50 +3477,40 @@ fn generated_descriptor_opens_and_borrows_exact_emitted_bytes() {
 }
 
 #[test]
-fn supported_additive_descriptors_open_in_flat_and_chunked_forms() {
+fn current_abi_descriptors_open_in_flat_and_chunked_forms() {
     let bytes = emitted_fixture().bytes;
-    for minor in 6..=TYPE_BRIDGE_C_ABI_MINOR {
-        let mut descriptor = bytes.descriptor();
-        descriptor.abi_minor = minor;
-        let mut package = ptr::null_mut();
-        let mut diagnostics = ptr::null_mut();
-        // SAFETY: descriptor backing bytes and distinct owner slots stay live.
-        assert_eq!(
-            unsafe {
-                type_bridge_schema_package_open_v1(&descriptor, &mut package, &mut diagnostics)
-            },
-            TypeBridgeStatus::Ok
-        );
-        assert!(!package.is_null());
-        assert!(diagnostics.is_null());
-        // SAFETY: return the unique live owner.
-        assert_eq!(
-            unsafe { type_bridge_schema_package_close(&mut package) },
-            TypeBridgeStatus::Ok
-        );
-        let chunks = bytes.chunked_parts(17);
-        let mut descriptor = chunks.descriptor();
-        descriptor.abi_minor = minor;
-        // SAFETY: chunk tables, backing bytes and owner slots stay live.
-        assert_eq!(
-            unsafe {
-                type_bridge_schema_package_open_chunked_v1(
-                    &descriptor,
-                    &mut package,
-                    &mut diagnostics,
-                )
-            },
-            TypeBridgeStatus::Ok
-        );
-        assert!(!package.is_null());
-        assert!(diagnostics.is_null());
-        // SAFETY: return the unique live owner.
-        assert_eq!(
-            unsafe { type_bridge_schema_package_close(&mut package) },
-            TypeBridgeStatus::Ok
-        );
-    }
-    for minor in [0, 5, TYPE_BRIDGE_C_ABI_MINOR + 1, u32::MAX] {
+    let descriptor = bytes.descriptor();
+    let mut package = ptr::null_mut();
+    let mut diagnostics = ptr::null_mut();
+    // SAFETY: descriptor backing bytes and distinct owner slots stay live.
+    assert_eq!(
+        unsafe { type_bridge_schema_package_open_v1(&descriptor, &mut package, &mut diagnostics) },
+        TypeBridgeStatus::Ok
+    );
+    assert!(!package.is_null());
+    assert!(diagnostics.is_null());
+    // SAFETY: return the unique live owner.
+    assert_eq!(
+        unsafe { type_bridge_schema_package_close(&mut package) },
+        TypeBridgeStatus::Ok
+    );
+    let chunks = bytes.chunked_parts(17);
+    let descriptor = chunks.descriptor();
+    // SAFETY: chunk tables, backing bytes and owner slots stay live.
+    assert_eq!(
+        unsafe {
+            type_bridge_schema_package_open_chunked_v1(&descriptor, &mut package, &mut diagnostics)
+        },
+        TypeBridgeStatus::Ok
+    );
+    assert!(!package.is_null());
+    assert!(diagnostics.is_null());
+    // SAFETY: return the unique live owner.
+    assert_eq!(
+        unsafe { type_bridge_schema_package_close(&mut package) },
+        TypeBridgeStatus::Ok
+    );
+    for minor in [5, 6, 11, TYPE_BRIDGE_C_ABI_MINOR + 1, u32::MAX] {
         let mut descriptor = bytes.descriptor();
         descriptor.abi_minor = minor;
         assert_rejected(
@@ -3549,9 +3523,9 @@ fn supported_additive_descriptors_open_in_flat_and_chunked_forms() {
 
 #[cfg(unix)]
 #[test]
-fn abi_1_6_header_consumer_links_and_opens_current_resource_package() {
+fn abi_1_6_header_consumer_rejects_old_package_before_io() {
     let Some(native_library) =
-        native_library_or_skip("abi_1_6_header_consumer_links_and_opens_current_resource_package")
+        native_library_or_skip("abi_1_6_header_consumer_rejects_old_package_before_io")
     else {
         return;
     };
@@ -3571,14 +3545,10 @@ type_bridge_status_t TYPE_BRIDGE_CALL fixture_schema_package_open(
 int main(void) {
   type_bridge_schema_package_t *package = NULL;
   type_bridge_diagnostics_t *diagnostics = NULL;
-  type_bridge_write_transaction_t *transaction = NULL;
-  type_bridge_execution_diagnostics_t *execution = NULL;
-  if (type_bridge_c_abi_minor() != 11u) return 1;
-  if (fixture_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 2;
-  if (package == NULL || diagnostics != NULL) return 3;
-  if (type_bridge_write_transaction_rollback(&transaction, &execution) != TYPE_BRIDGE_STATUS_OK) return 4;
-  if (transaction != NULL || execution != NULL) return 5;
-  return type_bridge_schema_package_close(&package) == TYPE_BRIDGE_STATUS_OK ? 0 : 6;
+  if (type_bridge_c_abi_major() != 2u || type_bridge_c_abi_minor() != 0u) return 1;
+  if (fixture_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_UNSUPPORTED) return 2;
+  if (package != NULL || diagnostics == NULL) return 3;
+  return type_bridge_diagnostics_close(&diagnostics) == TYPE_BRIDGE_STATUS_OK ? 0 : 4;
 }
 "#).expect("old consumer is written");
     let old_include = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/abi-1.6");
@@ -3654,7 +3624,7 @@ fn abi_1_6_package_source(generated: &str) -> String {
         .expect("descriptor names its chunks");
     let body = &generated[start..end];
     let previous = body.replace(
-        &format!("  1u,\n  {}u,\n  0u,", TYPE_BRIDGE_C_ABI_MINOR),
+        &format!("  2u,\n  {}u,\n  0u,", TYPE_BRIDGE_C_ABI_MINOR),
         "  1u,\n  6u,\n  0u,",
     );
     assert_ne!(
@@ -5638,7 +5608,7 @@ fn schema_package_open_v2_retains_the_exact_missing_semantic_evidence_representa
 fn schema_package_admission_rejects_unsupported_abis() {
     let fixture = emitted_fixture();
     let parts = fixture.bytes.chunked_parts(23);
-    for minor in (0..6).chain([TYPE_BRIDGE_C_ABI_MINOR + 1, u32::MAX]) {
+    for minor in (1..=11).chain([u32::MAX]) {
         let mut flat = fixture.bytes.descriptor();
         flat.abi_minor = minor;
         assert_v2_flat_rejected(
@@ -6434,7 +6404,7 @@ fn aliased_open_output_slots_are_rejected_without_writes() {
 #[test]
 fn abi_metadata_and_null_handle_paths_are_stable_and_initialize_views() {
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
-    assert_eq!(unsafe { type_bridge_c_abi_major() }, 1);
+    assert_eq!(unsafe { type_bridge_c_abi_major() }, 2);
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
     assert_eq!(
         unsafe { type_bridge_c_abi_minor() },
@@ -7746,3 +7716,7 @@ int main(void) {{
         String::from_utf8_lossy(&run.stderr),
     );
 }
+
+#[cfg(unix)]
+#[path = "support/deadline_live.rs"]
+mod deadline_live;

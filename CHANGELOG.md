@@ -11,6 +11,10 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C execution policies accept signed millisecond timeouts: nonpositive values
+  disable the deadline, and omitted policies now default to 60 seconds. Proxy
+  admission windows are independent; query and staged policies can collect
+  execution timelines exposed through read-only diagnostic accessors.
 - Node `executeQuery(text, kind)` and `rawTransaction(kind)` expose unchecked
   TypeQL on direct and proxy connections. Provider answers preserve unsafe
   integer tokens as `bigint`, with safe integers and doubles as `number`.
@@ -263,6 +267,10 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+- C ABI execution limits replace unsigned `timeout_milliseconds` with signed
+  milliseconds: use a positive deadline or a nonpositive value for no deadline.
+  Omitted C policies use 60 seconds instead of 30 seconds. The limits descriptor
+  replaces `reserved0` with `collect_phase_timestamps` (0 or 1).
 - Removed Python `Database.execute_with_rows`, `TransactionContext.execute`,
   `TransactionContext.execute_with_rows`, and its transaction view's `execute`;
   removed Node `TransactionContext.query` and native `queryJson`. Use the
