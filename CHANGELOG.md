@@ -331,6 +331,13 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+- Workspace `MigrationV2Directory` and `migration_v2_directory` accessors/builders
+  become `MigrationDirectory` and `migration_directory`. History defaults to
+  `migrations/`; explicit confined directories no longer need a `v2` suffix.
+  Unconfigured `migrations/v2` is refused with a move hint. Regenerate workspace
+  locks because the resolved-config identity field also changes. The removed
+  `InvalidMigrationV2Directory` restriction is replaced by ordinary
+  `PathNotConfined` checks and `LegacyMigrationDirectory` for the old default.
 - Node migration `MigrationPlan.execute()` and `executeControlled()` now return
   Promises. Await them, including schema-only migrations. Ordinary manager and
   transaction methods keep their existing return types.

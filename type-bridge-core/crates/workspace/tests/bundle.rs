@@ -16,7 +16,7 @@ use type_bridge_contract::projection::{
 };
 use type_bridge_workspace::{
     BundleProjectionContext, BundleVerificationContext, ExtensionRegistryService,
-    ExtensionRequirement, MAX_SCHEMA_BUNDLE_BYTES, MigrationV2Directory, OutputDirectory,
+    ExtensionRequirement, MAX_SCHEMA_BUNDLE_BYTES, MigrationDirectory, OutputDirectory,
     SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION, SCHEMA_BUNDLE_FINGERPRINT_DOMAIN,
     SchemaBundleErrorCode, SchemaSetPath, SecretReference, SecretReferenceService,
     TYPEBRIDGE_SCHEMA_BUNDLE_V1, TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeRuntime,
@@ -104,7 +104,7 @@ fn workspace(directory: &TempDirectory) -> TypeBridgeWorkspace {
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .migration_directory(MigrationDirectory::new("migrations/v2").unwrap())
         .require_capability(CapabilityId::new("schema.doc-meta").unwrap())
         .require_extension(extension())
         .output(

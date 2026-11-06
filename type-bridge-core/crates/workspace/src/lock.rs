@@ -67,7 +67,7 @@ struct ResolvedConfigIdentityView {
     configured_capability_requirements: Vec<String>,
     managed_scope_id: String,
     managed_scope_profile_id: String,
-    migration_v2_directory: String,
+    migration_directory: String,
     schema_set: String,
     semantic_profile_id: String,
 }
@@ -125,7 +125,7 @@ impl fmt::Display for WorkspaceLockError {
                 formatter.write_str("workspace lock version is unsupported")
             }
             Self::Stale => {
-                formatter.write_str("workspace lock does not match the source workspace")
+                formatter.write_str("workspace lock does not match the source workspace; regenerate it with `generate_workspace_lock` (3.0 uses migration_directory instead of migration_v2_directory)")
             }
         }
     }
@@ -275,11 +275,11 @@ fn resolved_config_identity(config: &TypeBridgeConfig) -> Result<Fingerprint, Wo
             .collect(),
         managed_scope_id: config.managed_scope().id().as_str().to_owned(),
         managed_scope_profile_id: config.managed_scope().profile().id().as_str().to_owned(),
-        migration_v2_directory: config
-            .migration_v2_directory()
+        migration_directory: config
+            .migration_directory()
             .as_path()
             .to_str()
-            .expect("MigrationV2Directory validates UTF-8 paths")
+            .expect("MigrationDirectory validates UTF-8 paths")
             .to_owned(),
         schema_set: config
             .schema_set()

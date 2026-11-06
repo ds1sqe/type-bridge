@@ -81,7 +81,7 @@ fn generated_node_emits_complete_administration_report() {
 
     let consumer = generated.join("consumer.mjs");
     fs::write(&consumer, CONSUMER).expect("consumer writes");
-    let database = format!("sdk_administration_node_{}", std::process::id());
+    let database = support::live_database_name("sdk_administration_node");
     let output = Command::new("node")
         .current_dir(&generated)
         .env("TYPE_BRIDGE_SDK_ADMINISTRATION_DATABASE", database)

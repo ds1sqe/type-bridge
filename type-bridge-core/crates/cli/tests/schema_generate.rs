@@ -106,11 +106,11 @@ fn documented_examples_complete_the_unchanged_offline_journey() {
         }
     }
     assert!(
-        root.join("migrations/v2/0001_initial.tbmigration.json")
+        root.join("migrations/0001_initial.tbmigration.json")
             .is_file(),
         "migration make did not create the configured absent directory and manifest",
     );
-    assert!(root.join("migrations/v2/0001_initial.typeql").is_file());
+    assert!(root.join("migrations/0001_initial.typeql").is_file());
 }
 
 #[test]

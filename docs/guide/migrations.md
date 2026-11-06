@@ -1,10 +1,13 @@
-# V2 migrations
+# Migrations
 
-TypeBridge V2 migrations move a declared Split-YAML schema through an ordered,
+TypeBridge migrations move a declared Split-YAML schema through an ordered,
 binding-neutral history. Generated Python, TypeScript, and Rust packages are
 projections of the resulting schema; they are not migration authority.
 
 ## Configure the workspace
+
+History defaults to `migrations/` beside the workspace manifest. Set
+`migrations.directory` explicitly to use another confined directory.
 
 ```yaml
 format: typebridge.workspace/v1
@@ -15,7 +18,7 @@ schema:
   managed-scope: application
 
 migrations:
-  directory: migrations/v2
+  directory: migrations
   app-label: application
   destructive: require-approval
 
@@ -96,7 +99,7 @@ silently skipping a step.
 
 Each migration has a stable identity, exact parents, checksum, normalized
 operations, safety classification, and resulting declared schema. A clean
-database can replay the committed V2 chain without importing the current
+database can replay the committed migration chain without importing the current
 application package.
 
 Use expand/backfill/contract as separate migrations when data must move:

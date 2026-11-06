@@ -17,7 +17,7 @@ use type_bridge_schema_migration::{
     decode_verified_migration_history_bundle, encode_verified_manifest, typedb_3_12_1_profile,
 };
 use type_bridge_workspace::{
-    ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
+    ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationDirectory,
     SchemaSetPath, SecretReference, SecretReferenceService, TypeBridgeConfig,
     TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace,
     TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode, WorkspaceDirectoryAuthority,
@@ -120,7 +120,7 @@ fn load_workspace(
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .migration_directory(MigrationDirectory::new("migrations/v2").unwrap())
         .build(&TypeBridgeConfigServices::new(
             &authority, secrets, extensions,
         ))
@@ -798,4 +798,74 @@ fn data_intents_reject_unknown_duplicate_and_escaping_inputs_before_publication(
         .unwrap();
     assert!(generated.manifest().reversible());
     assert_eq!(generated.manifest().steps().len(), 1);
+}
+
+#[test]
+fn implicit_history_refuses_old_layout_then_replays_the_moved_bytes() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let available = capabilities();
+    let explicit = load_workspace(&directory, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(first) = explicit.migration_make("init").unwrap()
+    else {
+        panic!("initial schema produces a migration");
+    };
+    explicit.write_generated_migration(&first).unwrap();
+    let old_manifest = directory.0.join("migrations/v2/0001_init.tbmigration.json");
+    let bytes = fs::read(&old_manifest).unwrap();
+    let authority = WorkspaceDirectoryAuthority::open(directory.root()).unwrap();
+    let config = TypeBridgeConfig::builder(directory.root())
+        .schema_set(SchemaSetPath::new("schema/schema.yaml").unwrap())
+        .app_label(MigrationAppLabel::new("example").unwrap())
+        .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
+        .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
+        .build(&TypeBridgeConfigServices::new(
+            &authority,
+            &secrets,
+            &extensions,
+        ))
+        .unwrap();
+    let implicit = TypeBridgeWorkspace::from_config(
+        config,
+        &TypeBridgeWorkspaceServices::new(&authority, &secrets, &extensions, &available),
+    )
+    .unwrap();
+    for error in [
+        implicit.open_migration_directory().unwrap_err(),
+        implicit.ensure_migration_directory().unwrap_err(),
+        implicit.migration_make("refused").unwrap_err(),
+    ] {
+        let type_bridge_workspace::TypeBridgeWorkspaceError::Config(error) = error else {
+            panic!("legacy layout must have a typed config diagnostic");
+        };
+        assert_eq!(
+            error.code(),
+            WorkspaceConfigErrorCode::LegacyMigrationDirectory
+        );
+        assert!(error.to_string().contains("mv -n -t migrations/"));
+    }
+    assert_eq!(fs::read(&old_manifest).unwrap(), bytes);
+    for entry in fs::read_dir(directory.0.join("migrations/v2")).unwrap() {
+        let entry = entry.unwrap();
+        fs::rename(
+            entry.path(),
+            directory.0.join("migrations").join(entry.file_name()),
+        )
+        .unwrap();
+    }
+    fs::remove_dir(directory.0.join("migrations/v2")).unwrap();
+    assert_eq!(
+        fs::read(directory.0.join("migrations/0001_init.tbmigration.json")).unwrap(),
+        bytes
+    );
+    assert_eq!(
+        implicit.migration_plan(&Default::default()).unwrap().len(),
+        1
+    );
+    assert!(matches!(
+        implicit.migration_make("noop").unwrap(),
+        MigrationGenerationOutcome::UpToDate
+    ));
 }

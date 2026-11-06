@@ -95,7 +95,7 @@ fn generated_rust_observes_administration_administration_controls_and_lifecycle(
         locks::Consumer::AdministrationLive.lock(),
     )
     .expect("consumer lockfile writes");
-    let database = format!("sdk_administration_rust_{}", std::process::id());
+    let database = support::live_database_name("sdk_administration_rust");
     let output = Command::new("cargo")
         .current_dir(&consumer)
         .env("CARGO_TARGET_DIR", support::cargo_target())

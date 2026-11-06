@@ -59,7 +59,7 @@ The principal layers are:
 | `schema` | Split-YAML resolution and projection facts |
 | `schema-codegen` | Deterministic Python, TypeScript, Rust and C emitters |
 | `query` | Immutable query authority, validation, and lowering |
-| `migration` / `schema-migration` | Canonical V2 planning and state |
+| `migration` / `schema-migration` | Canonical migration planning and state |
 | `orm` | Generated projection CRUD, query, hydration, and transactions |
 | `typedb-runtime` | Retained TypeDB provider routing and lifecycle |
 | `python` / `node` / `rust` / `c` | Language boundaries over the shared engine |
@@ -128,7 +128,7 @@ versions fail before application data work. See [TypeDB integration](typedb.md).
 
 ## Migration and archive separation
 
-Active change authority is the V2 workspace migration flow:
+Active change authority is the workspace migration flow:
 
 ```text
 migration make -> plan -> apply -> verify

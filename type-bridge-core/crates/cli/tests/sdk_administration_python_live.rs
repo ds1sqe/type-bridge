@@ -102,7 +102,7 @@ fn generated_python_emits_complete_administration_report() {
 
     let consumer = temporary.path().join("consumer.py");
     fs::write(&consumer, CONSUMER).expect("consumer writes");
-    let database = format!("sdk_administration_python_{}", std::process::id());
+    let database = support::live_database_name("sdk_administration_python");
     let python_path = format!(
         "{}:{}",
         temporary.path().display(),

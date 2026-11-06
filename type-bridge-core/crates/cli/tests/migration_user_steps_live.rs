@@ -43,7 +43,7 @@ fn four_generated_sdks_share_atomic_user_callback_transactions() {
     let source = root.join("type-bridge-core/crates/cli/tests/migration_user_steps_live");
     let profile = support::sdk_profile_matrix::requested("administration").semantic_profile;
     fs::create_dir_all(workspace.join("schema")).unwrap();
-    fs::create_dir_all(workspace.join("migrations/v2")).unwrap();
+    fs::create_dir_all(workspace.join("migrations")).unwrap();
     fs::write(
         workspace.join("schema/schema.yaml"),
         "format: typebridge.schema-set/v1\nsources: [person.yaml]\n",
@@ -56,10 +56,10 @@ fn four_generated_sdks_share_atomic_user_callback_transactions() {
     .unwrap();
     fs::copy(
         source.join("gender.data.yaml"),
-        workspace.join("migrations/v2/gender.data.yaml"),
+        workspace.join("migrations/gender.data.yaml"),
     )
     .unwrap();
-    fs::write(workspace.join("typebridge.yaml"), format!("format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: user-steps\ncompatibility:\n  semantic-profile: {profile}\nmigrations:\n  directory: migrations/v2\n  app-label: users\nbindings:\n  python:\n    output: generated/python/callback_models\n  typescript:\n    output: generated/typescript\n  rust:\n    output: generated/rust\n  c:\n    output: generated/c\n")).unwrap();
+    fs::write(workspace.join("typebridge.yaml"), format!("format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: user-steps\ncompatibility:\n  semantic-profile: {profile}\nmigrations:\n  app-label: users\nbindings:\n  python:\n    output: generated/python/callback_models\n  typescript:\n    output: generated/typescript\n  rust:\n    output: generated/rust\n  c:\n    output: generated/c\n")).unwrap();
     let cli = env!("CARGO_BIN_EXE_type-bridge");
     run(Command::new(cli)
         .current_dir(workspace)
@@ -183,6 +183,121 @@ fn four_generated_sdks_share_atomic_user_callback_transactions() {
             }
         }
     });
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}
+
+#[test]
+#[ignore = "requires exact live TypeDB; rebuilds the current administration history before moving it"]
+fn moved_conformance_history_uses_the_default_directory() {
+    support::requested_administration_server_version_blocking();
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path();
+    support::prepare_administration_workspace(workspace);
+    let database = support::live_database_name("moved_history");
+    let config_path = workspace.join("typebridge.yaml");
+    let config = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("  directory: migrations/v2\n", "")
+        .replace(
+            "database: sdk_administration",
+            &format!("database: {database}"),
+        )
+        .replace(
+            "uri: 127.0.0.1:1729",
+            &format!(
+                "uri: {}\n    http-port: {}",
+                env::var("TYPEDB_ADDRESS").unwrap(),
+                env::var("TYPEDB_HTTP_PORT").unwrap()
+            ),
+        );
+    fs::write(config_path, config).unwrap();
+    let cli = env!("CARGO_BIN_EXE_type-bridge");
+    let refused = Command::new(cli)
+        .current_dir(workspace)
+        .args(["migration", "make", "--name", "refused"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let error = String::from_utf8(refused.stderr).unwrap();
+    assert!(
+        error.contains("migration_directory_move_required"),
+        "{error}"
+    );
+    assert!(error.contains("mv -n -t migrations/"), "{error}");
+    for entry in fs::read_dir(workspace.join("migrations/v2")).unwrap() {
+        let entry = entry.unwrap();
+        let bytes = fs::read(entry.path()).unwrap();
+        let destination = workspace.join("migrations").join(entry.file_name());
+        assert!(!destination.exists());
+        fs::rename(entry.path(), &destination).unwrap();
+        assert_eq!(fs::read(destination).unwrap(), bytes);
+    }
+    fs::remove_dir(workspace.join("migrations/v2")).unwrap();
+    run(Command::new(cli).current_dir(workspace).args([
+        "migration",
+        "make",
+        "--name",
+        "unchanged",
+    ]));
+    run(Command::new(cli)
+        .current_dir(workspace)
+        .args(["migration", "plan"]));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
+    let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    let provider = runtime
+        .block_on(TypeDBRuntime::connect(
+            &env::var("TYPEDB_ADDRESS").unwrap(),
+            &username,
+            &password,
+            ConnectOptions {
+                http_port: env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    let journal = format!("{database}__tb_journal");
+    assert!(
+        !runtime
+            .block_on(provider.database_exists(&database))
+            .unwrap()
+    );
+    assert!(
+        !runtime
+            .block_on(provider.database_exists(&journal))
+            .unwrap()
+    );
+    runtime
+        .block_on(provider.create_database(&database))
+        .unwrap();
+    let result = std::panic::catch_unwind(|| {
+        for arguments in [
+            vec![
+                "migration",
+                "apply",
+                "--environment",
+                "live",
+                "--approve",
+                "administration/0003_backfill-display-name",
+                "--approve",
+                "administration/0004_contract-legacy-name",
+            ],
+            vec!["migration", "verify", "--environment", "live"],
+        ] {
+            run(Command::new(cli)
+                .current_dir(workspace)
+                .env("TYPEBRIDGE_SDK_ADMINISTRATION_USERNAME", &username)
+                .env("TYPEBRIDGE_SDK_ADMINISTRATION_PASSWORD", &password)
+                .args(arguments));
+        }
+    });
+    for name in [&database, &journal] {
+        if runtime.block_on(provider.database_exists(name)).unwrap() {
+            runtime.block_on(provider.delete_database(name)).unwrap();
+        }
+    }
     if let Err(error) = result {
         std::panic::resume_unwind(error);
     }

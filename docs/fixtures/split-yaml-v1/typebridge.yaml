@@ -10,7 +10,7 @@ compatibility:
   require: [schema.doc-meta]
 
 migrations:
-  directory: migrations/v2
+  directory: migrations
   app-label: reference
   destructive: require-approval
 

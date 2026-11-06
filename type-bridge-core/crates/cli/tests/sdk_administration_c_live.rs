@@ -121,7 +121,7 @@ async fn generated_c_emits_complete_administration_report() {
         "strict C17 consumer compile",
     );
 
-    let database = format!("sdk_administration_c_{}", std::process::id());
+    let database = support::live_database_name("sdk_administration_c");
     let mut child = Command::new(&executable)
         .current_dir(&generated)
         .env("TYPE_BRIDGE_SDK_ADMINISTRATION_DATABASE", &database)

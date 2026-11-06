@@ -33,6 +33,7 @@ use type_bridge_orm::{ConnectOptions, SecureConnectOptions, TlsMode};
 
 #[path = "../../../../tests/support/typedb_database_move.rs"]
 mod database_move;
+mod support;
 
 use database_move::move_database;
 
@@ -253,7 +254,7 @@ async fn empty_workspace_to_replayed_history_live() {
         std::env::set_var("TYPEDB_USERNAME", &username);
         std::env::set_var("TYPEDB_PASSWORD", &password);
     }
-    let primary = format!("tb_e2e_smoke_{}", std::process::id());
+    let primary = support::live_database_name("tb_e2e_smoke");
     let replay = format!("{primary}_replay");
 
     let workspace = tempfile::tempdir().expect("workspace directory");
@@ -437,7 +438,7 @@ async fn documented_examples_initial_constraints_apply_and_verify_live() {
         std::env::set_var("TYPEDB_PASSWORD", &password);
     }
 
-    let database_name = format!("tb_e2e_documented_examples_{}", std::process::id());
+    let database_name = support::live_database_name("tb_e2e_documented_examples");
     let journal_name =
         type_bridge_schema_migration_typedb::derived_journal_database_name(&database_name);
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples");
@@ -588,7 +589,7 @@ async fn tls_workspace_apply_and_verify_live() {
         std::env::set_var("TYPEDB_PASSWORD", &password);
     }
 
-    let database = format!("tb_e2e_tls_{}", std::process::id());
+    let database = support::live_database_name("tb_e2e_tls");
     let workspace = tempfile::tempdir().expect("workspace directory");
     let root = workspace.path();
     fs::create_dir_all(root.join("schema/fragments")).expect("schema directory");
@@ -654,7 +655,7 @@ async fn verify_never_creates_databases_live() {
         std::env::set_var("TYPEDB_USERNAME", &username);
         std::env::set_var("TYPEDB_PASSWORD", &password);
     }
-    let missing = format!("tb_e2e_verify_missing_{}", std::process::id());
+    let missing = support::live_database_name("tb_e2e_verify_missing");
 
     let workspace = tempfile::tempdir().expect("workspace directory");
     let root = workspace.path();
@@ -772,7 +773,7 @@ async fn upgrade_profile_moves_a_3_12_history_to_3_13_live() {
         std::env::set_var("TYPEDB_USERNAME", &username);
         std::env::set_var("TYPEDB_PASSWORD", &password);
     }
-    let database_name = format!("tb_e2e_upgrade_profile_{}", std::process::id());
+    let database_name = support::live_database_name("tb_e2e_upgrade_profile");
     let journal_name =
         type_bridge_schema_migration_typedb::derived_journal_database_name(&database_name);
     let workspace = tempfile::tempdir().expect("workspace directory");
@@ -925,7 +926,7 @@ async fn completed_legacy_history_then_evolve_live() {
     let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap();
     let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
     let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
-    let primary = format!("tb270_06b_adopted_cli_{}", std::process::id());
+    let primary = support::live_database_name("tb270_06b_adopted_cli");
     let journal_name = type_bridge_schema_migration_typedb::derived_journal_database_name(&primary);
     let options = connect_options(&http_port);
     for name in [&primary, &journal_name] {

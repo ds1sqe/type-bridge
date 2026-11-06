@@ -46,6 +46,33 @@ backfill intent. Rollback removes only destination values equal to the source;
 unlike the deleted executor it preserves other pre-existing destination values.
 See [migration backfills](migrations.md#declarative-data-backfills).
 
+### Move the history directory and regenerate locks
+
+The default is now `migrations/` beside `typebridge.yaml`. Remove the explicit
+`migrations.directory` setting to use that default, or set another confined
+path. An explicit `migrations/v2` path is still accepted. Without an explicit
+setting, finding the old subdirectory returns `migration_directory_move_required`
+(`WorkspaceConfigErrorCode::LegacyMigrationDirectory`) before history writes.
+
+Stop migration writers and, from the manifest directory, move all entries,
+including hidden authoring files, without overwriting existing files:
+
+```bash
+find migrations/v2 -mindepth 1 -maxdepth 1 -exec mv -n -t migrations/ -- {} + && rmdir migrations/v2
+```
+
+If a destination file already exists, inspect the collision before continuing.
+Rename Rust workspace `MigrationV2Directory` to `MigrationDirectory`, and its
+`migration_v2_directory` accessor/builder to `migration_directory`. The former
+`InvalidMigrationV2Directory` suffix restriction is gone; ordinary confinement
+errors remain `PathNotConfined`.
+
+Regenerate application-owned workspace locks with `generate_workspace_lock`.
+The old `migration_v2_directory` identity key was hashed into
+`resolved_config_identity`, rather than stored as a top-level lock field.
+Verification returns typed `WorkspaceLockErrorCode::Stale` for that old identity
+and gives a regeneration hint. Lock verification never silently rewrites it.
+
 ### Await Node migration execution
 
 `MigrationPlan.execute()` and `executeControlled()` now return Promises so

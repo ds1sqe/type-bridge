@@ -18,7 +18,7 @@ compatibility:
   semantic-profile: typedb-3.13.6/v1
 
 migrations:
-  directory: migrations/v2
+  directory: migrations
   app-label: application
   destructive: require-approval
 

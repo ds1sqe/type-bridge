@@ -266,3 +266,9 @@ pub fn format2_history_fingerprint(profile: &str) -> String {
         .expect("format-2 profile")
         .to_owned()
 }
+
+/// Keep live fixtures within an operator-assigned database namespace.
+pub fn live_database_name(stem: &str) -> String {
+    let prefix = std::env::var("TYPE_BRIDGE_TEST_DATABASE_PREFIX").unwrap_or_default();
+    format!("{prefix}{stem}_{}", std::process::id())
+}

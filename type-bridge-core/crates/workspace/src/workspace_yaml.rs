@@ -15,7 +15,7 @@ use type_bridge_schema::{SchemaComment, SchemaDocument, YamlMapping, YamlNode};
 use type_bridge_schema_migration::{MigrationSafetyPolicy, SafetyClass, SafetyPolicyDecision};
 
 use crate::{
-    ExtensionRequirement, MigrationV2Directory, OutputDirectory, SchemaAuthorityOutputPath,
+    ExtensionRequirement, MigrationDirectory, OutputDirectory, SchemaAuthorityOutputPath,
     SchemaSetPath, SecretReference, SecretSlot, TypeBridgeConfig, TypeBridgeConfigServices,
     WorkspaceConfigError, WorkspaceConfigErrorCode, WorkspaceEnvironment, WorkspaceRoot,
     WorkspaceRootCa, WorkspaceTransportPolicy, confined_relative_path,
@@ -147,7 +147,7 @@ struct WorkspaceWire {
     environments: Vec<(SpannedString, EnvironmentWire)>,
     extensions: Vec<ExtensionWire>,
     managed_scope: SpannedString,
-    migration_directory: SpannedString,
+    migration_directory: Option<SpannedString>,
     outputs: Vec<BindingWire>,
     schema_root: SpannedString,
     secrets: Vec<SecretWire>,
@@ -260,13 +260,21 @@ impl LocatedConfigSpec {
         let Self { origin, spec } = self;
         let TypeBridgeConfigSpec { document, wire } = spec;
         let schema_path = resolve_owned_path(&origin, &wire.schema_root, "schema.root")?;
-        let migration_path =
-            resolve_owned_path(&origin, &wire.migration_directory, "migrations.directory")?;
+        let default_directory = SpannedString {
+            value: "migrations".into(),
+            span: document.root().span().clone(),
+        };
+        let directory = wire
+            .migration_directory
+            .as_ref()
+            .unwrap_or(&default_directory);
+        let migration_path = resolve_owned_path(&origin, directory, "migrations.directory")?;
 
         let schema_set = SchemaSetPath::new(schema_path)
             .map_err(|error| sourced(error, &origin, &wire.schema_root.span))?;
-        let migration_v2_directory = MigrationV2Directory::new(migration_path)
-            .map_err(|error| sourced(error, &origin, &wire.migration_directory.span))?;
+        let mut migration_directory = MigrationDirectory::new(migration_path)
+            .map_err(|error| sourced(error, &origin, &directory.span))?;
+        migration_directory.configured = wire.migration_directory.is_some();
         let authority_output = wire
             .authority_output
             .as_ref()
@@ -303,7 +311,7 @@ impl LocatedConfigSpec {
             .app_label(app_label)
             .exclusive_managed_scope(managed_scope)
             .semantic_profile(semantic_profile)
-            .migration_v2_directory(migration_v2_directory);
+            .migration_directory(migration_directory);
         if let Some(output) = authority_output {
             builder = builder.schema_authority_output(output);
         }
@@ -452,8 +460,8 @@ fn validate_manifest_path_disjointness(
     let mut owned_paths = vec![
         ("schema_set", config.schema_set().as_path()),
         (
-            "migration_v2_directory",
-            config.migration_v2_directory().as_path(),
+            "migration_directory",
+            config.migration_directory().as_path(),
         ),
     ];
     for (target, directory) in config.outputs() {
@@ -927,7 +935,7 @@ fn parse_compatibility(
 fn parse_migrations(
     value: &YamlMapping,
     origin: &ConfigOrigin,
-) -> Result<(SpannedString, SpannedString, Option<SpannedString>), WorkspaceConfigError> {
+) -> Result<(Option<SpannedString>, SpannedString, Option<SpannedString>), WorkspaceConfigError> {
     let mut directory = None;
     let mut app_label = None;
     let mut destructive = None;
@@ -950,11 +958,9 @@ fn parse_migrations(
         .map(|value| scalar(value, "migrations.destructive", origin))
         .transpose()?;
     Ok((
-        scalar(
-            required(directory, "migrations.directory", value, origin)?,
-            "migrations.directory",
-            origin,
-        )?,
+        directory
+            .map(|node| scalar(node, "migrations.directory", origin))
+            .transpose()?,
         scalar(
             required(app_label, "migrations.app-label", value, origin)?,
             "migrations.app-label",
