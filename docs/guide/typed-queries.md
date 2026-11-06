@@ -245,7 +245,7 @@ rows = session.query(person).rows(limit=50)
 ```
 
 Supported remote terminals are `one`, `first`, bounded `rows`, `page_by`,
-`count_by`, `exists_by`, and typed `aggregate`/`group_by`, including exact/subtype
+`count_by`, `exists_by`, and typed `reduce`/`group_by`, including exact/subtype
 hydration, predicates, roles, reachability, explicit cross joins, selected
 shapes, all reducers, and binding/field/tuple-field grouping. Reduction replies
 echo the exact root, grouping, and reducer contract and are authenticated before
@@ -821,7 +821,7 @@ They select purchase R1 after the write that inserted it and both its players.
 ```
 
 Stage the built plan on a read transaction and commit it. Python's
-`Pending.result()` returns `Documents(documents)`; TypeScript's `get()`
+`Pending.result()` returns `Documents(documents)`; TypeScript's `result()`
 returns `{ kind: "documents", documents }`; Rust's `get()` returns
 `PlanAnswer::Documents`. C reads the same answer through the
 [borrowed document cursors](c.md#reading-answers).
@@ -999,7 +999,7 @@ The normative cross-language behavior is maintained in the
 
 
 Rust staged transactions expose `tx.query()?`. Its session uses the same
-`one()`, `rows()`, `first()`, `page_by()`, count, existence and aggregate
+`one()`, `rows()`, `first()`, `page_by()`, count, existence and reduce
 terminals as `db.query()?`; each returns `query::Pending<T>` instead of `T`.
 Drop the session before `tx.commit().await?`, then call `pending.result()?`
 to obtain the direct terminal's exact output type. Reads see earlier staged

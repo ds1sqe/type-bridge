@@ -152,7 +152,7 @@ async def selection_shapes() -> None:
 
 Fields and roles are bound through their owning variables. Python string
 helpers take the corresponding typed string attribute while TypeScript helpers
-take a string; only `regex` interprets that value as a regex. A disconnected
+take a string; only `like` interprets that value as a regex. A disconnected
 graph is invalid unless topology-level cross-join permission names its
 components.
 
@@ -519,8 +519,7 @@ Concept identity determines equality but is not assumed sortable.
 
 `contains`, `starts_with`/`startsWith`, and `ends_with`/`endsWith` accept literal
 text. Rust owns escaping. A percent sign is an ordinary percent sign, not a SQL
-wildcard. `regex` is the only regex operator on the new facade. The new facade
-does not expose `like`; legacy `like` behavior remains unchanged.
+wildcard. `like` is the regular-expression operator on the generated query facade.
 
 ## TypeDB Parameter Transport
 
@@ -536,8 +535,7 @@ on band 9 because the current portable row adapter cannot preserve their full
 canonical TypeQL spelling surface. TypeDB requires the right operand of `like`
 to be a string literal, so prefix, suffix, and regex predicates remain inline;
 Rust still owns their escaping and validation. `contains` can use `given`,
-retains TypeDB's Unicode case-folded substring semantics, and `regex` remains
-the only raw regular expression.
+retains TypeDB's Unicode case-folded substring semantics, and `like` is the operator that interprets a raw regular expression.
 The route is an internal provider choice and does not change the request shape,
 statement ceiling, transaction snapshot, or public API.
 

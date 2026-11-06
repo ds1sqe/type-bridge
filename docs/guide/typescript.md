@@ -213,7 +213,7 @@ const rows = await session
 direct `Database` or transaction, or on a proxy connection (see
 [Proxy queries](#proxy-queries)). Composition is synchronous and performs no
 I/O. Every terminal (`one`, `first`, `rows`, `pageBy`, `countBy`, `existsBy`,
-`aggregate`, grouped `aggregate`) returns a `Promise` on every connection;
+`reduce`, grouped `reduce`) returns a `Promise` on every connection;
 direct terminals run off the JavaScript thread, so they do not block the event
 loop.
 
