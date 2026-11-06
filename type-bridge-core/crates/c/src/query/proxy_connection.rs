@@ -90,6 +90,16 @@ impl StagedProxyGuard {
 }
 
 impl TypeBridgeProxyConnection {
+    pub(crate) fn package_state(&self) -> &Arc<SchemaPackageState> {
+        &self.package
+    }
+    pub(crate) fn manager_target(&self) -> type_bridge_orm::QueryTarget<'_> {
+        type_bridge_orm::QueryTarget::Proxy(&self.connection)
+    }
+    pub(crate) fn manager_block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
+    }
+
     pub(super) fn new(
         package: Arc<SchemaPackageState>,
         connection: ProxyQueryConnection,

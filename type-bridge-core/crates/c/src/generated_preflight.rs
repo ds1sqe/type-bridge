@@ -133,6 +133,10 @@ pub const GENERATED_INPUT_PLAN_OPTIONS: u32 = 44;
 pub const GENERATED_INPUT_IID: u32 = 45;
 /// Immutable canonical manager filter owner.
 pub const GENERATED_INPUT_MANAGER_FILTER: u32 = 46;
+/// Immutable canonical manager read result.
+pub const GENERATED_INPUT_MANAGER_RESULT: u32 = 47;
+/// Package-bound proxy connection.
+pub const GENERATED_INPUT_PROXY_CONNECTION: u32 = 48;
 
 /// Frozen generated create-argument graph layout version.
 pub const GENERATED_CREATE_GRAPH_VERSION: u32 = 1;
@@ -455,6 +459,12 @@ fn object_size(kind: u32) -> Option<usize> {
         GENERATED_INPUT_PLAN_BUILDER => Some(size_of::<TypeBridgePlanBuilder>()),
         GENERATED_INPUT_PLAN_OPTIONS => Some(size_of::<TypeBridgePlanOptionsV1>()),
         GENERATED_INPUT_IID => Some(size_of::<crate::iid::TypeBridgeIid>()),
+        GENERATED_INPUT_MANAGER_RESULT => {
+            Some(size_of::<crate::manager_read::TypeBridgeManagerResult>())
+        }
+        GENERATED_INPUT_PROXY_CONNECTION => {
+            Some(size_of::<crate::query::TypeBridgeProxyConnection>())
+        }
         GENERATED_INPUT_MANAGER_FILTER => {
             Some(size_of::<crate::manager_filter::TypeBridgeManagerFilter>())
         }
@@ -695,6 +705,16 @@ unsafe fn check_deep_object_ranges(
         GENERATED_INPUT_PROJECTED_BATCH_RESULT => {
             // SAFETY: the complete projected-batch result was checked before dispatch.
             unsafe { &*pointer.cast::<TypeBridgeProjectedBatchResult>() }
+                .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_MANAGER_RESULT => {
+            // SAFETY: complete result was fenced before this dispatch.
+            unsafe { &*pointer.cast::<crate::manager_read::TypeBridgeManagerResult>() }
+                .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_PROXY_CONNECTION => {
+            // SAFETY: complete connection was fenced before this dispatch.
+            unsafe { &*pointer.cast::<crate::query::TypeBridgeProxyConnection>() }
                 .check_borrowed_ranges(outputs)
         }
         GENERATED_INPUT_MANAGER_FILTER => {
@@ -1410,7 +1430,15 @@ mod tests {
             object_size(GENERATED_INPUT_MANAGER_FILTER),
             Some(size_of::<crate::manager_filter::TypeBridgeManagerFilter>())
         );
-        assert_eq!(object_size(47), None);
+        assert_eq!(
+            object_size(GENERATED_INPUT_MANAGER_RESULT),
+            Some(size_of::<crate::manager_read::TypeBridgeManagerResult>())
+        );
+        assert_eq!(
+            object_size(GENERATED_INPUT_PROXY_CONNECTION),
+            Some(size_of::<crate::query::TypeBridgeProxyConnection>())
+        );
+        assert_eq!(object_size(49), None);
         assert_eq!(object_size(u32::MAX), None);
     }
 

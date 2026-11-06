@@ -11,6 +11,10 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C canonical manager `all`, `first`, `count`, and `exists` terminals accept
+  database, borrowed read/write, and proxy connection targets. Owned read
+  results expose nominal `count`/`at`/`close`; empty IID filters skip provider
+  requests, and borrowed provider panics poison the transaction.
 - C immutable manager filters expose `type_bridge_manager_filter_open`,
   `_iid`, `_iids`, `_compare`, and `_close`. Predicates use validated IID
   owners and nominal field/value tokens; an empty IID list matches none.

@@ -218,6 +218,10 @@ functions:
     }
 
     impl DriverBackend for FakeBackend {
+        fn match_capabilities(&self) -> type_bridge_orm::CapabilitySet {
+            type_bridge_orm::CapabilitySet::all()
+        }
+
         fn open_transaction(
             &self,
             _database: &str,

@@ -15,7 +15,7 @@
     "package_metadata_version": "2.0.0",
     "package_metadata_description": "CMake and pkg-config require ABI 2.0.0; regenerate all ABI 1.x schema packages.",
     "contract_path": "tests/contracts/c-abi.json",
-    "contract_sha256": "6197ad2350df93fe10567ac31138407454857f45388bfcab60b599496acf747f",
+    "contract_sha256": "72ad174f8c4f0c3ab058f25b10c267237cb661ab261777870c320b91cd1e3b33",
     "static_linkage": "unsupported",
     "shared_linkage": "artifact",
     "accepted_descriptor_minors": [
@@ -24,6 +24,10 @@
     "added_exports": [
       "type_bridge_count_pending_result",
       "type_bridge_database_execute_query",
+      "type_bridge_database_manager_all",
+      "type_bridge_database_manager_count",
+      "type_bridge_database_manager_exists",
+      "type_bridge_database_manager_first",
       "type_bridge_database_open_with_query_limits_v2",
       "type_bridge_database_projected_batch_delete_returning",
       "type_bridge_database_query_execute",
@@ -57,6 +61,9 @@
       "type_bridge_manager_filter_iid",
       "type_bridge_manager_filter_iids",
       "type_bridge_manager_filter_open",
+      "type_bridge_manager_result_at",
+      "type_bridge_manager_result_close",
+      "type_bridge_manager_result_count",
       "type_bridge_matched_pending_result",
       "type_bridge_pending_answer",
       "type_bridge_pending_document",
@@ -253,6 +260,10 @@
       "type_bridge_projected_batch_result_item",
       "type_bridge_proxy_connection_close",
       "type_bridge_proxy_connection_execute_query",
+      "type_bridge_proxy_connection_manager_all",
+      "type_bridge_proxy_connection_manager_count",
+      "type_bridge_proxy_connection_manager_exists",
+      "type_bridge_proxy_connection_manager_first",
       "type_bridge_proxy_connection_open_v1",
       "type_bridge_proxy_connection_open_with_query_limits_v1",
       "type_bridge_proxy_connection_raw_transaction",
@@ -279,6 +290,10 @@
       "type_bridge_raw_transaction_commit",
       "type_bridge_raw_transaction_execute_query",
       "type_bridge_raw_transaction_rollback",
+      "type_bridge_read_transaction_manager_all",
+      "type_bridge_read_transaction_manager_count",
+      "type_bridge_read_transaction_manager_exists",
+      "type_bridge_read_transaction_manager_first",
       "type_bridge_read_transaction_query_execute",
       "type_bridge_row_value_boolean",
       "type_bridge_row_value_date",
@@ -310,6 +325,10 @@
       "type_bridge_staged_transaction_rollback",
       "type_bridge_staged_transaction_stage",
       "type_bridge_staged_transaction_stage_selection",
+      "type_bridge_write_transaction_manager_all",
+      "type_bridge_write_transaction_manager_count",
+      "type_bridge_write_transaction_manager_exists",
+      "type_bridge_write_transaction_manager_first",
       "type_bridge_write_transaction_projected_batch_delete_returning",
       "type_bridge_write_transaction_rollback_keep"
     ]
@@ -495,7 +514,7 @@
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-      "sha256": "6bd19176c415298d319c9d7775d073a38d9a1fedb7bb8c2e0a242b786ffc138b"
+      "sha256": "709bb50d2898be9d9a36b6a3ec23a3c2dd07fcd588e1b964e385863a34d1be2d"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",

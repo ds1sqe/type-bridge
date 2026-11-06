@@ -3648,6 +3648,153 @@ type_bridge_manager_filter_compare(
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_manager_filter_close(type_bridge_manager_filter_t **filter);
 
+/* Canonical manager reads share the same plan compiler on every target.
+ * Empty IID filters return empty/absent/zero without provider requests. */
+typedef struct type_bridge_manager_result type_bridge_manager_result_t;
+#define TYPE_BRIDGE_GENERATED_INPUT_MANAGER_RESULT ((type_bridge_generated_opaque_input_kind_t)47)
+#define TYPE_BRIDGE_GENERATED_INPUT_PROXY_CONNECTION ((type_bridge_generated_opaque_input_kind_t)48)
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_manager_all(
+    const type_bridge_database_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_manager_result_t **out_result,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_manager_first(
+    const type_bridge_database_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_manager_count(
+    const type_bridge_database_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint64_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_manager_exists(
+    const type_bridge_database_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint8_t *out_exists,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_read_transaction_manager_all(
+    const type_bridge_read_transaction_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_manager_result_t **out_result,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_read_transaction_manager_first(
+    const type_bridge_read_transaction_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_read_transaction_manager_count(
+    const type_bridge_read_transaction_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint64_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_read_transaction_manager_exists(
+    const type_bridge_read_transaction_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint8_t *out_exists,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_manager_all(
+    const type_bridge_write_transaction_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_manager_result_t **out_result,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_manager_first(
+    const type_bridge_write_transaction_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_manager_count(
+    const type_bridge_write_transaction_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint64_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_manager_exists(
+    const type_bridge_write_transaction_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint8_t *out_exists,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_manager_all(
+    const type_bridge_proxy_connection_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_manager_result_t **out_result,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_manager_first(
+    const type_bridge_proxy_connection_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_manager_count(
+    const type_bridge_proxy_connection_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint64_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_manager_exists(
+    const type_bridge_proxy_connection_t *owner,
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint8_t *out_exists,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_manager_result_count(
+    const type_bridge_manager_result_t *result,
+    const type_bridge_projected_token_v1_t *model, size_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_manager_result_at(
+    const type_bridge_manager_result_t *result,
+    const type_bridge_projected_token_v1_t *model, size_t index,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_manager_result_close(type_bridge_manager_result_t **result);
+
 /* Bounded homogeneous projected mutation batches. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_projected_batch_builder_open_v1(
