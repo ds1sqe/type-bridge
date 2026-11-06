@@ -38,9 +38,7 @@ def report(binding: str, *, live: bool) -> dict[str, Any]:
             else {}
         ),
         "explanation": json.loads(
-            (
-                ROOT / "tests/contracts/plan/explain/purchase-sdk.typedb-3.13.6-v1.json"
-            ).read_text()
+            (ROOT / "tests/contracts/plan/explain/purchase-sdk.typedb-3.13.6-v1.json").read_text()
         ),
         "results": (
             {transport: copy.deepcopy(EXPECTED["results"]) for transport in COMPARE.TRANSPORTS}

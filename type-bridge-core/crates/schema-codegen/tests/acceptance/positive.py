@@ -277,9 +277,7 @@ async def check_direct() -> None:
         tuple[tuple[ValBool, tuple[int]], ...],
     )
     assert_type(
-        await people_query.group_by(person_var, bool_field, score_field).reduce(
-            aggregate.count()
-        ),
+        await people_query.group_by(person_var, bool_field, score_field).reduce(aggregate.count()),
         tuple[tuple[tuple[ValBool, Score], tuple[int]], ...],
     )
 

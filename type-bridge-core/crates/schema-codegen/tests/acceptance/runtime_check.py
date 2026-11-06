@@ -790,9 +790,7 @@ for rejected_same_package_query in (
     lambda: person_var.field(Employment.employee),
     lambda: person_var.field(Person.score).ge(Identifier("wrong-wrapper")),
     lambda: (
-        query_session.exact(Employment)
-        .role(Employment.employee)
-        .links(query_session.exact(Event))
+        query_session.exact(Employment).role(Employment.employee).links(query_session.exact(Event))
     ),
     lambda: query_session.query_as(MutableRow, person=person_var),
     lambda: query_session.query_as(

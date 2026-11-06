@@ -158,9 +158,7 @@ async def _core_rule_refusals(
         (
             "terms",
             "aggregate.seventeen-terms",
-            lambda: query.reduce(
-                person, *(generated.aggregate.count() for _ in range(width + 1))
-            ),
+            lambda: query.reduce(person, *(generated.aggregate.count() for _ in range(width + 1))),
         ),
         ("empty_terms", "aggregate.empty-terms", lambda: query.reduce(person)),
         ("zero_limit", "bounds.public-invalid-limit", lambda: query.rows(limit=0)),
@@ -1688,9 +1686,7 @@ def _run_sdk_queries_journey(
         remote_selection_participant = remote_session.exact(generated.Person)
         remote_selection_predicates = (
             remote_selection_link.iid(network_iid),
-            remote_selection_link.role(generated.NetworkLink.origin).links(
-                remote_selection_origin
-            ),
+            remote_selection_link.role(generated.NetworkLink.origin).links(remote_selection_origin),
             remote_selection_link.role(generated.NetworkLink.participant).links(
                 remote_selection_participant
             ),
@@ -3134,9 +3130,7 @@ def test_sdk_serialization_live(
         remote_employment, remote_person = asyncio.run(
             remote_session.query(remote_employment_var, remote_person_var)
             .where(
-                remote_employment_var.role(generated.Employment.employee).links(
-                    remote_person_var
-                ),
+                remote_employment_var.role(generated.Employment.employee).links(remote_person_var),
                 remote_person_var.field(generated.Person.identifier).eq(
                     generated.Identifier("v5-live-person")
                 ),
@@ -4224,9 +4218,7 @@ def test_generated_projection_round_trips_live_models(
         ),
         (
             "decimal",
-            person_var.field(generated.Person.val_decimal).ge(
-                generated.ValDecimal(Decimal("3.5"))
-            ),
+            person_var.field(generated.Person.val_decimal).ge(generated.ValDecimal(Decimal("3.5"))),
         ),
         (
             "date",
@@ -5271,9 +5263,7 @@ def test_generated_projection_round_trips_live_models(
                 .distinct()
                 .sort(remote_participant.field(generated.Person.identifier).asc()),
             )
-            .where(
-                remote_network.role(generated.NetworkLink.participant).links(remote_participant)
-            )
+            .where(remote_network.role(generated.NetworkLink.participant).links(remote_participant))
             .page_by(
                 remote_network,
                 limit=10,
