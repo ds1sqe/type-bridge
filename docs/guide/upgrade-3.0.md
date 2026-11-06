@@ -543,10 +543,22 @@ Remove `supports_v3` implementations and explicit coverage-check calls.
 `begin_request` to run transport admission before handing a request to the executor.
 The endpoint metadata key is `endpoint`, replacing `v3_endpoint`.
 
+Removing `supports_v3` (formerly false by default) and `validate_v3_coverage`
+removes the fail-closed opt-in check: every configured custom interceptor is
+now applied to every request. Interceptor authors must check that their hooks
+handle typed plans, raw requests and writes, enforce the intended authorization
+for each, and explicitly reject unsupported operations; a missing hook override
+no longer causes a coverage refusal.
+
 ## Diagnostic code names
 
 Active internal plan diagnostics lose their historical query-version prefix.
 SDK diagnostic categories, typed paths and details retain their meaning.
+Mixed 2.x clients with a 3.0 server, or 3.0 clients with older servers, receive
+no diagnostic-code translation. The `typed_transport_diagnostic` compatibility
+adapter was removed; update client/server code together and match the current
+codes below rather than relying on old version-prefix normalization.
+
 Historical `old_code` entries in the migration ledger keep the original
 spelling; they are not active diagnostic producers.
 
@@ -592,6 +604,9 @@ spelling; they are not active diagnostic producers.
 | `query_remote_v3_plan_limit` | `query_remote_plan_limit` |
 | `query_remote_v3_query_limits` | `query_remote_query_limits` |
 | `query_remote_v3_reply_bytes` | `query_remote_reply_bytes` |
+| `query_remote_v3_failure_binding` | `query_remote_failure_binding` |
+| `query_remote_v3_failure_unexpected_binding` | `query_remote_failure_unexpected_binding` |
+| `query_remote_v3_failure_wire_mismatch` | `query_remote_failure_wire_mismatch` |
 | `query_remote_v3_reply_shape` | `query_remote_reply_shape` |
 | `query_remote_v3_statement_limit` | `query_remote_statement_limit` |
 | `query_remote_v3_time` | `query_remote_time` |

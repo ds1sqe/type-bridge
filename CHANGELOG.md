@@ -415,6 +415,10 @@ Active `query_remote_v2_*` / `query_remote_v3_*` diagnostics become
 codes also lose the version. The 3.0 upgrade guide lists every exact code
 replacement; typed categories, paths and details are preserved.
 
+- `query_remote_v3_failure_binding` → `query_remote_failure_binding`.
+- `query_remote_v3_failure_unexpected_binding` → `query_remote_failure_unexpected_binding`.
+- `query_remote_v3_failure_wire_mismatch` → `query_remote_failure_wire_mismatch`.
+
 Server interceptors use the single staged policy path. `supports_v3`,
 `InterceptorChain::ensure_v3_coverage` and `QueryPipeline::validate_v3_coverage`
 are removed; implement the policy hooks directly. Authentication, write
