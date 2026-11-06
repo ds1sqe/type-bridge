@@ -11,6 +11,8 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C proxy connections execute projected batches and returning delete batches
+  through the shared staged path, preserving remote commit diagnostics.
 - C canonical manager `insert` and `put` terminals accept database, borrowed
   write, and proxy targets and return complete write results through the
   shared single-write executor.

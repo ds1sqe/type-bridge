@@ -15386,6 +15386,173 @@ mod tests {
     }
 
     #[test]
+    fn proxy_batches_use_one_staged_write_and_preserve_returning_cardinality() {
+        use crate::iid::TypeBridgeIid;
+        use crate::projected_batch::*;
+        use type_bridge_orm::session::StagedTransport;
+        use type_bridge_orm::{ProxyQueryConnection, QueryTargetError};
+        struct Transport {
+            fixture: RemoteFixture,
+            calls: AtomicUsize,
+        }
+        impl StagedTransport for Transport {
+            fn staged_capabilities(&self) -> BoxFuture<'_, Result<Vec<u8>, QueryTargetError>> {
+                panic!("staged capabilities are pinned")
+            }
+            fn exchange_staged<'a>(
+                &'a self,
+                bytes: &'a [u8],
+            ) -> BoxFuture<'a, Result<Vec<u8>, QueryTargetError>> {
+                Box::pin(async move {
+                    self.calls.fetch_add(1, Ordering::Relaxed);
+                    let request = remote_envelope(bytes, &self.fixture);
+                    assert_eq!(request.plans().len(), 1);
+                    assert_eq!(
+                        request.kind(),
+                        type_bridge_contract::query_remote_v3::StagedKindV3::Write
+                    );
+                    Ok(remote_terminal_reply(bytes, &self.fixture))
+                })
+            }
+        }
+        let fixture =
+            crate::entity_crud::tests::fixture(vec![], crate::entity_crud::tests::COMMIT_SUCCESS);
+        let package = &fixture.package;
+        let mut remote = remote_fixture(0x59);
+        let mut capabilities = query_plan_v3_capability_vocabulary();
+        for capability in [
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_WRITE_V3,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        ] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
+        }
+        remote.contract = RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("c-batch-proxy-executor", "epoch-batch-proxy-v1").unwrap(),
+            remote.signer.public_key(),
+        );
+        remote.advertisement = remote.contract.encode().unwrap();
+        remote.schema = package.state()._authority.declared_schema().clone();
+        let (authority, _) = remote_authority(package.state()).unwrap();
+        let connection = ProxyQueryConnection::with_exchange(
+            remote.advertisement.clone(),
+            authority,
+            QueryExecutionResourceLimits::default(),
+        )
+        .unwrap();
+        let transport = Arc::new(Transport {
+            fixture: remote,
+            calls: 0.into(),
+        });
+        let connection = connection.with_staged_transport(transport.clone());
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let proxy =
+            TypeBridgeProxyConnection::new(Arc::clone(package.state()), connection, runtime);
+        for rows in [0usize, 2] {
+            let mut builder = ptr::null_mut();
+            let mut batch = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    type_bridge_projected_batch_builder_open_v1_impl(
+                        package,
+                        &fixture.token,
+                        4,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut builder,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            for iid in ["0x10", "0x11"].iter().take(rows) {
+                assert_eq!(
+                    unsafe {
+                        type_bridge_projected_batch_builder_add_v1_impl(
+                            builder,
+                            &TypeBridgeIid::new(iid).unwrap(),
+                            ptr::null(),
+                            &mut diagnostics,
+                        )
+                    },
+                    TypeBridgeStatus::Ok
+                );
+            }
+            assert_eq!(
+                unsafe {
+                    type_bridge_projected_batch_builder_finish_impl(
+                        &mut builder,
+                        &mut batch,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            for returning in [false, true] {
+                let mut result = ptr::null_mut();
+                let execute = if returning {
+                    type_bridge_proxy_connection_projected_batch_delete_returning
+                } else {
+                    type_bridge_proxy_connection_projected_batch_execute
+                };
+                let status = unsafe {
+                    execute(
+                        &proxy,
+                        batch,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics,
+                    )
+                };
+                assert_eq!(
+                    status,
+                    TypeBridgeStatus::Ok,
+                    "{}",
+                    if diagnostics.is_null() {
+                        String::new()
+                    } else {
+                        unsafe { diagnostic_code(diagnostics) }
+                    }
+                );
+                let mut count = usize::MAX;
+                assert_eq!(
+                    unsafe {
+                        type_bridge_projected_batch_result_count_impl(
+                            result,
+                            &fixture.token,
+                            4,
+                            &mut count,
+                            &mut diagnostics,
+                        )
+                    },
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(count, if returning { 0 } else { rows });
+                assert_eq!(
+                    unsafe { type_bridge_projected_batch_result_close_impl(&mut result) },
+                    TypeBridgeStatus::Ok
+                );
+            }
+            assert_eq!(
+                unsafe { type_bridge_projected_batch_close_impl(&mut batch) },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                transport.calls.load(Ordering::Relaxed),
+                if rows == 0 { 0 } else { 2 }
+            );
+        }
+    }
+
+    #[test]
     fn proxy_execute_reports_unreachable_route_and_package_mismatch() {
         let package_a = package("proxyroutea");
         let package_b = package("proxyrouteb");

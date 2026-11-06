@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use type_bridge_contract::id::TypeId;
 use type_bridge_contract::sdk_diagnostic::{
-    SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
+    SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
 };
 use type_bridge_orm::projected_batch::ProjectedBatchConstructionControl;
 use type_bridge_orm::{
@@ -38,7 +38,7 @@ use crate::projected_model::{
 };
 use crate::projected_token::{TypeBridgeProjectedTokenV1, resolve_model_token};
 use crate::projected_value::{invalid_brand_diagnostic, same_package_brand};
-use crate::query::TypeBridgeQueryExecutionLimitsV1;
+use crate::query::{TypeBridgeProxyConnection, TypeBridgeQueryExecutionLimitsV1};
 use crate::runtime::{
     TypeBridgeCancellation, TypeBridgeDatabase, TypeBridgeWriteTransaction,
     check_database_borrowed_ranges, check_write_transaction_borrowed_ranges,
@@ -967,6 +967,7 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_close_impl(
 enum BatchExecutionTarget<'handle> {
     Database(&'handle TypeBridgeDatabase),
     WriteTransaction(&'handle TypeBridgeWriteTransaction),
+    Proxy(&'handle TypeBridgeProxyConnection),
 }
 
 impl BatchExecutionTarget<'_> {
@@ -974,13 +975,17 @@ impl BatchExecutionTarget<'_> {
         match self {
             Self::Database(database) => database.package_state(),
             Self::WriteTransaction(transaction) => transaction.package_state(),
+            Self::Proxy(proxy) => proxy.package_state(),
         }
     }
 
-    fn answer_ceiling(&self) -> QueryExecutionResourceLimits {
+    fn constrain(&self, limits: QueryExecutionResourceLimits) -> QueryExecutionResourceLimits {
         match self {
-            Self::Database(database) => database.answer_ceiling(),
-            Self::WriteTransaction(transaction) => transaction.answer_ceiling(),
+            Self::Database(database) => limits.constrained_by(database.answer_ceiling()),
+            Self::WriteTransaction(transaction) => {
+                limits.constrained_by(transaction.answer_ceiling())
+            }
+            Self::Proxy(proxy) => proxy.manager_target().constrain(limits),
         }
     }
 }
@@ -1029,14 +1034,17 @@ unsafe fn execute_impl(
         // SAFETY: execution preflight fenced a complete optional descriptor.
         let call_limits = match parse_common_limits(
             unsafe { copied_limits(limits) },
-            type_bridge_orm::AnswerTransport::Direct,
+            if matches!(target, BatchExecutionTarget::Proxy(_)) {
+                type_bridge_orm::AnswerTransport::Proxy
+            } else {
+                type_bridge_orm::AnswerTransport::Direct
+            },
         ) {
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
-        let effective_limits = call_limits
-            .constrained_by(batch.value.resource_ceiling())
-            .constrained_by(target.answer_ceiling());
+        let effective_limits =
+            target.constrain(call_limits.constrained_by(batch.value.resource_ceiling()));
         let control = ProjectedBatchInvocationControl::capture(
             effective_limits,
             cancellation_owner(cancellation),
@@ -1077,6 +1085,26 @@ unsafe fn execute_impl(
             executor
         };
         let executed = match target {
+            BatchExecutionTarget::Proxy(proxy) => proxy
+                .manager_block_on(executor.execute_on_target_mapped(
+                    proxy.manager_target(),
+                    &batch.value,
+                    control,
+                    None,
+                    move |value| {
+                        map_result(
+                            package,
+                            model,
+                            operation,
+                            input_count,
+                            reserved_things,
+                            value,
+                            return_deleted,
+                        )
+                        .map(Some)
+                    },
+                ))
+                .map_err(|error| error.into_diagnostic(SdkProviderOperation::Write)),
             BatchExecutionTarget::Database(database) => database.block_on(executor.execute_mapped(
                 database.orm_database(),
                 &batch.value,
@@ -1346,6 +1374,105 @@ unsafe fn write_transaction_execute(
     unsafe {
         execute_impl(
             BatchExecutionTarget::WriteTransaction(&*transaction),
+            batch,
+            limits,
+            cancellation,
+            out_result,
+            out_diagnostics,
+            return_deleted,
+        )
+    }
+}
+
+/// Execute a projected batch through the proxy's single staged request.
+#[unsafe(export_name = "type_bridge_proxy_connection_projected_batch_execute")]
+pub(crate) unsafe extern "C" fn type_bridge_proxy_connection_projected_batch_execute(
+    proxy: *const TypeBridgeProxyConnection,
+    batch: *const TypeBridgeProjectedBatch,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_result: *mut *mut TypeBridgeProjectedBatchResult,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: common helper fences the retained owner graph and writable outputs.
+    unsafe {
+        proxy_execute(
+            proxy,
+            batch,
+            limits,
+            cancellation,
+            out_result,
+            out_diagnostics,
+            false,
+        )
+    }
+}
+
+/// Return every deleted root through the proxy's single staged request.
+#[unsafe(export_name = "type_bridge_proxy_connection_projected_batch_delete_returning")]
+pub(crate) unsafe extern "C" fn type_bridge_proxy_connection_projected_batch_delete_returning(
+    proxy: *const TypeBridgeProxyConnection,
+    batch: *const TypeBridgeProjectedBatch,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_result: *mut *mut TypeBridgeProjectedBatchResult,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: common helper fences the retained owner graph and writable outputs.
+    unsafe {
+        proxy_execute(
+            proxy,
+            batch,
+            limits,
+            cancellation,
+            out_result,
+            out_diagnostics,
+            true,
+        )
+    }
+}
+
+unsafe fn proxy_execute(
+    proxy: *const TypeBridgeProxyConnection,
+    batch: *const TypeBridgeProjectedBatch,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_result: *mut *mut TypeBridgeProjectedBatchResult,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    return_deleted: bool,
+) -> TypeBridgeStatus {
+    let preflight = match preflight_outputs(&[
+        (
+            out_result.cast(),
+            size_of::<*mut TypeBridgeProjectedBatchResult>(),
+        ),
+        (
+            out_diagnostics.cast(),
+            size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+        ),
+    ]) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    // SAFETY: caller retains the complete connection and batch owners.
+    if let Err(status) =
+        unsafe { crate::manager_target::RawTarget::Proxy(proxy).preflight(&preflight) }.and_then(
+            |()| unsafe { execute_input_preflight(&preflight, batch, limits, cancellation) },
+        )
+    {
+        return status;
+    }
+    // SAFETY: output slots are pairwise and input disjoint.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_result, out_diagnostics) } {
+        return status;
+    }
+    if proxy.is_null() {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    // SAFETY: all target/batch/policy owners have been preflighted.
+    unsafe {
+        execute_impl(
+            BatchExecutionTarget::Proxy(&*proxy),
             batch,
             limits,
             cancellation,
@@ -3828,7 +3955,7 @@ plays:
     }
 
     #[test]
-    fn source_activates_exactly_the_thirteen_compiler_anchored_batch_entries() {
+    fn source_activates_exactly_the_fifteen_compiler_anchored_batch_entries() {
         let source = include_str!("projected_batch.rs");
         for name in [
             "type_bridge_projected_batch_builder_open_v1",
@@ -3840,6 +3967,8 @@ plays:
             "type_bridge_write_transaction_projected_batch_execute_v1",
             "type_bridge_database_projected_batch_delete_returning",
             "type_bridge_write_transaction_projected_batch_delete_returning",
+            "type_bridge_proxy_connection_projected_batch_execute",
+            "type_bridge_proxy_connection_projected_batch_delete_returning",
             "type_bridge_projected_batch_result_count",
             "type_bridge_projected_batch_result_thing_at",
             "type_bridge_projected_batch_result_item",
@@ -3854,13 +3983,13 @@ plays:
             source
                 .matches("#[unsafe(export_name = \"type_bridge_")
                 .count(),
-            13
+            15
         );
         assert_eq!(
             source
                 .matches("pub(crate) unsafe extern \"C\" fn type_bridge_")
                 .count(),
-            13
+            15
         );
     }
 }
