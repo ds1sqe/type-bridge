@@ -16,6 +16,7 @@ mod iid;
 mod manager_filter;
 mod manager_read;
 mod manager_target;
+mod manager_write;
 mod migration_abi;
 mod migration_runtime;
 mod perf_stages;

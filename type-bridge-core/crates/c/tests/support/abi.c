@@ -343,9 +343,45 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *manager_result_at_fn)(
     const type_bridge_manager_result_t *, const type_bridge_projected_token_v1_t *,
     size_t, type_bridge_projected_thing_t **, type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *manager_result_close_fn)(type_bridge_manager_result_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_manager_update_fn)(
+    const type_bridge_database_t *, const type_bridge_manager_filter_t *,
+    const type_bridge_projected_create_t *,
+    const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
+    type_bridge_projected_batch_result_t **,
+    type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_manager_delete_fn)(
+    const type_bridge_database_t *, const type_bridge_manager_filter_t *,
+    const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
+    type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *write_transaction_manager_update_fn)(
+    const type_bridge_write_transaction_t *, const type_bridge_manager_filter_t *,
+    const type_bridge_projected_create_t *,
+    const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
+    type_bridge_projected_batch_result_t **,
+    type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *write_transaction_manager_delete_fn)(
+    const type_bridge_write_transaction_t *, const type_bridge_manager_filter_t *,
+    const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
+    type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *proxy_connection_manager_update_fn)(
+    const type_bridge_proxy_connection_t *, const type_bridge_manager_filter_t *,
+    const type_bridge_projected_create_t *,
+    const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
+    type_bridge_projected_batch_result_t **,
+    type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *proxy_connection_manager_delete_fn)(
+    const type_bridge_proxy_connection_t *, const type_bridge_manager_filter_t *,
+    const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
+    type_bridge_execution_diagnostics_t **);
 #define TAKE(type, symbol) do { type value = &symbol; (void)value; } while (0)
 
 void type_bridge_abi_probe(void) {
+  TAKE(database_manager_update_fn, type_bridge_database_manager_update);
+  TAKE(database_manager_delete_fn, type_bridge_database_manager_delete);
+  TAKE(write_transaction_manager_update_fn, type_bridge_write_transaction_manager_update);
+  TAKE(write_transaction_manager_delete_fn, type_bridge_write_transaction_manager_delete);
+  TAKE(proxy_connection_manager_update_fn, type_bridge_proxy_connection_manager_update);
+  TAKE(proxy_connection_manager_delete_fn, type_bridge_proxy_connection_manager_delete);
   TAKE(manager_filter_open_fn, type_bridge_manager_filter_open);
   TAKE(manager_filter_iid_fn, type_bridge_manager_filter_iid);
   TAKE(manager_filter_iids_fn, type_bridge_manager_filter_iids);

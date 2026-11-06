@@ -11,6 +11,10 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C canonical filter `update` and `delete` terminals support database, borrowed
+  write, and proxy targets. Updates return every root through the common write
+  result; direct result mapping finishes before commit. Empty IID filters
+  perform no provider requests.
 - C canonical manager `all`, `first`, `count`, and `exists` terminals accept
   database, borrowed read/write, and proxy connection targets. Owned read
   results expose nominal `count`/`at`/`close`; empty IID filters skip provider
