@@ -498,7 +498,9 @@ impl NodeMigrationPlan {
                         .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
                 }
             }.map(node_execution_report).map_err(|error| {
-                if error.code().as_str() == "migration_user_step_failed" { Error::from_reason(error.to_string()) } else { catalog_error(error.code().as_str()) }
+                if error.code().as_str() == "migration_user_step_failed" {
+                    Error::from_reason(format!("migration catalog rejected [{}]: {error}", error.code()))
+                } else { catalog_error(error.code().as_str()) }
             })
         }.instrument(entry.clone()))
     }
