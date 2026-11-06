@@ -15,6 +15,18 @@
 #include <typebridge/type_bridge.h>
 #include <fixture/models.h>
 
+/* These fixtures expect one root. Exercise the result owner, then its item. */
+#define TEST_SINGLE_WRITE(MODEL, OP, CALL, OUT, DIAG)                           \
+  ((write_status = (CALL)) != TYPE_BRIDGE_STATUS_OK ? write_status :            \
+   ((write_status = MODEL##_##OP##_batch_result_item(                           \
+         MODEL##_##OP##_result, (OUT), (DIAG))) != TYPE_BRIDGE_STATUS_OK ?       \
+    ((void)MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result),            \
+     write_status) :                                                          \
+    (MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result) !=               \
+         TYPE_BRIDGE_STATUS_OK ? TYPE_BRIDGE_STATUS_INVALID_ARGUMENT :         \
+     (*(OUT) != NULL ? TYPE_BRIDGE_STATUS_OK : TYPE_BRIDGE_STATUS_INVALID_ARGUMENT))))
+
+
 #define CHECK(condition)                                                       \
   do {                                                                         \
     if (!(condition)) {                                                        \
@@ -5300,6 +5312,10 @@ static int run_sdk_serialization_live_codec(
     const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_status_t write_status;
+  fixture_employment_insert_batch_result *fixture_employment_insert_result = NULL;
+  fixture_employment_update_batch_result *fixture_employment_update_result = NULL;
+  fixture_person_insert_batch_result *fixture_person_insert_result = NULL;
   type_bridge_iid_t *iid_argument = NULL;
   const char *directory = getenv("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE_DIR");
   const uint16_t remote_port = required_remote_port();
@@ -5361,8 +5377,7 @@ static int run_sdk_serialization_live_codec(
   CHECK(remote_port != 0u);
   CHECK(open_person_create(package, "v5-live-person", 70, &person_create,
                            out_diagnostics) == 0);
-  CHECK(fixture_person_database_insert(database, person_create, NULL,
-                                       &inserted_person, out_diagnostics) ==
+  CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_database_insert(database, person_create, NULL,&fixture_person_insert_result, out_diagnostics), &inserted_person, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_reference(inserted_person, &inserted_person_ref,
                                  out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -5375,9 +5390,9 @@ static int run_sdk_serialization_live_codec(
   CHECK(fixture_employment_create_open(package, &employment_args,
                                        &employment_create, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_employment_database_insert(
-            database, employment_create, NULL, &inserted_employment,
-            out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_employment, insert, fixture_employment_database_insert(
+            database, employment_create, NULL,&fixture_employment_insert_result,
+            out_diagnostics), &inserted_employment, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_employment_iid(inserted_employment, &employment_iid,
                                out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(employment_iid.length != 0u &&
@@ -5536,9 +5551,8 @@ static int run_sdk_serialization_live_codec(
   CHECK(fixture_employment_create_open(package, &employment_args,
                                        &rebound_create, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_employment_database_update(
-            database, checked_iid(employment_iid, &iid_argument), rebound_create, NULL,
-            &updated_employment, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_employment, update, fixture_employment_database_update(
+            database, checked_iid(employment_iid, &iid_argument), rebound_create, NULL,&fixture_employment_update_result, out_diagnostics), &updated_employment, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(write_canonical_view(directory, "entity.bin", direct_entity_view));
   CHECK(write_canonical_view(directory, "relation.bin", direct_relation_view));
 
@@ -5616,6 +5630,16 @@ static int run_sdk_serialization_live_codec(
 #endif
 
 int main(void) {
+  type_bridge_status_t write_status;
+  fixture_employee_insert_batch_result *fixture_employee_insert_result = NULL;
+  fixture_manager_insert_batch_result *fixture_manager_insert_result = NULL;
+  fixture_membership_insert_batch_result *fixture_membership_insert_result = NULL;
+  fixture_membership_put_batch_result *fixture_membership_put_result = NULL;
+  fixture_membership_update_batch_result *fixture_membership_update_result = NULL;
+  fixture_networkzhlink_insert_batch_result *fixture_networkzhlink_insert_result = NULL;
+  fixture_person_insert_batch_result *fixture_person_insert_result = NULL;
+  fixture_person_put_batch_result *fixture_person_put_result = NULL;
+  fixture_person_update_batch_result *fixture_person_update_result = NULL;
   type_bridge_iid_t *iid_argument = NULL;
   const char *address = getenv("TYPEDB_ADDRESS");
   const char *database_name = getenv("TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE");
@@ -5750,9 +5774,8 @@ int main(void) {
   CHECK(fixture_valzuconstrained_close(&robot_constrained) ==
         TYPE_BRIDGE_STATUS_OK);
   person = (fixture_person *)(uintptr_t)1u;
-  CHECK(fixture_person_database_insert(
-            database, (const fixture_person_create *)robot_create, NULL,
-            &person, &diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
+  CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_database_insert(
+            database, (const fixture_person_create *)robot_create, NULL,&fixture_person_insert_result, &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
   CHECK(person == NULL && diagnostics != NULL);
   CHECK(execution_code_is(diagnostics, "c_entity_create_model_mismatch"));
   CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
@@ -5768,8 +5791,8 @@ int main(void) {
 
   CHECK(open_person_create(package, "query-ada", 36, &ada_create, &diagnostics) ==
         0);
-  CHECK(fixture_person_database_insert(database, ada_create, NULL, &person,
-                                       &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_database_insert(database, ada_create, NULL,&fixture_person_insert_result,
+                                       &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   entity_created = 1;
   CHECK(check_person(person, "query-ada", 36, &diagnostics) == 0);
   CHECK(read_query_person_identifier(person, entity_lifecycle_key,
@@ -5799,8 +5822,7 @@ int main(void) {
 
     CHECK(open_person_create(package, "query-ada", 37, &ada_update, &diagnostics) ==
           0);
-    CHECK(fixture_person_database_update(database, checked_iid(ada_iid, &iid_argument), ada_update, NULL,
-                                         &person, &diagnostics) ==
+    CHECK(TEST_SINGLE_WRITE(fixture_person, update, fixture_person_database_update(database, checked_iid(ada_iid, &iid_argument), ada_update, NULL,&fixture_person_update_result, &diagnostics), &person, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 37, &diagnostics) == 0);
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
@@ -5816,8 +5838,8 @@ int main(void) {
     CHECK(type_bridge_write_transaction_open(database, NULL, &write_tx,
                                              &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_person_write_transaction_insert(
-              write_tx, bob_create, NULL, &person, &diagnostics) ==
+    CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_write_transaction_insert(
+              write_tx, bob_create, NULL,&fixture_person_insert_result, &diagnostics), &person, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(copy_person_iid(person, bob_iid_storage, sizeof(bob_iid_storage),
                           &bob_iid_length, &diagnostics) == 0);
@@ -5825,8 +5847,8 @@ int main(void) {
     CHECK(fixture_person_create_close(&bob_create) == TYPE_BRIDGE_STATUS_OK);
     puts("P4 write transaction insert: passed");
 
-    CHECK(fixture_person_write_transaction_put(
-              write_tx, cara_create, NULL, &person, &diagnostics) ==
+    CHECK(TEST_SINGLE_WRITE(fixture_person, put, fixture_person_write_transaction_put(
+              write_tx, cara_create, NULL,&fixture_person_put_result, &diagnostics), &person, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(copy_person_iid(person, cara_iid_storage, sizeof(cara_iid_storage),
                           &cara_iid_length, &diagnostics) == 0);
@@ -5841,9 +5863,9 @@ int main(void) {
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
     puts("P4 write transaction get: passed");
 
-    CHECK(fixture_person_write_transaction_update(
-              write_tx, checked_iid(ada_iid, &iid_argument), ada_tx_update, NULL, &person,
-              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_person, update, fixture_person_write_transaction_update(
+              write_tx, checked_iid(ada_iid, &iid_argument), ada_tx_update, NULL,&fixture_person_update_result,
+              &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 38, &diagnostics) == 0);
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_create_close(&ada_tx_update) ==
@@ -5888,8 +5910,8 @@ int main(void) {
 
     CHECK(open_person_create(package, "query-dana", 45, &dana_create,
                              &diagnostics) == 0);
-    CHECK(fixture_person_database_put(database, dana_create, NULL, &person,
-                                      &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_person, put, fixture_person_database_put(database, dana_create, NULL,&fixture_person_put_result,
+                                      &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(copy_person_iid(person, dana_iid_storage, sizeof(dana_iid_storage),
                           &dana_iid_length, &diagnostics) == 0);
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
@@ -5898,9 +5920,9 @@ int main(void) {
 
     CHECK(open_employee_create(package, "query-employee", 3,
                                &query_employee_create, &diagnostics) == 0);
-    CHECK(fixture_employee_database_insert(
-              database, query_employee_create, NULL, &query_employee,
-              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_employee, insert, fixture_employee_database_insert(
+              database, query_employee_create, NULL,&fixture_employee_insert_result,
+              &diagnostics), &query_employee, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     {
       type_bridge_byte_view_t iid = {NULL, 0u};
       CHECK(fixture_employee_iid(query_employee, &iid, &diagnostics) ==
@@ -5916,9 +5938,9 @@ int main(void) {
 
     CHECK(open_manager_create(package, "query-manager", 5,
                               &query_manager_create, &diagnostics) == 0);
-    CHECK(fixture_manager_database_insert(
-              database, query_manager_create, NULL, &query_manager,
-              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_manager, insert, fixture_manager_database_insert(
+              database, query_manager_create, NULL,&fixture_manager_insert_result,
+              &diagnostics), &query_manager, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     {
       type_bridge_byte_view_t iid = {NULL, 0u};
       CHECK(fixture_manager_iid(query_manager, &iid, &diagnostics) ==
@@ -5934,9 +5956,9 @@ int main(void) {
 
     CHECK(open_membership_create(package, ada_iid, &query_membership_create,
                                  &diagnostics) == 0);
-    CHECK(fixture_membership_database_insert(
-              database, query_membership_create, NULL, &membership,
-              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_membership, insert, fixture_membership_database_insert(
+              database, query_membership_create, NULL,&fixture_membership_insert_result,
+              &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     relation_created = 1;
     CHECK(fixture_person_database_get_by_iid(database, checked_iid(ada_iid, &iid_argument), NULL, &person,
                                              &diagnostics) ==
@@ -5957,9 +5979,9 @@ int main(void) {
                                                              dana_iid_length},
                                    &query_network_link_create,
                                    &diagnostics) == 0);
-    CHECK(fixture_networkzhlink_database_insert(
-              database, query_network_link_create, NULL, &query_network_link,
-              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_networkzhlink, insert, fixture_networkzhlink_database_insert(
+              database, query_network_link_create, NULL,&fixture_networkzhlink_insert_result,
+              &diagnostics), &query_network_link, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     {
       type_bridge_byte_view_t iid = {NULL, 0u};
       CHECK(fixture_networkzhlink_iid(query_network_link, &iid,
@@ -6022,9 +6044,9 @@ int main(void) {
                                    &cara_membership_create, &diagnostics) == 0);
       puts("P5 generated Person role-player unions: passed");
 
-      CHECK(fixture_membership_database_insert(
-                database, ada_membership_create, NULL, &membership,
-                &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(TEST_SINGLE_WRITE(fixture_membership, insert, fixture_membership_database_insert(
+                database, ada_membership_create, NULL,&fixture_membership_insert_result,
+                &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
       CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
       CHECK(copy_membership_iid(
                 membership, membership_one_iid_storage,
@@ -6062,17 +6084,16 @@ int main(void) {
         CHECK(count == 1u);
         puts("P5 database relation count: passed");
 
-        CHECK(fixture_membership_database_update(
-                  database, checked_iid(membership_one_iid, &iid_argument), cara_membership_create, NULL,
-                  &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(TEST_SINGLE_WRITE(fixture_membership, update, fixture_membership_database_update(
+                  database, checked_iid(membership_one_iid, &iid_argument), cara_membership_create, NULL,&fixture_membership_update_result, &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, cara_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
               TYPE_BRIDGE_STATUS_OK);
         puts("P5 database relation update: passed");
 
-        CHECK(fixture_membership_database_put(
-                  database, ada_membership_create, NULL, &membership,
-                  &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(TEST_SINGLE_WRITE(fixture_membership, put, fixture_membership_database_put(
+                  database, ada_membership_create, NULL,&fixture_membership_put_result,
+                  &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
         CHECK(copy_membership_iid(
                   membership, membership_two_iid_storage,
@@ -6085,9 +6106,9 @@ int main(void) {
         CHECK(type_bridge_write_transaction_open(database, NULL, &write_tx,
                                                  &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
-        CHECK(fixture_membership_write_transaction_insert(
-                  write_tx, ada_membership_create, NULL, &membership,
-                  &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(TEST_SINGLE_WRITE(fixture_membership, insert, fixture_membership_write_transaction_insert(
+                  write_tx, ada_membership_create, NULL,&fixture_membership_insert_result,
+                  &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
         CHECK(copy_membership_iid(
                   membership, membership_three_iid_storage,
@@ -6097,9 +6118,9 @@ int main(void) {
               TYPE_BRIDGE_STATUS_OK);
         puts("P5 write transaction relation insert: passed");
 
-        CHECK(fixture_membership_write_transaction_put(
-                  write_tx, cara_membership_create, NULL, &membership,
-                  &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(TEST_SINGLE_WRITE(fixture_membership, put, fixture_membership_write_transaction_put(
+                  write_tx, cara_membership_create, NULL,&fixture_membership_put_result,
+                  &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, cara_iid, &diagnostics) == 0);
         CHECK(copy_membership_iid(
                   membership, membership_four_iid_storage,
@@ -6117,9 +6138,8 @@ int main(void) {
               TYPE_BRIDGE_STATUS_OK);
         puts("P5 write transaction relation get: passed");
 
-        CHECK(fixture_membership_write_transaction_update(
-                  write_tx, checked_iid(membership_one_iid, &iid_argument), ada_membership_create, NULL,
-                  &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(TEST_SINGLE_WRITE(fixture_membership, update, fixture_membership_write_transaction_update(
+                  write_tx, checked_iid(membership_one_iid, &iid_argument), ada_membership_create, NULL,&fixture_membership_update_result, &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
               TYPE_BRIDGE_STATUS_OK);

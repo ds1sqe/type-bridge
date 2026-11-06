@@ -6,6 +6,18 @@
 
 #include <fixture/models.h>
 
+/* These fixtures expect one root. Exercise the result owner, then its item. */
+#define TEST_SINGLE_WRITE(MODEL, OP, CALL, OUT, DIAG)                           \
+  ((write_status = (CALL)) != TYPE_BRIDGE_STATUS_OK ? write_status :            \
+   ((write_status = MODEL##_##OP##_batch_result_item(                           \
+         MODEL##_##OP##_result, (OUT), (DIAG))) != TYPE_BRIDGE_STATUS_OK ?       \
+    ((void)MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result),            \
+     write_status) :                                                          \
+    (MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result) !=               \
+         TYPE_BRIDGE_STATUS_OK ? TYPE_BRIDGE_STATUS_INVALID_ARGUMENT :         \
+     (*(OUT) != NULL ? TYPE_BRIDGE_STATUS_OK : TYPE_BRIDGE_STATUS_INVALID_ARGUMENT))))
+
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -374,6 +386,8 @@ static int run_counter_plan_lifecycle(
     const type_bridge_database_t *database,
     const type_bridge_query_execution_limits_v1_t *limits,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_status_t write_status;
+  fixture_counter_update_batch_result *fixture_counter_update_result = NULL;
   type_bridge_iid_t *iid_argument = NULL;
   type_bridge_query_execution_limits_v1_t common_limits = *limits;
   common_limits.items = UINT64_C(100000);
@@ -436,7 +450,7 @@ static int run_counter_plan_lifecycle(
   CHECK(run_staged_counter_count(package, database, before + 2u, out_diagnostics) == 0);
   CHECK(open_counter_create(package, 11, &replacement, out_diagnostics) == 0);
   model_plan_mark("update");
-  CHECK(fixture_counter_database_update_v2(database, checked_iid(ids[0], &iid_argument), replacement, limits, NULL, &value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_counter, update, fixture_counter_database_update_v2(database, checked_iid(ids[0], &iid_argument), replacement, limits, NULL,&fixture_counter_update_result, out_diagnostics), &value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_counter_iid(value, &borrowed, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && borrowed.length == ids[0].length && memcmp(borrowed.data, ids[0].data, borrowed.length) == 0);
   CHECK(fixture_counter_counterzuvalue(value, &counter_value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -658,6 +672,13 @@ static int run_empty_ordered_lifecycle(
     const type_bridge_schema_package_t *package, const type_bridge_database_t *database,
     const type_bridge_query_execution_limits_v1_t *limits,
     type_bridge_execution_diagnostics_t **diagnostics) {
+  type_bridge_status_t write_status;
+  fixture_networkzhlink_insert_batch_result *fixture_networkzhlink_insert_result = NULL;
+  fixture_networkzhlink_put_batch_result *fixture_networkzhlink_put_result = NULL;
+  fixture_networkzhlink_update_batch_result *fixture_networkzhlink_update_result = NULL;
+  fixture_person_insert_batch_result *fixture_person_insert_result = NULL;
+  fixture_person_put_batch_result *fixture_person_put_result = NULL;
+  fixture_person_update_batch_result *fixture_person_update_result = NULL;
   type_bridge_iid_t *iid_argument = NULL;
   fixture_person_create *input = NULL;
   fixture_person *person = NULL;
@@ -669,7 +690,7 @@ static int run_empty_ordered_lifecycle(
   type_bridge_byte_view_t person_iid, link_iid, borrowed;
   CHECK(open_person_create(package, "data-ada", 0, &input, diagnostics) == 0);
   model_plan_mark("ordered_distinct_collections.entity_insert");
-  CHECK(fixture_person_database_insert_v2(database, input, limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_database_insert_v2(database, input, limits, NULL,&fixture_person_insert_result, diagnostics), &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_person_iid(person, &borrowed, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(copy_iid(borrowed, person_storage, sizeof(person_storage), &person_length));
@@ -678,7 +699,7 @@ static int run_empty_ordered_lifecycle(
   CHECK(fixture_person_aliases_count(person, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
   CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("ordered_distinct_collections.entity_put");
-  CHECK(fixture_person_database_put_v2(database, input, limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_person, put, fixture_person_database_put_v2(database, input, limits, NULL,&fixture_person_put_result, diagnostics), &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_person_iid(person, &borrowed, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(borrowed.length == person_iid.length && memcmp(borrowed.data, person_iid.data, borrowed.length) == 0);
@@ -688,7 +709,7 @@ static int run_empty_ordered_lifecycle(
   CHECK(fixture_person_database_count_v2(database, limits, NULL, &total, diagnostics) == TYPE_BRIDGE_STATUS_OK && total == 2u);
   model_plan_mark("");
   model_plan_mark("ordered_distinct_collections.entity_update");
-  CHECK(fixture_person_database_update_v2(database, checked_iid(person_iid, &iid_argument), input, limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_person, update, fixture_person_database_update_v2(database, checked_iid(person_iid, &iid_argument), input, limits, NULL,&fixture_person_update_result, diagnostics), &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("ordered_distinct_collections.entity_read");
@@ -698,7 +719,7 @@ static int run_empty_ordered_lifecycle(
   CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
   CHECK(open_empty_ordered_link(package, person_iid, "data-link-forward", 0, &link_input, diagnostics) == 0);
   model_plan_mark("ordered_distinct_collections.role_insert");
-  CHECK(fixture_networkzhlink_database_insert_v2(database, link_input, limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_networkzhlink, insert, fixture_networkzhlink_database_insert_v2(database, link_input, limits, NULL,&fixture_networkzhlink_insert_result, diagnostics), &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_networkzhlink_iid(link, &borrowed, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(copy_iid(borrowed, link_storage, sizeof(link_storage), &link_length));
@@ -707,7 +728,7 @@ static int run_empty_ordered_lifecycle(
   CHECK(fixture_networkzhlink_participant_count(link, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
   CHECK(fixture_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("ordered_distinct_collections.role_put");
-  CHECK(fixture_networkzhlink_database_put_v2(database, link_input, limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_networkzhlink, put, fixture_networkzhlink_database_put_v2(database, link_input, limits, NULL,&fixture_networkzhlink_put_result, diagnostics), &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_networkzhlink_iid(link, &borrowed, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(borrowed.length == link_iid.length && memcmp(borrowed.data, link_iid.data, borrowed.length) == 0);
@@ -716,7 +737,7 @@ static int run_empty_ordered_lifecycle(
   CHECK(fixture_networkzhlink_database_count_v2(database, limits, NULL, &total, diagnostics) == TYPE_BRIDGE_STATUS_OK && total == 1u);
   model_plan_mark("");
   model_plan_mark("ordered_distinct_collections.role_update");
-  CHECK(fixture_networkzhlink_database_update_v2(database, checked_iid(link_iid, &iid_argument), link_input, limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_networkzhlink, update, fixture_networkzhlink_database_update_v2(database, checked_iid(link_iid, &iid_argument), link_input, limits, NULL,&fixture_networkzhlink_update_result, diagnostics), &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_networkzhlink_participant_count(link, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
   CHECK(fixture_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
@@ -728,14 +749,14 @@ static int run_empty_ordered_lifecycle(
   CHECK(fixture_person_create_close(&input) == TYPE_BRIDGE_STATUS_OK);
   CHECK(open_person_create(package, "data-ada", 1, &input, diagnostics) == 0);
   model_plan_mark("ordered_distinct_collections.refused_nonempty");
-  CHECK(fixture_person_database_insert_v2(database, input, limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_UNSUPPORTED);
+  CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_database_insert_v2(database, input, limits, NULL,&fixture_person_insert_result, diagnostics), &person, diagnostics) == TYPE_BRIDGE_STATUS_UNSUPPORTED);
   CHECK(person == NULL && check_ordered_refusal(diagnostics) == 0);
   model_plan_mark("");
   CHECK(fixture_person_create_close(&input) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_create_close(&link_input) == TYPE_BRIDGE_STATUS_OK);
   CHECK(open_empty_ordered_link(package, person_iid, "data-link-forward", 1, &link_input, diagnostics) == 0);
   model_plan_mark("ordered_distinct_collections.refused_nonempty");
-  CHECK(fixture_networkzhlink_database_insert_v2(database, link_input, limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_UNSUPPORTED);
+  CHECK(TEST_SINGLE_WRITE(fixture_networkzhlink, insert, fixture_networkzhlink_database_insert_v2(database, link_input, limits, NULL,&fixture_networkzhlink_insert_result, diagnostics), &link, diagnostics) == TYPE_BRIDGE_STATUS_UNSUPPORTED);
   CHECK(link == NULL && check_ordered_refusal(diagnostics) == 0);
   model_plan_mark("");
   CHECK(fixture_networkzhlink_create_close(&link_input) == TYPE_BRIDGE_STATUS_OK);
@@ -756,6 +777,11 @@ run_unkeyed_lifecycles(const type_bridge_schema_package_t *package,
                        type_bridge_byte_view_t person_iid,
                        const type_bridge_query_execution_limits_v1_t *limits,
                        type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_status_t write_status;
+  fixture_counter_insert_batch_result *fixture_counter_insert_result = NULL;
+  fixture_counter_update_batch_result *fixture_counter_update_result = NULL;
+  fixture_membership_insert_batch_result *fixture_membership_insert_result = NULL;
+  fixture_membership_update_batch_result *fixture_membership_update_result = NULL;
   type_bridge_iid_t *iid_argument = NULL;
   uint8_t iid_storage[256];
   size_t iid_length = 0u;
@@ -770,8 +796,8 @@ run_unkeyed_lifecycles(const type_bridge_schema_package_t *package,
 
   CHECK(open_counter_create(package, 10, &counter_create, out_diagnostics) ==
         0);
-  CHECK(fixture_counter_database_insert_v2(database, counter_create, limits,
-                                           NULL, &counter, out_diagnostics) ==
+  CHECK(TEST_SINGLE_WRITE(fixture_counter, insert, fixture_counter_database_insert_v2(database, counter_create, limits,
+                                           NULL,&fixture_counter_insert_result, out_diagnostics), &counter, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_iid(counter, &borrowed, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
@@ -785,9 +811,9 @@ run_unkeyed_lifecycles(const type_bridge_schema_package_t *package,
   CHECK(fixture_counter_close(&counter) == TYPE_BRIDGE_STATUS_OK);
   CHECK(open_counter_create(package, 11, &counter_update, out_diagnostics) ==
         0);
-  CHECK(fixture_counter_database_update_v2(
-            database, checked_iid(iid, &iid_argument), counter_update, limits, NULL, &counter,
-            out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_counter, update, fixture_counter_database_update_v2(
+            database, checked_iid(iid, &iid_argument), counter_update, limits, NULL,&fixture_counter_update_result,
+            out_diagnostics), &counter, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_close(&counter) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_database_delete_by_iid_v2(database, checked_iid(iid, &iid_argument), limits, NULL,
                                                   out_diagnostics) ==
@@ -801,9 +827,9 @@ run_unkeyed_lifecycles(const type_bridge_schema_package_t *package,
 
   CHECK(open_membership_create(package, person_iid, &membership_create,
                                out_diagnostics) == 0);
-  CHECK(fixture_membership_database_insert_v2(
-            database, membership_create, limits, NULL, &membership,
-            out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_membership, insert, fixture_membership_database_insert_v2(
+            database, membership_create, limits, NULL,&fixture_membership_insert_result,
+            out_diagnostics), &membership, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_membership_iid(membership, &borrowed, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(copy_iid(borrowed, iid_storage, sizeof(iid_storage), &iid_length));
@@ -814,9 +840,9 @@ run_unkeyed_lifecycles(const type_bridge_schema_package_t *package,
             database, checked_iid(iid, &iid_argument), limits, NULL, &membership, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_membership_close(&membership) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_membership_database_update_v2(
-            database, checked_iid(iid, &iid_argument), membership_create, limits, NULL, &membership,
-            out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_membership, update, fixture_membership_database_update_v2(
+            database, checked_iid(iid, &iid_argument), membership_create, limits, NULL,&fixture_membership_update_result,
+            out_diagnostics), &membership, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_membership_close(&membership) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_membership_database_delete_by_iid_v2(database, checked_iid(iid, &iid_argument), limits,
                                                      NULL, out_diagnostics) ==
@@ -1293,6 +1319,8 @@ static int check_answer_ceiling_binds_calls(
 }
 
 int main(void) {
+  type_bridge_status_t write_status;
+  fixture_person_insert_batch_result *fixture_person_insert_result = NULL;
   type_bridge_iid_t *iid_argument = NULL;
   const char *address = getenv("TYPEDB_ADDRESS");
   const char *database_name = getenv("TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE");
@@ -1398,8 +1426,8 @@ int main(void) {
 
   CHECK(open_person_create(package, "query-target", 0, &person_create,
                            &diagnostics) == 0);
-  CHECK(fixture_person_database_insert_v2(database, person_create, &limits,
-                                          NULL, &person, &diagnostics) ==
+  CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_database_insert_v2(database, person_create, &limits,
+                                          NULL,&fixture_person_insert_result, &diagnostics), &person, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_iid(person, &borrowed, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);

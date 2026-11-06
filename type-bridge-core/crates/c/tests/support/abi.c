@@ -144,7 +144,7 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_create_fn)(
     const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
     const type_bridge_projected_create_t *,
     const type_bridge_query_execution_limits_v1_t *,
-    const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+    const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
     type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_get_fn)(
     const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
@@ -155,7 +155,7 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_update_fn)(
     const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
     const type_bridge_iid_t *, const type_bridge_projected_create_t *,
     const type_bridge_query_execution_limits_v1_t *,
-    const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+    const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
     type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_delete_fn)(
     const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
@@ -183,7 +183,7 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *write_create_fn)(
     const type_bridge_projected_token_v1_t *,
     const type_bridge_projected_create_t *,
     const type_bridge_query_execution_limits_v1_t *,
-    const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+    const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
     type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *write_get_fn)(
     const type_bridge_write_transaction_t *,
@@ -196,7 +196,7 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *write_update_fn)(
     const type_bridge_projected_token_v1_t *, const type_bridge_iid_t *,
     const type_bridge_projected_create_t *,
     const type_bridge_query_execution_limits_v1_t *,
-    const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+    const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
     type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *write_delete_fn)(
     const type_bridge_write_transaction_t *,

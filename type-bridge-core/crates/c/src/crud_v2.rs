@@ -1,6 +1,7 @@
 //! Policy-aware C CRUD implementations.
 
 use crate::iid::TypeBridgeIid;
+use crate::projected_batch::TypeBridgeProjectedBatchResult;
 use std::{mem::size_of, ptr};
 
 use crate::abi::TypeBridgeStatus;
@@ -193,12 +194,12 @@ unsafe fn check_crud_inputs(
     preflight.check_object_kind(GENERATED_INPUT_CANCELLATION, cancellation.cast())
 }
 
-fn thing_output_preflight(
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+fn thing_output_preflight<T>(
+    out_thing: *mut *mut T,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> Result<DirectOutputPreflight, TypeBridgeStatus> {
     direct_output_preflight(&[
-        (out_thing.cast(), size_of::<*mut TypeBridgeProjectedThing>()),
+        (out_thing.cast(), size_of::<*mut T>()),
         (
             out_diagnostics.cast(),
             size_of::<*mut TypeBridgeExecutionDiagnostics>(),
@@ -237,7 +238,7 @@ unsafe fn create_impl(
     create: *const TypeBridgeProjectedCreate,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     let preflight = match thing_output_preflight(out_thing, out_diagnostics) {
@@ -311,7 +312,7 @@ unsafe fn update_impl(
     create: *const TypeBridgeProjectedCreate,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     let preflight = match thing_output_preflight(out_thing, out_diagnostics) {
@@ -551,7 +552,7 @@ macro_rules! define_database_create {
             create: *const TypeBridgeProjectedCreate,
             limits: *const TypeBridgeQueryExecutionLimitsV1,
             cancellation: *const TypeBridgeCancellation,
-            out_thing: *mut *mut TypeBridgeProjectedThing,
+            out_thing: *mut *mut TypeBridgeProjectedBatchResult,
             out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
         ) -> TypeBridgeStatus {
             // SAFETY: this exact-prototype implementation delegates complete preflight.
@@ -575,7 +576,7 @@ macro_rules! define_database_create {
             *const TypeBridgeProjectedCreate,
             *const TypeBridgeQueryExecutionLimitsV1,
             *const TypeBridgeCancellation,
-            *mut *mut TypeBridgeProjectedThing,
+            *mut *mut TypeBridgeProjectedBatchResult,
             *mut *mut TypeBridgeExecutionDiagnostics,
         ) -> TypeBridgeStatus = $name;
     };
@@ -590,7 +591,7 @@ macro_rules! define_write_transaction_create {
             create: *const TypeBridgeProjectedCreate,
             limits: *const TypeBridgeQueryExecutionLimitsV1,
             cancellation: *const TypeBridgeCancellation,
-            out_thing: *mut *mut TypeBridgeProjectedThing,
+            out_thing: *mut *mut TypeBridgeProjectedBatchResult,
             out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
         ) -> TypeBridgeStatus {
             // SAFETY: this exact-prototype implementation delegates complete preflight.
@@ -614,7 +615,7 @@ macro_rules! define_write_transaction_create {
             *const TypeBridgeProjectedCreate,
             *const TypeBridgeQueryExecutionLimitsV1,
             *const TypeBridgeCancellation,
-            *mut *mut TypeBridgeProjectedThing,
+            *mut *mut TypeBridgeProjectedBatchResult,
             *mut *mut TypeBridgeExecutionDiagnostics,
         ) -> TypeBridgeStatus = $name;
     };
@@ -630,7 +631,7 @@ macro_rules! define_update {
             create: *const TypeBridgeProjectedCreate,
             limits: *const TypeBridgeQueryExecutionLimitsV1,
             cancellation: *const TypeBridgeCancellation,
-            out_thing: *mut *mut TypeBridgeProjectedThing,
+            out_thing: *mut *mut TypeBridgeProjectedBatchResult,
             out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
         ) -> TypeBridgeStatus {
             // SAFETY: this exact-prototype implementation delegates complete preflight.
@@ -655,7 +656,7 @@ macro_rules! define_update {
             *const TypeBridgeProjectedCreate,
             *const TypeBridgeQueryExecutionLimitsV1,
             *const TypeBridgeCancellation,
-            *mut *mut TypeBridgeProjectedThing,
+            *mut *mut TypeBridgeProjectedBatchResult,
             *mut *mut TypeBridgeExecutionDiagnostics,
         ) -> TypeBridgeStatus = $name;
     };
@@ -973,9 +974,9 @@ mod tests {
     use super::*;
     use crate::allocation::{AllocationSite, inject_failure};
     use crate::entity_crud::tests::{
-        COMMIT_SUCCESS, FakeState, Response, close_diagnostics, close_thing, diagnostic, documents,
-        fixture, fixture_with_answer_ceiling, membership_document, person_document,
-        relation_fixture, relation_fixture_with_answer_ceiling,
+        COMMIT_SUCCESS, FakeState, Response, close_diagnostics, close_result, close_thing,
+        diagnostic, documents, fixture, fixture_with_answer_ceiling, membership_document,
+        person_document, relation_fixture, relation_fixture_with_answer_ceiling,
     };
     use crate::entity_crud::{
         type_bridge_database_entity_insert, type_bridge_write_transaction_entity_delete_by_iid,
@@ -994,7 +995,7 @@ mod tests {
         *const TypeBridgeProjectedCreate,
         *const TypeBridgeQueryExecutionLimitsV1,
         *const TypeBridgeCancellation,
-        *mut *mut TypeBridgeProjectedThing,
+        *mut *mut TypeBridgeProjectedBatchResult,
         *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
     type DatabaseGet = unsafe extern "C" fn(
@@ -1037,7 +1038,7 @@ mod tests {
         *const TypeBridgeProjectedCreate,
         *const TypeBridgeQueryExecutionLimitsV1,
         *const TypeBridgeCancellation,
-        *mut *mut TypeBridgeProjectedThing,
+        *mut *mut TypeBridgeProjectedBatchResult,
         *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
     type WriteGet = unsafe extern "C" fn(
@@ -1125,11 +1126,12 @@ mod tests {
         assert!(!thing.is_null());
         assert!(diagnostics.is_null());
         assert_eq!(
-            Arc::as_ptr(&unsafe { &*thing }.value).addr(),
+            Arc::as_ptr(unsafe { &*thing }.test_item()).addr(),
             crate::thing_crud::last_reserved_thing_storage_address(),
-            "publication must reuse the Arc storage reserved before dispatch"
+            "publication must reuse the Arc storage reserved before commit"
         );
-        close_thing(&mut thing);
+        close_result(&mut thing);
+        let mut thing = ptr::dangling_mut();
 
         // SAFETY: the IID view and all handles remain valid for this call.
         assert_eq!(
@@ -1272,7 +1274,8 @@ mod tests {
             },
             TypeBridgeStatus::Ok
         );
-        close_thing(&mut thing);
+        close_result(&mut thing);
+        let mut thing = ptr::dangling_mut();
         // SAFETY: the successful mutation left the borrowed transaction active.
         assert_eq!(
             unsafe {
@@ -1504,7 +1507,7 @@ mod tests {
 
         let allocation = fixture(vec![], COMMIT_SUCCESS);
         let limits = default_limits();
-        let failure = inject_failure(AllocationSite::ProjectedThingHandle, 0);
+        let failure = inject_failure(AllocationSite::CrudWriteResultHandle, 0);
         // SAFETY: all inputs remain live; the deterministic reservation fails pre-provider.
         assert_eq!(
             unsafe {
@@ -1525,9 +1528,12 @@ mod tests {
         assert_eq!(diagnostic(diagnostics).1, "c_allocation_exhausted");
         close_diagnostics(&mut diagnostics);
 
-        let storage_allocation = fixture(vec![], COMMIT_SUCCESS);
-        let failure = inject_failure(AllocationSite::ProjectedThingHandle, 1);
-        // SAFETY: the second matching checkpoint is the per-result Arc storage.
+        let storage_allocation = fixture(
+            vec![documents(vec![person_document("0x10")])],
+            COMMIT_SUCCESS,
+        );
+        let failure = inject_failure(AllocationSite::ProjectedBatchResultThingStorage, 0);
+        // SAFETY: complete roots reserve their Arc storage while the write is uncommitted.
         assert_eq!(
             unsafe {
                 type_bridge_database_entity_insert_v2_impl(
@@ -1544,7 +1550,12 @@ mod tests {
         );
         drop(failure);
         assert!(thing.is_null());
-        assert!(storage_allocation.state.opened_transactions().is_empty());
+        assert_eq!(storage_allocation.state.query_count(), 1);
+        assert_eq!(storage_allocation.state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(
+            storage_allocation.state.rollbacks.load(Ordering::Acquire),
+            1
+        );
         assert_eq!(diagnostic(diagnostics).1, "c_allocation_exhausted");
         close_diagnostics(&mut diagnostics);
 
@@ -1616,7 +1627,7 @@ mod tests {
         let default_limits = default_limits();
         let mut thing = ptr::dangling_mut();
         let mut diagnostics = ptr::dangling_mut();
-        let allocation = inject_failure(AllocationSite::ProjectedThingHandle, 0);
+        let allocation = inject_failure(AllocationSite::CrudWriteResultHandle, 0);
         crate::thing_crud::delay_next_controlled_crud_checkpoint(20);
         // SAFETY: the test retains every immutable input and both output slots.
         assert_eq!(
@@ -1668,7 +1679,7 @@ mod tests {
             unsafe { type_bridge_cancellation_request(cancellation) },
             TypeBridgeStatus::Ok
         );
-        let allocation = inject_failure(AllocationSite::ProjectedThingHandle, 0);
+        let allocation = inject_failure(AllocationSite::CrudWriteResultHandle, 0);
         // SAFETY: the requested cancellation and fixture handles remain live.
         assert_eq!(
             unsafe {
@@ -1735,7 +1746,7 @@ mod tests {
                     &*fixture.create,
                     &limits,
                     ptr::null(),
-                    forged_thing,
+                    forged_thing.cast(),
                     &mut diagnostics,
                 )
             },
@@ -1868,7 +1879,7 @@ mod tests {
                     &*fixture.create,
                     &limits,
                     ptr::null(),
-                    forged_thing,
+                    forged_thing.cast(),
                     &mut diagnostics,
                 )
             },
@@ -1923,7 +1934,7 @@ mod tests {
                     &database.token,
                     &*database.create,
                     ptr::null(),
-                    forged_thing,
+                    forged_thing.cast(),
                     &mut diagnostics,
                 )
             },
@@ -2133,7 +2144,7 @@ mod tests {
         assert!(diagnostics.is_null());
         assert_eq!(legacy.state.query_count(), 1);
         assert_eq!(legacy.state.commits.load(Ordering::Acquire), 1);
-        close_thing(&mut thing);
+        close_result(&mut thing);
         // SAFETY: close consumes the cancellation owner slot.
         assert_eq!(
             unsafe { type_bridge_cancellation_close(&mut cancellation) },

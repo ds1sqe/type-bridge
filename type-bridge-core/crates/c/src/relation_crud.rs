@@ -3,6 +3,7 @@
 use crate::abi::TypeBridgeStatus;
 use crate::execution_diagnostic::TypeBridgeExecutionDiagnostics;
 use crate::iid::TypeBridgeIid;
+use crate::projected_batch::TypeBridgeProjectedBatchResult;
 use crate::projected_model::{TypeBridgeProjectedCreate, TypeBridgeProjectedThing};
 use crate::projected_token::TypeBridgeProjectedTokenV1;
 use crate::runtime::{
@@ -24,7 +25,7 @@ pub unsafe extern "C" fn type_bridge_database_relation_insert(
     model: *const TypeBridgeProjectedTokenV1,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
@@ -68,7 +69,7 @@ pub unsafe extern "C" fn type_bridge_database_relation_put(
     model: *const TypeBridgeProjectedTokenV1,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
@@ -155,7 +156,7 @@ pub unsafe extern "C" fn type_bridge_database_relation_update(
     iid: *const TypeBridgeIid,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
@@ -390,7 +391,7 @@ macro_rules! write_transaction_create_operation {
             model: *const TypeBridgeProjectedTokenV1,
             create: *const TypeBridgeProjectedCreate,
             cancellation: *const TypeBridgeCancellation,
-            out_thing: *mut *mut TypeBridgeProjectedThing,
+            out_thing: *mut *mut TypeBridgeProjectedBatchResult,
             out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
         ) -> TypeBridgeStatus {
             // SAFETY: all caller input ranges are described before any output write.
@@ -441,7 +442,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_relation_update(
     iid: *const TypeBridgeIid,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.

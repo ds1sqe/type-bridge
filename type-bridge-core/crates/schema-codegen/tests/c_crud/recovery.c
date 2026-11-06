@@ -207,19 +207,19 @@ type_bridge_status_t type_bridge_database_entity_insert_v2(
     const type_bridge_projected_create_t *create,
     const type_bridge_query_execution_limits_v1_t *limits,
     const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_thing_t **out_thing,
+    type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   ++crud_calls;
-  crud_generic_output_slot = out_thing;
+  crud_generic_output_slot = out_result;
   STUB_CHECK(database == DATABASE);
   STUB_CHECK(model == &@MODEL_TOKEN@);
   STUB_CHECK(create == GENERIC_CREATE);
   STUB_CHECK(limits != NULL);
   STUB_CHECK(cancellation == CANCELLATION);
-  STUB_CHECK(out_thing != NULL && *out_thing == NULL);
+  STUB_CHECK(out_result != NULL && *out_result == NULL);
   STUB_CHECK(out_diagnostics != NULL && *out_diagnostics == NULL);
   if (crud_status == TYPE_BRIDGE_STATUS_OK) {
-    *out_thing = THING;
+    *out_result = RESULT;
   } else {
     *out_diagnostics = DIAGNOSTICS;
   }
@@ -577,12 +577,12 @@ int main(void) {
 
   reset_probe();
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
-  thing = ALTERNATE(acme_v3_keyed);
+  result = ALTERNATE(acme_v3_keyed_insert_batch_result);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
   status = acme_v3_keyed_database_insert_v2(
-      DATABASE, CREATE, &limits, CANCELLATION, &thing, &diagnostics);
+      DATABASE, CREATE, &limits, CANCELLATION, &result, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
-  CHECK(thing == ALTERNATE(acme_v3_keyed));
+  CHECK(result == ALTERNATE(acme_v3_keyed_insert_batch_result));
   CHECK(diagnostics == ALTERNATE(type_bridge_execution_diagnostics_t));
   CHECK(crud_calls == 0u && preflight_calls == 1u && stub_error == 0);
   CHECK(preflight_records[0].input_count == 5u);
@@ -593,17 +593,17 @@ int main(void) {
   CHECK_INPUT(0, 3, TYPE_BRIDGE_GENERATED_INPUT_BYTES, &limits, sizeof(limits));
   CHECK_INPUT(0, 4, TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION, CANCELLATION, 1u);
   CHECK(preflight_records[0].output_count == 2u);
-  CHECK_OUTPUT(0, 0, &thing, sizeof(thing));
+  CHECK_OUTPUT(0, 0, &result, sizeof(result));
   CHECK_OUTPUT(0, 1, &diagnostics, sizeof(diagnostics));
 
   reset_probe();
-  thing = ALTERNATE(acme_v3_keyed);
+  result = ALTERNATE(acme_v3_keyed_insert_batch_result);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
   status = acme_v3_keyed_database_insert_v2(
-      DATABASE, CREATE, &limits, CANCELLATION, &thing, &diagnostics);
-  CHECK(status == TYPE_BRIDGE_STATUS_OK && thing == NOMINAL_THING);
+      DATABASE, CREATE, &limits, CANCELLATION, &result, &diagnostics);
+  CHECK(status == TYPE_BRIDGE_STATUS_OK && result == NOMINAL_RESULT);
   CHECK(diagnostics == NULL && crud_calls == 1u && stub_error == 0);
-  CHECK(crud_generic_output_slot != (void *)&thing);
+  CHECK(crud_generic_output_slot != (void *)&result);
 
   reset_probe();
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;

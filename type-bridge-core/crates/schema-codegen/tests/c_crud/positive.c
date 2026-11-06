@@ -3,7 +3,7 @@
 static type_bridge_status_t (*const keyed_insert_v2)(
     const type_bridge_database_t *, const acme_v3_keyed_create *,
     const type_bridge_query_execution_limits_v1_t *,
-    const type_bridge_cancellation_t *, acme_v3_keyed **,
+    const type_bridge_cancellation_t *, acme_v3_keyed_insert_batch_result **,
     type_bridge_execution_diagnostics_t **) = acme_v3_keyed_database_insert_v2;
 static type_bridge_status_t (*const keyed_add)(
     acme_v3_keyed_insert_batch_builder *, const acme_v3_keyed_create *,

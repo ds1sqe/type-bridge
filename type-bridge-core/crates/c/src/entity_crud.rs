@@ -3,6 +3,7 @@
 use crate::abi::TypeBridgeStatus;
 use crate::execution_diagnostic::TypeBridgeExecutionDiagnostics;
 use crate::iid::TypeBridgeIid;
+use crate::projected_batch::TypeBridgeProjectedBatchResult;
 use crate::projected_model::{TypeBridgeProjectedCreate, TypeBridgeProjectedThing};
 use crate::projected_token::TypeBridgeProjectedTokenV1;
 use crate::runtime::{
@@ -24,7 +25,7 @@ pub unsafe extern "C" fn type_bridge_database_entity_insert(
     model: *const TypeBridgeProjectedTokenV1,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
@@ -727,6 +728,17 @@ functions:
         assert!(diagnostics.is_null());
     }
 
+    pub(crate) fn close_result(result: &mut *mut TypeBridgeProjectedBatchResult) {
+        // SAFETY: fixture uniquely owns this result slot.
+        assert_eq!(
+            unsafe {
+                crate::projected_batch::type_bridge_projected_batch_result_close_impl(result)
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert!(result.is_null());
+    }
+
     pub(crate) fn close_thing(thing: &mut *mut TypeBridgeProjectedThing) {
         assert_eq!(
             // SAFETY: the slot owns either null or one thing handle.
@@ -830,23 +842,23 @@ functions:
         assert!(!thing.is_null());
         assert!(diagnostics.is_null());
         // SAFETY: success returned one live projected thing.
-        assert_eq!(unsafe { &*thing }.value.iid(), "0x10");
+        assert_eq!(unsafe { &*thing }.test_item().iid(), "0x10");
         assert_eq!(*fixture.state.opens.lock().unwrap(), [TxType::Write]);
         assert_eq!(fixture.state.query_count(), 1);
         assert_eq!(fixture.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(fixture.state.rollbacks.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_result(&mut thing);
     }
 
     #[test]
-    fn projected_thing_reservation_failure_is_pre_provider_and_retry_safe() {
+    fn write_result_reservation_failure_is_pre_provider_and_retry_safe() {
         let fixture = fixture(
             vec![documents(vec![person_document("0x10")])],
             COMMIT_SUCCESS,
         );
         let mut thing = ptr::dangling_mut();
         let mut diagnostics = ptr::dangling_mut();
-        let failure = inject_failure(AllocationSite::ProjectedThingHandle, 0);
+        let failure = inject_failure(AllocationSite::CrudWriteResultHandle, 0);
         assert_eq!(
             // SAFETY: the fixture retains all inputs and owns both output slots.
             unsafe {
@@ -887,11 +899,11 @@ functions:
         assert_eq!(fixture.state.query_count(), 1);
         assert_eq!(fixture.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(fixture.state.rollbacks.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_result(&mut thing);
     }
 
     #[test]
-    fn borrowed_thing_reservation_failure_leaves_transaction_live_and_unpoisoned() {
+    fn borrowed_result_reservation_failure_leaves_transaction_live_and_unpoisoned() {
         let fixture = fixture(
             vec![documents(vec![person_document("0x10")])],
             COMMIT_SUCCESS,
@@ -911,7 +923,7 @@ functions:
             TypeBridgeStatus::Ok
         );
         let mut thing = ptr::dangling_mut();
-        let failure = inject_failure(AllocationSite::ProjectedThingHandle, 0);
+        let failure = inject_failure(AllocationSite::CrudWriteResultHandle, 0);
         assert_eq!(
             // SAFETY: transaction and create remain live for this borrowed call.
             unsafe {
@@ -948,7 +960,7 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        close_thing(&mut thing);
+        close_result(&mut thing);
         assert_eq!(
             // SAFETY: rollback proves the borrowed transaction owner remains live.
             unsafe {
@@ -1171,7 +1183,7 @@ functions:
         assert!(!thing.is_null());
         assert_eq!(fixture.state.commits.load(Ordering::Acquire), 0);
         assert_eq!(fixture.state.rollbacks.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
         let mut count = 0;
         assert_eq!(
@@ -1429,6 +1441,7 @@ functions:
         assert!(fixture.state.opens.lock().unwrap().is_empty());
         assert_eq!(fixture.state.query_count(), 0);
 
+        let mut thing = ptr::dangling_mut();
         let mut forged = fixture.token;
         forged.projection_digest[0] ^= 0xff;
         assert_eq!(
@@ -1542,7 +1555,7 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
-                    create_output,
+                    create_output.cast(),
                     &mut untouched_diagnostics,
                 )
             },
@@ -1755,7 +1768,7 @@ functions:
         // The put matches exactly the declared type, as the released lookup did.
         assert!(put_fixture.state.queries.lock().unwrap()[0].contains("put $thing0 isa! person"));
         assert_eq!(put_fixture.state.commits.load(Ordering::Acquire), 1);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
         let update_fixture = fixture(
             vec![documents(vec![person_document("0x20")])],
@@ -1778,8 +1791,9 @@ functions:
         );
         assert_eq!(update_fixture.state.query_count(), 1);
         assert_eq!(update_fixture.state.commits.load(Ordering::Acquire), 1);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
+        let mut read_thing = ptr::dangling_mut();
         let read_fixture = fixture(
             vec![documents(vec![person_document("0x20")])],
             COMMIT_SUCCESS,
@@ -1805,14 +1819,14 @@ functions:
                     &read_fixture.token,
                     &TypeBridgeIid::new("0x20").unwrap(),
                     ptr::null(),
-                    &mut thing,
+                    &mut read_thing,
                     &mut diagnostics,
                 )
             },
             TypeBridgeStatus::Ok
         );
         assert_eq!(read_fixture.state.closes.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_thing(&mut read_thing);
         assert_eq!(
             // SAFETY: the owner slot contains the still-live read transaction.
             unsafe { type_bridge_read_transaction_close(&mut read, &mut diagnostics) },
@@ -1856,7 +1870,7 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        close_thing(&mut thing);
+        close_result(&mut thing);
         assert_eq!(
             // SAFETY: the borrowed write handle remains live after put.
             unsafe {
@@ -1865,13 +1879,13 @@ functions:
                     &write_fixture.token,
                     &TypeBridgeIid::new("0x30").unwrap(),
                     ptr::null(),
-                    &mut thing,
+                    &mut read_thing,
                     &mut diagnostics,
                 )
             },
             TypeBridgeStatus::Ok
         );
-        close_thing(&mut thing);
+        close_thing(&mut read_thing);
         assert_eq!(
             // SAFETY: the borrowed write handle remains live after get.
             unsafe {
@@ -1887,7 +1901,7 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        close_thing(&mut thing);
+        close_result(&mut thing);
         assert_eq!(
             // SAFETY: blind delete borrows but does not terminal the write handle.
             unsafe {
@@ -1934,11 +1948,11 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(unsafe { &*thing }.value.iid(), "0x20");
+        assert_eq!(unsafe { &*thing }.test_item().iid(), "0x20");
         assert_eq!(insert.state.query_count(), 1);
         assert_eq!(insert.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(insert.state.rollbacks.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
         let put = relation_fixture(
             vec![documents(vec![membership_document("0x21")])],
@@ -1958,10 +1972,10 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(unsafe { &*thing }.value.iid(), "0x21");
+        assert_eq!(unsafe { &*thing }.test_item().iid(), "0x21");
         assert_eq!(put.state.query_count(), 1);
         assert_eq!(put.state.commits.load(Ordering::Acquire), 1);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
         let update = relation_fixture(
             vec![documents(vec![membership_document("0x22")])],
@@ -1982,11 +1996,11 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(unsafe { &*thing }.value.iid(), "0x22");
+        assert_eq!(unsafe { &*thing }.test_item().iid(), "0x22");
         assert_eq!(update.state.query_count(), 1);
         assert_eq!(update.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(update.state.rollbacks.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_result(&mut thing);
     }
 
     #[test]
@@ -2120,6 +2134,7 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
+        let mut result = ptr::dangling_mut();
         for status in [
             unsafe {
                 type_bridge_write_transaction_relation_insert(
@@ -2127,25 +2142,25 @@ functions:
                     &write_fixture.token,
                     &*write_fixture.create,
                     ptr::null(),
-                    &mut thing,
+                    &mut result,
                     &mut diagnostics,
                 )
             },
             {
-                close_thing(&mut thing);
+                close_result(&mut result);
                 unsafe {
                     type_bridge_write_transaction_relation_put(
                         write,
                         &write_fixture.token,
                         &*write_fixture.create,
                         ptr::null(),
-                        &mut thing,
+                        &mut result,
                         &mut diagnostics,
                     )
                 }
             },
             {
-                close_thing(&mut thing);
+                close_result(&mut result);
                 unsafe {
                     type_bridge_write_transaction_relation_get_by_iid(
                         write,
@@ -2166,7 +2181,7 @@ functions:
                         &TypeBridgeIid::new("0x31").unwrap(),
                         &*write_fixture.create,
                         ptr::null(),
-                        &mut thing,
+                        &mut result,
                         &mut diagnostics,
                     )
                 }
@@ -2174,7 +2189,7 @@ functions:
         ] {
             assert_eq!(status, TypeBridgeStatus::Ok);
         }
-        close_thing(&mut thing);
+        close_result(&mut result);
         assert_eq!(
             unsafe {
                 type_bridge_write_transaction_relation_delete_by_iid(
@@ -2211,7 +2226,7 @@ functions:
     }
 
     #[test]
-    fn relation_player_resolution_is_exact_and_ambiguous_hydration_rolls_back() {
+    fn relation_player_resolution_preserves_complete_write_roots() {
         let fixture = relation_fixture(
             vec![documents(vec![membership_with_relation_player_document(
                 "0x20",
@@ -2235,9 +2250,9 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(unsafe { &*thing }.value.iid(), "0x20");
+        assert_eq!(unsafe { &*thing }.test_item().iid(), "0x20");
         let role = RoleId::new("membership", "member").unwrap();
-        let player = &unsafe { &*thing }.value.roles()[&role][0];
+        let player = &unsafe { &*thing }.test_item().roles()[&role][0];
         assert_eq!(player.reference().type_id().kind(), TypeKind::Relation);
         let queries = fixture.state.queries.lock().unwrap();
         // The relation-as-player reference resolves inside the write.
@@ -2246,38 +2261,91 @@ functions:
         assert!(queries[0].contains("$player1 iid 0x11"));
         assert!(!queries[0].contains("$player1 isa event"));
         drop(queries);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
-        let ambiguous = relation_fixture(
-            vec![documents(vec![
-                membership_document("0x20"),
-                membership_document("0x21"),
-            ])],
-            COMMIT_SUCCESS,
-        );
-        assert_eq!(
-            // SAFETY: all immutable handles and writable output slots remain live.
-            unsafe {
-                type_bridge_database_relation_insert(
-                    &*ambiguous.database,
-                    &ambiguous.token,
-                    &*ambiguous.create,
-                    ptr::null(),
-                    &mut thing,
-                    &mut diagnostics,
-                )
-            },
-            TypeBridgeStatus::ExecutionFailed
-        );
-        assert!(thing.is_null());
-        // Two relations in the write's own answer mean the write made two.
-        assert_eq!(
-            diagnostic(diagnostics).1,
-            "provider_identity_cardinality_invalid"
-        );
-        assert_eq!(ambiguous.state.commits.load(Ordering::Acquire), 0);
-        assert_eq!(ambiguous.state.rollbacks.load(Ordering::Acquire), 1);
-        close_diagnostics(&mut diagnostics);
+        for expected_count in 0..=2 {
+            let ambiguous = relation_fixture(
+                vec![documents(
+                    ["0x20", "0x21"]
+                        .iter()
+                        .take(expected_count)
+                        .map(|iid| membership_document(iid))
+                        .collect(),
+                )],
+                COMMIT_SUCCESS,
+            );
+            assert_eq!(
+                // SAFETY: all immutable handles and writable output slots remain live.
+                unsafe {
+                    type_bridge_database_relation_insert(
+                        &*ambiguous.database,
+                        &ambiguous.token,
+                        &*ambiguous.create,
+                        ptr::null(),
+                        &mut thing,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert!(!thing.is_null());
+            assert!(diagnostics.is_null());
+            // Non-key role resolution can write multiple roots; retain both in order.
+            let mut count = usize::MAX;
+            // SAFETY: result, nominal token and disjoint output slots remain live.
+            assert_eq!(
+                unsafe {
+                    crate::projected_batch::type_bridge_projected_batch_result_count_impl(
+                        thing,
+                        &ambiguous.token,
+                        1,
+                        &mut count,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(count, expected_count);
+            let mut item = ptr::dangling_mut();
+            assert_eq!(
+                unsafe {
+                    crate::projected_batch::type_bridge_projected_batch_result_item_impl(
+                        thing,
+                        &ambiguous.token,
+                        1,
+                        &mut item,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            if expected_count == 1 {
+                assert_eq!(unsafe { &*item }.value.iid(), "0x20");
+                close_thing(&mut item);
+            } else {
+                assert!(item.is_null());
+            }
+            for (index, expected) in ["0x20", "0x21"].iter().take(expected_count).enumerate() {
+                assert_eq!(
+                    unsafe {
+                        crate::projected_batch::type_bridge_projected_batch_result_thing_at_impl(
+                            thing,
+                            &ambiguous.token,
+                            1,
+                            index,
+                            &mut item,
+                            &mut diagnostics,
+                        )
+                    },
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(unsafe { &*item }.value.iid(), *expected);
+                close_thing(&mut item);
+            }
+            assert_eq!(ambiguous.state.commits.load(Ordering::Acquire), 1);
+            assert_eq!(ambiguous.state.rollbacks.load(Ordering::Acquire), 0);
+            close_result(&mut thing);
+        }
     }
 
     #[test]
@@ -2366,6 +2434,7 @@ functions:
                 "target",
             ),
         ));
+        let mut thing = ptr::dangling_mut();
         macro_rules! assert_origin_rejected {
             ($status:expr) => {{
                 let status = $status;
@@ -2757,6 +2826,7 @@ functions:
         assert_eq!(diagnostic(diagnostics).1, "c_relation_model_kind_invalid");
         close_diagnostics(&mut diagnostics);
 
+        let mut thing = ptr::dangling_mut();
         let mut forged = fixture.token;
         forged.projection_digest[0] ^= 0xff;
         assert_eq!(
@@ -2835,7 +2905,7 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
-                    create_output,
+                    create_output.cast(),
                     &mut untouched,
                 )
             },
@@ -2964,7 +3034,7 @@ pub unsafe extern "C" fn type_bridge_database_entity_put(
     model: *const TypeBridgeProjectedTokenV1,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
@@ -3051,7 +3121,7 @@ pub unsafe extern "C" fn type_bridge_database_entity_update(
     iid: *const TypeBridgeIid,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
@@ -3286,7 +3356,7 @@ macro_rules! write_transaction_create_operation {
             model: *const TypeBridgeProjectedTokenV1,
             create: *const TypeBridgeProjectedCreate,
             cancellation: *const TypeBridgeCancellation,
-            out_thing: *mut *mut TypeBridgeProjectedThing,
+            out_thing: *mut *mut TypeBridgeProjectedBatchResult,
             out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
         ) -> TypeBridgeStatus {
             // SAFETY: all caller input ranges are described before any output write.
@@ -3337,7 +3407,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_entity_update(
     iid: *const TypeBridgeIid,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.

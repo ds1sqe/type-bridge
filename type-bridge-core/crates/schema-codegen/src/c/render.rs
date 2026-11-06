@@ -165,6 +165,11 @@ fn render_header(
         render_canonical_codec_declarations(&mut output, projection)?;
     }
     render_generated_helpers(&mut output, prefix)?;
+    for model in projection.models().values() {
+        for operation in extra_single_write_results(model, ordered) {
+            render_model_write_result_accessors(&mut output, projection, model, prefix, operation)?;
+        }
+    }
     if ordered {
         render_successor_model_api(&mut output, projection, prefix)?;
     }
@@ -261,6 +266,11 @@ fn projected_nominal_names(
                     insert(&name)?;
                 }
             }
+        }
+    }
+    for model in projection.models().values() {
+        for operation in extra_single_write_results(model, ordered) {
+            insert(&successor_batch_type_names(model, operation)?[2])?;
         }
     }
     Ok(names)
@@ -1296,6 +1306,16 @@ fn validate_generated_symbols(
             }
         }
     }
+    for model in projection.models().values() {
+        for operation in extra_single_write_results(model, ordered) {
+            for symbol in successor_batch_function_names(model, operation)?
+                .into_iter()
+                .skip(7)
+            {
+                insert(symbol)?;
+            }
+        }
+    }
     Ok(symbols)
 }
 
@@ -1938,6 +1958,22 @@ fn successor_batch_operations(model: &ModelProjection) -> Vec<SuccessorBatchOper
         .collect()
 }
 
+fn extra_single_write_results(
+    model: &ModelProjection,
+    ordered: bool,
+) -> Vec<SuccessorBatchOperation> {
+    if model.create().target_name().is_none() {
+        return Vec::new();
+    }
+    if !ordered {
+        return SUCCESSOR_BATCH_OPERATIONS[..3].to_vec();
+    }
+    if !model_has_reference_key(model) {
+        return vec![SUCCESSOR_BATCH_OPERATIONS[1]];
+    }
+    Vec::new()
+}
+
 fn successor_batch_type_names(
     model: &ModelProjection,
     operation: SuccessorBatchOperation,
@@ -2068,6 +2104,7 @@ fn render_successor_model_crud(
                 if operation == "put" && !model_has_reference_key(model) {
                     continue;
                 }
+                let write_result = generated_symbol(target, &format!("{operation}_batch_result"))?;
                 let symbol = entity_crud_symbol(model, &format!("{scope}_{operation}_v2"))?;
                 let runtime = format!("type_bridge_{scope}_{kind}_{operation}_v2");
                 let _ = write!(
@@ -2076,9 +2113,9 @@ fn render_successor_model_crud(
                        const {owner} *owner, const {create} *create,\n\
                        const type_bridge_query_execution_limits_v1_t *limits,\n\
                        const type_bridge_cancellation_t *cancellation,\n\
-                       {target} **out_entity,\n\
+                       {write_result} **out_entity,\n\
                        type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-                       type_bridge_projected_thing_t *generic_entity = NULL;\n\
+                       type_bridge_projected_batch_result_t *generic_entity = NULL;\n\
                        type_bridge_generated_opaque_input_v1_t alias_inputs[5];\n\
                        size_t alias_input_count = 0u;\n\
                        type_bridge_status_t status;\n\
@@ -2105,7 +2142,7 @@ fn render_successor_model_crud(
                            (const type_bridge_projected_create_t *)create, limits, cancellation,\n\
                            &generic_entity, out_diagnostics);\n\
                        if (status == TYPE_BRIDGE_STATUS_OK) {{\n\
-                         *out_entity = ({target} *)generic_entity;\n\
+                         *out_entity = ({write_result} *)generic_entity;\n\
                        }}\n\
                        return status;\n\
                      }}\n"
@@ -2156,6 +2193,7 @@ fn render_successor_model_crud(
         );
 
         if scope != "read_transaction" {
+            let write_result = generated_symbol(target, "update_batch_result")?;
             let update = entity_crud_symbol(model, &format!("{scope}_update_v2"))?;
             let runtime_update = format!("type_bridge_{scope}_{kind}_update_v2");
             let _ = write!(
@@ -2165,9 +2203,9 @@ fn render_successor_model_crud(
                    const {create} *replacement,\n\
                    const type_bridge_query_execution_limits_v1_t *limits,\n\
                    const type_bridge_cancellation_t *cancellation,\n\
-                   {target} **out_entity,\n\
+                   {write_result} **out_entity,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-                   type_bridge_projected_thing_t *generic_entity = NULL;\n\
+                   type_bridge_projected_batch_result_t *generic_entity = NULL;\n\
                    type_bridge_generated_opaque_input_v1_t alias_inputs[6];\n\
                    size_t alias_input_count = 0u;\n\
                    type_bridge_status_t status;\n\
@@ -2196,7 +2234,7 @@ fn render_successor_model_crud(
                        (const type_bridge_projected_create_t *)replacement, limits, cancellation,\n\
                        &generic_entity, out_diagnostics);\n\
                    if (status == TYPE_BRIDGE_STATUS_OK) {{\n\
-                     *out_entity = ({target} *)generic_entity;\n\
+                     *out_entity = ({write_result} *)generic_entity;\n\
                    }}\n\
                    return status;\n\
                  }}\n"
@@ -2291,17 +2329,7 @@ fn render_successor_model_batch(
     let batch_close = function.next().expect("batch close symbol exists");
     let database_execute = function.next().expect("database execute symbol exists");
     let transaction_execute = function.next().expect("transaction execute symbol exists");
-    let count = function.next().expect("batch result count symbol exists");
-    let thing_at = operation
-        .has_thing_result
-        .then(|| function.next().expect("batch result thing symbol exists"));
-    let item = operation
-        .has_thing_result
-        .then(|| function.next().expect("batch result item symbol exists"));
-    let result_close = function.next().expect("batch result close symbol exists");
-    debug_assert!(function.next().is_none());
     let model_token = model_token_symbol(projection, prefix, model.id())?;
-    let target = model.target_name().as_str();
     let create = model
         .create()
         .target_name()
@@ -2561,6 +2589,31 @@ fn render_successor_model_batch(
         );
     }
 
+    render_model_write_result_accessors(output, projection, model, prefix, operation)
+}
+
+fn render_model_write_result_accessors(
+    output: &mut String,
+    projection: &RuntimeProjection,
+    model: &ModelProjection,
+    prefix: &str,
+    operation: SuccessorBatchOperation,
+) -> Result<(), Diagnostic> {
+    let [_, _, result] = successor_batch_type_names(model, operation)?;
+    let functions = successor_batch_function_names(model, operation)?;
+    let mut function = functions.iter().skip(7);
+    let count = function.next().expect("batch result count symbol exists");
+    let thing_at = operation
+        .has_thing_result
+        .then(|| function.next().expect("batch result thing symbol exists"));
+    let item = operation
+        .has_thing_result
+        .then(|| function.next().expect("batch result item symbol exists"));
+    let result_close = function.next().expect("batch result close symbol exists");
+    debug_assert!(function.next().is_none());
+    let model_token = model_token_symbol(projection, prefix, model.id())?;
+    let target = model.target_name().as_str();
+    let [add_input, preflight] = generated_alias_helper_symbols(prefix)?;
     let _ = write!(
         output,
         "static inline type_bridge_status_t TYPE_BRIDGE_CALL {count}(\n\
@@ -3487,6 +3540,7 @@ fn render_model_crud_declarations(
     ] {
         if scope != "read_transaction" {
             for operation in ["insert", "put"] {
+                let write_result = generated_symbol(target, &format!("{operation}_batch_result"))?;
                 let symbol = entity_crud_symbol(model, &format!("{scope}_{operation}"))?;
                 let _ = write!(
                     output,
@@ -3494,7 +3548,7 @@ fn render_model_crud_declarations(
                            const {owner} *owner,\n\
                            const {create} *create,\n\
                            const type_bridge_cancellation_t *cancellation,\n\
-                           {target} **out_entity,\n\
+                           {write_result} **out_entity,\n\
                            type_bridge_execution_diagnostics_t **out_diagnostics);\n",
                     create = create.as_str(),
                 );
@@ -3510,6 +3564,7 @@ fn render_model_crud_declarations(
                type_bridge_execution_diagnostics_t **out_diagnostics);\n"
         );
         if scope != "read_transaction" {
+            let write_result = generated_symbol(target, "update_batch_result")?;
             let update = entity_crud_symbol(model, &format!("{scope}_update"))?;
             let _ = write!(
                 output,
@@ -3517,7 +3572,7 @@ fn render_model_crud_declarations(
                        const {owner} *owner, const type_bridge_iid_t *iid,\n\
                        const {create} *create,\n\
                        const type_bridge_cancellation_t *cancellation,\n\
-                       {target} **out_entity,\n\
+                       {write_result} **out_entity,\n\
                        type_bridge_execution_diagnostics_t **out_diagnostics);\n",
                 create = create.as_str(),
             );
@@ -4588,6 +4643,7 @@ fn render_model_crud_definitions(
         };
         if scope != "read_transaction" {
             for operation in ["insert", "put"] {
+                let write_result = generated_symbol(target, &format!("{operation}_batch_result"))?;
                 let symbol = entity_crud_symbol(model, &format!("{scope}_{operation}"))?;
                 let runtime = format!("type_bridge_{scope}_{kind}_{operation}");
                 let _ = write!(
@@ -4596,9 +4652,9 @@ fn render_model_crud_definitions(
                        const {owner} *owner,\n\
                        const {create} *create,\n\
                        const type_bridge_cancellation_t *cancellation,\n\
-                       {target} **out_entity,\n\
+                       {write_result} **out_entity,\n\
                        type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-                       type_bridge_projected_thing_t *generic_entity = NULL;\n\
+                       type_bridge_projected_batch_result_t *generic_entity = NULL;\n\
                        type_bridge_generated_opaque_input_v1_t alias_inputs[4];\n\
                        size_t alias_input_count = 0u;\n\
                        type_bridge_status_t status;\n\
@@ -4623,7 +4679,7 @@ fn render_model_crud_definitions(
                            (const type_bridge_projected_create_t *)create, cancellation,\n\
                            &generic_entity, out_diagnostics);\n\
                        if (status == TYPE_BRIDGE_STATUS_OK) {{\n\
-                         *out_entity = ({target} *)generic_entity;\n\
+                         *out_entity = ({write_result} *)generic_entity;\n\
                        }}\n\
                        return status;\n\
                      }}\n\n",
@@ -4672,6 +4728,7 @@ fn render_model_crud_definitions(
         );
 
         if scope != "read_transaction" {
+            let write_result = generated_symbol(target, "update_batch_result")?;
             let update = entity_crud_symbol(model, &format!("{scope}_update"))?;
             let runtime_update = format!("type_bridge_{scope}_{kind}_update");
             let _ = write!(
@@ -4680,9 +4737,9 @@ fn render_model_crud_definitions(
                    const {owner} *owner, const type_bridge_iid_t *iid,\n\
                    const {create} *create,\n\
                    const type_bridge_cancellation_t *cancellation,\n\
-                   {target} **out_entity,\n\
+                   {write_result} **out_entity,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-                   type_bridge_projected_thing_t *generic_entity = NULL;\n\
+                   type_bridge_projected_batch_result_t *generic_entity = NULL;\n\
                    type_bridge_generated_opaque_input_v1_t alias_inputs[5];\n\
                    size_t alias_input_count = 0u;\n\
                    type_bridge_status_t status;\n\
@@ -4709,7 +4766,7 @@ fn render_model_crud_definitions(
                        (const type_bridge_projected_create_t *)create, cancellation,\n\
                        &generic_entity, out_diagnostics);\n\
                    if (status == TYPE_BRIDGE_STATUS_OK) {{\n\
-                     *out_entity = ({target} *)generic_entity;\n\
+                     *out_entity = ({write_result} *)generic_entity;\n\
                    }}\n\
                    return status;\n\
                  }}\n\n",

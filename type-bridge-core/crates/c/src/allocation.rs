@@ -13,6 +13,7 @@ pub(crate) enum AllocationSite {
     RawTransactionHandle,
     RawResultHandle,
     IidHandle,
+    CrudWriteResultHandle,
     ProjectedValueHandle,
     PlanViewStorage,
     PlanRowsResultHandle,

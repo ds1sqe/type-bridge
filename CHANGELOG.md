@@ -93,6 +93,13 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- C database and write-transaction entity/relation `insert`, `put`, and
+  `update` functions (including `_v2` forms) return an owned projected result
+  instead of one thing. Use `count`, `thing_at`, and optional `item`, then
+  close the result. Generated wrappers expose operation-specific result types.
+  Zero or multiple roots no longer cause a binding cardinality refusal;
+  complete result storage is prepared before commit.
+
 - Canonical manager filter reads accept borrowed read or write transactions
   across SDKs, preserving read-after-write; borrowed schema targets remain
   refused and transaction ownership is unchanged.

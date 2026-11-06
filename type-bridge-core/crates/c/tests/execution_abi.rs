@@ -177,13 +177,13 @@ void type_bridge_function_type_probe(void) {
   type_bridge_status_t (*database_entity_insert)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_entity_insert;
   type_bridge_status_t (*database_entity_put)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) = &type_bridge_database_entity_put;
   type_bridge_status_t (*database_entity_get)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
@@ -195,7 +195,7 @@ void type_bridge_function_type_probe(void) {
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
       const type_bridge_iid_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) = &type_bridge_database_entity_update;
   type_bridge_status_t (*database_entity_delete)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
@@ -222,14 +222,14 @@ void type_bridge_function_type_probe(void) {
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_entity_insert;
   type_bridge_status_t (*write_entity_put)(
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_entity_put;
   type_bridge_status_t (*write_entity_get)(
@@ -242,7 +242,7 @@ void type_bridge_function_type_probe(void) {
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *, const type_bridge_iid_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_entity_update;
   type_bridge_status_t (*write_entity_delete)(
@@ -260,13 +260,13 @@ void type_bridge_function_type_probe(void) {
   type_bridge_status_t (*database_relation_insert)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_relation_insert;
   type_bridge_status_t (*database_relation_put)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_relation_put;
   type_bridge_status_t (*database_relation_get)(
@@ -278,7 +278,7 @@ void type_bridge_function_type_probe(void) {
   type_bridge_status_t (*database_relation_update)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
       const type_bridge_iid_t *, const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_relation_update;
   type_bridge_status_t (*database_relation_delete)(
@@ -307,14 +307,14 @@ void type_bridge_function_type_probe(void) {
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_relation_insert;
   type_bridge_status_t (*write_relation_put)(
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_relation_put;
   type_bridge_status_t (*write_relation_get)(
@@ -327,7 +327,7 @@ void type_bridge_function_type_probe(void) {
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *, const type_bridge_iid_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_relation_update;
   type_bridge_status_t (*write_relation_delete)(

@@ -9,8 +9,7 @@ use std::sync::Arc;
 
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::sdk_diagnostic::{
-    SdkDiagnosticCode, SdkDiagnosticMessage, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
-    SdkProviderOperation,
+    SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
 };
 use type_bridge_orm::projected_crud::ProjectedCrudInvocationControl;
 use type_bridge_orm::{
@@ -25,6 +24,7 @@ use crate::allocation::{
 use crate::execution_diagnostic::{TypeBridgeExecutionDiagnostics, return_execution_error};
 use crate::generated_preflight::{DirectOutputPreflight, direct_output_preflight};
 use crate::policy::parse_common_limits;
+use crate::projected_batch::TypeBridgeProjectedBatchResult;
 use crate::projected_model::{TypeBridgeProjectedCreate, TypeBridgeProjectedThing};
 use crate::projected_token::{TypeBridgeProjectedTokenV1, resolve_model_token};
 use crate::projected_value::{invalid_brand_diagnostic, same_package_brand};
@@ -53,6 +53,11 @@ std::thread_local! {
 #[cfg(test)]
 pub(crate) fn delay_next_controlled_crud_checkpoint(millis: u64) {
     CONTROLLED_CRUD_CHECKPOINT_DELAY_MILLIS.with(|delay| delay.set(millis));
+}
+
+#[cfg(test)]
+pub(crate) fn record_reserved_thing_storage(value: usize) {
+    LAST_RESERVED_THING_STORAGE.with(|address| address.set(value));
 }
 
 #[cfg(test)]
@@ -190,19 +195,6 @@ impl CrudKind {
         }
     }
 
-    fn result_model_mismatch(self) -> SdkExecutionDiagnostic {
-        match self {
-            Self::Entity => SdkExecutionDiagnostic::integrity(
-                code("c_entity_result_model_mismatch"),
-                message("The provider returned a projected thing for a different entity model"),
-            ),
-            Self::Relation => SdkExecutionDiagnostic::integrity(
-                code("c_relation_result_model_mismatch"),
-                message("The provider returned a projected thing for a different relation model"),
-            ),
-        }
-    }
-
     fn inactive_transaction(self) -> SdkExecutionDiagnostic {
         match self {
             Self::Entity => invalid_input(
@@ -314,8 +306,8 @@ fn initialize_diagnostics_output(
     Ok(())
 }
 
-pub(crate) struct PreparedThingOutputs {
-    thing: *mut *mut TypeBridgeProjectedThing,
+pub(crate) struct PreparedThingOutputs<T = TypeBridgeProjectedThing> {
+    thing: *mut *mut T,
     diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 }
 
@@ -408,12 +400,12 @@ unsafe fn check_legacy_policy_target_outputs(
     unsafe { target.check_borrowed_ranges(&preflight) }
 }
 
-unsafe fn prepare_thing_outputs_inner(
+unsafe fn prepare_thing_outputs_inner<T>(
     inputs: &[Option<MemoryRange>],
     legacy_policy_target: Option<LegacyPolicyTarget>,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut T,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> Result<PreparedThingOutputs, TypeBridgeStatus> {
+) -> Result<PreparedThingOutputs<T>, TypeBridgeStatus> {
     let outputs = [
         MemoryRange::of_output(out_thing),
         MemoryRange::of_output(out_diagnostics),
@@ -427,7 +419,7 @@ unsafe fn prepare_thing_outputs_inner(
             check_legacy_policy_target_outputs(
                 target,
                 &[
-                    (out_thing.cast(), size_of::<*mut TypeBridgeProjectedThing>()),
+                    (out_thing.cast(), size_of::<*mut T>()),
                     (
                         out_diagnostics.cast(),
                         size_of::<*mut TypeBridgeExecutionDiagnostics>(),
@@ -454,21 +446,21 @@ unsafe fn prepare_thing_outputs_inner(
     })
 }
 
-pub(crate) unsafe fn prepare_thing_outputs(
+pub(crate) unsafe fn prepare_thing_outputs<T>(
     inputs: &[Option<MemoryRange>],
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut T,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> Result<PreparedThingOutputs, TypeBridgeStatus> {
+) -> Result<PreparedThingOutputs<T>, TypeBridgeStatus> {
     // SAFETY: this compatibility wrapper adds no target dereference.
     unsafe { prepare_thing_outputs_inner(inputs, None, out_thing, out_diagnostics) }
 }
 
-pub(crate) unsafe fn prepare_thing_outputs_for_legacy_policy_target(
+pub(crate) unsafe fn prepare_thing_outputs_for_legacy_policy_target<T>(
     target: LegacyPolicyTarget,
     inputs: &[Option<MemoryRange>],
-    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_thing: *mut *mut T,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> Result<PreparedThingOutputs, TypeBridgeStatus> {
+) -> Result<PreparedThingOutputs<T>, TypeBridgeStatus> {
     // SAFETY: the caller retains the complete raw target and writable outputs.
     unsafe { prepare_thing_outputs_inner(inputs, Some(target), out_thing, out_diagnostics) }
 }
@@ -571,28 +563,21 @@ pub(crate) unsafe fn prepare_diagnostics_output_for_legacy_policy_target(
     unsafe { prepare_diagnostics_output_inner(inputs, Some(target), out_diagnostics) }
 }
 
-// ABI 1.11 temporarily retains singleton results. Replace this adapter with the
-// complete result handle in 06.11 (ABI 2.0); do not change the frozen C exports.
-fn legacy_single_write(
-    result: type_bridge_orm::WriteResult<ProjectedThing>,
-    model: &TypeId,
-) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-    if result.count() != 1 {
-        return Err(SdkExecutionDiagnostic::integrity(
-            code("provider_identity_cardinality_invalid"),
-            message("The provider identity query did not resolve exactly one thing"),
-        )
-        .try_at(SdkDiagnosticPathSegment::Type(model.clone()))
-        .expect("one C result type path fits"));
-    }
-    Ok(result.into_items().pop().expect("one root"))
-}
-
 #[derive(Clone, Copy)]
 enum ThingMutation<'iid> {
     Insert,
     Put,
     Update(&'iid str),
+}
+
+impl ThingMutation<'_> {
+    fn operation(self) -> type_bridge_orm::ProjectedBatchOperation {
+        match self {
+            Self::Insert => type_bridge_orm::ProjectedBatchOperation::Insert,
+            Self::Put => type_bridge_orm::ProjectedBatchOperation::Put,
+            Self::Update(_) => type_bridge_orm::ProjectedBatchOperation::Update,
+        }
+    }
 }
 
 pub(crate) enum WriteTarget<'handle> {
@@ -626,9 +611,9 @@ impl WriteTarget<'_> {
         &self,
         kind: CrudKind,
         operation: ThingMutation<'_>,
-        expected_model: &TypeId,
+        _expected_model: &TypeId,
         create: &TypeBridgeProjectedCreate,
-    ) -> Result<ProjectedThing, CrudFailure> {
+    ) -> Result<TypeBridgeProjectedBatchResult, CrudFailure> {
         match self {
             Self::Database(database) => {
                 let executor =
@@ -663,7 +648,14 @@ impl WriteTarget<'_> {
                             executor.update_relation_in_transaction(&context, iid, &create.value),
                         ),
                     }
-                    .and_then(|result| legacy_single_write(result, create.value.type_id()))
+                    .and_then(|result| {
+                        TypeBridgeProjectedBatchResult::from_write(
+                            Arc::clone(self.package_state()),
+                            create.value.type_id().clone(),
+                            operation.operation(),
+                            result,
+                        )
+                    })
                 }));
                 let thing = match executed {
                     Ok(Ok(thing)) => thing,
@@ -680,12 +672,7 @@ impl WriteTarget<'_> {
                         return Err(CrudFailure::Panic);
                     }
                 };
-                if thing.type_id() != expected_model {
-                    let _ = catch_unwind(AssertUnwindSafe(|| {
-                        database.rollback_transaction_context(&context)
-                    }));
-                    return Err(CrudFailure::Diagnostic(kind.result_model_mismatch()));
-                }
+
                 database
                     .commit_transaction_context_classified(&context)
                     .map_err(CrudFailure::Diagnostic)?;
@@ -718,11 +705,15 @@ impl WriteTarget<'_> {
                 })) {
                     Ok(result) => {
                         let result = result.and_then(|result| {
-                            legacy_single_write(result, create.value.type_id()).inspect_err(
-                                |diagnostic| {
-                                    transaction.block_on(context.latch_rollback_only(diagnostic));
-                                },
+                            TypeBridgeProjectedBatchResult::from_write(
+                                Arc::clone(self.package_state()),
+                                create.value.type_id().clone(),
+                                operation.operation(),
+                                result,
                             )
+                            .inspect_err(|diagnostic| {
+                                transaction.block_on(context.latch_rollback_only(diagnostic));
+                            })
                         });
                         result.map_err(CrudFailure::Diagnostic)
                     }
@@ -731,9 +722,7 @@ impl WriteTarget<'_> {
                         Err(CrudFailure::Panic)
                     }
                 }?;
-                if thing.type_id() != expected_model {
-                    return Err(CrudFailure::Diagnostic(kind.result_model_mismatch()));
-                }
+
                 Ok(thing)
             }
         }
@@ -745,8 +734,9 @@ impl WriteTarget<'_> {
         operation: ThingMutation<'_>,
         create: &TypeBridgeProjectedCreate,
         control: ProjectedBatchInvocationControl,
-    ) -> Result<ProjectedThing, CrudFailure> {
+    ) -> Result<TypeBridgeProjectedBatchResult, CrudFailure> {
         let executor = ProjectedCrudExecutor::new(&self.package_state().installed_projection);
+        let result_operation = operation.operation();
         let executed = catch_unwind(AssertUnwindSafe(|| {
             let (operation, row) = match operation {
                 ThingMutation::Insert => (
@@ -776,7 +766,14 @@ impl WriteTarget<'_> {
                         ),
                         &batch,
                         control,
-                        |result| legacy_single_write(result, create.value.type_id()),
+                        |result| {
+                            TypeBridgeProjectedBatchResult::from_write(
+                                Arc::clone(self.package_state()),
+                                create.value.type_id().clone(),
+                                result_operation,
+                                result,
+                            )
+                        },
                     ))
                     .map_err(CrudFailure::Diagnostic),
                 Self::Transaction(transaction) => {
@@ -793,7 +790,14 @@ impl WriteTarget<'_> {
                             ),
                             &batch,
                             control,
-                            |result| legacy_single_write(result, create.value.type_id()),
+                            |result| {
+                                TypeBridgeProjectedBatchResult::from_write(
+                                    Arc::clone(self.package_state()),
+                                    create.value.type_id().clone(),
+                                    result_operation,
+                                    result,
+                                )
+                            },
                         ))
                         .map_err(CrudFailure::Diagnostic)
                 }
@@ -1482,7 +1486,7 @@ unsafe fn controlled_crud_call(
 pub(crate) unsafe fn run_write_thing_call_controlled(
     kind: CrudKind,
     target: WriteTarget<'_>,
-    prepared: PreparedThingOutputs,
+    prepared: PreparedThingOutputs<TypeBridgeProjectedBatchResult>,
     model: *const TypeBridgeProjectedTokenV1,
     create: *const TypeBridgeProjectedCreate,
     iid: Option<*const TypeBridgeIid>,
@@ -1533,7 +1537,7 @@ pub(crate) unsafe fn run_write_thing_call_controlled(
         if let Err(diagnostic) = control.checkpoint() {
             return return_execution_error(diagnostic, out_diagnostics);
         }
-        let reservation = match ThingReservation::try_new() {
+        let reservation = match ReservedBox::try_new(AllocationSite::CrudWriteResultHandle) {
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
         };
@@ -1542,7 +1546,10 @@ pub(crate) unsafe fn run_write_thing_call_controlled(
             .map_or(ThingMutation::Insert, ThingMutation::Update);
         match target.run_thing_mutation_controlled(kind, operation, create, control) {
             Ok(thing) => {
-                store_thing(target.package_state(), thing, reservation, out_thing);
+                // SAFETY: preflight fenced the initialized result output.
+                unsafe {
+                    out_thing.write_unaligned(Box::into_raw(reservation.initialize(thing)));
+                }
                 TypeBridgeStatus::Ok
             }
             Err(failure) => return_failure(failure, out_diagnostics),
@@ -1553,7 +1560,7 @@ pub(crate) unsafe fn run_write_thing_call_controlled(
 pub(crate) unsafe fn run_put_call_controlled(
     kind: CrudKind,
     target: WriteTarget<'_>,
-    prepared: PreparedThingOutputs,
+    prepared: PreparedThingOutputs<TypeBridgeProjectedBatchResult>,
     model: *const TypeBridgeProjectedTokenV1,
     create: *const TypeBridgeProjectedCreate,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
@@ -1593,13 +1600,16 @@ pub(crate) unsafe fn run_put_call_controlled(
         if let Err(diagnostic) = control.checkpoint() {
             return return_execution_error(diagnostic, out_diagnostics);
         }
-        let reservation = match ThingReservation::try_new() {
+        let reservation = match ReservedBox::try_new(AllocationSite::CrudWriteResultHandle) {
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
         };
         match target.run_thing_mutation_controlled(kind, ThingMutation::Put, create, control) {
             Ok(thing) => {
-                store_thing(target.package_state(), thing, reservation, out_thing);
+                // SAFETY: preflight fenced the initialized result output.
+                unsafe {
+                    out_thing.write_unaligned(Box::into_raw(reservation.initialize(thing)));
+                }
                 TypeBridgeStatus::Ok
             }
             Err(failure) => return_failure(failure, out_diagnostics),
@@ -1740,7 +1750,7 @@ pub(crate) unsafe fn run_count_call_controlled(
 pub(crate) unsafe fn run_write_thing_call(
     kind: CrudKind,
     target: WriteTarget<'_>,
-    prepared: PreparedThingOutputs,
+    prepared: PreparedThingOutputs<TypeBridgeProjectedBatchResult>,
     model: *const TypeBridgeProjectedTokenV1,
     create: *const TypeBridgeProjectedCreate,
     iid: Option<*const TypeBridgeIid>,
@@ -1791,7 +1801,7 @@ pub(crate) unsafe fn run_write_thing_call(
         {
             return return_execution_error(diagnostic, out_diagnostics);
         }
-        let reservation = match ThingReservation::try_new() {
+        let reservation = match ReservedBox::try_new(AllocationSite::CrudWriteResultHandle) {
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
         };
@@ -1804,7 +1814,10 @@ pub(crate) unsafe fn run_write_thing_call(
         };
         match result {
             Ok(thing) => {
-                store_thing(target.package_state(), thing, reservation, out_thing);
+                // SAFETY: preflight fenced the initialized result output.
+                unsafe {
+                    out_thing.write_unaligned(Box::into_raw(reservation.initialize(thing)));
+                }
                 TypeBridgeStatus::Ok
             }
             Err(failure) => return_failure(failure, out_diagnostics),
@@ -1815,7 +1828,7 @@ pub(crate) unsafe fn run_write_thing_call(
 pub(crate) unsafe fn run_put_call(
     kind: CrudKind,
     target: WriteTarget<'_>,
-    prepared: PreparedThingOutputs,
+    prepared: PreparedThingOutputs<TypeBridgeProjectedBatchResult>,
     model: *const TypeBridgeProjectedTokenV1,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
@@ -1855,7 +1868,7 @@ pub(crate) unsafe fn run_put_call(
         {
             return return_execution_error(diagnostic, out_diagnostics);
         }
-        let reservation = match ThingReservation::try_new() {
+        let reservation = match ReservedBox::try_new(AllocationSite::CrudWriteResultHandle) {
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
         };
@@ -1867,7 +1880,10 @@ pub(crate) unsafe fn run_put_call(
         };
         match result {
             Ok(thing) => {
-                store_thing(target.package_state(), thing, reservation, out_thing);
+                // SAFETY: preflight fenced the initialized result output.
+                unsafe {
+                    out_thing.write_unaligned(Box::into_raw(reservation.initialize(thing)));
+                }
                 TypeBridgeStatus::Ok
             }
             Err(failure) => return_failure(failure, out_diagnostics),

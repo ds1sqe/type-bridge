@@ -7,6 +7,18 @@
 #include <manager/models.h>
 #include <manager_foreign/models.h>
 
+/* These fixtures expect one root. Exercise the result owner, then its item. */
+#define TEST_SINGLE_WRITE(MODEL, OP, CALL, OUT, DIAG)                           \
+  ((write_status = (CALL)) != TYPE_BRIDGE_STATUS_OK ? write_status :            \
+   ((write_status = MODEL##_##OP##_batch_result_item(                           \
+         MODEL##_##OP##_result, (OUT), (DIAG))) != TYPE_BRIDGE_STATUS_OK ?       \
+    ((void)MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result),            \
+     write_status) :                                                          \
+    (MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result) !=               \
+         TYPE_BRIDGE_STATUS_OK ? TYPE_BRIDGE_STATUS_INVALID_ARGUMENT :         \
+     (*(OUT) != NULL ? TYPE_BRIDGE_STATUS_OK : TYPE_BRIDGE_STATUS_INVALID_ARGUMENT))))
+
+
 #define CHECK(condition)                                                       \
   do {                                                                         \
     if (!(condition)) {                                                        \
@@ -571,6 +583,8 @@ static int check_manager_http_if_requested(
 }
 
 int main(void) {
+  type_bridge_status_t write_status;
+  manager_person_insert_batch_result *manager_person_insert_result = NULL;
   const char *address = getenv("TYPE_BRIDGE_MANAGER_LIVE_ADDRESS");
   const char *database_name =
       getenv("TYPE_BRIDGE_MANAGER_LIVE_DATABASE");
@@ -681,8 +695,8 @@ int main(void) {
       package, "data-ada", "Ada", 38, 7, 40, 0u, 38, "2026-08-12",
       "2026-08-12T09:30:00", "2026-08-12T09:30:00Z", "38.5",
       UINT64_C(0x4043000000000000), "PT38S", &ada_create, &diagnostics));
-  CHECK(manager_person_database_insert(database, ada_create, NULL, &person,
-                                      &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(manager_person, insert, manager_person_database_insert(database, ada_create, NULL,&manager_person_insert_result,
+                                      &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   {
     type_bridge_byte_view_t iid = {0};
     CHECK(manager_person_iid(person, &iid, &diagnostics) ==
@@ -694,8 +708,8 @@ int main(void) {
       package, "data-dana", NULL, 45, 9, 40, 1u, 45, "2026-08-13",
       "2026-08-13T10:45:00", "2026-08-13T10:45:00Z", "45.5",
       UINT64_C(0x4046800000000000), "PT45S", &dana_create, &diagnostics));
-  CHECK(manager_person_database_insert(database, dana_create, NULL, &person,
-                                      &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(manager_person, insert, manager_person_database_insert(database, dana_create, NULL,&manager_person_insert_result,
+                                      &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   {
     type_bridge_byte_view_t iid = {0};
     CHECK(manager_person_iid(person, &iid, &diagnostics) ==

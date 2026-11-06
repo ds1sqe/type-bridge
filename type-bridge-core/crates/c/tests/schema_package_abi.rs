@@ -3988,7 +3988,7 @@ int main(void) {
           (type_bridge_execution_diagnostics_t *)(uintptr_t)1u;
       CHECK(fixture_person_database_insert(
                 NULL, generated_create, NULL,
-                (fixture_person **)((uint8_t *)generated_create + 1u),
+                (fixture_person_insert_batch_result **)((uint8_t *)generated_create + 1u),
                 &execution_diagnostics) ==
             TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
       CHECK(execution_diagnostics ==

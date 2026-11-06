@@ -279,6 +279,41 @@ impl TypeBridgeProjectedBatch {
 }
 
 impl TypeBridgeProjectedBatchResult {
+    #[cfg(test)]
+    pub(crate) fn test_item(&self) -> &Arc<ProjectedThing> {
+        assert_eq!(self.input_count, 1);
+        assert_eq!(self.things.len(), 1);
+        &self.things[0]
+    }
+
+    /// Map complete roots while the caller still owns the uncommitted lease.
+    pub(crate) fn from_write(
+        package: Arc<SchemaPackageState>,
+        model: TypeId,
+        operation: ProjectedBatchOperation,
+        result: type_bridge_orm::WriteResult<ProjectedThing>,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        if result.items().iter().any(|thing| thing.type_id() != &model) {
+            return Err(result_thing_model_mismatch());
+        }
+        let count = result.count();
+        let mut reserved = reserve_result_things(count)?;
+        for (slot, thing) in reserved.iter_mut().zip(result.into_items()) {
+            Arc::get_mut(slot)
+                .expect("newly reserved result slot")
+                .write(thing);
+        }
+        // SAFETY: every newly reserved slot was initialized by the loop above.
+        let things = unsafe { assume_initialized_things(reserved) };
+        Ok(Self {
+            package,
+            model,
+            operation,
+            input_count: count,
+            things,
+        })
+    }
+
     pub(crate) fn check_borrowed_ranges(
         &self,
         preflight: &DirectOutputPreflight,
@@ -549,10 +584,12 @@ fn reserve_result_things(
     for _ in 0..count {
         allocation_checkpoint(AllocationSite::ProjectedBatchResultThingStorage)
             .map_err(|_| allocation_exhausted())?;
-        // All caller-scaled Arc storage is allocated before the first mutation.
-        // A process-terminal global allocator abort can therefore expose no
-        // partial database effect; deterministic allocation probes fail here.
-        things.push(Arc::new_uninit());
+        // Batch input reservations precede dispatch; single-write mappings run
+        // under the uncommitted lease. Recoverable failures can still abort.
+        let slot = Arc::new_uninit();
+        #[cfg(test)]
+        crate::thing_crud::record_reserved_thing_storage(Arc::as_ptr(&slot).addr());
+        things.push(slot);
     }
     Ok(things)
 }
