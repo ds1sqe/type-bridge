@@ -345,6 +345,8 @@ All notable changes to TypeBridge will be documented in this file.
   `import_pending` (`TYPE_BRIDGE_DATABASE_PAIR_IMPORT_PENDING` in C); pair
   deletion also
   removes the exact owner-verified old companion to prevent later resurrection.
+  A foreign or mismatched reserved `<db>__tbv2_journal` fails pair administration
+  closed with `migration_journal_import_invalid`, including for 3.0 pairs.
 - Persisted-name constants retain their Rust names but now contain the new
   suffix and label values. `TYPEBRIDGE_INTERNAL_PREFIX` reserves the full
   `typebridge-internal-` namespace, including the retained old control labels.
@@ -354,8 +356,17 @@ All notable changes to TypeBridge will be documented in this file.
   `MANAGED_CONTROL_LEASE_STATE`, `LEGACY_CUTOVER_ANCHOR_ENTITY`,
   `LEGACY_CUTOVER_ANCHOR_KEY`, `LEGACY_CUTOVER_ANCHOR_SCOPE`, and
   `LEGACY_CUTOVER_ANCHOR_FINGERPRINT`.
-  `JOURNAL_CONTROL_SCHEMA_TYPEQL` and `MANAGED_FENCE_SCHEMA_TYPEQL` now come
-  from `contract::reserved` and remain re-exported by their existing modules.
+  `JOURNAL_CONTROL_SCHEMA_TYPEQL` and `MANAGED_FENCE_SCHEMA_TYPEQL` change
+  their schema values to the new labels (and data-step declarations), now come
+  from `type_bridge_contract::reserved`, and remain re-exported by their existing modules.
+- `type_bridge_contract::reserved` adds grouped data-step (`DATA_STEP_*`),
+  journal (`JOURNAL_*`), record (`RECORD_*`, `*_RECORD_KIND`), control/lease
+  (`CONTROL_*`, `LEASE_*`, `NEXT_SEQUENCE`), cutover (`LEGACY_CUTOVER_*`),
+  and frozen import (`IMPORT_LEGACY_*`) constants. The public
+  `type_bridge_contract::migration_data` module defines the data-step contracts.
+- `WorkspaceLockError::Stale` now carries `{ field }`, naming the lock claim
+  that differs from the freshly derived workspace identity; its error code
+  remains `Stale`.
 - `MigrationStep` gains `Data(DataStep)`, with `DataProgram::{Plan, Typeql, User}`
   forward and optional reverse programs. `MigrationStepKind` gains `Data` too;
   exhaustive matches must handle both `MigrationStep::Data` and
@@ -402,7 +413,8 @@ All notable changes to TypeBridge will be documented in this file.
   `execute_catalog_apply_plan_controlled_with_user_steps()` and
   `execute_catalog_rollback_plan_controlled_with_user_steps()`.
   The ORM's `BorrowedTransactionContext` is entered through
-  `borrow_migration_context()`, which verifies the held migration fence.
+  `borrow_migration_context()`, which verifies the held migration fence using
+  the supplied cancellation signal and absolute execution deadline.
   Compatibility inspection adds `derived_legacy_journal_database()`,
   `verify_import_pending_query_control_scope()`,
   `import_legacy_fence_schema_presence()`, `without_import_control()`, and
