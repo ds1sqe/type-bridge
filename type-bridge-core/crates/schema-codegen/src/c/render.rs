@@ -2384,7 +2384,7 @@ fn render_successor_model_batch(
                 "static inline type_bridge_status_t TYPE_BRIDGE_CALL {add}(\n\
                    {builder} *builder, const {create} *create,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-                   const type_bridge_byte_view_t iid = {{ NULL, 0u }};\n\
+                   const type_bridge_iid_t *iid = NULL;\n\
                    type_bridge_generated_opaque_input_v1_t alias_inputs[2];\n\
                    size_t alias_input_count = 0u;\n\
                    type_bridge_status_t status;\n\
@@ -2409,7 +2409,7 @@ fn render_successor_model_batch(
             let _ = write!(
                 output,
                 "static inline type_bridge_status_t TYPE_BRIDGE_CALL {add}(\n\
-                   {builder} *builder, type_bridge_byte_view_t iid,\n\
+                   {builder} *builder, const type_bridge_iid_t *iid,\n\
                    const {create} *replacement,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
                    type_bridge_generated_opaque_input_v1_t alias_inputs[3];\n\
@@ -2418,7 +2418,7 @@ fn render_successor_model_batch(
                    {add_input}(alias_inputs, &alias_input_count,\n\
                        TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_BUILDER, builder, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_BYTES, iid.data, iid.length);\n\
+                       TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
                        TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CREATE, replacement, 1u);\n\
                    status = {preflight}(alias_inputs, alias_input_count,\n\
@@ -2438,7 +2438,7 @@ fn render_successor_model_batch(
             let _ = write!(
                 output,
                 "static inline type_bridge_status_t TYPE_BRIDGE_CALL {add}(\n\
-                   {builder} *builder, type_bridge_byte_view_t iid,\n\
+                   {builder} *builder, const type_bridge_iid_t *iid,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
                    type_bridge_generated_opaque_input_v1_t alias_inputs[2];\n\
                    size_t alias_input_count = 0u;\n\
@@ -2446,7 +2446,7 @@ fn render_successor_model_batch(
                    {add_input}(alias_inputs, &alias_input_count,\n\
                        TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_BUILDER, builder, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_BYTES, iid.data, iid.length);\n\
+                       TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n\
                    status = {preflight}(alias_inputs, alias_input_count,\n\
                        out_diagnostics, sizeof(*out_diagnostics), NULL, 0u);\n\
                    if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}\n\

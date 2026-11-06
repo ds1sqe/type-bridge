@@ -253,12 +253,12 @@ type_bridge_status_t type_bridge_projected_batch_builder_open_v1(
 
 type_bridge_status_t type_bridge_projected_batch_builder_add_v1(
     type_bridge_projected_batch_builder_t *builder,
-    type_bridge_byte_view_t iid,
+    const type_bridge_iid_t *iid,
     const type_bridge_projected_create_t *create,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   ++builder_add_calls;
   STUB_CHECK(builder == BUILDER);
-  STUB_CHECK(iid.data == NULL && iid.length == 0u);
+  STUB_CHECK(iid == NULL);
   STUB_CHECK(create == GENERIC_CREATE);
   STUB_CHECK(out_diagnostics != NULL && *out_diagnostics == NULL);
   if (builder_add_status != TYPE_BRIDGE_STATUS_OK) {

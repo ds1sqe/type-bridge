@@ -218,7 +218,7 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *batch_builder_open_fn)(
     const type_bridge_cancellation_t *, type_bridge_projected_batch_builder_t **,
     type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *batch_builder_add_fn)(
-    type_bridge_projected_batch_builder_t *, type_bridge_byte_view_t,
+    type_bridge_projected_batch_builder_t *, const type_bridge_iid_t *,
     const type_bridge_projected_create_t *,
     type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *batch_builder_finish_fn)(

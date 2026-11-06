@@ -3624,10 +3624,12 @@ type_bridge_projected_batch_builder_open_v1(
     const type_bridge_cancellation_t *cancellation,
     type_bridge_projected_batch_builder_t **out_builder,
     type_bridge_execution_diagnostics_t **out_diagnostics);
+/* Insert/put require a NULL IID. Update/delete copy a validated IID owner;
+ * the caller may close that IID after this call. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_projected_batch_builder_add_v1(
     type_bridge_projected_batch_builder_t *builder,
-    type_bridge_byte_view_t iid,
+    const type_bridge_iid_t *iid,
     const type_bridge_projected_create_t *create,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL

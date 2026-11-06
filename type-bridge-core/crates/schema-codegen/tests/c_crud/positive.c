@@ -9,11 +9,11 @@ static type_bridge_status_t (*const keyed_add)(
     acme_v3_keyed_insert_batch_builder *, const acme_v3_keyed_create *,
     type_bridge_execution_diagnostics_t **) = acme_v3_keyed_insert_batch_builder_add;
 static type_bridge_status_t (*const keyed_update_add)(
-    acme_v3_keyed_update_batch_builder *, type_bridge_byte_view_t,
+    acme_v3_keyed_update_batch_builder *, const type_bridge_iid_t *,
     const acme_v3_keyed_create *, type_bridge_execution_diagnostics_t **) =
     acme_v3_keyed_update_batch_builder_add;
 static type_bridge_status_t (*const gathering_delete_add)(
-    acme_v3_gathering_delete_batch_builder *, type_bridge_byte_view_t,
+    acme_v3_gathering_delete_batch_builder *, const type_bridge_iid_t *,
     type_bridge_execution_diagnostics_t **) = acme_v3_gathering_delete_batch_builder_add;
 static type_bridge_status_t (*const membership_execute)(
     const type_bridge_write_transaction_t *, const acme_v3_membership_put_batch *,

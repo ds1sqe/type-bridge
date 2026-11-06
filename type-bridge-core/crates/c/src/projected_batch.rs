@@ -6,7 +6,7 @@ use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ptr;
 use std::sync::Arc;
 
-use type_bridge_contract::id::{MAX_THING_IID_HEX_DIGITS, TypeId, is_canonical_thing_iid};
+use type_bridge_contract::id::TypeId;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
@@ -18,8 +18,7 @@ use type_bridge_orm::{
 };
 
 use crate::abi::{
-    SchemaPackageState, TypeBridgeByteView, TypeBridgeSchemaPackage, TypeBridgeStatus, close_box,
-    guarded,
+    SchemaPackageState, TypeBridgeSchemaPackage, TypeBridgeStatus, close_box, guarded,
 };
 use crate::allocation::{
     AllocationSite, ReservedBox, allocation_checkpoint, allocation_exhausted, try_reserve,
@@ -45,7 +44,7 @@ use crate::runtime::{
     check_database_borrowed_ranges, check_write_transaction_borrowed_ranges,
 };
 
-const MAX_THING_IID_BYTES: usize = 2 + MAX_THING_IID_HEX_DIGITS;
+use crate::iid::TypeBridgeIid;
 
 /// Stable C integer tag for one homogeneous projected-batch operation.
 pub type TypeBridgeProjectedBatchOperation = i32;
@@ -442,28 +441,21 @@ unsafe fn copied_limits(
     }
 }
 
-unsafe fn copy_iid(view: TypeBridgeByteView) -> Result<String, SdkExecutionDiagnostic> {
-    if view.length == 0 || view.length > MAX_THING_IID_BYTES || view.data.is_null() {
+unsafe fn copy_iid(value: *const TypeBridgeIid) -> Result<String, SdkExecutionDiagnostic> {
+    if value.is_null() {
         return Err(invalid_iid());
     }
+    // SAFETY: add preflight fenced the complete immutable validated IID owner.
+    let text = unsafe { &*value }.as_str();
     let mut bytes = Vec::new();
     try_reserve(
         &mut bytes,
-        view.length,
+        text.len(),
         AllocationSite::ProjectedBatchBuilderIidBytes,
     )
     .map_err(|_| allocation_exhausted())?;
-    // SAFETY: range preflight proved these already-bounded caller bytes readable.
-    bytes.extend_from_slice(unsafe { std::slice::from_raw_parts(view.data, view.length) });
-    let iid = String::from_utf8(bytes).map_err(|_| invalid_iid())?;
-    if !is_canonical_thing_iid(&iid) {
-        return Err(invalid_iid());
-    }
-    Ok(iid)
-}
-
-fn canonical_empty_view(view: TypeBridgeByteView) -> bool {
-    view.length == 0 && view.data.is_null()
+    bytes.extend_from_slice(text.as_bytes());
+    Ok(String::from_utf8(bytes).expect("validated IID text is UTF-8"))
 }
 
 fn validate_create(
@@ -484,12 +476,12 @@ fn validate_create(
 
 fn row_from_c(
     builder: &TypeBridgeProjectedBatchBuilder,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     create: *const TypeBridgeProjectedCreate,
 ) -> Result<ProjectedBatchRow, SdkExecutionDiagnostic> {
     match builder.operation {
         ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put => {
-            if !canonical_empty_view(iid) || create.is_null() {
+            if !iid.is_null() || create.is_null() {
                 return Err(invalid_row_form());
             }
             // SAFETY: add preflight fenced and the caller retains this immutable handle.
@@ -512,7 +504,7 @@ fn row_from_c(
             // SAFETY: add preflight fenced and the caller retains this immutable handle.
             let create = unsafe { &*create };
             validate_create(builder, create)?;
-            // SAFETY: byte-range preflight and canonical bounds precede the copy.
+            // SAFETY: complete IID owner preflight precedes the copy.
             let iid = unsafe { copy_iid(iid) }?;
             allocation_checkpoint(AllocationSite::ProjectedBatchBuilderCreateClone)
                 .map_err(|_| allocation_exhausted())?;
@@ -527,7 +519,7 @@ fn row_from_c(
             if !create.is_null() {
                 return Err(invalid_row_form());
             }
-            // SAFETY: byte-range preflight and canonical bounds precede the copy.
+            // SAFETY: complete IID owner preflight precedes the copy.
             let iid = unsafe { copy_iid(iid) }?;
             Ok(ProjectedBatchRow::Delete { iid })
         }
@@ -819,7 +811,7 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_open_v1_impl
 #[unsafe(export_name = "type_bridge_projected_batch_builder_add_v1")]
 pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_add_v1_impl(
     builder: *mut TypeBridgeProjectedBatchBuilder,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     create: *const TypeBridgeProjectedCreate,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -832,7 +824,9 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_add_v1_impl(
     };
     // SAFETY: all live handle graphs are fenced before diagnostics initialization.
     if let Err(status) = unsafe { check_builder_input(&preflight, builder) }
-        .and_then(|()| preflight.check_bytes(iid.data.cast(), iid.length))
+        .and_then(|()| {
+            preflight.check_object_kind(crate::generated_preflight::GENERATED_INPUT_IID, iid.cast())
+        })
         .and_then(|()| preflight.check_object_kind(GENERATED_INPUT_PROJECTED_CREATE, create.cast()))
     {
         return status;
@@ -1532,7 +1526,7 @@ const _: unsafe extern "C" fn(
 ) -> TypeBridgeStatus = type_bridge_projected_batch_builder_open_v1_impl;
 const _: unsafe extern "C" fn(
     *mut TypeBridgeProjectedBatchBuilder,
-    TypeBridgeByteView,
+    *const TypeBridgeIid,
     *const TypeBridgeProjectedCreate,
     *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus = type_bridge_projected_batch_builder_add_v1_impl;
@@ -1964,13 +1958,6 @@ plays:
         )
     }
 
-    fn empty_iid() -> TypeBridgeByteView {
-        TypeBridgeByteView {
-            data: ptr::null(),
-            length: 0,
-        }
-    }
-
     fn open_builder(
         package: &TypeBridgeSchemaPackage,
         token: &TypeBridgeProjectedTokenV1,
@@ -2006,13 +1993,14 @@ plays:
         iid: &str,
         create: *const TypeBridgeProjectedCreate,
     ) -> Result<(), *mut TypeBridgeExecutionDiagnostics> {
+        let owned_iid = TypeBridgeIid::new(iid).ok();
         let view = if matches!(
             operation,
             ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put
         ) {
-            empty_iid()
+            ptr::null()
         } else {
-            byte_view(iid.as_bytes())
+            owned_iid.as_ref().map_or(ptr::null(), |value| value)
         };
         let mut diagnostics = ptr::dangling_mut();
         let status =
@@ -3574,7 +3562,7 @@ plays:
             unsafe {
                 type_bridge_projected_batch_builder_add_v1_impl(
                     update,
-                    byte_view(b"0x21"),
+                    &TypeBridgeIid::new("0x21").unwrap(),
                     &*creates[1],
                     alias,
                 )

@@ -97,6 +97,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- C `type_bridge_projected_batch_builder_add_v1` and generated update/delete
+  batch builders take validated IID owners. Insert/put pass a null IID; each
+  added update/delete row copies its identity before the owner can close.
+
 - C batch insert/put/update results count and retain every returned root,
   including missing inputs and several roots from one input. Additional
   result storage is reserved before commit.

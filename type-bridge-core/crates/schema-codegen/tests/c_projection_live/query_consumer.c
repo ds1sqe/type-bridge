@@ -465,8 +465,8 @@ static int run_counter_plan_lifecycle(
   CHECK(fixture_counterzuvalue_close(&counter_value) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_close(&value) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_update_batch_builder_open(package, limits, NULL, &update_builder, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_counter_update_batch_builder_add(update_builder, ids[0], replacement, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_counter_update_batch_builder_add(update_builder, ids[1], inputs[1], out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_update_batch_builder_add(update_builder, checked_iid(ids[0], &iid_argument), replacement, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_update_batch_builder_add(update_builder, checked_iid(ids[1], &iid_argument), inputs[1], out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_update_batch_builder_finish(&update_builder, &update_batch, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("entity_batch_update_delete_atomic.update");
   CHECK(fixture_counter_database_update_batch_execute(database, update_batch, limits, NULL, &update_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -481,7 +481,7 @@ static int run_counter_plan_lifecycle(
   CHECK(fixture_counter_update_batch_close(&update_batch) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_delete_batch_builder_open(package, limits, NULL, &delete_builder, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   for (index = 0u; index < 2u; ++index)
-    CHECK(fixture_counter_delete_batch_builder_add(delete_builder, ids[index], out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_counter_delete_batch_builder_add(delete_builder, checked_iid(ids[index], &iid_argument), out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_delete_batch_builder_finish(&delete_builder, &delete_batch, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("delete");
   CHECK(fixture_counter_database_delete_batch_execute(database, delete_batch, limits, NULL, &delete_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -618,7 +618,7 @@ static int run_manager_batch_lifecycle(
   CHECK(fixture_networkzhlink_put_batch_result_close(&put_result) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_put_batch_close(&put_batch) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_delete_batch_builder_open(package, limits, NULL, &delete_builder, diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  for (index=0u; index<2u; ++index) CHECK(fixture_networkzhlink_delete_batch_builder_add(delete_builder, ids[index], diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  for (index=0u; index<2u; ++index) CHECK(fixture_networkzhlink_delete_batch_builder_add(delete_builder, checked_iid(ids[index], &iid_argument), diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_delete_batch_builder_finish(&delete_builder, &delete_batch, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_database_delete_batch_execute(database, delete_batch, limits, NULL, &delete_result, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_delete_batch_result_close(&delete_result) == TYPE_BRIDGE_STATUS_OK);
@@ -641,7 +641,7 @@ static int run_manager_batch_lifecycle(
   CHECK(fixture_networkzhlink_insert_batch_result_close(&insert_result) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_insert_batch_close(&insert_batch) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_update_batch_builder_open(package, limits, NULL, &update_builder, diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  for (index=0u; index<2u; ++index) CHECK(fixture_networkzhlink_update_batch_builder_add(update_builder, ids[index], links[index], diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  for (index=0u; index<2u; ++index) CHECK(fixture_networkzhlink_update_batch_builder_add(update_builder, checked_iid(ids[index], &iid_argument), links[index], diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_update_batch_builder_finish(&update_builder, &update_batch, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("relation_batch_update_delete_atomic.update");
   CHECK(fixture_networkzhlink_database_update_batch_execute(database, update_batch, limits, NULL, &update_result, diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -655,7 +655,7 @@ static int run_manager_batch_lifecycle(
   CHECK(fixture_networkzhlink_update_batch_result_close(&update_result) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_update_batch_close(&update_batch) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_delete_batch_builder_open(package, limits, NULL, &delete_builder, diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  for (index=0u; index<2u; ++index) CHECK(fixture_networkzhlink_delete_batch_builder_add(delete_builder, ids[index], diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  for (index=0u; index<2u; ++index) CHECK(fixture_networkzhlink_delete_batch_builder_add(delete_builder, checked_iid(ids[index], &iid_argument), diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_delete_batch_builder_finish(&delete_builder, &delete_batch, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("relation_batch_update_delete_atomic.delete");
   CHECK(fixture_networkzhlink_database_delete_batch_execute(database, delete_batch, limits, NULL, &delete_result, diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -956,7 +956,7 @@ run_robot_batches(const type_bridge_schema_package_t *package,
   CHECK(fixture_robot_update_batch_builder_open(
             package, limits, NULL, &update_builder, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_robot_update_batch_builder_add(update_builder, insert_iid,
+  CHECK(fixture_robot_update_batch_builder_add(update_builder, checked_iid(insert_iid, &iid_argument),
                                                create, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_robot_update_batch_builder_finish(
@@ -982,7 +982,7 @@ run_robot_batches(const type_bridge_schema_package_t *package,
   CHECK(fixture_robot_delete_batch_builder_open(
             package, limits, NULL, &delete_builder, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_robot_delete_batch_builder_add(delete_builder, insert_iid,
+  CHECK(fixture_robot_delete_batch_builder_add(delete_builder, checked_iid(insert_iid, &iid_argument),
                                                out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_robot_delete_batch_builder_finish(
@@ -1215,7 +1215,7 @@ run_interaction_batches(const type_bridge_schema_package_t *package,
   CHECK(fixture_interaction_update_batch_builder_open(
             package, limits, NULL, &update_builder, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_interaction_update_batch_builder_add(update_builder, insert_iid,
+  CHECK(fixture_interaction_update_batch_builder_add(update_builder, checked_iid(insert_iid, &iid_argument),
                                                      create, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_interaction_update_batch_builder_finish(
@@ -1241,7 +1241,7 @@ run_interaction_batches(const type_bridge_schema_package_t *package,
   CHECK(fixture_interaction_delete_batch_builder_open(
             package, limits, NULL, &delete_builder, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_interaction_delete_batch_builder_add(delete_builder, insert_iid,
+  CHECK(fixture_interaction_delete_batch_builder_add(delete_builder, checked_iid(insert_iid, &iid_argument),
                                                      out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_interaction_delete_batch_builder_finish(
