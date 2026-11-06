@@ -344,6 +344,7 @@ fn old_migration_directory_identity_is_stale_with_a_regeneration_hint() {
         verify_workspace_lock(&to_canonical_json(&old_lock).unwrap(), &workspace).unwrap_err();
     assert_eq!(error.code(), WorkspaceLockErrorCode::Stale);
     assert!(error.to_string().contains("generate_workspace_lock"));
+    assert!(error.to_string().contains("resolved_config_identity"));
     verify_workspace_lock(
         generate_workspace_lock(&workspace).unwrap().bytes(),
         &workspace,

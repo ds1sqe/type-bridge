@@ -92,8 +92,11 @@ pub enum WorkspaceLockError {
     Contract(Diagnostic),
     /// The lock format discriminator is unsupported.
     UnsupportedVersion,
-    /// At least one lock claim is stale or tampered.
-    Stale,
+    /// A named lock claim differs from the freshly derived source workspace.
+    Stale {
+        /// The first differing canonical workspace-lock field.
+        field: &'static str,
+    },
 }
 
 impl WorkspaceLockError {
@@ -103,7 +106,7 @@ impl WorkspaceLockError {
         match self {
             Self::Contract(_) => WorkspaceLockErrorCode::Contract,
             Self::UnsupportedVersion => WorkspaceLockErrorCode::UnsupportedVersion,
-            Self::Stale => WorkspaceLockErrorCode::Stale,
+            Self::Stale { .. } => WorkspaceLockErrorCode::Stale,
         }
     }
 
@@ -112,7 +115,7 @@ impl WorkspaceLockError {
     pub const fn contract(&self) -> Option<&Diagnostic> {
         match self {
             Self::Contract(error) => Some(error),
-            Self::UnsupportedVersion | Self::Stale => None,
+            Self::UnsupportedVersion | Self::Stale { .. } => None,
         }
     }
 }
@@ -124,8 +127,11 @@ impl fmt::Display for WorkspaceLockError {
             Self::UnsupportedVersion => {
                 formatter.write_str("workspace lock version is unsupported")
             }
-            Self::Stale => {
-                formatter.write_str("workspace lock does not match the source workspace; regenerate it with `generate_workspace_lock`")
+            Self::Stale { field } => {
+                write!(
+                    formatter,
+                    "workspace lock field `{field}` differs from the source workspace; regenerate it with `generate_workspace_lock`"
+                )
             }
         }
     }
@@ -196,8 +202,73 @@ pub fn verify_workspace_lock(
         return Err(WorkspaceLockError::UnsupportedVersion);
     }
     let expected = derive_lock_wire(workspace)?;
-    if decoded != expected {
-        return Err(WorkspaceLockError::Stale);
+    let claims = [
+        (
+            "authored_config",
+            decoded.authored_config != expected.authored_config,
+        ),
+        (
+            "bound_scope_id",
+            decoded.bound_scope_id != expected.bound_scope_id,
+        ),
+        (
+            "declared_identity_fingerprint",
+            decoded.declared_identity_fingerprint != expected.declared_identity_fingerprint,
+        ),
+        (
+            "derived_capability_requirements",
+            decoded.derived_capability_requirements != expected.derived_capability_requirements,
+        ),
+        (
+            "discovery_version",
+            decoded.discovery_version != expected.discovery_version,
+        ),
+        (
+            "document_set_fingerprint",
+            decoded.document_set_fingerprint != expected.document_set_fingerprint,
+        ),
+        (
+            "managed_declared_identity_fingerprint",
+            decoded.managed_declared_identity_fingerprint
+                != expected.managed_declared_identity_fingerprint,
+        ),
+        (
+            "managed_scope_profile_fingerprint",
+            decoded.managed_scope_profile_fingerprint != expected.managed_scope_profile_fingerprint,
+        ),
+        (
+            "managed_scope_profile_id",
+            decoded.managed_scope_profile_id != expected.managed_scope_profile_id,
+        ),
+        (
+            "managed_semantic_schema_fingerprint",
+            decoded.managed_semantic_schema_fingerprint
+                != expected.managed_semantic_schema_fingerprint,
+        ),
+        (
+            "resolved_config_identity",
+            decoded.resolved_config_identity != expected.resolved_config_identity,
+        ),
+        (
+            "schema_set_manifest_fingerprint",
+            decoded.schema_set_manifest_fingerprint != expected.schema_set_manifest_fingerprint,
+        ),
+        (
+            "semantic_profile_fingerprint",
+            decoded.semantic_profile_fingerprint != expected.semantic_profile_fingerprint,
+        ),
+        (
+            "semantic_profile_id",
+            decoded.semantic_profile_id != expected.semantic_profile_id,
+        ),
+        (
+            "semantic_schema_fingerprint",
+            decoded.semantic_schema_fingerprint != expected.semantic_schema_fingerprint,
+        ),
+        ("sources", decoded.sources != expected.sources),
+    ];
+    if let Some((field, _)) = claims.into_iter().find(|(_, differs)| *differs) {
+        return Err(WorkspaceLockError::Stale { field });
     }
     Ok(VerifiedWorkspaceLock {
         lock: WorkspaceLock {
