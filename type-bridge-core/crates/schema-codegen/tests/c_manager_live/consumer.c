@@ -450,69 +450,117 @@ static int compare_manager_iids(const void *left, const void *right) {
   return strcmp((const char *)left, (const char *)right);
 }
 
-static int check_manager_terminal_twins(
+static int check_manager_person_terminal_twins(
     const type_bridge_database_t *database,
     const type_bridge_proxy_connection_t *proxy,
-    const manager_query *query, manager_query_binding_ref_v1_t root,
+    const manager_person_manager *manager, manager_person_manager_filter_ref_v1_t filter,
     type_bridge_query_terminal_kind_t kind,
     type_bridge_execution_diagnostics_t **diagnostics) {
-  type_bridge_query_terminal_descriptor_v1_t descriptor;
-  type_bridge_query_terminal_t *terminal = NULL;
   manager_read_observation_t observations[2];
   size_t target;
-  memset(&descriptor, 0, sizeof(descriptor));
   memset(observations, 0, sizeof(observations));
-  descriptor.struct_size = (uint32_t)sizeof(descriptor);
-  descriptor.version = TYPE_BRIDGE_QUERY_DESCRIPTOR_VERSION;
-  descriptor.kind = kind;
-  descriptor.cardinality =
-      kind == TYPE_BRIDGE_QUERY_TERMINAL_COUNT || kind == TYPE_BRIDGE_QUERY_TERMINAL_EXISTS
-      ? TYPE_BRIDGE_QUERY_ROWS_EXACTLY_ONE : TYPE_BRIDGE_QUERY_ROWS_BOUNDED_MANY;
-  descriptor.root = root.handle;
-  descriptor.expected_root_model = root.expected_model;
-  descriptor.expected_root_mode = root.expected_mode;
-  CHECK(type_bridge_query_terminal_open(
-            (const type_bridge_query_t *)query, &descriptor, &terminal,
-            diagnostics) == TYPE_BRIDGE_STATUS_OK);
   for (target = 0u; target < 2u; ++target) {
-    type_bridge_query_result_t *result = NULL;
+    manager_person_manager_all_result *result = NULL;
+    manager_person *first = NULL;
     const long offset = target == 1u ? manager_trace_offset() : -1;
-    CHECK((target == 0u
-        ? type_bridge_database_query_execute(database, terminal, kind,
-              NULL, NULL, &result, diagnostics)
-        : type_bridge_proxy_query_execute(proxy, terminal, kind,
-              NULL, NULL, &result, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(check_manager_trace(offset) == 0);
     if (kind == TYPE_BRIDGE_QUERY_TERMINAL_COUNT) {
-      CHECK(type_bridge_query_result_count(result, &observations[target].count,
-                                          diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      CHECK((target == 0u
+          ? manager_person_manager_database_count(database, manager, filter, NULL, NULL, &observations[target].count, diagnostics)
+          : manager_person_manager_proxy_connection_count(proxy, manager, filter, NULL, NULL, &observations[target].count, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
     } else if (kind == TYPE_BRIDGE_QUERY_TERMINAL_EXISTS) {
-      CHECK(type_bridge_query_result_exists(result, &observations[target].exists,
-                                           diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      CHECK((target == 0u
+          ? manager_person_manager_database_exists(database, manager, filter, NULL, NULL, &observations[target].exists, diagnostics)
+          : manager_person_manager_proxy_connection_exists(proxy, manager, filter, NULL, NULL, &observations[target].exists, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
     } else {
       size_t row;
-      CHECK(type_bridge_query_result_row_count(result, TYPE_BRIDGE_QUERY_RESULT_ROWS,
-                &observations[target].row_count, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      if (kind == TYPE_BRIDGE_QUERY_TERMINAL_FIRST) {
+        CHECK((target == 0u
+            ? manager_person_manager_database_first(database, manager, filter, NULL, NULL, &first, diagnostics)
+            : manager_person_manager_proxy_connection_first(proxy, manager, filter, NULL, NULL, &first, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+        observations[target].row_count = first == NULL ? 0u : 1u;
+      } else {
+        CHECK((target == 0u
+            ? manager_person_manager_database_all(database, manager, filter, NULL, NULL, &result, diagnostics)
+            : manager_person_manager_proxy_connection_all(proxy, manager, filter, NULL, NULL, &result, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(manager_person_manager_all_result_count(result, &observations[target].row_count, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      }
       CHECK(observations[target].row_count <= 32u);
       for (row = 0u; row < observations[target].row_count; ++row) {
-        type_bridge_projected_thing_t *thing = NULL;
+        manager_person *thing = first;
         type_bridge_byte_view_t iid;
-        CHECK(type_bridge_query_result_row_slot_thing_at(result,
-                  TYPE_BRIDGE_QUERY_RESULT_ROWS, row, 0u, 0u, root.expected_model,
-                  root.expected_mode, TYPE_BRIDGE_QUERY_SELECTION_ONE, &thing,
-                  diagnostics) == TYPE_BRIDGE_STATUS_OK);
-        CHECK(type_bridge_projected_thing_iid(thing, &iid) == TYPE_BRIDGE_STATUS_OK);
+        first = NULL;
+        if (result != NULL) {
+          CHECK(manager_person_manager_all_result_at(result, row, &thing, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        }
+        CHECK(type_bridge_projected_thing_iid((const type_bridge_projected_thing_t *)thing, &iid) == TYPE_BRIDGE_STATUS_OK);
         CHECK(iid.data != NULL && iid.length > 0u && iid.length < 256u);
         memcpy(observations[target].iids[row], iid.data, iid.length);
-        CHECK(type_bridge_projected_thing_close(&thing) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(manager_person_close(&thing) == TYPE_BRIDGE_STATUS_OK);
       }
       qsort(observations[target].iids, observations[target].row_count,
             sizeof(observations[target].iids[0]), compare_manager_iids);
     }
-    CHECK(type_bridge_query_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(check_manager_trace(offset) == 0);
+    CHECK(manager_person_manager_all_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
   }
   CHECK(memcmp(&observations[0], &observations[1], sizeof(observations[0])) == 0);
-  CHECK(type_bridge_query_terminal_close(&terminal) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
+static int check_manager_networkzhlink_terminal_twins(
+    const type_bridge_database_t *database,
+    const type_bridge_proxy_connection_t *proxy,
+    const manager_networkzhlink_manager *manager, manager_networkzhlink_manager_filter_ref_v1_t filter,
+    type_bridge_query_terminal_kind_t kind,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  manager_read_observation_t observations[2];
+  size_t target;
+  memset(observations, 0, sizeof(observations));
+  for (target = 0u; target < 2u; ++target) {
+    manager_networkzhlink_manager_all_result *result = NULL;
+    manager_networkzhlink *first = NULL;
+    const long offset = target == 1u ? manager_trace_offset() : -1;
+    if (kind == TYPE_BRIDGE_QUERY_TERMINAL_COUNT) {
+      CHECK((target == 0u
+          ? manager_networkzhlink_manager_database_count(database, manager, filter, NULL, NULL, &observations[target].count, diagnostics)
+          : manager_networkzhlink_manager_proxy_connection_count(proxy, manager, filter, NULL, NULL, &observations[target].count, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+    } else if (kind == TYPE_BRIDGE_QUERY_TERMINAL_EXISTS) {
+      CHECK((target == 0u
+          ? manager_networkzhlink_manager_database_exists(database, manager, filter, NULL, NULL, &observations[target].exists, diagnostics)
+          : manager_networkzhlink_manager_proxy_connection_exists(proxy, manager, filter, NULL, NULL, &observations[target].exists, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+    } else {
+      size_t row;
+      if (kind == TYPE_BRIDGE_QUERY_TERMINAL_FIRST) {
+        CHECK((target == 0u
+            ? manager_networkzhlink_manager_database_first(database, manager, filter, NULL, NULL, &first, diagnostics)
+            : manager_networkzhlink_manager_proxy_connection_first(proxy, manager, filter, NULL, NULL, &first, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+        observations[target].row_count = first == NULL ? 0u : 1u;
+      } else {
+        CHECK((target == 0u
+            ? manager_networkzhlink_manager_database_all(database, manager, filter, NULL, NULL, &result, diagnostics)
+            : manager_networkzhlink_manager_proxy_connection_all(proxy, manager, filter, NULL, NULL, &result, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(manager_networkzhlink_manager_all_result_count(result, &observations[target].row_count, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      }
+      CHECK(observations[target].row_count <= 32u);
+      for (row = 0u; row < observations[target].row_count; ++row) {
+        manager_networkzhlink *thing = first;
+        type_bridge_byte_view_t iid;
+        first = NULL;
+        if (result != NULL) {
+          CHECK(manager_networkzhlink_manager_all_result_at(result, row, &thing, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        }
+        CHECK(type_bridge_projected_thing_iid((const type_bridge_projected_thing_t *)thing, &iid) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(iid.data != NULL && iid.length > 0u && iid.length < 256u);
+        memcpy(observations[target].iids[row], iid.data, iid.length);
+        CHECK(manager_networkzhlink_close(&thing) == TYPE_BRIDGE_STATUS_OK);
+      }
+      qsort(observations[target].iids, observations[target].row_count,
+            sizeof(observations[target].iids[0]), compare_manager_iids);
+    }
+    CHECK(check_manager_trace(offset) == 0);
+    CHECK(manager_networkzhlink_manager_all_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(memcmp(&observations[0], &observations[1], sizeof(observations[0])) == 0);
   return 0;
 }
 
@@ -544,12 +592,12 @@ static int check_manager_read_twins(
             diagnostics) == TYPE_BRIDGE_STATUS_OK);
   for (index = 0u; index < sizeof(kinds) / sizeof(kinds[0]); ++index) {
     const int first = kinds[index] == TYPE_BRIDGE_QUERY_TERMINAL_FIRST;
-    CHECK(check_manager_terminal_twins(database, proxy,
-              first ? manager_person_manager_filter_ref(absent_person).query : people.root_query,
-              manager_person_query_exact_binding_ref(people.binding), kinds[index], diagnostics) == 0);
-    CHECK(check_manager_terminal_twins(database, proxy,
-              first ? manager_networkzhlink_manager_filter_ref(absent_link).query : links.root_query,
-              manager_networkzhlink_query_exact_binding_ref(links.binding), kinds[index], diagnostics) == 0);
+    CHECK(check_manager_person_terminal_twins(database, proxy, &people,
+              first ? manager_person_manager_filter_ref(absent_person) : manager_person_manager_filter_root(&people),
+              kinds[index], diagnostics) == 0);
+    CHECK(check_manager_networkzhlink_terminal_twins(database, proxy, &links,
+              first ? manager_networkzhlink_manager_filter_ref(absent_link) : manager_networkzhlink_manager_filter_root(&links),
+              kinds[index], diagnostics) == 0);
   }
   CHECK(manager_networkzhlink_manager_filter_close(&absent_link) == TYPE_BRIDGE_STATUS_OK);
   CHECK(manager_person_manager_filter_close(&absent_person) == TYPE_BRIDGE_STATUS_OK);
@@ -658,7 +706,7 @@ int main(void) {
   CHECK(manager_person_manager_open(foreign_package, &foreign_manager,
                                    &diagnostics) ==
             TYPE_BRIDGE_STATUS_EXECUTION_FAILED &&
-        foreign_manager.binding == NULL && foreign_manager.root_query == NULL &&
+        foreign_manager.root_filter == NULL &&
         foreign_manager.reserved[0] == 0u &&
         foreign_manager.reserved[1] == 0u &&
         foreign_manager.reserved[2] == 0u &&
@@ -742,21 +790,14 @@ int main(void) {
         filter == NULL &&
         exact_diagnostic(&diagnostics,
                          TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_INVALID_INPUT,
-                         "c_query_nominal_contract_mismatch"));
+                         "wrong_scalar_domain"));
   CHECK(manager_person_manager_filter_valzubool_gt(
             &manager, manager_person_manager_filter_root(&manager),
-            boolean_value, &filter, &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
-        filter != NULL && diagnostics == NULL);
-  count = UINT64_MAX;
-  CHECK(manager_person_manager_database_count(
-            database, &manager, manager_person_manager_filter_ref(filter),
-            &limits, NULL, &count, &diagnostics) ==
-            TYPE_BRIDGE_STATUS_INVALID_ARGUMENT &&
-        count == 0u &&
+            boolean_value, &filter, &diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT &&
+        filter == NULL &&
         exact_diagnostic(&diagnostics,
                          TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_INVALID_INPUT,
                          "invalid_operator_for_type"));
-  CHECK(manager_person_manager_filter_close(&filter) == TYPE_BRIDGE_STATUS_OK);
 
   CHECK(type_bridge_read_transaction_open_v2(database, &limits, NULL, &read,
                                              &diagnostics) ==
@@ -858,11 +899,10 @@ int main(void) {
   /*
    * The normalized wrong_field_owner row below is source-bound for C by the
    * strict nominal compile-negative plus the fail-closed hostile ABI probe
-   * above. The wrong_scalar_domain row is likewise source-bound by its strict
-   * wrong-wrapper compile-negative and hostile cast that fails closed with
-   * `c_query_nominal_contract_mismatch`. Those two typed-query diagnostics are
-   * not rebranded as observed manager diagnostics. The wrong_package row is an
-   * exact manager-open diagnostic observed before database/provider setup.
+   * above. Its typed-query diagnostic is not rebranded as observed manager
+   * diagnostics. The wrong_scalar_domain and boolean_ordering rows now observe
+   * exact canonical manager-filter construction refusals. The wrong_package row
+   * is an exact manager-open diagnostic observed before database/provider setup.
    */
   puts("TYPE_BRIDGE_C_MANAGER_LIVE_FACT\t{\"borrowed_read\":{\"final_state\":\"active\",\"reusable_after_each_terminal\":true,\"sibling_filter_usable\":true},\"conjunction\":{\"authored_order\":[\"foo__bar:gte:7\",\"score:gt:40\"],\"normalized_keys\":[\"data-dana\"]},\"field_token\":{\"attribute\":\"attribute:foo__bar\",\"binding_name\":\"foo__bar\",\"owner\":\"entity:person\"},\"first\":{\"identity_predicate\":\"identifier:eq:data-ada\",\"nonsingular_rejection\":{\"category\":\"invalid_input\",\"code\":\"manager_first_requires_identity\",\"rejected_before_provider_io\":true},\"result\":\"data-ada\",\"strict_singular\":true},\"model\":\"person\",\"operator_literal\":{\"kind\":\"long\",\"value\":\"7\"},\"operator_outcomes\":[{\"normalized_keys\":[\"data-ada\"],\"operator\":\"eq\"},{\"normalized_keys\":[\"data-dana\"],\"operator\":\"ne\"},{\"normalized_keys\":[\"data-dana\"],\"operator\":\"gt\"},{\"normalized_keys\":[\"data-ada\",\"data-dana\"],\"operator\":\"gte\"},{\"normalized_keys\":[],\"operator\":\"lt\"},{\"normalized_keys\":[\"data-ada\"],\"operator\":\"lte\"}],\"rejections\":[{\"category\":\"integrity\",\"code\":\"field_owner_mismatch\",\"kind\":\"wrong_field_owner\",\"rejected_before_provider_io\":true},{\"category\":\"invalid_input\",\"code\":\"wrong_scalar_domain\",\"kind\":\"wrong_scalar_domain\",\"rejected_before_provider_io\":true},{\"category\":\"integrity\",\"code\":\"generated_token_package_mismatch\",\"kind\":\"wrong_package\",\"rejected_before_provider_io\":true},{\"category\":\"invalid_input\",\"code\":\"invalid_operator_for_type\",\"kind\":\"boolean_ordering\",\"rejected_before_provider_io\":true}],\"terminals\":{\"all_normalization\":\"reference_key_ascending\",\"count\":2,\"exists\":true}}");
 

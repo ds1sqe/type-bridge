@@ -320,6 +320,10 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+- Regenerated C manager structs store `root_filter` instead of `binding` and
+  `root_query`; manager filter references expose `value` instead of `query`.
+  Use the generated open/filter/terminal functions and regenerate packages
+  for ABI 2.0. Read terminals now include borrowed write and proxy targets.
 - `type_bridge_query_binding_iid` accepts `const type_bridge_iid_t *`;
   `type_bridge_query_binding_iid_in` accepts an array of validated IID
   pointers. Generated query binding wrappers use the same argument types.

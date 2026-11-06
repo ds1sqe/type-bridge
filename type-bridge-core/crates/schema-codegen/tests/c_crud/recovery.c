@@ -66,10 +66,10 @@ static max_align_t alternate_storage;
 #define QUERY_BINDING HANDLE(type_bridge_query_binding_t, query_binding_storage)
 #define NOMINAL_QUERY_BINDING                                                   \
   HANDLE(acme_v3_keyed_query_exact_binding, query_binding_storage)
-#define QUERY HANDLE(type_bridge_query_t, query_storage)
+#define QUERY HANDLE(type_bridge_manager_filter_t, query_storage)
 #define NOMINAL_QUERY HANDLE(acme_v3_query, query_storage)
 #define NOMINAL_FILTER HANDLE(acme_v3_keyed_manager_filter, query_storage)
-#define QUERY_RESULT HANDLE(type_bridge_query_result_t, query_result_storage)
+#define QUERY_RESULT HANDLE(type_bridge_manager_result_t, query_result_storage)
 #define NOMINAL_MANAGER_RESULT                                                  \
   HANDLE(acme_v3_keyed_manager_all_result, query_result_storage)
 #define DIAGNOSTICS HANDLE(type_bridge_execution_diagnostics_t, diagnostics_storage)
@@ -125,7 +125,6 @@ static void *builder_finish_generic_owner_slot;
 static void *builder_finish_generic_output_slot;
 static void *execute_generic_output_slot;
 static void *result_thing_generic_output_slot;
-static void *query_binding_close_generic_owner_slot;
 static void *query_close_generic_owner_slot;
 static void *query_result_thing_generic_output_slot;
 static void *query_result_close_generic_owner_slot;
@@ -168,7 +167,6 @@ static void reset_probe(void) {
   builder_finish_generic_output_slot = NULL;
   execute_generic_output_slot = NULL;
   result_thing_generic_output_slot = NULL;
-  query_binding_close_generic_owner_slot = NULL;
   query_close_generic_owner_slot = NULL;
   query_result_thing_generic_output_slot = NULL;
   query_result_close_generic_owner_slot = NULL;
@@ -379,7 +377,6 @@ type_bridge_status_t type_bridge_projected_batch_result_close(
 type_bridge_status_t type_bridge_query_binding_close(
     type_bridge_query_binding_t **binding) {
   ++query_binding_close_calls;
-  query_binding_close_generic_owner_slot = binding;
   STUB_CHECK(binding != NULL && *binding == QUERY_BINDING);
   if (query_binding_close_status == TYPE_BRIDGE_STATUS_OK) {
     *binding = NULL;
@@ -387,7 +384,7 @@ type_bridge_status_t type_bridge_query_binding_close(
   return query_binding_close_status;
 }
 
-type_bridge_status_t type_bridge_query_close(type_bridge_query_t **query) {
+type_bridge_status_t type_bridge_manager_filter_close(type_bridge_manager_filter_t **query) {
   ++query_close_calls;
   query_close_generic_owner_slot = query;
   STUB_CHECK(query != NULL && (*query == NULL || *query == QUERY));
@@ -397,23 +394,16 @@ type_bridge_status_t type_bridge_query_close(type_bridge_query_t **query) {
   return query_close_status;
 }
 
-type_bridge_status_t type_bridge_query_result_row_slot_thing_at(
-    const type_bridge_query_result_t *result,
-    type_bridge_query_result_kind_t expected_result_kind, size_t row_index,
-    size_t slot_index, size_t thing_index,
-    const type_bridge_projected_token_v1_t *expected_model,
-    type_bridge_query_match_mode_t expected_mode,
-    type_bridge_query_selection_kind_t expected_kind,
+type_bridge_status_t type_bridge_manager_result_at(
+    const type_bridge_manager_result_t *result,
+    const type_bridge_projected_token_v1_t *expected_model, size_t row_index,
     type_bridge_projected_thing_t **out_thing,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   ++query_result_thing_calls;
   query_result_thing_generic_output_slot = out_thing;
   STUB_CHECK(result == QUERY_RESULT);
-  STUB_CHECK(expected_result_kind == TYPE_BRIDGE_QUERY_RESULT_ROWS);
-  STUB_CHECK(row_index == 2u && slot_index == 0u && thing_index == 0u);
+  STUB_CHECK(row_index == 2u);
   STUB_CHECK(expected_model == &@MODEL_TOKEN@);
-  STUB_CHECK(expected_mode == TYPE_BRIDGE_QUERY_MATCH_EXACT);
-  STUB_CHECK(expected_kind == TYPE_BRIDGE_QUERY_SELECTION_ONE);
   STUB_CHECK(out_thing != NULL && *out_thing == NULL);
   STUB_CHECK(out_diagnostics != NULL && *out_diagnostics == NULL);
   *out_thing = THING;
@@ -431,8 +421,8 @@ type_bridge_status_t type_bridge_projected_thing_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t type_bridge_query_result_close(
-    type_bridge_query_result_t **result) {
+type_bridge_status_t type_bridge_manager_result_close(
+    type_bridge_manager_result_t **result) {
   ++query_result_close_calls;
   query_result_close_generic_owner_slot = result;
   STUB_CHECK(result != NULL && *result == QUERY_RESULT);
@@ -442,108 +432,33 @@ type_bridge_status_t type_bridge_query_result_close(
   return query_result_close_status;
 }
 
-type_bridge_status_t type_bridge_query_field_open(
-    const type_bridge_query_binding_t *binding,
-    const type_bridge_projected_token_v1_t *field,
-    type_bridge_query_field_t **out_field,
-    type_bridge_execution_diagnostics_t **out_diagnostics) {
-  (void)binding;
-  (void)field;
-  (void)out_field;
-  (void)out_diagnostics;
+type_bridge_status_t type_bridge_manager_filter_validate_model(
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_manager_filter_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  (void)filter; (void)owner; (void)model; (void)diagnostics;
   ++manager_dependency_calls;
   return TYPE_BRIDGE_STATUS_PANIC;
 }
-
-type_bridge_status_t type_bridge_query_field_compare_value(
-    const type_bridge_query_field_t *field,
-    const type_bridge_projected_token_v1_t *expected_field,
+type_bridge_status_t type_bridge_manager_filter_compare(
+    const type_bridge_manager_filter_t *source,
+    const type_bridge_projected_token_v1_t *field,
     type_bridge_query_comparison_t comparison,
     const type_bridge_projected_value_t *value,
-    type_bridge_query_predicate_t **out_predicate,
-    type_bridge_execution_diagnostics_t **out_diagnostics) {
-  (void)field;
-  (void)expected_field;
-  (void)comparison;
-  (void)value;
-  (void)out_predicate;
-  (void)out_diagnostics;
+    type_bridge_manager_filter_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  (void)source; (void)field; (void)comparison; (void)value; (void)out; (void)diagnostics;
   ++manager_dependency_calls;
   return TYPE_BRIDGE_STATUS_PANIC;
 }
-
-type_bridge_status_t type_bridge_query_field_close(
-    type_bridge_query_field_t **field) {
-  (void)field;
-  ++manager_dependency_calls;
-  return TYPE_BRIDGE_STATUS_PANIC;
-}
-
-type_bridge_status_t type_bridge_query_predicate_close(
-    type_bridge_query_predicate_t **predicate) {
-  (void)predicate;
-  ++manager_dependency_calls;
-  return TYPE_BRIDGE_STATUS_PANIC;
-}
-
-type_bridge_status_t type_bridge_query_where(
-    const type_bridge_query_t *query,
-    const type_bridge_query_predicate_t *predicate,
-    type_bridge_query_t **out_query,
-    type_bridge_execution_diagnostics_t **out_diagnostics) {
-  (void)query;
-  (void)predicate;
-  (void)out_query;
-  (void)out_diagnostics;
-  ++manager_dependency_calls;
-  return TYPE_BRIDGE_STATUS_PANIC;
-}
-
-type_bridge_status_t type_bridge_query_terminal_open(
-    const type_bridge_query_t *query,
-    const type_bridge_query_terminal_descriptor_v1_t *descriptor,
-    type_bridge_query_terminal_t **out_terminal,
-    type_bridge_execution_diagnostics_t **out_diagnostics) {
-  (void)query;
-  (void)descriptor;
-  (void)out_terminal;
-  (void)out_diagnostics;
-  ++manager_dependency_calls;
-  return TYPE_BRIDGE_STATUS_PANIC;
-}
-
-type_bridge_status_t type_bridge_query_terminal_close(
-    type_bridge_query_terminal_t **terminal) {
-  (void)terminal;
-  ++manager_dependency_calls;
-  return TYPE_BRIDGE_STATUS_PANIC;
-}
-
-type_bridge_status_t type_bridge_database_query_execute(
+type_bridge_status_t type_bridge_database_manager_count(
     const type_bridge_database_t *database,
-    const type_bridge_query_terminal_t *terminal,
-    type_bridge_query_terminal_kind_t expected_terminal_kind,
+    const type_bridge_manager_filter_t *filter,
     const type_bridge_query_execution_limits_v1_t *limits,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_query_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics) {
-  (void)database;
-  (void)terminal;
-  (void)expected_terminal_kind;
-  (void)limits;
-  (void)cancellation;
-  (void)out_result;
-  (void)out_diagnostics;
-  ++manager_dependency_calls;
-  return TYPE_BRIDGE_STATUS_PANIC;
-}
-
-type_bridge_status_t type_bridge_query_result_count(
-    const type_bridge_query_result_t *result, uint64_t *out_count,
-    type_bridge_execution_diagnostics_t **out_diagnostics) {
-  (void)result;
-  (void)out_count;
-  (void)out_diagnostics;
+    const type_bridge_cancellation_t *cancellation, uint64_t *out,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  (void)database; (void)filter; (void)limits; (void)cancellation; (void)out; (void)diagnostics;
   ++manager_dependency_calls;
   return TYPE_BRIDGE_STATUS_PANIC;
 }
@@ -764,8 +679,7 @@ int main(void) {
 
   reset_probe();
   memset(&manager, 0, sizeof(manager));
-  manager.binding = NOMINAL_QUERY_BINDING;
-  manager.root_query = NOMINAL_QUERY;
+  manager.root_filter = QUERY;
   manager.reserved[2] = 1u;
   manager_snapshot = manager;
   status = acme_v3_keyed_manager_close(&manager);
@@ -773,10 +687,8 @@ int main(void) {
   CHECK(memcmp(&manager, &manager_snapshot, sizeof(manager)) == 0);
   CHECK(preflight_calls == 1u && query_close_calls == 0u &&
         query_binding_close_calls == 0u && stub_error == 0);
-  CHECK(preflight_records[0].input_count == 2u);
-  CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_QUERY_BINDING, QUERY_BINDING,
-              1u);
-  CHECK_INPUT(0, 1, TYPE_BRIDGE_GENERATED_INPUT_QUERY, QUERY, 1u);
+  CHECK(preflight_records[0].input_count == 1u);
+  CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_MANAGER_FILTER, QUERY, 1u);
   CHECK_OUTPUT(0, 0, &manager, sizeof(manager));
 
   reset_probe();
@@ -788,29 +700,17 @@ int main(void) {
   CHECK(memcmp(&manager, &manager_snapshot, sizeof(manager)) == 0);
   CHECK(query_close_calls == 1u && query_binding_close_calls == 0u &&
         stub_error == 0);
-  CHECK(query_close_generic_owner_slot != (void *)&manager.root_query);
-
-  reset_probe();
-  query_binding_close_status = TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
-  status = acme_v3_keyed_manager_close(&manager);
-  CHECK(status == TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
-  CHECK(manager.binding == NOMINAL_QUERY_BINDING && manager.root_query == NULL);
-  CHECK(query_close_calls == 1u && query_binding_close_calls == 1u &&
-        stub_error == 0);
-  CHECK(query_close_generic_owner_slot != (void *)&manager.root_query);
-  CHECK(query_binding_close_generic_owner_slot != (void *)&manager.binding);
+  CHECK(query_close_generic_owner_slot != (void *)&manager.root_filter);
 
   reset_probe();
   status = acme_v3_keyed_manager_close(&manager);
   CHECK(status == TYPE_BRIDGE_STATUS_OK);
-  CHECK(manager.binding == NULL && manager.root_query == NULL);
-  CHECK(query_close_calls == 1u && query_binding_close_calls == 1u &&
-        stub_error == 0);
+  CHECK(manager.root_filter == NULL);
+  CHECK(query_close_calls == 1u && query_binding_close_calls == 0u && stub_error == 0);
 
   reset_probe();
   memset(&manager, 0, sizeof(manager));
-  manager.binding = NOMINAL_QUERY_BINDING;
-  manager.root_query = NOMINAL_QUERY;
+  manager.root_filter = QUERY;
   filter_ref = acme_v3_keyed_manager_filter_root(&manager);
   manager.reserved[0] = 1u;
   manager_snapshot = manager;
@@ -848,14 +748,14 @@ int main(void) {
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
   status = acme_v3_keyed_manager_filter_identifier_eq(
       &manager, filter_ref, CONST_HANDLE(acme_v3_identifier, create_storage),
-      (acme_v3_keyed_manager_filter **)(void *)&manager.root_query,
+      (acme_v3_keyed_manager_filter **)(void *)&manager.root_filter,
       &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
   CHECK(memcmp(&manager, &manager_snapshot, sizeof(manager)) == 0);
   CHECK(diagnostics == ALTERNATE(type_bridge_execution_diagnostics_t));
   CHECK(preflight_calls == 1u && manager_dependency_calls == 0u &&
         stub_error == 0);
-  CHECK_OUTPUT(0, 0, &manager.root_query, sizeof(manager.root_query));
+  CHECK_OUTPUT(0, 0, &manager.root_filter, sizeof(manager.root_filter));
 
   reset_probe();
   manager.reserved[0] = 1u;
@@ -910,7 +810,7 @@ int main(void) {
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT &&
         filter == NOMINAL_FILTER);
   CHECK(query_close_calls == 0u && preflight_calls == 1u && stub_error == 0);
-  CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_QUERY, QUERY, 1u);
+  CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_MANAGER_FILTER, QUERY, 1u);
   CHECK_OUTPUT(0, 0, &filter, sizeof(filter));
 
   reset_probe();
@@ -942,7 +842,7 @@ int main(void) {
   CHECK(query_result_thing_calls == 0u && thing_close_calls == 0u &&
         preflight_calls == 1u && stub_error == 0);
   CHECK(preflight_records[0].input_count == 2u);
-  CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_QUERY_RESULT, QUERY_RESULT,
+  CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_MANAGER_RESULT, QUERY_RESULT,
               1u);
   CHECK_INPUT(0, 1, TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN,
               &@MODEL_TOKEN@, 1u);
@@ -982,7 +882,7 @@ int main(void) {
         manager_result == NOMINAL_MANAGER_RESULT);
   CHECK(query_result_close_calls == 0u && preflight_calls == 1u &&
         stub_error == 0);
-  CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_QUERY_RESULT, QUERY_RESULT,
+  CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_MANAGER_RESULT, QUERY_RESULT,
               1u);
   CHECK_OUTPUT(0, 0, &manager_result, sizeof(manager_result));
 

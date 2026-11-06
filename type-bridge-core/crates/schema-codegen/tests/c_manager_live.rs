@@ -306,8 +306,8 @@ fn c_manager_live_producer_is_bounded_and_expectation_independent() {
     }
     assert!(CONSUMER.contains("TYPE_BRIDGE_STATUS_INVALID_ARGUMENT"));
     assert!(CONSUMER.contains("cross_owner_field"));
-    assert!(CONSUMER.contains("c_query_nominal_contract_mismatch"));
-    assert!(CONSUMER.contains("not rebranded as observed manager diagnostics"));
+    assert!(CONSUMER.contains("wrong_scalar_domain"));
+    assert!(CONSUMER.contains("not rebranded as observed manager"));
     assert!(
         WRONG_OWNER_COMPILE_FAIL.contains("manager_person_foozuzubar_query_field_from_exact(robot")
     );
