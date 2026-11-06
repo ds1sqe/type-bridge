@@ -6,6 +6,7 @@ import {
   type NativeRustTransactionContext,
   type Database,
   type TransactionContext,
+  type MigrationTransaction,
 } from "./index.js";
 import { loadNative } from "./native.js";
 import type {
@@ -65,7 +66,7 @@ export type RuntimeProjectionReduction =
 type RuntimeProjectionRemoteContext = ReturnType<NativeModule["planRemoteModelContextWithResources"]>;
 type RuntimeProjectionRemotePending = ReturnType<NativeModule["planPrepareRemoteModelRows"]>;
 
-export type RuntimeProjectionConnection = Database | TransactionContext | ProxyConnection;
+export type RuntimeProjectionConnection = Database | TransactionContext | MigrationTransaction | ProxyConnection;
 
 const proxyConnectionHandles = new WeakMap<ProxyConnection, NativeProxyConnection>();
 

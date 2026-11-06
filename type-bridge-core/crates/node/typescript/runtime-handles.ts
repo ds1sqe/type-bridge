@@ -3,6 +3,7 @@ import type {
   NativeRustTransactionContext,
   Database,
   TransactionContext,
+  MigrationTransaction,
 } from "./index.js";
 
 const databaseHandles = new WeakMap<object, NativeRustDatabase>();
@@ -11,7 +12,7 @@ const transactionHandles = new WeakMap<object, NativeRustTransactionContext>();
 /** @internal Reject structurally forged execution connections. */
 export function isRegisteredRustConnection(
   connection: unknown,
-): connection is Database | TransactionContext {
+): connection is Database | TransactionContext | MigrationTransaction {
   if (
     connection === null ||
     (typeof connection !== "object" && typeof connection !== "function")
@@ -31,7 +32,7 @@ export function registerRustDatabaseHandle(
 
 /** @internal Retain an opaque borrowed transaction handle. */
 export function registerRustTransactionHandle(
-  transaction: TransactionContext,
+  transaction: TransactionContext | MigrationTransaction,
   native: NativeRustTransactionContext,
 ): void {
   transactionHandles.set(transaction, native);
@@ -39,14 +40,14 @@ export function registerRustTransactionHandle(
 
 /** @internal Resolve database ownership for generated execution. */
 export function rustDatabaseHandle(
-  connection: Database | TransactionContext,
+  connection: Database | TransactionContext | MigrationTransaction,
 ): NativeRustDatabase | undefined {
   return databaseHandles.get(connection);
 }
 
 /** @internal Resolve borrowed transaction ownership for generated execution. */
 export function rustTransactionHandle(
-  connection: Database | TransactionContext,
+  connection: Database | TransactionContext | MigrationTransaction,
 ): NativeRustTransactionContext | undefined {
   return transactionHandles.get(connection);
 }

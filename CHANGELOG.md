@@ -331,6 +331,13 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+- Node migration `MigrationPlan.execute()` and `executeControlled()` now return
+  Promises. Await them, including schema-only migrations. Ordinary manager and
+  transaction methods keep their existing return types.
+- Generated SDK migration catalogs register process-local user data callbacks.
+  Callbacks use engine-owned write transactions; lifecycle calls are refused and
+  retained handles become unusable after callback completion.
+
 
 <!-- --8<-- [start:breaking-3-0] -->
 

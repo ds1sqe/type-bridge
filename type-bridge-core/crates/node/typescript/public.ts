@@ -11,6 +11,7 @@ export {
   MigrationApprovalSet,
   MigrationCancellation,
   MigrationCatalog,
+  MigrationTransaction,
   MigrationExecutionResources,
   MigrationPlan,
   MigrationPreview,

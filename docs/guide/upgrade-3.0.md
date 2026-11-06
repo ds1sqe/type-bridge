@@ -46,6 +46,23 @@ backfill intent. Rollback removes only destination values equal to the source;
 unlike the deleted executor it preserves other pre-existing destination values.
 See [migration backfills](migrations.md#declarative-data-backfills).
 
+### Await Node migration execution
+
+`MigrationPlan.execute()` and `executeControlled()` now return Promises so
+registered async callbacks can run on the JavaScript event loop. Update every
+migration call, including schema-only plans:
+
+```typescript
+const report = await plan.execute(database, "deployment");
+const controlled = await plan.executeControlled(database, "deployment", options);
+```
+
+Ordinary manager and transaction methods retain their existing return types.
+Register callbacks before creating a preview. Regenerate Python packages so
+their manager and typed-query connection types accept `MigrationTransaction`.
+See [user data steps](migrations.md#registered-user-data-steps) for each SDK's
+callback signature and transaction ownership.
+
 ### Import the existing journal once
 
 Stop all 2.x migration runners before the first 3.0 apply. Keep a backup of the

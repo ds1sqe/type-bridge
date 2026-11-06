@@ -1,5 +1,5 @@
 import { RawTransaction, type RawValue } from "./raw-query.js";
-import { PlanAuthority, type NativeRustDatabase, type NativeRustTransactionContext, type Database, type TransactionContext } from "./index.js";
+import { PlanAuthority, type NativeRustDatabase, type NativeRustTransactionContext, type Database, type TransactionContext, type MigrationTransaction } from "./index.js";
 import { loadNative } from "./native.js";
 import type { NativePlan, NativePendingPlanAnswer, NativeProxyConnection, NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
@@ -20,7 +20,7 @@ export type RuntimeProjectionMatchQuery = ReturnType<RuntimeProjectionMatchSessi
 export type RuntimeProjectionMatchResult = Awaited<ReturnType<RuntimeProjectionMatchQuery["executeFetchRowsOwned"]>>;
 export type RuntimeProjectionMatchThing = ReturnType<RuntimeProjectionMatchResult["slotThing"]>;
 export type RuntimeProjectionReduction = "count" | "sum" | "min" | "max" | "mean" | "median" | "std";
-export type RuntimeProjectionConnection = Database | TransactionContext | ProxyConnection;
+export type RuntimeProjectionConnection = Database | TransactionContext | MigrationTransaction | ProxyConnection;
 export interface RuntimeProjectionBinding {
     readonly typeKey: string;
     readonly targetName: string;

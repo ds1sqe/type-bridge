@@ -210,8 +210,8 @@ interface NativeMigrationApprovalSet {
 }
 interface NativeMigrationPlan {
     readonly executionAuthorized: boolean;
-    execute(database: NativeRustDatabase, holder: string): MigrationExecutionReport;
-    executeControlled(database: NativeRustDatabase, holder: string, timeoutMilliseconds?: number | null, resources?: NativeMigrationExecutionResources | null, cancellation?: NativeMigrationCancellation | null): MigrationExecutionReport;
+    execute(database: NativeRustDatabase, holder: string): Promise<MigrationExecutionReport>;
+    executeControlled(database: NativeRustDatabase, holder: string, timeoutMilliseconds?: number | null, resources?: NativeMigrationExecutionResources | null, cancellation?: NativeMigrationCancellation | null): Promise<MigrationExecutionReport>;
 }
 interface NativeMigrationCancellation {
     readonly cancelled: boolean;
@@ -230,6 +230,7 @@ interface NativeMigrationPreview {
     authorize(approvals: NativeMigrationApprovalSet): NativeMigrationPlan;
 }
 interface NativeMigrationCatalog {
+    register(stepId: string, forward: (tx: NativeRustTransactionContext) => Promise<void>, reverse?: (tx: NativeRustTransactionContext) => Promise<void>): void;
     readonly length: number;
     fingerprintJson(): string;
     isEmpty(): boolean;
@@ -263,6 +264,7 @@ export interface MigrationBackfillObservation {
     readonly transactionGroups: number;
 }
 export interface NativeRustTransactionContext {
+    executeQuery(query: string): Promise<RawValue>;
     commit(): void;
     rollback(): void;
     close(): void;
@@ -322,12 +324,12 @@ export declare class MigrationPlan {
     /** @internal */
     constructor(native: NativeMigrationPlan);
     get executionAuthorized(): boolean;
-    execute(database: Database, holder: string): MigrationExecutionReport;
+    execute(database: Database, holder: string): Promise<MigrationExecutionReport>;
     executeControlled(database: Database, holder: string, options?: {
         timeoutMilliseconds?: number;
         resources?: MigrationExecutionResources;
         cancellation?: MigrationCancellation;
-    }): MigrationExecutionReport;
+    }): Promise<MigrationExecutionReport>;
 }
 export declare class MigrationCancellation {
     #private;
@@ -360,6 +362,8 @@ export declare class MigrationCatalog {
     #private;
     /** @internal */
     constructor(native: NativeMigrationCatalog);
+    /** Register async user code before creating a migration preview. */
+    register(stepId: string, forward: (tx: MigrationTransaction) => Promise<void>, reverse?: (tx: MigrationTransaction) => Promise<void>): void;
     get length(): number;
     fingerprintJson(): string;
     isEmpty(): boolean;
@@ -437,6 +441,12 @@ export declare class ManagedDatabaseDeletionPlan {
 }
 /** @internal Wrap a generated-package-owned native database handle. */
 export declare function createRustDatabaseFromNative(native: NativeRustDatabase): Database;
+/** Callback-scoped managers, typed queries and raw TypeQL on the engine transaction. */
+export declare class MigrationTransaction {
+    #private;
+    private constructor();
+    executeQuery(query: string): Promise<RawValue>;
+}
 export declare class TransactionContext {
     #private;
     private constructor();

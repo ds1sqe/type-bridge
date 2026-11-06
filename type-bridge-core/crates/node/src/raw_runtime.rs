@@ -11,7 +11,7 @@ use std::sync::Arc;
 use type_bridge_orm::session::raw::{RawQueryError, RawTransaction};
 use type_bridge_orm::{CommitFailureCertainty, ProviderRuntimeOwner, TxType};
 
-fn raw_error(error: RawQueryError) -> napi::Error {
+pub(crate) fn raw_error(error: RawQueryError) -> napi::Error {
     let outcome = error.commit_outcome.map(|outcome| match outcome {
         CommitFailureCertainty::DefinitelyAborted => "definitely_aborted",
         CommitFailureCertainty::Unknown => "unknown",
@@ -25,7 +25,7 @@ fn raw_error(error: RawQueryError) -> napi::Error {
     ))
 }
 
-struct RawJson(serde_json::Value);
+pub(crate) struct RawJson(pub(crate) serde_json::Value);
 
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 enum RawNumber {

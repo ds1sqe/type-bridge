@@ -551,6 +551,17 @@ pub struct NodeRustTransactionContext {
 }
 
 impl NodeRustTransactionContext {
+    pub(crate) fn from_borrowed(
+        context: TransactionContext,
+        runtime: Arc<ProviderRuntimeOwner>,
+    ) -> Self {
+        Self {
+            context,
+            runtime,
+            successor_batch_invoked: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
     }
@@ -562,6 +573,24 @@ impl NodeRustTransactionContext {
 
 #[napi]
 impl NodeRustTransactionContext {
+    #[napi(js_name = "executeQuery", ts_return_type = "Promise<unknown>")]
+    pub fn execute_query(
+        &self,
+        env: Env,
+        query: String,
+    ) -> napi::Result<napi::bindgen_prelude::Object<'static>> {
+        let tx = self.context.clone();
+        crate::proxy_connection_runtime::settle(&env, &self.runtime, async move {
+            let bytes = tx
+                .execute_query(&query)
+                .await
+                .map_err(crate::raw_runtime::raw_error)?;
+            serde_json::from_slice(&bytes)
+                .map(crate::raw_runtime::RawJson)
+                .map_err(|_| napi::Error::from_reason("raw_answer_encoding"))
+        })
+    }
+
     #[napi(js_name = "commit")]
     pub fn commit(&self) -> Result<()> {
         if self.successor_batch_invoked.load(Ordering::Acquire) {
