@@ -276,3 +276,88 @@ cover the callback's source code. Keep callback code versioned with the
 application. CLI apply cannot load user code and reports
 `migration_user_step_unregistered`; execute such migrations through an SDK
 catalog with the callback registered.
+
+
+### Registered user data steps
+
+Register code on the generated catalog **before creating the preview**. A
+preview snapshots its registrations. Both directions of a user intent normally
+name the same registration ID; the engine selects its forward or reverse
+function. A missing callback or reverse is refused before writes. User callbacks
+run only on direct connections; proxy execution is refused before writes.
+
+Python callbacks are synchronous. Generated managers use the callback transaction:
+
+```python
+from app_models import Gender, Person, open_migration_catalog
+from type_bridge.migration import MigrationTransaction
+
+
+def derive_gender(tx: MigrationTransaction) -> None:
+    people = Person.manager(tx)
+    for person in people.all():
+        # Example legacy encoding: the final digit encodes this stored category.
+        person.gender = Gender("male" if int(person.ssn.value[-1]) % 2 else "female")
+        people.update(person)
+
+
+def clear_gender(tx: MigrationTransaction) -> None:
+    tx.execute_query("match $p isa person, has gender $g; delete has $g of $p;")
+
+
+catalog = open_migration_catalog()
+catalog.register("derive-gender", derive_gender, clear_gender)
+```
+
+Use this reverse only when the migration owns all those gender values. A real
+migration must preserve unrelated pre-existing data. Async Python typed-query
+terminals can run with `asyncio.run()` inside the synchronous callback.
+
+Node callbacks are async and migration execution is awaited:
+
+```typescript
+catalog.register("derive-gender", async tx => {
+  const people = Person.manager(tx);
+  for (const person of people.all()) {
+    people.update(person.iid, Person.create({
+      ssn: person.ssn,
+      gender: Gender.create(Number(person.ssn.value.slice(-1)) % 2 ? "male" : "female"),
+    }));
+  }
+}, async tx => {
+  await tx.executeQuery("match $p isa person, has gender $g; delete has $g of $p;");
+});
+const report = await plan.execute(database, "deployment");
+```
+
+In Rust, a plain `async fn(MigrationTransaction<AppSchema>) -> type_bridge::Result<()>`
+works with `catalog.register("derive-gender", forward)` or
+`catalog.register_with_reverse("derive-gender", forward, reverse)`. Use
+`tx.entities::<Person>()`, `tx.relations::<Relation>()`, `tx.query()` and
+`tx.execute_query(text).await` on that transaction.
+
+C uses `type_bridge_migration_catalog_register(catalog, step_id, forward,
+reverse, context, &diagnostics)`. Its callback signature is:
+
+```c
+type_bridge_status_t forward(type_bridge_write_transaction_t *tx,
+    void *context, type_bridge_execution_diagnostics_t **diagnostics);
+```
+
+The borrowed write handle supports generated managers and typed queries.
+`type_bridge_migration_transaction_execute_query` returns the ordinary raw JSON
+result handle. Return an error status, optionally transferring owned execution
+diagnostics, to fail the callback. The context must be callable from a worker
+thread and remain live until the catalog and all derived plans close. Close
+those owners before closing the database; they retain borrowed handle storage.
+C callbacks must not unwind. Cancellation invalidates the borrowed transaction;
+the execute call waits for the C function to return before releasing its context.
+
+All surfaces share the same engine transaction. The engine commits its data
+and completion marker together, or rolls both back on a callback error. A
+process failure after commit is recovered from the marker without calling the
+callback again. Callbacks cannot commit, roll back or close the transaction;
+escaped handles and managers become invalid after return or cancellation.
+Keep external side effects out of callbacks: retries cannot roll those back.
+One data step is one TypeDB transaction. Split large derivations into several
+steps to stay within TypeDB transaction limits.
