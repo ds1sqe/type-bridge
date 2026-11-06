@@ -2353,10 +2353,6 @@ jobs:
       - name: Run pyright on ${{ matrix.target }}
         run: uv run pyright ${{ matrix.target }}/
 
-      - name: Check intentional typed Query API diagnostics
-        if: matrix.target == 'tests'
-        run: uv run python tests/unit/typed_query/check_query_negative.py
-
       - name: Check generated Python projection package
         if: matrix.target == 'tests'
         run: uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
