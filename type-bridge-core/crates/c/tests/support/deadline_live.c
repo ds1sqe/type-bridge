@@ -61,6 +61,8 @@ int main(int argc, char **argv) {
             connection.username = view("admin"); connection.password = view("password");
             connection.http_port = 43131; connection.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
             connection.answer_limits = limits;
+            connection.answer_limits.timeout_milliseconds = 0;
+            connection.answer_limits.collect_phase_timestamps = 0;
             CHECK(type_bridge_database_open(runtime, package, &connection, NULL, &database, &errors) == TYPE_BRIDGE_STATUS_OK);
             CHECK(type_bridge_database_transaction_with_options(database, TYPE_BRIDGE_TRANSACTION_WRITE, &options, &tx, &errors) == TYPE_BRIDGE_STATUS_OK);
         }
