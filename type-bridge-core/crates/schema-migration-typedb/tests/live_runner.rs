@@ -1753,7 +1753,7 @@ async fn catalog_import_checks_adoption_evidence_before_any_new_journal_write() 
     };
     use type_bridge_schema_migration_typedb::{
         ManagedDatabasePairAdministrator, ManagedDatabasePairCreateOutcome,
-        ManagedDatabasePairState, execute_catalog_apply_plan,
+        ManagedDatabasePairState, execute_catalog_apply_plan_controlled,
     };
     for mismatch in [
         None,
@@ -1854,11 +1854,12 @@ async fn catalog_import_checks_adoption_evidence_before_any_new_journal_write() 
                 &[],
             )
             .unwrap();
-        let result = execute_catalog_apply_plan(
+        let result = execute_catalog_apply_plan_controlled(
             Arc::clone(&managed),
             &catalog,
             &LeaseHolderId::new("sdk-first-import").unwrap(),
             &plan,
+            &type_bridge_schema_migration::MigrationExecutionControl::default(),
         )
         .await;
         if let Some(mismatch) = mismatch {
@@ -1888,6 +1889,65 @@ async fn catalog_import_checks_adoption_evidence_before_any_new_journal_write() 
                     .unwrap()
                     .contains("entity company")
             );
+            managed
+                .execute_raw(
+                    "match $row isa type_bridge_migration; delete $row;",
+                    TxType::Write,
+                )
+                .await
+                .unwrap();
+            let next_target = type_bridge_schema_compat::parse_adopted_genesis(
+                DocumentId::new("catalog-next.typeql").unwrap(),
+                "define entity person; entity company; entity project;\n",
+            )
+            .unwrap();
+            write_manifest(
+                directory.path(),
+                &manifest_with_derived_assertions(
+                    "0002_project",
+                    vec![migration_id("0001_company")],
+                    &target,
+                    &next_target,
+                    &context,
+                ),
+            );
+            let graph =
+                discover_verified_migration_chain(directory.path(), &head, &context).unwrap();
+            let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).unwrap();
+            let catalog = MigrationCatalog::open(
+                &encode_verified_migration_history_bundle(&bundle).unwrap(),
+                &context,
+            )
+            .unwrap();
+            let applied = type_bridge_schema_migration_typedb::load_catalog_applied_migrations(
+                Arc::clone(&managed),
+                &catalog,
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+            let repeat = catalog
+                .authorize_apply(
+                    &applied,
+                    &MigrationApplyTarget::DefaultHead,
+                    &MigrationSafetyPolicy::default_policy(),
+                    &[],
+                )
+                .unwrap();
+            let repeated = execute_catalog_apply_plan_controlled(
+                Arc::clone(&managed),
+                &catalog,
+                &LeaseHolderId::new("sdk-after-import").unwrap(),
+                &repeat,
+                &type_bridge_schema_migration::MigrationExecutionControl::default(),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                repeated,
+                MigrationExecutionOutcome::Applied { .. }
+            ));
         }
         administrator
             .plan_delete()

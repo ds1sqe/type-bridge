@@ -257,7 +257,9 @@ impl TypeDbMigrationStore<'_> {
             .cloned()
             .ok_or_else(|| invalid("legacy bridge has no applied-set binding"))?;
         let scope = ExecutionScope::new(self.managed_scope_id.clone());
-        let fingerprint = if let Some(complete) = self.import_complete(&scope).await? {
+        let complete = self.import_complete(&scope).await?;
+        let already_imported = complete.is_some();
+        let fingerprint = if let Some(complete) = complete {
             complete
                 .legacy
                 .ok_or_else(|| invalid("import-complete has no legacy bridge evidence"))?
@@ -315,7 +317,7 @@ impl TypeDbMigrationStore<'_> {
             self.managed_scope_id.as_str().to_owned(),
             fingerprint,
         ));
-        if self.import_complete(&scope).await?.is_none() {
+        if !already_imported {
             self.legacy_evidence().await?;
         }
         Ok(self)
