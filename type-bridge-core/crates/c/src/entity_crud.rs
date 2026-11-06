@@ -920,6 +920,7 @@ functions:
                 type_bridge_write_transaction_open(
                     &*fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -1334,6 +1335,7 @@ functions:
                 type_bridge_write_transaction_open(
                     &*fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -1386,6 +1388,7 @@ functions:
                 type_bridge_write_transaction_commit(
                     &mut transaction,
                     ptr::null(),
+                    ptr::null(),
                     &mut diagnostics,
                 )
             },
@@ -1405,6 +1408,7 @@ functions:
             unsafe {
                 type_bridge_write_transaction_open(
                     &*fixture.database,
+                    ptr::null(),
                     ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
@@ -1457,6 +1461,7 @@ functions:
                 type_bridge_write_transaction_commit(
                     &mut transaction,
                     ptr::null(),
+                    ptr::null(),
                     &mut diagnostics,
                 )
             },
@@ -1497,6 +1502,7 @@ functions:
             unsafe {
                 type_bridge_read_transaction_open(
                     &*read_fixture.database,
+                    ptr::null(),
                     ptr::null(),
                     &mut read,
                     &mut diagnostics,
@@ -1871,6 +1877,7 @@ functions:
                 type_bridge_write_transaction_open(
                     &*fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -1982,6 +1989,7 @@ functions:
                 type_bridge_read_transaction_open(
                     &*read_fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut read,
                     &mut diagnostics,
                 )
@@ -2026,6 +2034,7 @@ functions:
             unsafe {
                 type_bridge_write_transaction_open(
                     &*write_fixture.database,
+                    ptr::null(),
                     ptr::null(),
                     &mut write,
                     &mut diagnostics,
@@ -2249,6 +2258,7 @@ functions:
                 type_bridge_read_transaction_open(
                     &*read_fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut read,
                     &mut diagnostics,
                 )
@@ -2304,6 +2314,7 @@ functions:
             unsafe {
                 type_bridge_write_transaction_open(
                     &*write_fixture.database,
+                    ptr::null(),
                     ptr::null(),
                     &mut write,
                     &mut diagnostics,
@@ -2749,6 +2760,7 @@ functions:
                 type_bridge_write_transaction_open(
                     &*fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -2795,6 +2807,7 @@ functions:
                 type_bridge_write_transaction_commit(
                     &mut transaction,
                     ptr::null(),
+                    ptr::null(),
                     &mut diagnostics,
                 )
             },
@@ -2817,6 +2830,7 @@ functions:
             unsafe {
                 type_bridge_read_transaction_open(
                     &*read_fixture.database,
+                    ptr::null(),
                     ptr::null(),
                     &mut read,
                     &mut diagnostics,
@@ -3161,6 +3175,7 @@ functions:
             unsafe {
                 type_bridge_write_transaction_open(
                     &*transaction_fixture.database,
+                    ptr::null(),
                     ptr::null(),
                     &mut transaction,
                     &mut diagnostics,

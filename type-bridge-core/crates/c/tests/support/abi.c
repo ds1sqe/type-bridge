@@ -499,9 +499,9 @@ void type_bridge_abi_probe(void) {
   TAKE(database_open_fn, type_bridge_database_open);
   TAKE(database_query_limits_open_fn, type_bridge_database_open_with_query_limits);
   TAKE(proxy_query_limits_open_fn, type_bridge_proxy_connection_open_with_query_limits_v1);
-  TAKE(read_open_fn, type_bridge_read_transaction_open_v2);
-  TAKE(write_open_fn, type_bridge_write_transaction_open_v2);
-  TAKE(write_commit_fn, type_bridge_write_transaction_commit_v2);
+  TAKE(read_open_fn, type_bridge_read_transaction_open);
+  TAKE(write_open_fn, type_bridge_write_transaction_open);
+  TAKE(write_commit_fn, type_bridge_write_transaction_commit);
   TAKE(database_create_fn, type_bridge_database_entity_insert_v2);
   TAKE(database_create_fn, type_bridge_database_entity_put_v2);
   TAKE(database_get_fn, type_bridge_database_entity_get_by_iid_v2);

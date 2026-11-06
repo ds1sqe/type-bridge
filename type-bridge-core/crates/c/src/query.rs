@@ -10132,6 +10132,7 @@ mod tests {
                 type_bridge_read_transaction_open(
                     &*database.value,
                     ptr::null(),
+                    ptr::null(),
                     &mut read,
                     &mut diagnostics,
                 )
@@ -13097,6 +13098,7 @@ mod tests {
                 type_bridge_read_transaction_open(
                     &*database.value,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -13879,6 +13881,7 @@ mod tests {
                 unsafe {
                     type_bridge_read_transaction_open(
                         &*database.value,
+                        ptr::null(),
                         ptr::null(),
                         &mut transaction,
                         &mut diagnostics,

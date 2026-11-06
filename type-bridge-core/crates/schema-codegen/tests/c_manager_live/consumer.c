@@ -993,7 +993,7 @@ int main(void) {
                          TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_INVALID_INPUT,
                          "invalid_operator_for_type"));
 
-  CHECK(type_bridge_read_transaction_open_v2(database, &limits, NULL, &read,
+  CHECK(type_bridge_read_transaction_open(database, &limits, NULL, &read,
                                              &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         read != NULL && diagnostics == NULL);

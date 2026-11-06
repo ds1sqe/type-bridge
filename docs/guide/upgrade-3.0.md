@@ -326,3 +326,18 @@ Admission failures retain the underlying structured diagnostics in detail kind
 original diagnostic objects, including code, message, path and details. Read
 it with `type_bridge_execution_diagnostics_detail_get_v1` while the execution
 diagnostics owner is live. The enclosing typed admission code is retained.
+
+C transaction open and commit names now use the policy-aware signature:
+
+| Previous call | Current call |
+| --- | --- |
+| `type_bridge_read_transaction_open(db, cancel, out, diagnostics)` | `type_bridge_read_transaction_open(db, NULL, cancel, out, diagnostics)` |
+| `type_bridge_write_transaction_open(db, cancel, out, diagnostics)` | `type_bridge_write_transaction_open(db, NULL, cancel, out, diagnostics)` |
+| `type_bridge_write_transaction_commit(tx, cancel, diagnostics)` | `type_bridge_write_transaction_commit(tx, NULL, cancel, diagnostics)` |
+
+For these three functions, the `_v2` name becomes the unsuffixed name without
+changing arguments. `NULL` selects the shared direct default policy; supply a
+`type_bridge_query_execution_limits_v1_t` pointer to set call limits. Open and
+commit retain the owning database or transaction ceilings. Cancellation uses
+the current policy-aware diagnostics, including `provider_cancelled` when a
+cancellation is already requested before transaction dispatch.

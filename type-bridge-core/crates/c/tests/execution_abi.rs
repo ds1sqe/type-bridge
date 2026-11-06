@@ -126,13 +126,13 @@ void type_bridge_function_type_probe(void) {
       const type_bridge_cancellation_t *, type_bridge_database_t **,
       type_bridge_execution_diagnostics_t **) = &type_bridge_database_open;
   type_bridge_status_t (*read_open)(
-      const type_bridge_database_t *, const type_bridge_cancellation_t *,
-      type_bridge_read_transaction_t **,
+      const type_bridge_database_t *, const type_bridge_query_execution_limits_v1_t *,
+      const type_bridge_cancellation_t *, type_bridge_read_transaction_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_read_transaction_open;
   type_bridge_status_t (*write_open)(
-      const type_bridge_database_t *, const type_bridge_cancellation_t *,
-      type_bridge_write_transaction_t **,
+      const type_bridge_database_t *, const type_bridge_query_execution_limits_v1_t *,
+      const type_bridge_cancellation_t *, type_bridge_write_transaction_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_open;
   type_bridge_status_t (*generated_preflight)(
@@ -496,7 +496,7 @@ fn read_and_write_transaction_handles_are_not_interchangeable_in_c() {
         r#"#include <typebridge/type_bridge.h>
 void misuse(type_bridge_read_transaction_t **read,
             type_bridge_execution_diagnostics_t **diagnostics) {
-  (void)type_bridge_write_transaction_commit(read, NULL, diagnostics);
+  (void)type_bridge_write_transaction_commit(read, NULL,  NULL, diagnostics);
 }
 "#,
     )

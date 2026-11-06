@@ -6763,7 +6763,7 @@ int main(void) {
   CHECK(package == NULL);
 
   CHECK(type_bridge_read_transaction_open(
-            database, NULL, &read_transaction, &diagnostics) ==
+            database, NULL,  NULL, &read_transaction, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(read_transaction != NULL && diagnostics == NULL);
   {
@@ -6778,22 +6778,22 @@ int main(void) {
   CHECK(read_transaction == NULL && diagnostics == NULL);
 
   CHECK(type_bridge_write_transaction_open(
-            database, NULL, &write_transaction, &diagnostics) ==
+            database, NULL,  NULL, &write_transaction, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(write_transaction != NULL && diagnostics == NULL);
   CHECK(type_bridge_write_transaction_commit(
-            &write_transaction, NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+            &write_transaction, NULL,  NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(write_transaction == NULL && diagnostics == NULL);
 
   CHECK(type_bridge_write_transaction_open(
-            database, NULL, &write_transaction, &diagnostics) ==
+            database, NULL,  NULL, &write_transaction, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_write_transaction_rollback(
             &write_transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(write_transaction == NULL && diagnostics == NULL);
 
   CHECK(type_bridge_write_transaction_open(
-            database, NULL, &write_transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+            database, NULL,  NULL, &write_transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   {
     type_bridge_write_transaction_t *const original = write_transaction;
     uint64_t count = 99u;
@@ -6805,12 +6805,12 @@ int main(void) {
               &count, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(count == 0u && diagnostics == NULL);
     CHECK(type_bridge_write_transaction_commit(
-              &write_transaction, NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+              &write_transaction, NULL,  NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(write_transaction == NULL && diagnostics == NULL);
   }
 
   CHECK(type_bridge_write_transaction_open(
-            database, NULL, &write_transaction, &diagnostics) ==
+            database, NULL,  NULL, &write_transaction, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_write_transaction_close(
             &write_transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);

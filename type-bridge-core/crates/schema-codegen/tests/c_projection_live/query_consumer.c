@@ -1155,7 +1155,7 @@ run_robot_batches(const type_bridge_schema_package_t *package,
     CHECK(fixture_robot_insert_batch_builder_finish(
               &insert_builder, &insert_batch, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(type_bridge_write_transaction_open_v2(
+    CHECK(type_bridge_write_transaction_open(
               database, limits, NULL, &write_transaction, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_robot_write_transaction_insert_batch_execute(
@@ -1165,7 +1165,7 @@ run_robot_batches(const type_bridge_schema_package_t *package,
     CHECK(check_exact_provider_write_failure(*out_diagnostics) == 0);
     CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(type_bridge_write_transaction_commit_v2(&write_transaction, limits,
+    CHECK(type_bridge_write_transaction_commit(&write_transaction, limits,
                                                   NULL, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
     CHECK(write_transaction != NULL && *out_diagnostics != NULL);
@@ -1497,7 +1497,7 @@ int main(void) {
         TYPE_BRIDGE_STATUS_OK);
   CHECK(same_text(version, expected_server_version));
 
-  CHECK(type_bridge_read_transaction_open_v2(database, &limits, NULL,
+  CHECK(type_bridge_read_transaction_open(database, &limits, NULL,
                                              &read_transaction, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_read_transaction_count_v2(read_transaction, &limits,
@@ -1506,14 +1506,14 @@ int main(void) {
         count == 0u);
   CHECK(type_bridge_read_transaction_close(&read_transaction, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(type_bridge_write_transaction_open_v2(
+  CHECK(type_bridge_write_transaction_open(
             database, &limits, NULL, &write_transaction, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_write_transaction_count_v2(
             write_transaction, &limits, NULL, &count, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         count == 0u);
-  CHECK(type_bridge_write_transaction_commit_v2(&write_transaction, &limits,
+  CHECK(type_bridge_write_transaction_commit(&write_transaction, &limits,
                                                 NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(write_transaction == NULL && diagnostics == NULL);

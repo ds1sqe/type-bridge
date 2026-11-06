@@ -2923,7 +2923,7 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_query_exists_result_close(&exists_result) ==
         TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(type_bridge_read_transaction_open(database, NULL, &read_transaction,
+  CHECK(type_bridge_read_transaction_open(database, NULL,  NULL, &read_transaction,
                                           out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_read_transaction_query_execute_rows(
@@ -5835,7 +5835,7 @@ int main(void) {
           0);
     CHECK(open_person_create(package, "cara", 25, &cara_create,
                              &diagnostics) == 0);
-    CHECK(type_bridge_write_transaction_open(database, NULL, &write_tx,
+    CHECK(type_bridge_write_transaction_open(database, NULL,  NULL, &write_tx,
                                              &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_write_transaction_insert(
@@ -5885,12 +5885,12 @@ int main(void) {
           TYPE_BRIDGE_STATUS_OK);
     CHECK(count == 2u);
     puts("P4 write transaction count: passed");
-    CHECK(type_bridge_write_transaction_commit(&write_tx, NULL,
+    CHECK(type_bridge_write_transaction_commit(&write_tx, NULL,  NULL,
                                                &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(write_tx == NULL && diagnostics == NULL);
 
-    CHECK(type_bridge_read_transaction_open(database, NULL, &read_tx,
+    CHECK(type_bridge_read_transaction_open(database, NULL,  NULL, &read_tx,
                                             &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_read_transaction_get_by_iid(
@@ -6103,7 +6103,7 @@ int main(void) {
               TYPE_BRIDGE_STATUS_OK);
         puts("P5 database relation put: passed");
 
-        CHECK(type_bridge_write_transaction_open(database, NULL, &write_tx,
+        CHECK(type_bridge_write_transaction_open(database, NULL,  NULL, &write_tx,
                                                  &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
         CHECK(TEST_SINGLE_WRITE(fixture_membership, insert, fixture_membership_write_transaction_insert(
@@ -6158,12 +6158,12 @@ int main(void) {
               TYPE_BRIDGE_STATUS_OK);
         CHECK(count == 3u);
         puts("P5 write transaction relation count: passed");
-        CHECK(type_bridge_write_transaction_commit(&write_tx, NULL,
+        CHECK(type_bridge_write_transaction_commit(&write_tx, NULL,  NULL,
                                                    &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
         CHECK(write_tx == NULL && diagnostics == NULL);
 
-        CHECK(type_bridge_read_transaction_open(database, NULL, &read_tx,
+        CHECK(type_bridge_read_transaction_open(database, NULL,  NULL, &read_tx,
                                                 &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
         CHECK(fixture_membership_read_transaction_get_by_iid(

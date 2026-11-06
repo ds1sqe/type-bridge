@@ -333,6 +333,10 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+- C `type_bridge_read_transaction_open`, `type_bridge_write_transaction_open`,
+  and `type_bridge_write_transaction_commit` now take `limits` immediately
+  after their database/transaction argument. Pass `NULL` for defaults.
+  Their `_v2` counterparts become these unsuffixed functions unchanged.
 - C package openers and runtime/generated migration-catalog openers use
   execution diagnostics. The V1 package openers are removed; generated
   packages expose one opener. Detail kind 16 retains the exact original

@@ -1154,25 +1154,8 @@ type_bridge_database_close(
  * rollback/close remain permitted and consume the handle normally.
  */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_read_transaction_open(
-    const type_bridge_database_t *database,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_read_transaction_t **out_transaction,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_read_transaction_close(
     type_bridge_read_transaction_t **transaction,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_open(
-    const type_bridge_database_t *database,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_write_transaction_t **out_transaction,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_commit(
-    type_bridge_write_transaction_t **transaction,
-    const type_bridge_cancellation_t *cancellation,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_write_transaction_rollback(
@@ -3311,21 +3294,21 @@ type_bridge_database_open_with_query_limits(
     type_bridge_database_t **out_database,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_read_transaction_open_v2(
+type_bridge_read_transaction_open(
     const type_bridge_database_t *database,
     const type_bridge_query_execution_limits_v1_t *limits,
     const type_bridge_cancellation_t *cancellation,
     type_bridge_read_transaction_t **out_transaction,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_open_v2(
+type_bridge_write_transaction_open(
     const type_bridge_database_t *database,
     const type_bridge_query_execution_limits_v1_t *limits,
     const type_bridge_cancellation_t *cancellation,
     type_bridge_write_transaction_t **out_transaction,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_commit_v2(
+type_bridge_write_transaction_commit(
     type_bridge_write_transaction_t **transaction,
     const type_bridge_query_execution_limits_v1_t *limits,
     const type_bridge_cancellation_t *cancellation,

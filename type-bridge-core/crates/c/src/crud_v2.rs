@@ -1187,6 +1187,7 @@ mod tests {
                 type_bridge_read_transaction_open(
                     database,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -1251,6 +1252,7 @@ mod tests {
             unsafe {
                 type_bridge_write_transaction_open(
                     database,
+                    ptr::null(),
                     ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
@@ -1816,6 +1818,7 @@ mod tests {
                 type_bridge_read_transaction_open(
                     &*fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut read_transaction,
                     &mut diagnostics,
                 )
@@ -1856,6 +1859,7 @@ mod tests {
             unsafe {
                 type_bridge_write_transaction_open(
                     &*fixture.database,
+                    ptr::null(),
                     ptr::null(),
                     &mut write_transaction,
                     &mut diagnostics,
@@ -1961,6 +1965,7 @@ mod tests {
                 type_bridge_read_transaction_open(
                     &*read.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut read_transaction,
                     &mut diagnostics,
                 )
@@ -2008,6 +2013,7 @@ mod tests {
             unsafe {
                 type_bridge_write_transaction_open(
                     &*write.database,
+                    ptr::null(),
                     ptr::null(),
                     &mut write_transaction,
                     &mut diagnostics,
