@@ -105,7 +105,7 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     lane_3_13_6_tests = {
         "concurrency_guide_snippets_run_on_3_13_6",
         "staged_plans_race_like_the_concurrency_guide_on_3_13_6",
-        "live_c17_consumer_stages_and_commits_contract_v3_plans",
+        "live_c17_consumer_stages_and_commits_contract_plans",
         "live_c17_consumer_builds_stages_and_races_the_purchase",
         "lowering::tests::native_ordered_formatter_exports_and_removes_schema_live",
         "racing_lease_acquirers_serialize_on_the_control_row",
@@ -265,7 +265,7 @@ def test_profile_lane_steps_run_on_their_own_profile_job() -> None:
             "-p type-bridge-orm --test plan_race_live",
         ),
         "Run C ABI 1.7 staged contract plans": (
-            "live_c17_consumer_stages_and_commits_contract_v3_plans",
+            "live_c17_consumer_stages_and_commits_contract_plans",
             "-p type-bridge-c --test schema_package_abi",
         ),
         "Run C ABI 1.7 builder purchase race": (

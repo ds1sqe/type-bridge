@@ -48,7 +48,7 @@ pub async fn setup_db() -> Database {
 /// profiles, `@doc`/`@meta` on subtypes and functions) are defined against the
 /// TypeDB 3.12.1 semantic baseline. Custom backends must prove a compatible
 /// server identity before the conformance probes execute.
-pub fn server_supports_v2_conformance(db: &Database) -> bool {
+pub fn server_supports_conformance(db: &Database) -> bool {
     db.server_version()
         .is_some_and(|version| version.major > 3 || (version.major == 3 && version.minor >= 12))
 }

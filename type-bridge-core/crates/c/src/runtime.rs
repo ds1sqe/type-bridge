@@ -2915,7 +2915,7 @@ entities:
     }
 
     #[test]
-    fn v2_configuration_validates_captured_custom_root_without_provider_io_or_disclosure() {
+    fn configuration_validates_captured_custom_root_without_provider_io_or_disclosure() {
         let valid_root = include_bytes!("../../core/tests/fixtures/valid-root.pem").to_vec();
         let valid = DatabaseConfigFixture::new(
             TLS_CUSTOM_ROOT_CA,
@@ -3109,11 +3109,11 @@ entities:
     }
 
     #[test]
-    fn v2_result_handle_allocation_failures_precede_provider_dispatch() {
+    fn result_handle_allocation_failures_precede_provider_dispatch() {
         let state = Arc::new(FakeState::default());
         state.lacks_given_rows.store(false, Ordering::Release);
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
-        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2allocation")));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "allocation")));
         let fixture = DatabaseConfigFixture::plaintext(QueryExecutionResourceLimits::default());
 
         let unbounded_connection_limits = QueryExecutionResourceLimits {
@@ -3243,11 +3243,11 @@ entities:
     }
 
     #[test]
-    fn v2_output_preflight_fences_nested_and_live_handle_storage_before_writes() {
+    fn output_preflight_fences_nested_and_live_handle_storage_before_writes() {
         let state = Arc::new(FakeState::default());
         state.lacks_given_rows.store(false, Ordering::Release);
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
-        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2alias")));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "alias")));
         let fixture = DatabaseConfigFixture::plaintext(QueryExecutionResourceLimits::default());
         let preserved_address = fixture._address.clone();
         // SAFETY: this hostile output starts inside the readable address bytes;
@@ -3360,7 +3360,7 @@ entities:
     }
 
     #[test]
-    fn legacy_lifecycle_on_v2_handles_deep_fences_every_retained_input_before_writes() {
+    fn legacy_lifecycle_on_handles_deep_fences_every_retained_input_before_writes() {
         let state = Arc::new(FakeState::default());
         state.lacks_given_rows.store(false, Ordering::Release);
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
@@ -3723,11 +3723,11 @@ entities:
     }
 
     #[test]
-    fn v2_database_requires_band9_and_transactions_intersect_and_inherit_answer_policy() {
+    fn database_requires_band9_and_transactions_intersect_and_inherit_answer_policy() {
         let state = Arc::new(FakeState::default());
         state.lacks_given_rows.store(true, Ordering::Release);
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
-        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2policy")));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "policy")));
         let answer_limits =
             QueryExecutionResourceLimits::tightened(9_000, 11, 101, 13, 17, 19, 23, 2);
         let fixture = DatabaseConfigFixture::plaintext(answer_limits);
@@ -3846,10 +3846,10 @@ entities:
     }
 
     #[test]
-    fn v2_transaction_open_wakes_for_cancellation_and_deadline() {
+    fn transaction_open_wakes_for_cancellation_and_deadline() {
         let state = Arc::new(FakeState::default());
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
-        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2opencontrol")));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "opencontrol")));
         let (mut database, mut diagnostics, status) =
             unsafe { open_database(runtime, package, ptr::null()) };
         assert_eq!(status, TypeBridgeStatus::Ok);
@@ -3994,7 +3994,7 @@ entities:
     }
 
     #[test]
-    fn rollback_only_commit_is_exact_pre_dispatch_and_retains_legacy_and_v2_owners() {
+    fn rollback_only_commit_is_exact_pre_dispatch_and_retains_legacy_and_owners() {
         let state = Arc::new(FakeState::default());
         state.lacks_given_rows.store(false, Ordering::Release);
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
@@ -4109,10 +4109,10 @@ entities:
     }
 
     #[test]
-    fn v2_and_inherited_legacy_commits_reject_before_dispatch_but_actual_outcome_wins() {
+    fn and_inherited_legacy_commits_reject_before_dispatch_but_actual_outcome_wins() {
         let state = Arc::new(FakeState::default());
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
-        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2commit")));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "commitcontrol")));
         let (mut database, mut diagnostics, status) =
             unsafe { open_database(runtime, package, ptr::null()) };
         assert_eq!(status, TypeBridgeStatus::Ok);
@@ -4302,7 +4302,7 @@ entities:
     }
 
     #[test]
-    fn v2_commit_deadline_awaits_actual_outcome_without_cancelling_reusable_token() {
+    fn commit_deadline_awaits_actual_outcome_without_cancelling_reusable_token() {
         let state = Arc::new(FakeState::default());
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "commitdeadline")));

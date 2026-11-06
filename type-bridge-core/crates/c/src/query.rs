@@ -13207,7 +13207,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_query_execution_cannot_widen_a_v2_target_answer_ceiling() {
+    fn legacy_query_execution_cannot_widen_a_target_answer_ceiling() {
         let package = package("querytargetceiling");
         // SAFETY: fixture owns exact generated handles.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_FIRST, ROWS_BOUNDED_MANY) };

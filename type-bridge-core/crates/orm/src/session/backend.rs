@@ -615,7 +615,7 @@ pub trait TransactionOps: Send {
     /// Execute using canonical provider temporal encoding while preserving answer kind.
     ///
     /// This hidden compatibility hook delegates to legacy [`Self::query`] by
-    /// default; the real provider overrides it with the ExactV2 path.
+    /// default; the real provider overrides it with canonical scalar encoding.
     #[doc(hidden)]
     fn query_canonical<'a>(
         &'a mut self,

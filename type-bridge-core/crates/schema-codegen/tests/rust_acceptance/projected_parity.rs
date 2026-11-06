@@ -856,7 +856,7 @@ async fn hydrated_observations(root: &Path) -> Result<Hydrated, Box<dyn std::err
     let refusal=session.query(binding)?.one().await.expect_err("populated ordered query role must refuse");
     assert_eq!(refusal.code(),Some("query_plan_hydration_ordered_role"));
     assert_eq!(refusal.diagnostic_path(),Some(&[type_bridge::ErrorPathSegment::Query(type_bridge::QueryDiagnosticPathKind::ProviderEvidence)][..]));
-    println!("INTENDED_V3_DIFFERENCE ordered roles refused: network-link:participant");
+    println!("INTENDED_STAGED_DIFFERENCE ordered roles refused: network-link:participant");
     let empty=hydrate_one!(NetworkLink);
     assert!(empty.participant().is_empty());
     use type_bridge::__codegen::{IntoHydratedSnapshot,HydratedRow,MaterializeModel,HydrationCapability};

@@ -44,7 +44,7 @@ const ASSIGNMENT_JSON: &str = r#"{"kind":"relation","label":"assignment"}"#;
 const POSITION_OWNS: &str =
     r#"{"attribute":"position","owner":{"kind":"relation","label":"assignment"}}"#;
 
-fn v3_repository_root() -> PathBuf {
+fn repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -56,7 +56,7 @@ fn v3_repository_root() -> PathBuf {
         .unwrap()
 }
 
-fn v3_data_source_identity(root: &Path, relative: &str) -> Value {
+fn data_source_identity(root: &Path, relative: &str) -> Value {
     let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
@@ -81,7 +81,7 @@ fn publish_models_data_fragment(results: Vec<Value>) {
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     );
-    let root = v3_repository_root();
+    let root = repository_root();
     let sources = [
         "type-bridge-core/crates/contract/src/sdk_diagnostic.rs",
         "type-bridge-core/crates/orm/src/execution_diagnostic.rs",
@@ -101,12 +101,12 @@ fn publish_models_data_fragment(results: Vec<Value>) {
     let fragment = json!({
         "binding": "rust",
         "contract": {
-            "allowlist": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
-            "journey": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
-            "proof_schema": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
+            "allowlist": data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
+            "journey": data_source_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
+            "proof_schema": data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
         },
         "format": "typebridge.sdk-models-proof-fragment/v1",
-        "producer": {"id": "type-bridge-rust.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| v3_data_source_identity(&root, path)).collect::<Vec<_>>()},
+        "producer": {"id": "type-bridge-rust.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| data_source_identity(&root, path)).collect::<Vec<_>>()},
         "results": results,
         "run_nonce": nonce,
         "semantic_profile": crate::sdk_profile_matrix::requested("models").semantic_profile,

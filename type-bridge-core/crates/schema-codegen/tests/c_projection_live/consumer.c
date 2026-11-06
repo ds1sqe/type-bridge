@@ -90,7 +90,7 @@ static int emit_v2_observation(const char *observation_ref,
       return 0;
     }
   }
-  return printf("TYPE_BRIDGE_C_V2_FACT\t%s\t%s\t%s\n", observation_ref,
+  return printf("TYPE_BRIDGE_C_FACT\t%s\t%s\t%s\n", observation_ref,
                 proof_kind, canonical_json) > 0;
 }
 

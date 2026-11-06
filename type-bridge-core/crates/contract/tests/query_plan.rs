@@ -470,7 +470,7 @@ fn stage_plans() -> BTreeMap<&'static str, QueryPlan> {
 }
 
 #[test]
-fn v3_stages_have_stable_golden_bytes_and_round_trip() {
+fn stages_have_stable_golden_bytes_and_round_trip() {
     let schema = schema();
     let mut fixtures = BTreeMap::<&str, Value>::new();
     for (name, plan) in stage_plans() {

@@ -930,7 +930,7 @@ jobs:
           cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-c --lib
           bash scripts/ci/run_exact_ignored_rust_test.sh \
-            live_c17_consumer_stages_and_commits_contract_v3_plans \
+            live_c17_consumer_stages_and_commits_contract_plans \
             --manifest-path type-bridge-core/Cargo.toml --locked \
             -p type-bridge-c --test schema_package_abi
 

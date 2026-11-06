@@ -169,7 +169,7 @@ pub async fn connect(name: &str) -> Database {
 /// Whether the live server takes `given` rows, which every staged purchase
 /// plan binds. A custom provider must also advertise given-row transport.
 pub async fn given_rows_supported(test: &str) -> bool {
-    let db = connect("tb_server_v3_given_rows_probe").await;
+    let db = connect("tb_server_given_rows_probe").await;
     let supported = db.supports_given_stage();
     if !supported {
         eprintln!(
@@ -193,7 +193,7 @@ pub async fn seeded(test: &str) -> (String, Database) {
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ),
-        Err(_) => live_database::name(&format!("server_v3_{test}")),
+        Err(_) => live_database::name(&format!("server_staged_{test}")),
     };
     let db = connect(&name).await;
     db.create_database().await.expect("database created");

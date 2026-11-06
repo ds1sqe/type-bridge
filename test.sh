@@ -922,7 +922,7 @@ run_live_lane() {
                 TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
                 TYPE_BRIDGE_C_INTG_DATABASE="type_bridge_c_staged_live_${$}" \
             bash scripts/ci/run_exact_ignored_rust_test.sh \
-                live_c17_consumer_stages_and_commits_contract_v3_plans \
+                live_c17_consumer_stages_and_commits_contract_plans \
                 --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-c --test schema_package_abi
         run_step "C ABI 1.7 builder purchase race (TypeDB $typedb_server_version)" \

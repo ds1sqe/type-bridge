@@ -6960,13 +6960,13 @@ int main(void) {
 /// TYPEDB_ADDRESS=127.0.0.1:<grpc-port> TYPEDB_HTTP_PORT=<http-port> \
 /// TYPE_BRIDGE_C_INTG_DATABASE=type_bridge_c_staged_live_<unique> \
 /// cargo test --locked -p type-bridge-c --test schema_package_abi \
-///   live_c17_consumer_stages_and_commits_contract_v3_plans \
+///   live_c17_consumer_stages_and_commits_contract_plans \
 ///   -- --exact --ignored --nocapture
 /// ```
 #[cfg(unix)]
 #[test]
 #[ignore = "requires an isolated TypeDB 3.13 server and the C shared library"]
-fn live_c17_consumer_stages_and_commits_contract_v3_plans() {
+fn live_c17_consumer_stages_and_commits_contract_plans() {
     let profile = sdk_profile_matrix::requested("queries");
     let native_library = native_library().unwrap_or_else(|| {
         panic!(

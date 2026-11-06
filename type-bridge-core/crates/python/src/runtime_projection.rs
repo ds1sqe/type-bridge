@@ -8855,7 +8855,7 @@ mod tests {
     use super::*;
     use crate::match_runtime::{PyQueryInvocationBudget, validated_result_handle};
 
-    fn v3_repository_root() -> PathBuf {
+    fn repository_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -8888,7 +8888,7 @@ mod tests {
                     .bytes()
                     .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         );
-        let root = v3_repository_root();
+        let root = repository_root();
         let sources = [
             "type-bridge-core/crates/contract/src/sdk_diagnostic.rs",
             "type-bridge-core/crates/orm/src/execution_diagnostic.rs",

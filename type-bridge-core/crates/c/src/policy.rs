@@ -202,7 +202,7 @@ mod tests {
 
     #[cfg(target_pointer_width = "64")]
     #[test]
-    fn database_config_v2_native_layout_matches_the_frozen_lp64_or_llp64_contract() {
+    fn database_config_native_layout_matches_the_frozen_lp64_or_llp64_contract() {
         assert_eq!(size_of::<TypeBridgeDatabaseConfig>(), 336);
         assert_eq!(offset_of!(TypeBridgeDatabaseConfig, struct_size), 0);
         assert_eq!(offset_of!(TypeBridgeDatabaseConfig, version), 4);
@@ -220,7 +220,7 @@ mod tests {
 
     #[cfg(target_pointer_width = "32")]
     #[test]
-    fn database_config_v2_native_layout_matches_the_frozen_ilp32_contract() {
+    fn database_config_native_layout_matches_the_frozen_ilp32_contract() {
         assert_eq!(size_of::<TypeBridgeDatabaseConfig>(), 296);
         assert_eq!(offset_of!(TypeBridgeDatabaseConfig, struct_size), 0);
         assert_eq!(offset_of!(TypeBridgeDatabaseConfig, version), 4);

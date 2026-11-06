@@ -167,7 +167,7 @@ def test_proxy_query_limits_intersect_independent_advertised_dimensions() -> Non
     assert effective.get("selected_slots") == 16
 
 
-def test_invalid_v3_query_limits_are_refused_before_proxy_io() -> None:
+def test_invalid_query_limits_are_refused_before_proxy_io() -> None:
     import pytest
     from type_bridge_core import QueryLimits
 
@@ -177,7 +177,7 @@ def test_invalid_v3_query_limits_are_refused_before_proxy_io() -> None:
         )
 
 
-def test_invalid_v3_query_limits_are_refused_before_direct_io() -> None:
+def test_invalid_query_limits_are_refused_before_direct_io() -> None:
     import pytest
     from type_bridge_core import PyDatabase, QueryLimits
 

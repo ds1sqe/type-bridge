@@ -44,12 +44,12 @@ const SDK_QUERIES_PROOF_MAX_BYTES: u64 = 64 * 1024;
 const SDK_QUERIES_PROOF_MAX_RESULTS: usize = 16;
 const SDK_QUERIES_PROOF_MAX_SOURCES: usize = 16;
 
-pub type SdkV2ProofLane = (String, String);
+pub type SdkProofLane = (String, String);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct SdkV2ProofProducerAuthority {
+struct SdkProofProducerAuthority {
     sources: Vec<String>,
-    results: BTreeMap<SdkV2ProofLane, String>,
+    results: BTreeMap<SdkProofLane, String>,
 }
 
 fn proof_object<'a>(
@@ -159,7 +159,7 @@ fn validate_proof_source_identity(
     Ok(expected)
 }
 
-fn proof_lane(value: &Value, context: &str) -> Result<SdkV2ProofLane, String> {
+fn proof_lane(value: &Value, context: &str) -> Result<SdkProofLane, String> {
     let lane = proof_object(value, &["observation_ref", "proof_kind"], context)?;
     let observation_ref = proof_string(&lane["observation_ref"], context)?;
     let proof_kind = proof_string(&lane["proof_kind"], context)?;
@@ -179,7 +179,7 @@ fn proof_lane(value: &Value, context: &str) -> Result<SdkV2ProofLane, String> {
 fn sdk_queries_proof_authority(
     root: &Path,
     binding: &str,
-) -> Result<BTreeMap<String, SdkV2ProofProducerAuthority>, String> {
+) -> Result<BTreeMap<String, SdkProofProducerAuthority>, String> {
     if !matches!(binding, "python" | "node" | "rust" | "c") {
         return Err(format!("unknown queries binding {binding:?}"));
     }
@@ -298,7 +298,7 @@ fn sdk_queries_proof_authority(
         if authority
             .insert(
                 producer_id.to_owned(),
-                SdkV2ProofProducerAuthority {
+                SdkProofProducerAuthority {
                     sources: source_paths,
                     results: result_authority,
                 },
@@ -320,7 +320,7 @@ fn sdk_queries_proof_authority(
 pub fn sdk_queries_proof_lanes(
     root: &Path,
     binding: &str,
-) -> Result<BTreeSet<SdkV2ProofLane>, String> {
+) -> Result<BTreeSet<SdkProofLane>, String> {
     Ok(sdk_queries_proof_authority(root, binding)?
         .values()
         .flat_map(|producer| producer.results.keys().cloned())
@@ -401,7 +401,7 @@ pub fn validate_sdk_queries_proof_fragments(
     binding: &str,
     run_nonce: &str,
     fragment_paths: &[PathBuf],
-) -> Result<BTreeMap<SdkV2ProofLane, Value>, String> {
+) -> Result<BTreeMap<SdkProofLane, Value>, String> {
     validate_sdk_queries_proof_fragments_on(root, binding, TEST_PROFILE, run_nonce, fragment_paths)
 }
 
@@ -413,7 +413,7 @@ pub fn validate_sdk_queries_proof_fragments_on(
     semantic_profile: &str,
     run_nonce: &str,
     fragment_paths: &[PathBuf],
-) -> Result<BTreeMap<SdkV2ProofLane, Value>, String> {
+) -> Result<BTreeMap<SdkProofLane, Value>, String> {
     if !is_lower_hex_64(run_nonce) {
         return Err("queries proof run nonce must be 64 lowercase hex characters".to_owned());
     }

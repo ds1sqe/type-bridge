@@ -222,7 +222,7 @@ def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
     assert "steps.prepare-rust-queries.outputs.run_nonce" in rust_prepare
 
 
-def test_node_v2_validator_is_absolute_and_visible_only_to_the_live_producer() -> None:
+def test_node_validator_is_absolute_and_visible_only_to_the_live_producer() -> None:
     job = _jobs()["node-integration"]
     steps = _steps(job)
     setup = steps["Set up Python for the Node queries validator"]

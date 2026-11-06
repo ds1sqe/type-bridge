@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::common::rust_binding::{server_supports_v2_conformance, setup_db, unique_label};
+use crate::common::rust_binding::{server_supports_conformance, setup_db, unique_label};
 use crate::common::typedb::connect_options_from_env;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
@@ -412,7 +412,7 @@ relation {container},
 async fn projected_batch_all_operations_domains_roles_and_mixed_players_live() {
     let _guard = crate::common::integration_test_guard().await;
     let database = setup_db().await;
-    if !server_supports_v2_conformance(&database) {
+    if !server_supports_conformance(&database) {
         database.delete_database().await.unwrap();
         return;
     }
@@ -1109,7 +1109,7 @@ async fn counted_fixture(
     Arc<Mutex<DispatchLog>>,
 )> {
     let database = setup_db().await;
-    if !server_supports_v2_conformance(&database) {
+    if !server_supports_conformance(&database) {
         database.delete_database().await.unwrap();
         return None;
     }
@@ -6051,7 +6051,7 @@ async fn dynamic_nonkey_single_write_results_follow_typeql_fanout_and_role_cardi
     use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
     use type_bridge_orm::AttributeValue;
     let database = setup_db().await;
-    if !server_supports_v2_conformance(&database) {
+    if !server_supports_conformance(&database) {
         database.delete_database().await.unwrap();
         return;
     }

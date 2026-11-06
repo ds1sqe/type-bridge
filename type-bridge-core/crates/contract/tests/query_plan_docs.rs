@@ -4,7 +4,7 @@ use type_bridge_contract::query_plan::decode_query_plan;
 use type_bridge_contract::schema::decode_declared_schema;
 
 #[test]
-fn documented_plan_v3_bytes_and_fingerprints() {
+fn documented_plan_bytes_and_fingerprints() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let fixtures = root.join("tests/contracts/plan");
     let schema =

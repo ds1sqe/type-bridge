@@ -7164,7 +7164,7 @@ mod tests {
 
     use super::*;
 
-    fn v3_root() -> PathBuf {
+    fn root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -7176,7 +7176,7 @@ mod tests {
             .unwrap()
     }
 
-    fn v3_identity(root: &Path, relative: &str) -> Value {
+    fn identity(root: &Path, relative: &str) -> Value {
         json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(fs::read(root.join(relative)).unwrap()))})
     }
 
@@ -7196,7 +7196,7 @@ mod tests {
                     .bytes()
                     .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         );
-        let root = v3_root();
+        let root = root();
         let sources = [
             "type-bridge-core/crates/contract/src/sdk_diagnostic.rs",
             "type-bridge-core/crates/node/src/lib.rs",
@@ -7213,12 +7213,12 @@ mod tests {
         let fragment = json!({
             "binding": "node",
             "contract": {
-                "allowlist": v3_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
-                "journey": v3_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
-                "proof_schema": v3_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
+                "allowlist": identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
+                "journey": identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
+                "proof_schema": identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
             },
             "format": "typebridge.sdk-models-proof-fragment/v1",
-            "producer": {"id": "node.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| v3_identity(&root, path)).collect::<Vec<_>>()},
+            "producer": {"id": "node.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| identity(&root, path)).collect::<Vec<_>>()},
             "results": results,
             "run_nonce": nonce,
             "semantic_profile": crate::sdk_profile_matrix::requested("models").semantic_profile,

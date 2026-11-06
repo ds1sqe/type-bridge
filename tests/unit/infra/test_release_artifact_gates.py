@@ -531,7 +531,7 @@ def test_artifact_builds_cannot_start_before_release_identity_passes() -> None:
         assert needs_line(job_block(workflow, job)) == "    needs: validate-release-identity"
 
 
-def test_each_core_wheel_executes_v2_authoring_on_its_native_target() -> None:
+def test_each_core_wheel_executes_authoring_on_its_native_target() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     build = job_block(workflow, "build-core-wheels")
     legs = re.findall(

@@ -749,7 +749,7 @@ async def _ordered_link_observation(package, model, graph, root_node):
         if getattr(error, "code", None) != "query_plan_hydration_ordered_role":
             raise
         assert error.path == [{"kind": "provider_evidence"}], error.path
-        print("INTENDED_V3_DIFFERENCE ordered roles refused: network-link:participant", flush=True)
+        print("INTENDED_STAGED_DIFFERENCE ordered roles refused: network-link:participant", flush=True)
     else:
         raise AssertionError("populated ordered query role was accepted")
     empty = copy.deepcopy(graph)

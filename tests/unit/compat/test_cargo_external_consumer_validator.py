@@ -210,7 +210,7 @@ def test_generated_consumers_have_only_exact_registry_declarations(tmp_path: Pat
         version=inventory.release_version,
         features=(),
     )
-    v2_only = validator.write_server_consumer(
+    transport_only = validator.write_server_consumer(
         tmp_path / "server-transport-only",
         version=inventory.release_version,
         features=("axum-transport",),
@@ -219,7 +219,7 @@ def test_generated_consumers_have_only_exact_registry_declarations(tmp_path: Pat
         "version": "=2.3.2",
         "default-features": False,
     }
-    assert tomllib.loads(v2_only.read_text())["dependencies"]["type-bridge-server"] == {
+    assert tomllib.loads(transport_only.read_text())["dependencies"]["type-bridge-server"] == {
         "version": "=2.3.2",
         "default-features": False,
         "features": ["axum-transport"],

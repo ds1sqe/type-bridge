@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = ROOT / "type-bridge-core/crates/contract/tests/fixtures/query-remote"
 
 
-def test_query_remote_v3_fixtures() -> None:
+def test_query_remote_fixtures() -> None:
     fixtures = {p.name: json.loads(p.read_bytes()) for p in FIXTURES.glob("*.json")}
     assert len(fixtures) == 14
     request = fixtures["request.json"]

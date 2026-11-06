@@ -42,7 +42,7 @@ const QUERY_PROVIDER_SCHEMA: &str =
 const QUERY_PACKAGE: &str = include_str!("c_projection_live/query_package.c");
 const QUERY_CONSUMER: &str = include_str!("c_projection_live/query_consumer.c");
 const DATABASE_CREATED_MARKER: &str = "generated C isolated database created";
-const SDK_QUERIES_FACT_PREFIX: &str = "TYPE_BRIDGE_C_V2_FACT\t";
+const SDK_QUERIES_FACT_PREFIX: &str = "TYPE_BRIDGE_C_FACT\t";
 const SDK_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest.json";
 const SDK_QUERIES_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/queries/catalog.json";
 const SDK_SCHEMA_PATH: &str = "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml";
@@ -727,7 +727,7 @@ fn requested_sdk_serialization_evidence() -> Option<PathBuf> {
 fn validated_sdk_queries_proofs(
     root: &Path,
     report: Option<&Path>,
-) -> BTreeMap<support::SdkV2ProofLane, Value> {
+) -> BTreeMap<support::SdkProofLane, Value> {
     let fragments = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS");
     let nonce = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE");
     match (report, fragments, nonce) {
@@ -761,7 +761,7 @@ fn validated_sdk_queries_proofs(
 fn parse_sdk_queries_live_facts(
     root: &Path,
     stdout: &str,
-) -> BTreeMap<support::SdkV2ProofLane, Value> {
+) -> BTreeMap<support::SdkProofLane, Value> {
     let expected = SDK_QUERIES_LIVE_LANES
         .into_iter()
         .map(|(observation_ref, proof_kind)| (observation_ref.to_owned(), proof_kind.to_owned()))
@@ -822,7 +822,7 @@ fn parse_sdk_queries_live_facts(
 
 fn assert_sdk_queries_observations_match_journey(
     root: &Path,
-    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkProofLane, Value>,
 ) {
     let journey_bytes =
         fs::read(root.join(support::SDK_QUERIES_JOURNEY)).expect("queries journey is readable");
@@ -844,7 +844,7 @@ fn assert_sdk_queries_observations_match_journey(
 
 fn sdk_queries_report_results(
     catalog: &Value,
-    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkProofLane, Value>,
 ) -> Vec<Value> {
     let mut capabilities = BTreeMap::new();
     for case in catalog["cases"]
@@ -947,7 +947,7 @@ fn build_sdk_queries_report(
     profile: &SdkProfile,
     semantic_fingerprint: Value,
     projection_fingerprint: Value,
-    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkProofLane, Value>,
 ) -> Value {
     let catalog_bytes =
         fs::read(root.join(SDK_QUERIES_CATALOG_PATH)).expect("queries catalog is readable");
@@ -1005,7 +1005,7 @@ fn publish_sdk_queries_report(
     profile: &SdkProfile,
     semantic_fingerprint: Value,
     projection_fingerprint: Value,
-    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkProofLane, Value>,
 ) {
     let report = build_sdk_queries_report(
         root,
