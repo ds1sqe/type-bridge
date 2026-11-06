@@ -1,4 +1,4 @@
-//! V3 adapters for binding-neutral projected mutation batches.
+//! staged adapters for binding-neutral projected mutation batches.
 
 use type_bridge_contract::id::TypeId;
 use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticCategory, SdkExecutionDiagnostic};

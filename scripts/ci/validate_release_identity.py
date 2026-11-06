@@ -63,7 +63,7 @@ SEMVER_PATTERN = re.compile(
 
 CARGO_RELEASE_INVENTORY = load_cargo_release_inventory()
 PUBLISHED_CRATES = tuple(package.name for package in CARGO_RELEASE_INVENTORY.public_packages)
-UNPUBLISHED_V2_CRATES: tuple[str, ...] = ()
+UNPUBLISHED_CORE_CRATES: tuple[str, ...] = ()
 KNOWN_PUBLICATION_BLOCKER_EDGES: frozenset[tuple[str, str]] = frozenset()
 IMMUTABLE_BASELINE_CRATES: tuple[str, ...] = ()
 PREEXISTING_CRATES = tuple(package.name for package in CARGO_RELEASE_INVENTORY.immutable_packages)
@@ -95,7 +95,7 @@ RELEASE_CHANNEL_IDENTITIES = {
 UNPUBLISHED_BINDING_CRATES = tuple(
     package.name for package in CARGO_RELEASE_INVENTORY.private_packages
 )
-PYTHON_NPM_UNPUBLISHED_CRATES = UNPUBLISHED_V2_CRATES + UNPUBLISHED_BINDING_CRATES
+PYTHON_NPM_UNPUBLISHED_CRATES = UNPUBLISHED_CORE_CRATES + UNPUBLISHED_BINDING_CRATES
 TYPEDB_RUNTIME_BAND9_PIN_PATTERN = re.compile(
     r'^pub const PINNED_DRIVER_VERSION_B9: &str = "([^"]+)";$',
     re.MULTILINE,
@@ -1540,21 +1540,21 @@ def validate_release_identity(
     packages = cargo_workspace_packages(workspace_manifest)
     cargo_licenses = validate_cargo_license_boundary(workspace_manifest, packages)
     by_name = {package.name: package for package in packages}
-    missing_v2_crates = sorted(set(UNPUBLISHED_V2_CRATES) - set(by_name))
-    if missing_v2_crates:
+    missing_core_crates = sorted(set(UNPUBLISHED_CORE_CRATES) - set(by_name))
+    if missing_core_crates:
         raise ValidationError(
-            "Authoritative unpublished V2 crates are absent from the workspace: "
-            f"{missing_v2_crates!r}"
+            "Authoritative unpublished core crates are absent from the workspace: "
+            f"{missing_core_crates!r}"
         )
-    non_explicit_v2_publish_settings = sorted(
+    non_explicit_publish_settings = sorted(
         name
         for name in PYTHON_NPM_UNPUBLISHED_CRATES
         if name not in by_name or not by_name[name].publish_explicitly_false
     )
-    if non_explicit_v2_publish_settings:
+    if non_explicit_publish_settings:
         raise ValidationError(
-            "Authoritative V2 and binding crates must declare package.publish = false exactly: "
-            f"{non_explicit_v2_publish_settings!r}"
+            "Authoritative core and binding crates must declare package.publish = false exactly: "
+            f"{non_explicit_publish_settings!r}"
         )
     for package in packages:
         if package.vendored:
@@ -1652,7 +1652,7 @@ def validate_release_identity(
                     f"expected={target.version!r}"
                 )
             if not target.publishable or target.name not in publish_position:
-                if target.name not in UNPUBLISHED_V2_CRATES:
+                if target.name not in UNPUBLISHED_CORE_CRATES:
                     raise ValidationError(
                         f"Published crate {package.name} depends on unpublished workspace crate "
                         f"{target.name}"
@@ -1725,7 +1725,7 @@ def validate_release_identity(
         },
         "rust_publication_blockers": publication_blockers,
         "unpublished_crates": sorted(set(by_name) - expected_publishable),
-        "unpublished_v2_crates": list(UNPUBLISHED_V2_CRATES),
+        "unpublished_v2_crates": list(UNPUBLISHED_CORE_CRATES),
         "status": ("blocked" if crates_io_mutation and publication_blockers else "ok"),
         "tag": tag,
         "node_package_lock_version": node_lock_version,

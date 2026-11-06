@@ -100,7 +100,7 @@ impl PlanAnswer {
             .collect()
     }
 
-    /// Project this answer onto the staged V3 wire evidence of `plan`.
+    /// Project this answer onto the staged wire evidence of `plan`.
     ///
     /// Rows carry one provider concept per output binding, keyed by the
     /// binding's variable. Fetch scalars use the validated schema domains.
@@ -142,7 +142,7 @@ impl PlanAnswer {
         })
     }
 
-    /// Resolve one answer of a verified staged V3 reply. Rows become
+    /// Resolve one answer of a verified staged reply. Rows become
     /// objects keyed by the projected variable, holding the typed remote
     /// value; fetched documents retain their validated scalar domains.
     pub fn from_staged(answer: &StagedAnswer, plan: &QueryPlan) -> Result<Self, Diagnostic> {
@@ -563,7 +563,7 @@ pub(crate) fn plan_diagnostic_error(diagnostic: Diagnostic) -> crate::error::Orm
     .into()
 }
 
-/// A staged V3 row value that does not serialize as JSON.
+/// A staged row value that does not serialize as JSON.
 fn staged_value_unserializable() -> Diagnostic {
     failure(
         DiagnosticCategory::InvalidContract,

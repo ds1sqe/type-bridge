@@ -38,7 +38,7 @@ use type_bridge_schema_migration_typedb::{
 fn connection() -> (String, String, String, String, ConnectOptions) {
     let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".to_owned());
     let database = env::var("TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE")
-        .unwrap_or_else(|_| "type_bridge_v2_execution_store".to_owned());
+        .unwrap_or_else(|_| "type_bridge_execution_store".to_owned());
     let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
     let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
     let mut options = ConnectOptions::default();

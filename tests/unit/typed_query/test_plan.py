@@ -1,4 +1,4 @@
-"""All SDKs consume the same Rust-generated canonical V3 plans."""
+"""All SDKs consume the same Rust-generated canonical staged plans."""
 
 import json
 from pathlib import Path

@@ -226,7 +226,7 @@ async fn default_answer_limits_follow_the_transport_live() {
         counted.result()
     );
 
-    // V3 reduces CountBy in the provider, so both transports read one row.
+    // staged reduces CountBy in the provider, so both transports read one row.
     let advertisement = advertisement();
     let authority = Arc::new(authority(&define));
     let proxy_defaults = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
@@ -269,7 +269,7 @@ async fn default_answer_limits_follow_the_transport_live() {
     let (response, answers) = execute_staged(&db, &pending, &authority, &advertisement).await;
     assert!(
         matches!(answers.as_slice(), [StagedAnswer::Rows { rows }] if rows.len() == 1),
-        "V3 CountBy reads one provider aggregate row"
+        "staged CountBy reads one provider aggregate row"
     );
     let (_, counted) = ProxyQueryConnection::finish(&pending, &response, &cancellation, deadline)
         .expect("the proxy counts every entity without scanning its answers");

@@ -663,7 +663,7 @@ fn rebuild_bindings(values: Vec<u16>) -> Result<Vec<BindingId>, Diagnostic> {
     values.into_iter().map(BindingId::new).collect()
 }
 
-// V3 shares the released closed read vocabulary without exposing its DTOs.
+// staged shares the released closed read vocabulary without exposing its DTOs.
 pub(crate) fn rebuild_read_stage(value: Value) -> Result<ReadStage, Diagnostic> {
     serde_json::from_value::<ReadStageWire>(value)
         .map_err(|_| {
@@ -773,7 +773,7 @@ pub(crate) fn rebuild_pattern(
             failure(
                 DiagnosticCategory::InvalidContract,
                 "invalid_canonical_value",
-                "invalid V3 read pattern",
+                "invalid staged read pattern",
             )
         })?
         .rebuild_with_limits(limits)

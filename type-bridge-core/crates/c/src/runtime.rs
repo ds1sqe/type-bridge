@@ -2337,7 +2337,7 @@ entities:
     }
 
     fn sdk_models_source_identity(root: &Path, relative: &str) -> Value {
-        let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+        let bytes = fs::read(root.join(relative)).expect("staged proof source reads");
         json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
     }
 
@@ -2350,7 +2350,7 @@ entities:
         };
         let destination = PathBuf::from(destination);
         assert!(destination.is_absolute() && !destination.exists());
-        let nonce = nonce.to_str().expect("V3 proof nonce is UTF-8");
+        let nonce = nonce.to_str().expect("staged proof nonce is UTF-8");
         assert!(
             nonce.len() == 64
                 && nonce
@@ -2387,15 +2387,19 @@ entities:
             "semantic_profile": crate::sdk_profile_matrix::requested("models").semantic_profile,
         });
         let mut bytes = type_bridge_contract::codec::to_canonical_json(&fragment)
-            .expect("C V3 data fragment canonicalizes");
+            .expect("C staged data fragment canonicalizes");
         bytes.push(b'\n');
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(destination)
-            .expect("C V3 data fragment creates once");
-        output.write_all(&bytes).expect("C V3 data fragment writes");
-        output.sync_all().expect("C V3 data fragment is durable");
+            .expect("C staged data fragment creates once");
+        output
+            .write_all(&bytes)
+            .expect("C staged data fragment writes");
+        output
+            .sync_all()
+            .expect("C staged data fragment is durable");
     }
 
     #[derive(Default)]
@@ -4048,16 +4052,16 @@ entities:
             .open_transaction_context(TxType::Write)
             .unwrap();
         unsafe { &*database }.block_on(transaction_context.latch_rollback_only(&cause));
-        let mut v2 = Box::into_raw(Box::new(TypeBridgeWriteTransaction::from_test_context(
+        let mut bounded = Box::into_raw(Box::new(TypeBridgeWriteTransaction::from_test_context(
             unsafe { &*database },
             transaction_context,
         )));
-        let v2_before = v2;
+        let bounded_before = bounded;
         let descriptor = limits_descriptor(QueryExecutionResourceLimits::default());
         assert_eq!(
             unsafe {
                 type_bridge_write_transaction_commit(
-                    &mut v2,
+                    &mut bounded,
                     &descriptor,
                     ptr::null(),
                     &mut diagnostics,
@@ -4065,7 +4069,7 @@ entities:
             },
             TypeBridgeStatus::ExecutionFailed
         );
-        assert_eq!(v2, v2_before);
+        assert_eq!(bounded, bounded_before);
         assert_eq!(state.commits.load(Ordering::Acquire), 0);
         assert_eq!(
             unsafe { diagnostic_code(diagnostics) },
@@ -4074,8 +4078,8 @@ entities:
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                (&*v2).block_on(
-                    (&*v2)
+                (&*bounded).block_on(
+                    (&*bounded)
                         .context()
                         .expect("the rejected owner retains its context")
                         .lifecycle_state(),
@@ -4089,7 +4093,7 @@ entities:
             TypeBridgeStatus::Ok
         );
         assert_eq!(
-            unsafe { type_bridge_write_transaction_close(&mut v2, &mut diagnostics) },
+            unsafe { type_bridge_write_transaction_close(&mut bounded, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
         assert_eq!(state.rollbacks.load(Ordering::Acquire), 2);
@@ -5352,12 +5356,12 @@ entities:
         let root = sdk_models_repository_root();
         let journey: Value = serde_json::from_slice(
             &fs::read(root.join("tests/contracts/sdk_conformance/models/journey.json"))
-                .expect("V3 journey reads"),
+                .expect("staged journey reads"),
         )
-        .expect("V3 journey parses");
+        .expect("staged journey parses");
         let expected = journey["expected_observations"]
             .as_object()
-            .expect("V3 expected observations are an object");
+            .expect("staged expected observations are an object");
         let test_id = "runtime::tests::sdk_models_c_data_plane_fragment";
         publish_sdk_models_data_fragment(vec![
             json!({"observation": expected["complete_connection_policy"], "observation_ref": "complete_connection_policy", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),

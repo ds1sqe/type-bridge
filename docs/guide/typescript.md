@@ -464,7 +464,7 @@ executor and reply key as the connection's advertisement
 `stagedAdvertisement` connect option. Writes need a caller the server's
 interceptor vouches for, or a server that allows unauthenticated staged writes;
 otherwise the commit fails with `staged_write_not_authorized`. See the
-[staged remote envelope](../reference/query-plan.md#staged-remote-envelope-v3).
+[staged remote envelope](../reference/query-plan.md#staged-remote-envelope).
 
 ## Runtime boundary
 

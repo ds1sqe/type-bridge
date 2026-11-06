@@ -8868,7 +8868,7 @@ mod tests {
     }
 
     fn models_source_identity(root: &Path, relative: &str) -> Value {
-        let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+        let bytes = fs::read(root.join(relative)).expect("staged proof source reads");
         json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
     }
 
@@ -8881,7 +8881,7 @@ mod tests {
         };
         let destination = PathBuf::from(destination);
         assert!(destination.is_absolute() && !destination.exists());
-        let nonce = nonce.to_str().expect("V3 nonce is UTF-8");
+        let nonce = nonce.to_str().expect("staged nonce is UTF-8");
         assert!(
             nonce.len() == 64
                 && nonce

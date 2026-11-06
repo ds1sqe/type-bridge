@@ -345,9 +345,9 @@ fn sdk_models_fingerprints(semantic_profile: &str) -> (Value, Value) {
     .expect("exact Models schema projects to ordered C");
     (
         serde_json::to_value(projection.semantic_fingerprint())
-            .expect("V3 semantic fingerprint serializes"),
+            .expect("staged semantic fingerprint serializes"),
         serde_json::to_value(projection.projection_fingerprint())
-            .expect("V3 C projection fingerprint serializes"),
+            .expect("staged C projection fingerprint serializes"),
     )
 }
 
@@ -384,12 +384,12 @@ fn publish_sdk_models_c_live_supplement(profile: &SdkProfile) {
     let root = repository_root();
     let journey: Value = serde_json::from_slice(
         &fs::read(root.join("tests/contracts/sdk_conformance/models/journey.json"))
-            .expect("V3 journey reads"),
+            .expect("staged journey reads"),
     )
-    .expect("V3 journey parses");
+    .expect("staged journey parses");
     let expected = journey["expected_observations"]
         .as_object()
-        .expect("V3 expected observations are an object");
+        .expect("staged expected observations are an object");
     let lanes = [
         ("borrowed_transaction_lifecycle", "lifecycle"),
         ("data_resource_lifecycle", "lifecycle"),
@@ -409,7 +409,7 @@ fn publish_sdk_models_c_live_supplement(profile: &SdkProfile) {
         "producer": "type-bridge-c.sdk-models-data-model-runtime-live",
         "projection_fingerprint": projection_fingerprint,
         "results": lanes.into_iter().map(|(observation_ref, proof_kind)| json!({
-            "observation": expected.get(observation_ref).unwrap_or_else(|| panic!("V3 journey omitted {observation_ref}")),
+            "observation": expected.get(observation_ref).unwrap_or_else(|| panic!("staged journey omitted {observation_ref}")),
             "observation_ref": observation_ref,
             "outcome": "passed",
             "proof_kind": proof_kind,
@@ -417,17 +417,19 @@ fn publish_sdk_models_c_live_supplement(profile: &SdkProfile) {
         "semantic_fingerprint": semantic_fingerprint,
         "semantic_profile": profile.semantic_profile,
     });
-    let mut bytes = to_canonical_json(&supplement).expect("C V3 live supplement canonicalizes");
+    let mut bytes = to_canonical_json(&supplement).expect("C staged live supplement canonicalizes");
     bytes.push(b'\n');
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
-        .expect("C V3 live supplement destination creates once");
+        .expect("C staged live supplement destination creates once");
     output
         .write_all(&bytes)
-        .expect("C V3 live supplement writes");
-    output.sync_all().expect("C V3 live supplement is durable");
+        .expect("C staged live supplement writes");
+    output
+        .sync_all()
+        .expect("C staged live supplement is durable");
 }
 
 fn c_compilers() -> Vec<&'static str> {

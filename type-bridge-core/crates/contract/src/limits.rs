@@ -1,13 +1,13 @@
 //! Canonical implementation-independent codec ceilings.
 
-/// Maximum aggregate answer items in one staged V3 reply.
+/// Maximum aggregate answer items in one staged reply.
 pub const MAX_STAGED_ITEMS: u64 = 65_536;
 
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticDetailValue};
 
-/// Maximum plans in one staged V3 transaction; callers may tighten this ceiling.
+/// Maximum plans in one staged transaction; callers may tighten this ceiling.
 pub const MAX_STAGED_PLANS: u32 = 64;
-/// Default provider-write statement budget for a staged V3 transaction.
+/// Default provider-write statement budget for a staged transaction.
 pub const DEFAULT_STAGED_WRITE_STATEMENTS: u32 = 256;
 /// Default read statement budget, allowing three statements per staged plan.
 pub const DEFAULT_STAGED_READ_STATEMENTS: u32 = MAX_STAGED_PLANS * 3;
@@ -69,7 +69,7 @@ pub const REMOTE_ENVELOPE_CODEC_LIMITS: CodecLimits = CodecLimits {
     max_string_bytes: MAX_CANONICAL_STRING_BYTES,
 };
 
-/// V3 opaque plan-byte strings may use the envelope budget. Embedded plans
+/// staged opaque plan-byte strings may use the envelope budget. Embedded plans
 /// and canonical scalar values still enforce their independent codec ceilings.
 /// Frozen V1/V2 envelopes retain their original per-string ceiling.
 pub const STAGED_REMOTE_CODEC_LIMITS: CodecLimits = CodecLimits {
@@ -425,7 +425,7 @@ impl QueryLimits {
         remote_request_bytes: MAX_REMOTE_ENVELOPE_BYTES,
     };
 
-    /// Native V3 columns may expose every bounded binding as identity evidence.
+    /// Native staged columns may expose every bounded binding as identity evidence.
     /// Released V1/V2 and typed model output slots retain `CANONICAL`.
     pub const PLAN: Self = Self {
         structural: StructuralLimits {
@@ -435,7 +435,7 @@ impl QueryLimits {
         ..Self::CANONICAL
     };
 
-    /// Admit V3 limits, where every output column consumes a binding.
+    /// Admit staged limits, where every output column consumes a binding.
     pub fn validate_plan(self) -> Result<Self, QueryLimitsError> {
         let limits = self.validate()?;
         if limits.structural.selected_slots > limits.structural.bindings {

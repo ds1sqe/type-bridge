@@ -300,30 +300,30 @@ def test_hosted_queries_fan_in_is_provider_free_and_four_binding() -> None:
     jobs = _jobs()
     needs = ["test-integration", "rust-integration", "node-integration"]
 
-    v2 = jobs["sdk-queries"]
-    assert v2["needs"] == needs
-    assert "services" not in v2
-    v2_steps = _steps(v2)
-    v2_downloads = [step for step in v2["steps"] if step.get("uses") == DOWNLOAD]
-    assert len(v2_downloads) == 4
+    queries = jobs["sdk-queries"]
+    assert queries["needs"] == needs
+    assert "services" not in queries
+    query_steps = _steps(queries)
+    query_downloads = [step for step in queries["steps"] if step.get("uses") == DOWNLOAD]
+    assert len(query_downloads) == 4
     for display, binding in (
         ("Python", "python"),
         ("Node", "node"),
         ("Rust", "rust"),
         ("C", "c"),
     ):
-        download = v2_steps[f"Download {display} queries report"]
+        download = query_steps[f"Download {display} queries report"]
         assert download["with"] == {
             "name": f"sdk-queries-{binding}",
             "path": "${{ runner.temp }}/typebridge-sdk-queries",
         }
-    v2_compare = v2_steps["Compare generated SDK queries reports"]["run"]
-    assert v2_compare.startswith("python scripts/ci/sdk_queries_compare.py ")
-    assert v2_compare.count("$RUNNER_TEMP/typebridge-sdk-queries/") == 4
-    assert all(f'/{binding}.json"' in v2_compare for binding in ("python", "node", "rust", "c"))
-    assert "pending_manifest_promotions" not in str(v2)
-    assert "sdk_fingerprints" not in str(v2)
-    assert "TYPE_BRIDGE_SDK_FINGERPRINTS_OUTPUT" not in str(v2)
+    query_compare = query_steps["Compare generated SDK queries reports"]["run"]
+    assert query_compare.startswith("python scripts/ci/sdk_queries_compare.py ")
+    assert query_compare.count("$RUNNER_TEMP/typebridge-sdk-queries/") == 4
+    assert all(f'/{binding}.json"' in query_compare for binding in ("python", "node", "rust", "c"))
+    assert "pending_manifest_promotions" not in str(queries)
+    assert "sdk_fingerprints" not in str(queries)
+    assert "TYPE_BRIDGE_SDK_FINGERPRINTS_OUTPUT" not in str(queries)
 
 
 def test_local_full_suite_emits_fragments_then_compares_queries() -> None:
@@ -431,7 +431,7 @@ def test_local_profile_lanes_run_the_writes_program_live_in_four_languages() -> 
     source = LOCAL.read_text(encoding="utf-8")
     lane = source[
         source.index(
-            "# The staged V3 suites run on every server of the typedb-3.13.6/v1 profile."
+            "# The staged suites run on every server of the typedb-3.13.6/v1 profile."
         ) : source.index(
             'run_step "cargo test -p type-bridge-orm --features integration-tests --test integration"'
         )

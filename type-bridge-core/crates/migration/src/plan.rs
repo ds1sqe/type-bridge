@@ -52,7 +52,7 @@ pub enum OperationKind {
     /// Arbitrary authored TypeQL.
     #[default]
     RunTypeql,
-    /// Native V3 migration data program.
+    /// Native staged migration data program.
     RunPlan,
     /// Define a complete initial schema.
     DefineSchema,

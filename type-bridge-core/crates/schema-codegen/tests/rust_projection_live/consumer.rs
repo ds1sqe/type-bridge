@@ -8207,9 +8207,9 @@ async fn sdk_models_data_model_runtime_live() {
         journey["expected_observations"]["borrowed_transaction_lifecycle"]
     );
     let semantic_fingerprint: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
-        .expect("generated V3 semantic fingerprint is valid JSON");
+        .expect("generated staged semantic fingerprint is valid JSON");
     let projection_fingerprint: Value = serde_json::from_str(PROJECTION_FINGERPRINT_JSON)
-        .expect("generated V3 projection fingerprint is valid JSON");
+        .expect("generated staged projection fingerprint is valid JSON");
     assert_eq!(
         semantic_fingerprint,
         entry["expected_fingerprints"]["semantic"]

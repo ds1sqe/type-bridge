@@ -257,7 +257,7 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
         ("cli", "type-bridge-cli"),
     ],
 )
-def test_v2_crate_manifest_is_first_party_and_crates_io_publishable(
+def test_crate_manifest_is_first_party_and_crates_io_publishable(
     directory: str,
     package_name: str,
 ) -> None:
@@ -474,7 +474,7 @@ def test_publisher_without_needs_is_reported_as_validation_failure(tmp_path: Pat
         validator.validate_server_oci_release_channels(workflow)
 
 
-def test_v2_crate_cannot_be_marked_unpublished(tmp_path: Path) -> None:
+def test_crate_cannot_be_marked_unpublished(tmp_path: Path) -> None:
     workspace = copy_workspace_manifests(tmp_path)
     manifest = workspace.parent / "crates/contract/Cargo.toml"
     manifest.write_text(

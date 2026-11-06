@@ -191,7 +191,7 @@ Raw, unchecked TypeQL: the escape hatch. Sends the TypeQL text to TypeDB
 as written and returns the driver's answer unchanged. TypeBridge does not
 parse, validate, rewrite or hydrate it, and makes no promise about
 it: it can run any query in any transaction kind, including schema changes
-that break your generated models. Use a typed call or a V3 plan for
+that break your generated models. Use a typed call or a staged plan for
 anything TypeBridge should check. Proxy hosts still control admission:
 `on_transport` authenticates, `on_raw` receives the exact text and
 transaction kind before dispatch. Write and schema requests also need

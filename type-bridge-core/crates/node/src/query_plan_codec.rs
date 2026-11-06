@@ -1,4 +1,4 @@
-//! Primitive-only bridge to the shared V3 plan codec.
+//! Primitive-only bridge to the shared staged plan codec.
 use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 use type_bridge_contract::query_plan::decode_query_plan;
@@ -10,7 +10,7 @@ pub struct QueryPlanEncoding {
     pub fingerprint: String,
 }
 
-/// Validate canonical V3 bytes under a declared schema and return bytes and digest.
+/// Validate canonical staged bytes under a declared schema and return bytes and digest.
 #[napi(js_name = "_query_plan_round_trip")]
 pub fn _query_plan_round_trip(
     plan_bytes: Buffer,

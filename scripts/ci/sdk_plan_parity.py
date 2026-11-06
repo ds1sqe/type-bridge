@@ -261,7 +261,7 @@ def exchange_stack(request: bytes) -> list[dict[str, Any]]:
         or type(wire["plans"]) is not list
         or not wire["plans"]
     ):
-        _fail("plan_exchange_shape", "plan witness requires an actual staged V3 request")
+        _fail("plan_exchange_shape", "plan witness requires an actual staged request")
     plans = []
     for entry in wire["plans"]:
         if type(entry) is not dict or set(entry) != {"plan_bytes", "rows"}:

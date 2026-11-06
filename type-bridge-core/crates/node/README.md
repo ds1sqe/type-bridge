@@ -164,7 +164,7 @@ Generated sessions never read a schema-authority file or accept a low-level
 `ProxyConnection`, `ProxyConnectionOptions`, and `ProxyTlsMode` from
 `@type-bridge/node/runtime-projection`.
 
-Native plans use the authenticated V3 staged protocol. The capability
+Native plans use the authenticated staged protocol. The capability
 advertisement is a trust input: retrieve it over authenticated TLS for the
 intended executor or pin its bytes or fingerprint out of band.
 See the [3.0 upgrade guide](https://ds1sqe.github.io/type-bridge/guide/upgrade-3.0/)

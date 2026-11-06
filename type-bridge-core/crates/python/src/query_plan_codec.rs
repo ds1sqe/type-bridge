@@ -1,10 +1,10 @@
-//! Primitive-only bridge to the shared V3 plan codec.
+//! Primitive-only bridge to the shared staged plan codec.
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use type_bridge_contract::query_plan::decode_query_plan;
 use type_bridge_contract::schema::decode_declared_schema;
 
-/// Validate canonical V3 bytes under a declared schema and return bytes and digest.
+/// Validate canonical staged bytes under a declared schema and return bytes and digest.
 #[pyfunction]
 fn _query_plan_round_trip<'py>(
     py: Python<'py>,

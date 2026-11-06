@@ -12,7 +12,7 @@ use type_bridge_orm::{
 
 use crate::plan::{ExecutionStep, MigrationAction, OperationKind};
 
-/// Validated forward/reverse V3 programs and their explicit planning authority.
+/// Validated forward/reverse staged programs and their explicit planning authority.
 ///
 /// Persisted programs are revalidated against the carried declared schema when
 /// decoded. Execution uses these plans directly in the migration transaction.
@@ -26,7 +26,7 @@ pub struct NativeDataStep {
 }
 
 impl NativeDataStep {
-    /// Validate canonical V3 program objects against explicit planning authority.
+    /// Validate canonical staged program objects against explicit planning authority.
     pub fn new(
         schema: &DeclaredSchema,
         forward: &serde_json::Value,

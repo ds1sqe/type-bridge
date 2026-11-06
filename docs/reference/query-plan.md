@@ -1,6 +1,6 @@
-# Query-plan V3 wire format
+# Query-plan wire format
 
-V3 is an ordered, schema-checked read/write program encoded as canonical UTF-8
+A query plan is an ordered, schema-checked read/write program encoded as canonical UTF-8
 JSON. A producer can construct these bytes without Rust. SDKs delegate encoding
 and validation to Rust. This document specifies the format, its TypeQL
 lowering, the shared builder and batch-split rules, and the staged remote
@@ -151,7 +151,7 @@ with root-only reachability and expanded-hop node-budget checks. Functions use c
 argument/return types. Nested boolean bodies retain the released read patterns
 and the native optional unions described below. Local functions keep their
 released body vocabulary. Let remains a root-match assignment; nested IID
-operands are the additive V3 exception described below.
+operands are the additive staged exception described below.
 A root string iid pattern names a canonical thing IID (`0x` followed by 1..256
 hexadecimal digits) and constrains a mandatory binding that positive patterns
 of the same match type only as entities or relations; it adds
@@ -407,8 +407,8 @@ lists therefore fail.
 | Cross-join pairs | 1,024 |
 | Given rows / canonical row bytes | 4,096 / 4 MiB |
 
-V3 defaults output columns to the binding ceiling and refuses a column ceiling
-above the configured binding ceiling. The V3 advertisement carries this default;
+staged defaults output columns to the binding ceiling and refuses a column ceiling
+above the configured binding ceiling. The staged advertisement carries this default;
 a receiver advertising fewer columns still enforces its named `selected_slots`
 limit. Released `MatchRequest`/`FetchShape` user slots and frozen V1/V2 outputs
 retain their limit of 16. Hidden matched things add identity/type columns only;
@@ -416,7 +416,7 @@ complete attributes arrive through the separately bounded hydration plans.
 
 JSON depth may reject a tree before its semantic depth ceiling. Callers can raise `QueryLimits.canonical_string_bytes` through the existing
 query-limit options (Rust: `codec.max_string_bytes`). The default is 1 MiB;
-the complete artifact ceiling still applies (16 MiB by default). V3 plans or
+the complete artifact ceiling still applies (16 MiB by default). staged plans or
 invocation rows containing a larger string require `query.input.wide-strings`.
 The receiver applies its own configured ceiling, and refusals name
 `canonical_string_bytes`. Frozen V1/V2 scalar decoders retain their default
@@ -442,7 +442,7 @@ produce a different plan digest.
 
 ## Capabilities
 
-Recompute the sorted union from syntax. V3 includes `query.plan.v3`; released
+Recompute the sorted union from syntax. staged includes `query.plan.v3`; released
 read syntax also derives `query.plan`. New stages add `query.write.insert`,
 `query.write.put`, `query.write.update`, `query.write.delete`,
 `query.write.attach` and `query.fetch.thing`. A fetch immediately before its
@@ -617,8 +617,8 @@ lowercase plan variables.
 
 ## Versioning
 
-Construct native V3 plans with `QueryPlan::new` or the shared `PlanBuilder`.
-Legacy plans cannot be lifted into V3. The decoder rejects a `compatibility`
+Construct native staged plans with `QueryPlan::new` or the shared `PlanBuilder`.
+Legacy plans cannot be lifted into staged. The decoder rejects a `compatibility`
 member, including `null`. Bind invocation rows and choose count/exists on a
 native template explicitly as needed.
 
@@ -684,7 +684,7 @@ Two given rows insert accounts using typed ID and score columns, returning match
 
 Fingerprint: `c3a2e9bc496a9807ae6a32cb73c43f1f1601e066deec384dee1470369a89e5c0`.
 
-## Staged remote envelope V3
+## Staged remote envelope
 
 A staged transaction uses `typebridge.query-remote-request/v3`, independently
 of the plan version. Requests remain unsigned. Write execution requires an
@@ -864,7 +864,7 @@ its outcome committed and observed.
 | `plans` | Nonempty ordered array of `{"plan_bytes":"...","rows":[...]}` |
 
 Omit an absent `kind`; explicit null is not canonical. Each
-`plan_bytes` is the lowercase hexadecimal encoding of exact canonical V3 plan
+`plan_bytes` is the lowercase hexadecimal encoding of exact canonical staged plan
 bytes. It is opaque bytes, not TypeQL or a host-reserialized plan object. Rows
 are positional canonical scalar/null arrays under that plan's input columns.
 A bound plan's rows must exactly equal the envelope rows. For an unbound
@@ -999,16 +999,15 @@ Replies use the unchanged `typebridge.query-remote-signed-reply/v1` outer object
 is its digest; key is 32-byte Ed25519 public-key hex; signature is 64-byte hex.
 Key ID is SHA-256 of `UTF8("typebridge.query.remote-reply-key-id/v1")`, a zero
 byte and the raw public key. Let U be the canonical outer object with signature
-omitted, including the complete V3 payload. Sign the 32-byte SHA-256 digest of
+omitted, including the complete staged payload. Sign the 32-byte SHA-256 digest of
 `UTF8("typebridge.query.remote-reply-signature/v1") || 0x00 || U` using Ed25519.
 The receiver supplies the trusted public key, checks its advertisement binding,
-authenticates the outer envelope and only then interprets/correlates the V3
+authenticates the outer envelope and only then interprets/correlates the staged
 payload. Unknown fields/tags and noncanonical reconstruction are refused.
 
 Rust's genuine Ed25519 golden fixtures are in
 `type-bridge-core/crates/contract/tests/fixtures/query-remote/`: advertisement,
-request, request fingerprint, committed reply and failed reply. Existing V2
-envelope and V2/V3 plan fixtures remain byte-for-byte unchanged.
+request, request fingerprint, committed reply and failed reply. Archived envelope and plan fixtures remain byte-for-byte unchanged.
 
 ### Replays and unknown outcomes
 

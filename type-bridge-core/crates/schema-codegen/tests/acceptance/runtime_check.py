@@ -142,7 +142,7 @@ try:
 except ValueError as error:
     assert "selected_slots" in str(error)
 else:
-    raise AssertionError("generated direct policy did not forward V3 query limits before I/O")
+    raise AssertionError("generated direct policy did not forward staged query limits before I/O")
 
 
 class FakeCanonicalFilterNative:

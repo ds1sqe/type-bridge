@@ -347,7 +347,7 @@ pub trait Interceptor: Send + Sync {
     /// Writes are refused unless at least one policy answers
     /// [`StagedWriteAuthority::Authenticated`] and none fails, or the server
     /// explicitly allows unauthenticated staged writes. Runs first among the
-    /// V3 hooks, after the transport hook and before [`Self::on_plan`].
+    /// staged hooks, after the transport hook and before [`Self::on_plan`].
     fn on_write_authority<'a>(
         &'a self,
         _ctx: &'a RequestContext,
@@ -380,7 +380,7 @@ pub trait Interceptor: Send + Sync {
     /// Observe a staged transaction's outcome once it is known.
     ///
     /// Observe-only: errors are logged, never change the reply. Runs last
-    /// among the V3 hooks, after reservation, staging and the commit, and
+    /// among the staged hooks, after reservation, staging and the commit, and
     /// before the response policies see the signed reply.
     fn on_commit<'a>(
         &'a self,

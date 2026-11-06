@@ -226,7 +226,7 @@ supports abstract attribute labels. `"isa!"` selects the exact concrete
 attribute type; use the same example with `"mode":"isa!"` for that behavior.
 
 Custom forward/reverse strings and textual filters are refused on
-`CopyAttribute`. For custom native behavior, `RunPlan` accepts canonical V3
+`CopyAttribute`. For custom native behavior, `RunPlan` accepts canonical staged
 `forward` and optional `reverse` plan objects, validated at planning and again
 when persisted execution plans are decoded.
 

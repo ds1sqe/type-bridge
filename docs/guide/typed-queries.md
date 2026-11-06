@@ -48,7 +48,7 @@ before execution.
 For explicit read/write programs, use `PlanBuilder` and `Plan` from
 `type_bridge.plan` or `@type-bridge/node`. Build against the generated
 package's schema authority, then stage the plan in a direct or proxy
-transaction. Rust uses the same native V3 builder and validation.
+transaction. Rust uses the same native staged builder and validation.
 
 See the [TypeScript staged-plan examples](typescript.md) and
 [3.0 upgrade guide](upgrade-3.0.md#native-plan-execution-replaces-v1v2).
@@ -935,7 +935,7 @@ Python `staged_advertisement=`, TypeScript `stagedAdvertisement`).
 The server admits a staged write only from a caller an interceptor vouches for
 (`on_write_authority`), or from any caller when the operator sets
 `[v2] allow_unauthenticated_staged_writes`; otherwise the commit fails with the
-typed `staged_write_not_authorized` failure. The [staged remote envelope](../reference/query-plan.md#staged-remote-envelope-v3)
+typed `staged_write_not_authorized` failure. The [staged remote envelope](../reference/query-plan.md#staged-remote-envelope)
 defines the wire format.
 
 ## Query limits

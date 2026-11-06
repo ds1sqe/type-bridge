@@ -864,7 +864,7 @@ fn preflight_route_shape(
     // Scalar strings/temporals are cloned into the synthetic sizing rows and
     // later into the one retained provider matrix. Charging two additional
     // input-sized regions is conservative and keeps preparation beneath the
-    // same captured allocation ceiling even at hard V3 shapes.
+    // same captured allocation ceiling even at hard staged shapes.
     let scalar_clone_bytes = usize::try_from(prepared.batch().resource_measure().bytes())
         .unwrap_or(usize::MAX)
         .checked_mul(2)

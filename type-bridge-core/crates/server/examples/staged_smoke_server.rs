@@ -298,7 +298,7 @@ async fn main() {
         .expect("SMOKE_QUERY_LIMITS contains supported limits");
         state = state
             .with_staged_query_limits(limits)
-            .expect("SMOKE_QUERY_LIMITS admits V3 plans");
+            .expect("SMOKE_QUERY_LIMITS admits staged plans");
     }
     let state = Arc::new(state);
     let mut pipeline = PipelineBuilder::new().with_default_database(database_name);

@@ -225,14 +225,14 @@ test("query policy intersects independent staged server ceilings", async () => {
   assert.equal(connection.queryLimits.get("selected_slots"), 16n);
 });
 
-test("invalid V3 query policy is refused before proxy I/O", async () => {
+test("invalid staged query policy is refused before proxy I/O", async () => {
   const { QueryLimits } = await import("../../typescript/runtime-projection.js");
   await assert.rejects(ProxyConnection.connect(authority(), await closedEndpoint(), {
     queryLimits: new QueryLimits({ bindings: 8n }),
   }), /selected_slots/);
 });
 
-test("invalid V3 query policy is refused before direct I/O", async () => {
+test("invalid staged query policy is refused before direct I/O", async () => {
   const { QueryLimits } = await import("../../typescript/runtime-projection.js");
   const { Database } = await import("../../typescript/index.js");
   assert.throws(() => Database.connect("127.0.0.1:1", "app", {

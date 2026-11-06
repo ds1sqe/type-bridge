@@ -57,7 +57,7 @@ fn repository_root() -> PathBuf {
 }
 
 fn data_source_identity(root: &Path, relative: &str) -> Value {
-    let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+    let bytes = fs::read(root.join(relative)).expect("staged proof source reads");
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
@@ -67,14 +67,14 @@ fn publish_models_data_fragment(results: Vec<Value>) {
     assert_eq!(
         destination.is_some(),
         nonce.is_some(),
-        "V3 proof destination and nonce must be configured together"
+        "staged proof destination and nonce must be configured together"
     );
     let (Some(destination), Some(nonce)) = (destination, nonce) else {
         return;
     };
     let destination = PathBuf::from(destination);
     assert!(destination.is_absolute() && !destination.exists());
-    let nonce = nonce.to_str().expect("V3 proof nonce is UTF-8");
+    let nonce = nonce.to_str().expect("staged proof nonce is UTF-8");
     assert!(
         nonce.len() == 64
             && nonce
@@ -112,15 +112,17 @@ fn publish_models_data_fragment(results: Vec<Value>) {
         "semantic_profile": crate::sdk_profile_matrix::requested("models").semantic_profile,
     });
     let mut bytes = type_bridge_contract::codec::to_canonical_json(&fragment)
-        .expect("V3 data fragment canonicalizes");
+        .expect("staged data fragment canonicalizes");
     bytes.push(b'\n');
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
-        .expect("V3 data fragment destination creates once");
-    output.write_all(&bytes).expect("V3 data fragment writes");
-    output.sync_all().expect("V3 data fragment is durable");
+        .expect("staged data fragment destination creates once");
+    output
+        .write_all(&bytes)
+        .expect("staged data fragment writes");
+    output.sync_all().expect("staged data fragment is durable");
 }
 
 fn worker_role() -> &'static str {

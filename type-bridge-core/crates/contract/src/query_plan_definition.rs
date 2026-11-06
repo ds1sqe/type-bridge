@@ -23,7 +23,7 @@ use crate::schema::{
 
 /// Exact discriminator of the additive write-plan format.
 pub const QUERY_PLAN_FORMAT: &str = "typebridge.query-plan/v3";
-/// Canonicalization version separating V3 fingerprints from frozen V2.
+/// Canonicalization version separating staged fingerprints from frozen V2.
 pub const QUERY_PLAN_CANONICALIZATION: &str = "typebridge.query-plan-c14n/v3";
 /// Domain for diagnostic plan shapes, excluding transported caller values.
 pub const QUERY_PLAN_SHAPE_FINGERPRINT_DOMAIN: &str = "typebridge.query.plan-shape";
@@ -123,7 +123,7 @@ impl Serialize for Pattern {
     }
 }
 
-/// The terminal operation is part of V3 plan identity.
+/// The terminal operation is part of staged plan identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
@@ -150,7 +150,7 @@ pub enum WriteReturns {
     Rows,
 }
 
-/// Every capability derivable from closed V3 syntax that a staged
+/// Every capability derivable from closed staged syntax that a staged
 /// endpoint advertises.
 ///
 #[must_use]
@@ -426,7 +426,7 @@ impl ThingDocument {
     }
 }
 
-/// Ordered V3 pipeline vocabulary. Read tails retain the V2 order.
+/// Ordered staged pipeline vocabulary. Read tails retain the V2 order.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -597,7 +597,7 @@ pub struct PlanSpec {
     pub functions: Vec<LocalFunction>,
 }
 
-/// A trusted canonical V3 plan. Decoding always rebuilds through validation.
+/// A trusted canonical staged plan. Decoding always rebuilds through validation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct QueryPlan {
     bindings: Vec<AssertionBinding>,
@@ -995,7 +995,7 @@ impl QueryPlan {
     pub const fn writes(&self) -> bool {
         matches!(self.operation, Operation::Write { .. })
     }
-    /// Bind values to a reusable plan; rows participate in its V3 fingerprint.
+    /// Bind values to a reusable plan; rows participate in its staged fingerprint.
     pub fn with_given_rows(
         &self,
         rows: Vec<InputRow>,
@@ -1070,7 +1070,7 @@ impl QueryPlan {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
         to_canonical_json_with_limits(self, self.limits.codec)
     }
-    /// Fingerprint under the V3 canonicalization version and common plan domain.
+    /// Fingerprint under the staged canonicalization version and common plan domain.
     pub fn fingerprint(&self) -> Result<QueryPlanFingerprint, Diagnostic> {
         Ok(QueryPlanFingerprint(Fingerprint::compute(
             FingerprintDomain::new(QUERY_PLAN_FINGERPRINT_DOMAIN)?,
@@ -2921,7 +2921,7 @@ fn decode_stage(
     }
 }
 
-/// Decode exact canonical V3 bytes using local schema authority.
+/// Decode exact canonical staged bytes using local schema authority.
 pub fn decode_query_plan(bytes: &[u8], schema: &DeclaredSchema) -> Result<QueryPlan, Diagnostic> {
     decode_query_plan_with_limits(bytes, schema, QueryLimits::PLAN)
 }
@@ -2937,7 +2937,7 @@ pub fn decode_query_plan_with_limits(
     if wire.format != QUERY_PLAN_FORMAT {
         return Err(invalid(
             "query_plan_format_unsupported",
-            "V3 decoding requires the exact V3 discriminator",
+            "staged decoding requires the exact staged discriminator",
         ));
     }
     let claims = wire.required_capabilities;
@@ -2991,13 +2991,13 @@ pub fn decode_query_plan_with_limits(
     if claims != plan.required_capabilities {
         return Err(invalid(
             "query_plan_capability_claim_mismatch",
-            "V3 capabilities must be syntax-derived",
+            "staged capabilities must be syntax-derived",
         ));
     }
     if plan.canonical_bytes()? != bytes {
         return Err(invalid(
             "query_plan_wire_mismatch",
-            "V3 reconstruction changes canonical bytes",
+            "staged reconstruction changes canonical bytes",
         ));
     }
     Ok(plan)

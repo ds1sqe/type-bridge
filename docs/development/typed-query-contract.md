@@ -573,7 +573,7 @@ existing canonical bytes and fingerprints. In 3.0, typed predicate strings
 also observe the default 1 MiB `canonical_string_bytes` ceiling; 2.x typed
 predicates could reach the caller's artifact ceiling. Raise
 `canonical_string_bytes` explicitly to retain that larger-value behavior,
-subject to the artifact ceiling and the receiver's own limits. V3 requests
+subject to the artifact ceiling and the receiver's own limits. Staged requests
 with actual strings above 1 MiB require `query.input.wide-strings`;
 refusals name the configured `canonical_string_bytes` limit.
 
@@ -726,7 +726,7 @@ canonical native plans, given rows, transaction kind, resource budgets, the
 executor advertisement identity, a nonce and bounded admission expiry. Replies
 bind the request and carry validated answers or structured execution failures.
 The connection verifies the advertised reply key and complete request binding
-before publishing values. See the [wire specification](../reference/query-plan.md#staged-remote-envelope-v3)
+before publishing values. See the [wire specification](../reference/query-plan.md#staged-remote-envelope)
 for exact fields, tags and signing rules.
 
 `/v2/query` and `/v2/capabilities` are removed. Clients use `/v3/staged` and
@@ -737,7 +737,7 @@ for exact fields, tags and signing rules.
 A transaction on a proxy connection is the same core `Transaction` as a
 direct one, with a proxy backend. Staging stays local; `commit` serializes the
 ordered stack into one `typebridge.query-remote-request/v3` envelope (exact
-canonical V3 plan bytes, given rows, kind, limits, nonce and expiry) and
+canonical staged plan bytes, given rows, kind, limits, nonce and expiry) and
 sends it to `POST /v3/staged`. The server runs the stack
 on one TypeDB transaction and returns a `typebridge.query-remote-response/v3`
 reply signed with the key from `GET /v3/capabilities`. The SDK verifies the
@@ -760,7 +760,7 @@ once per connection. The server admits writes only from a caller an
 interceptor vouches for (`on_write_authority`), or from any caller under
 `[staged] allow_unauthenticated_staged_writes`. The wire format and failure
 vocabulary are in the
-[staged remote envelope](../reference/query-plan.md#staged-remote-envelope-v3).
+[staged remote envelope](../reference/query-plan.md#staged-remote-envelope).
 
 Fetch plans return a distinct `Documents` answer directly and remotely. The
 shared Rust verifier checks the document against the plan's possible exact

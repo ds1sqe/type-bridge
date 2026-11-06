@@ -309,10 +309,10 @@ def test_profile_lane_steps_run_on_their_own_profile_job() -> None:
     # Plain --ignored runs: every ignored test in the target, no exact gate.
     for name, target in {
         "Run staged query-plan/v3 programs at commit": "-p type-bridge-orm --test plan_execute_live",
-        "Run V3 staged server live acceptance": (
+        "Run staged server live acceptance": (
             "-p type-bridge-server --test staged_integration_tests -- --ignored"
         ),
-        "Run Rust SDK plan builder over the V3 staged proxy": (
+        "Run Rust SDK plan builder over the staged proxy": (
             "-p type-bridge --test plan_builder_live -- --ignored"
         ),
     }.items():

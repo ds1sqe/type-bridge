@@ -2295,11 +2295,11 @@ def sdk_models_package(
             f"prepare_generated_live_fixture.sh emits no models package for {semantic_profile}"
         )
     if not package.is_file() or package.is_symlink():
-        raise AssertionError(f"supplied generated Python V3 fixture is incomplete: {package}")
+        raise AssertionError(f"supplied generated Python staged fixture is incomplete: {package}")
     ordered_authority = stage / "schema-authority-ordered.json"
     if not ordered_authority.is_file() or ordered_authority.is_symlink():
         raise AssertionError(
-            f"supplied generated Python V3 authority is incomplete: {ordered_authority}"
+            f"supplied generated Python staged authority is incomplete: {ordered_authority}"
         )
     monkeypatch.syspath_prepend(str(stage))
     importlib.invalidate_caches()
@@ -2703,7 +2703,7 @@ def sdk_models_data_model_runtime_live(
     assert person_manager.filter(identifier=generated.Identifier("data-commit")).exists()
 
     rolled_back = person("data-rollback", 31)
-    with pytest.raises(RuntimeError, match="V3 rollback sentinel"):
+    with pytest.raises(RuntimeError, match="staged rollback sentinel"):
         with clean_db.transaction("write") as transaction:
             transaction_manager = generated.Person.manager(transaction)
             transaction_manager.insert(rolled_back)
@@ -2711,7 +2711,7 @@ def sdk_models_data_model_runtime_live(
             assert not person_manager.filter(
                 identifier=generated.Identifier("data-rollback")
             ).exists()
-            raise RuntimeError("V3 rollback sentinel")
+            raise RuntimeError("staged rollback sentinel")
     assert not person_manager.filter(identifier=generated.Identifier("data-rollback")).exists()
 
     reused = person("data-rollback-reuse", 32)

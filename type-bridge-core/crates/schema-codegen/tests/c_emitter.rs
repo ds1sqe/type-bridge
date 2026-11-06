@@ -144,7 +144,7 @@ fn sdk_models_repository_root() -> PathBuf {
 }
 
 fn sdk_models_source_identity(root: &Path, relative: &str) -> Value {
-    let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+    let bytes = fs::read(root.join(relative)).expect("staged proof source reads");
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
@@ -157,7 +157,7 @@ fn publish_sdk_models_package_fragment(results: Vec<Value>) {
     };
     let destination = PathBuf::from(destination);
     assert!(destination.is_absolute() && !destination.exists());
-    let nonce = nonce.to_str().expect("V3 proof nonce is UTF-8");
+    let nonce = nonce.to_str().expect("staged proof nonce is UTF-8");
     assert!(
         nonce.len() == 64
             && nonce
@@ -187,17 +187,19 @@ fn publish_sdk_models_package_fragment(results: Vec<Value>) {
         "run_nonce": nonce,
         "semantic_profile": support::sdk_profile_matrix::requested("models").semantic_profile,
     });
-    let mut bytes = to_canonical_json(&fragment).expect("C V3 package fragment canonicalizes");
+    let mut bytes = to_canonical_json(&fragment).expect("C staged package fragment canonicalizes");
     bytes.push(b'\n');
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
-        .expect("C V3 package fragment creates once");
+        .expect("C staged package fragment creates once");
     output
         .write_all(&bytes)
-        .expect("C V3 package fragment writes");
-    output.sync_all().expect("C V3 package fragment is durable");
+        .expect("C staged package fragment writes");
+    output
+        .sync_all()
+        .expect("C staged package fragment is durable");
 }
 
 fn projected(resources: &[CodeResourceDigest]) -> (RuntimeProjection, VerifiedSchemaAuthority) {
@@ -233,7 +235,7 @@ fn ordered_successor_projected() -> (RuntimeProjection, VerifiedSchemaAuthority)
     let projection = project(
         &resolved,
         BindingTarget::C,
-        &ProjectionConfig::c(CSymbolPrefix::new("acme_v3").expect("test prefix is valid")),
+        &ProjectionConfig::c(CSymbolPrefix::new("acme_nominal").expect("test prefix is valid")),
         &emitter.generator_handlers_for(&resolved),
         &emitter
             .code_resources_for(&resolved)
@@ -422,23 +424,24 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([
             "CMakeLists.txt",
-            "acme_v3.pc.in",
-            "acme_v3Config.cmake.in",
-            "include/acme_v3/models.h",
+            "acme_nominal.pc.in",
+            "acme_nominalConfig.cmake.in",
+            "include/acme_nominal/models.h",
             "src/models.c",
         ]),
     );
 
-    let header = std::str::from_utf8(package.get("include/acme_v3/models.h").unwrap()).unwrap();
+    let header =
+        std::str::from_utf8(package.get("include/acme_nominal/models.h").unwrap()).unwrap();
     let source = std::str::from_utf8(package.get("src/models.c").unwrap()).unwrap();
     let cmake = std::str::from_utf8(package.get("CMakeLists.txt").unwrap()).unwrap();
     let package_config =
-        std::str::from_utf8(package.get("acme_v3Config.cmake.in").unwrap()).unwrap();
-    let pkg_config = std::str::from_utf8(package.get("acme_v3.pc.in").unwrap()).unwrap();
+        std::str::from_utf8(package.get("acme_nominalConfig.cmake.in").unwrap()).unwrap();
+    let pkg_config = std::str::from_utf8(package.get("acme_nominal.pc.in").unwrap()).unwrap();
 
     assert!(header.contains("#include <typebridge/type_bridge.h>"));
-    assert!(header.contains("ACME_V3_MIGRATION_HISTORY_RESOURCE"));
-    assert!(header.contains("acme_v3_migration_catalog_open("));
+    assert!(header.contains("ACME_NOMINAL_MIGRATION_HISTORY_RESOURCE"));
+    assert!(header.contains("acme_nominal_migration_catalog_open("));
     assert!(
         source
             .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  2u,\n  0u,"),
@@ -448,7 +451,10 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(source.contains("type_bridge_schema_package_open_chunked("));
     assert!(source.contains("type_bridge_schema_package_open_chunked("));
     assert!(source.contains("type_bridge_migration_catalog_open("));
-    assert_eq!(header.matches("acme_v3_schema_package_open(").count(), 1);
+    assert_eq!(
+        header.matches("acme_nominal_schema_package_open(").count(),
+        1
+    );
     assert!(header.contains("type_bridge_execution_diagnostics_t **out_diagnostics"));
     assert!(cmake.contains("find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)"));
     assert!(package_config.contains("find_dependency(TypeBridge 2.0.0 EXACT CONFIG)"));
@@ -471,7 +477,7 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     ] {
         let mut ordinal = 0_u32;
         while projection.projected_token_identity(kind, ordinal).is_some() {
-            let symbol = format!("acme_v3_projected_{kind_name}_token_{ordinal}");
+            let symbol = format!("acme_nominal_projected_{kind_name}_token_{ordinal}");
             assert!(header.contains(&symbol));
             assert!(source.contains(&format!("\n  {}u,\n  {ordinal}u,", kind.as_u32())));
             ordinal += 1;
@@ -479,12 +485,12 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     }
 
     for nominal in [
-        "acme_v3_keyed_insert_batch_builder",
-        "acme_v3_keyed_insert_batch",
-        "acme_v3_keyed_insert_batch_result",
-        "acme_v3_membership_put_batch_builder",
-        "acme_v3_unkeyed_delete_batch_result",
-        "acme_v3_gathering_update_batch",
+        "acme_nominal_keyed_insert_batch_builder",
+        "acme_nominal_keyed_insert_batch",
+        "acme_nominal_keyed_insert_batch_result",
+        "acme_nominal_membership_put_batch_builder",
+        "acme_nominal_unkeyed_delete_batch_result",
+        "acme_nominal_gathering_update_batch",
     ] {
         assert!(
             header.contains(&format!("typedef struct {nominal} {nominal};")),
@@ -492,25 +498,25 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
         );
     }
     for wrapper in [
-        "acme_v3_keyed_database_insert",
-        "acme_v3_keyed_database_put",
-        "acme_v3_keyed_read_transaction_get_by_iid",
-        "acme_v3_keyed_write_transaction_update",
-        "acme_v3_membership_write_transaction_delete_by_iid",
-        "acme_v3_membership_database_count",
-        "acme_v3_keyed_insert_batch_builder_open",
-        "acme_v3_keyed_insert_batch_builder_add",
-        "acme_v3_keyed_insert_batch_builder_finish",
-        "acme_v3_keyed_insert_batch_builder_close",
-        "acme_v3_keyed_insert_batch_close",
-        "acme_v3_keyed_database_insert_batch_execute",
-        "acme_v3_keyed_write_transaction_insert_batch_execute",
-        "acme_v3_keyed_insert_batch_result_count",
-        "acme_v3_keyed_insert_batch_result_thing_at",
-        "acme_v3_keyed_insert_batch_result_close",
-        "acme_v3_gathering_delete_batch_builder_add",
-        "acme_v3_gathering_delete_batch_result_count",
-        "acme_v3_gathering_delete_batch_result_close",
+        "acme_nominal_keyed_database_insert",
+        "acme_nominal_keyed_database_put",
+        "acme_nominal_keyed_read_transaction_get_by_iid",
+        "acme_nominal_keyed_write_transaction_update",
+        "acme_nominal_membership_write_transaction_delete_by_iid",
+        "acme_nominal_membership_database_count",
+        "acme_nominal_keyed_insert_batch_builder_open",
+        "acme_nominal_keyed_insert_batch_builder_add",
+        "acme_nominal_keyed_insert_batch_builder_finish",
+        "acme_nominal_keyed_insert_batch_builder_close",
+        "acme_nominal_keyed_insert_batch_close",
+        "acme_nominal_keyed_database_insert_batch_execute",
+        "acme_nominal_keyed_write_transaction_insert_batch_execute",
+        "acme_nominal_keyed_insert_batch_result_count",
+        "acme_nominal_keyed_insert_batch_result_thing_at",
+        "acme_nominal_keyed_insert_batch_result_close",
+        "acme_nominal_gathering_delete_batch_builder_add",
+        "acme_nominal_gathering_delete_batch_result_count",
+        "acme_nominal_gathering_delete_batch_result_close",
     ] {
         assert!(
             header.contains(&format!("TYPE_BRIDGE_CALL {wrapper}(")),
@@ -524,24 +530,24 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
         );
     }
     assert!(header.contains(
-        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_unkeyed_database_put("
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_nominal_unkeyed_database_put("
     ));
     assert!(header.contains(
-        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_unkeyed_write_transaction_put("
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_nominal_unkeyed_write_transaction_put("
     ));
     assert!(header.contains(
-        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_gathering_database_put("
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_nominal_gathering_database_put("
     ));
-    assert!(header.contains("static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_gathering_write_transaction_put("));
+    assert!(header.contains("static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_nominal_gathering_write_transaction_put("));
     for forbidden in [
-        "acme_v3_unkeyed_put_batch_builder",
-        "acme_v3_unkeyed_database_put_batch_execute",
-        "acme_v3_gathering_put_batch_builder",
-        "acme_v3_gathering_database_put_batch_execute",
-        "acme_v3_keyed_delete_batch_result_thing_at",
-        "acme_v3_unkeyed_delete_batch_result_thing_at",
-        "acme_v3_membership_delete_batch_result_thing_at",
-        "acme_v3_gathering_delete_batch_result_thing_at",
+        "acme_nominal_unkeyed_put_batch_builder",
+        "acme_nominal_unkeyed_database_put_batch_execute",
+        "acme_nominal_gathering_put_batch_builder",
+        "acme_nominal_gathering_database_put_batch_execute",
+        "acme_nominal_keyed_delete_batch_result_thing_at",
+        "acme_nominal_unkeyed_delete_batch_result_thing_at",
+        "acme_nominal_membership_delete_batch_result_thing_at",
+        "acme_nominal_gathering_delete_batch_result_thing_at",
     ] {
         assert!(
             !header.contains(forbidden),
@@ -567,12 +573,12 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
         );
     }
     assert!(
-        !source.contains("acme_v3_keyed_database_insert(")
-            && !source.contains("acme_v3_keyed_insert_batch_builder_open("),
+        !source.contains("acme_nominal_keyed_database_insert(")
+            && !source.contains("acme_nominal_keyed_insert_batch_builder_open("),
         "nominal CRUD and batch successors must not add generated source exports",
     );
 
-    let crud_insert = emitted_function_definition(header, "acme_v3_keyed_database_insert");
+    let crud_insert = emitted_function_definition(header, "acme_nominal_keyed_database_insert");
     for input in [
         "TYPE_BRIDGE_GENERATED_INPUT_DATABASE",
         "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN",
@@ -588,11 +594,13 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(crud_insert.contains("type_bridge_projected_batch_result_t *generic_entity = NULL;"));
     assert!(crud_insert.contains("&generic_entity, out_diagnostics);"));
     assert!(
-        crud_insert.contains("*out_entity = (acme_v3_keyed_insert_batch_result *)generic_entity;")
+        crud_insert
+            .contains("*out_entity = (acme_nominal_keyed_insert_batch_result *)generic_entity;")
     );
     assert!(!crud_insert.contains("(type_bridge_projected_batch_result_t **)out_entity"));
 
-    let batch_open = emitted_function_definition(header, "acme_v3_keyed_insert_batch_builder_open");
+    let batch_open =
+        emitted_function_definition(header, "acme_nominal_keyed_insert_batch_builder_open");
     for input in [
         "TYPE_BRIDGE_GENERATED_INPUT_SCHEMA_PACKAGE",
         "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN",
@@ -608,16 +616,17 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(batch_open.contains("&generic_builder, out_diagnostics);"));
     assert!(!batch_open.contains("(type_bridge_projected_batch_builder_t **)out_builder"));
 
-    let batch_add = emitted_function_definition(header, "acme_v3_keyed_insert_batch_builder_add");
+    let batch_add =
+        emitted_function_definition(header, "acme_nominal_keyed_insert_batch_builder_add");
     assert!(batch_add.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_BUILDER"));
     assert!(batch_add.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CREATE"));
-    assert!(batch_add.contains("acme_v3_generated_alias_preflight_v1("));
+    assert!(batch_add.contains("acme_nominal_generated_alias_preflight_v1("));
 
     let batch_finish =
-        emitted_function_definition(header, "acme_v3_keyed_insert_batch_builder_finish");
+        emitted_function_definition(header, "acme_nominal_keyed_insert_batch_builder_finish");
     assert_eq!(
         batch_finish
-            .matches("acme_v3_generated_alias_preflight_v1(")
+            .matches("acme_nominal_generated_alias_preflight_v1(")
             .count(),
         2,
         "three finish outputs require the frozen two-call alias fence",
@@ -634,7 +643,7 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     );
     assert!(batch_finish.contains("type_bridge_projected_batch_t *generic_batch = NULL;"));
     let assign_builder = batch_finish
-        .find("*builder = (acme_v3_keyed_insert_batch_builder *)generic_builder;")
+        .find("*builder = (acme_nominal_keyed_insert_batch_builder *)generic_builder;")
         .expect("finish assigns generic ownership state back to the nominal builder slot");
     let success_branch = batch_finish
         .find("if (status == TYPE_BRIDGE_STATUS_OK)")
@@ -647,7 +656,7 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(!batch_finish.contains("(type_bridge_projected_batch_t **)out_batch"));
 
     let batch_execute =
-        emitted_function_definition(header, "acme_v3_keyed_database_insert_batch_execute");
+        emitted_function_definition(header, "acme_nominal_keyed_database_insert_batch_execute");
     assert!(batch_execute.contains("TYPE_BRIDGE_GENERATED_INPUT_DATABASE"));
     assert!(batch_execute.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH"));
     assert!(batch_execute.contains("TYPE_BRIDGE_GENERATED_INPUT_BYTES, limits, sizeof(*limits)"));
@@ -655,30 +664,30 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(!batch_execute.contains("(type_bridge_projected_batch_result_t **)out_result"));
 
     let result_count =
-        emitted_function_definition(header, "acme_v3_keyed_insert_batch_result_count");
+        emitted_function_definition(header, "acme_nominal_keyed_insert_batch_result_count");
     assert!(result_count.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT"));
     assert!(result_count.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN"));
     assert!(result_count.contains("TYPE_BRIDGE_PROJECTED_BATCH_OPERATION_INSERT"));
 
     let thing_at =
-        emitted_function_definition(header, "acme_v3_keyed_insert_batch_result_thing_at");
+        emitted_function_definition(header, "acme_nominal_keyed_insert_batch_result_thing_at");
     assert!(thing_at.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT"));
     assert!(thing_at.contains("type_bridge_projected_thing_t *generic_entity = NULL;"));
     assert!(!thing_at.contains("(type_bridge_projected_thing_t **)out_entity"));
 
     for (wrapper, input_kind, generic_type) in [
         (
-            "acme_v3_keyed_insert_batch_builder_close",
+            "acme_nominal_keyed_insert_batch_builder_close",
             "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_BUILDER",
             "type_bridge_projected_batch_builder_t *generic_builder",
         ),
         (
-            "acme_v3_keyed_insert_batch_close",
+            "acme_nominal_keyed_insert_batch_close",
             "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH",
             "type_bridge_projected_batch_t *generic_batch",
         ),
         (
-            "acme_v3_keyed_insert_batch_result_close",
+            "acme_nominal_keyed_insert_batch_result_close",
             "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT",
             "type_bridge_projected_batch_result_t *generic_result",
         ),
@@ -692,7 +701,7 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
             body.contains(generic_type),
             "{wrapper} omitted local ownership marshalling"
         );
-        assert!(body.contains("acme_v3_generated_alias_preflight_v1("));
+        assert!(body.contains("acme_nominal_generated_alias_preflight_v1("));
     }
 
     let names = emitted_function_names(header);
@@ -862,8 +871,9 @@ fn ordered_c_v3_nominal_alias_and_recovery_wrappers_execute_provider_free() {
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
     let runtime_include = runtime_include();
-    let header = std::str::from_utf8(package.get("include/acme_v3/models.h").unwrap()).unwrap();
-    let model_token = emitted_function_model_token(header, "acme_v3_keyed_database_insert");
+    let header =
+        std::str::from_utf8(package.get("include/acme_nominal/models.h").unwrap()).unwrap();
+    let model_token = emitted_function_model_token(header, "acme_nominal_keyed_database_insert");
     let probe = include_str!("c_crud/recovery.c").replace("@MODEL_TOKEN@", model_token);
     assert!(!probe.contains("@MODEL_TOKEN@"));
     fs::write(stage.path().join("recovery.c"), probe).expect("recovery probe is written");
@@ -5867,19 +5877,19 @@ int main(void) {
 #[test]
 fn sdk_models_generated_package_integrity() {
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("models.yaml").expect("V3 document ID is valid"),
+        DocumentId::new("models.yaml").expect("staged document ID is valid"),
         SDK_MODELS_SOURCE,
     )])
-    .expect("V3 schema parses");
-    let declared = normalize_documents(&documents).expect("V3 schema normalizes");
+    .expect("staged schema parses");
+    let declared = normalize_documents(&documents).expect("staged schema normalizes");
     let identity = support::sdk_profile_matrix::requested("models");
     let profile =
         SemanticProfileId::new(&identity.semantic_profile).expect("test profile is valid");
-    let resolved = resolve(&declared, &profile).expect("V3 schema resolves");
+    let resolved = resolve(&declared, &profile).expect("staged schema resolves");
     let emitter = CEmitter::new();
     let resources = emitter
         .code_resources_for(&resolved)
-        .expect("V3 C resources hash");
+        .expect("staged C resources hash");
     let projection = project(
         &resolved,
         BindingTarget::C,
@@ -5887,12 +5897,12 @@ fn sdk_models_generated_package_integrity() {
         &emitter.generator_handlers_for(&resolved),
         &resources,
     )
-    .expect("V3 schema projects to C");
+    .expect("staged schema projects to C");
     let authority =
         support::authority_for_declared(&declared, "models-c", &identity.semantic_profile);
     let package = emitter
         .emit(&projection, &authority)
-        .expect("V3 C package emits");
+        .expect("staged C package emits");
     let emitted = package
         .files()
         .values()
@@ -5900,7 +5910,10 @@ fn sdk_models_generated_package_integrity() {
             text.push_str(&String::from_utf8_lossy(bytes));
             text
         });
-    assert!(!projection.models().is_empty(), "V3 projection has models");
+    assert!(
+        !projection.models().is_empty(),
+        "staged projection has models"
+    );
     assert!(
         emitted.contains("fixture_"),
         "generated C package has the requested namespace"
@@ -5909,12 +5922,12 @@ fn sdk_models_generated_package_integrity() {
     let root = sdk_models_repository_root();
     let journey: Value = serde_json::from_slice(
         &fs::read(root.join("tests/contracts/sdk_conformance/models/journey.json"))
-            .expect("V3 journey reads"),
+            .expect("staged journey reads"),
     )
-    .expect("V3 journey parses");
+    .expect("staged journey parses");
     let expected = journey["expected_observations"]
         .as_object()
-        .expect("V3 expected observations are an object");
+        .expect("staged expected observations are an object");
     let test_id = "c_emitter::sdk_models_generated_package_integrity";
     publish_sdk_models_package_fragment(vec![
         json!({"observation": expected["projected_constraint_validation"], "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),

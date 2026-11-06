@@ -880,7 +880,7 @@ run_live_lane() {
                 -p type-bridge-orm --lib
     fi
 
-    # The staged V3 suites run on every server of the typedb-3.13.6/v1 profile.
+    # The staged suites run on every server of the typedb-3.13.6/v1 profile.
     if [[ "$lane_profile" == typedb-3.13.6/v1 ]]; then
         run_step "staged query-plan/v3 programs resolve at commit (TypeDB $typedb_server_version)" \
             run_with_timeout 10m \
@@ -916,7 +916,7 @@ run_live_lane() {
         # The C staged plans and the four-language writes emit SDK conformance
         # reports, which the profile matrix pairs with one server per profile.
         if [[ "$lane_in_sdk_matrix" == 1 ]]; then
-        run_step "C ABI 1.7 staged contract plans (TypeDB $typedb_server_version)" \
+        run_step "C ABI 2.0 staged contract plans (TypeDB $typedb_server_version)" \
             run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
@@ -988,14 +988,14 @@ run_live_lane() {
     fi
 
     if [[ "$lane_given_rows" == 1 ]]; then
-        run_step "type-bridge-server V3 staged live acceptance" \
+        run_step "type-bridge-server staged live acceptance" \
             run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             cargo test --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-server \
                 --test staged_integration_tests -- --ignored
 
-        run_step "Rust SDK plan builder over the V3 staged proxy (live)" \
+        run_step "Rust SDK plan builder over the staged proxy (live)" \
             run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             cargo test --manifest-path type-bridge-core/Cargo.toml \

@@ -80,12 +80,12 @@ pub enum RemoteValue {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RemoteFieldValue {
-    /// Complete player documents of one unordered V3 role.
+    /// Complete player documents of one unordered staged role.
     Documents {
         /// Schema-checked documents in provider order.
         documents: Vec<BTreeMap<String, RemoteFieldValue>>,
     },
-    /// Nested named fields of a V3 thing document.
+    /// Nested named fields of a staged thing document.
     Document {
         /// Schema-checked members.
         fields: BTreeMap<String, RemoteFieldValue>,

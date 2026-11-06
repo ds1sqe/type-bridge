@@ -244,7 +244,7 @@ impl fmt::Debug for DatabaseConnectionAuthority {
 impl Database {
     /// Select the immutable query policy for this connection and inherited transactions.
     ///
-    /// Defaults remain the native V3 limits. Every dimension is independently configurable.
+    /// Defaults remain the native staged limits. Every dimension is independently configurable.
     /// # Errors
     /// Returns an unsupported query-limit value before any provider I/O.
     pub fn with_query_limits(

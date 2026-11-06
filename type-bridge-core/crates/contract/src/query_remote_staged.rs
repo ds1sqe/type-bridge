@@ -1,4 +1,4 @@
-//! Canonical staged V3 transactions. Requests are unsigned; replies retain the
+//! Canonical staged transactions. Requests are unsigned; replies retain the
 //! existing Ed25519 signed outer envelope. No V1/V2 wire type is widened.
 
 use crate::capability::{CapabilityId, CapabilitySet};
@@ -113,7 +113,7 @@ pub enum StagedKind {
     Read,
     /// A write transaction, including a caller-selected write snapshot for reads.
     Write,
-    /// Reserved schema kind; V3 query staging rejects it.
+    /// Reserved schema kind; staged query staging rejects it.
     Schema,
 }
 
@@ -1562,13 +1562,13 @@ impl ValueWire {
     }
 }
 
-/// Decode one V3 row cell under the caller's scalar byte budgets.
+/// Decode one staged row cell under the caller's scalar byte budgets.
 pub fn decode_remote_value_with_limits(
     value: serde_json::Value,
     limits: crate::limits::CodecLimits,
 ) -> Result<RemoteValue, Diagnostic> {
     serde_json::from_value::<ValueWire>(value)
-        .map_err(|_| invalid("query_remote_answer_concept", "invalid V3 row cell"))?
+        .map_err(|_| invalid("query_remote_answer_concept", "invalid staged row cell"))?
         .rebuild(limits)
 }
 

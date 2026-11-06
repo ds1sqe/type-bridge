@@ -28,7 +28,7 @@ const SDK_MODELS_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGME
 const SDK_MODELS_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE";
 
 fn models_source_identity(root: &Path, relative: &str) -> Value {
-    let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+    let bytes = fs::read(root.join(relative)).expect("staged proof source reads");
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
@@ -38,14 +38,14 @@ fn publish_models_package_fragment(results: Vec<Value>) {
     assert_eq!(
         destination.is_some(),
         nonce.is_some(),
-        "V3 proof destination and nonce must be configured together"
+        "staged proof destination and nonce must be configured together"
     );
     let (Some(destination), Some(nonce)) = (destination, nonce) else {
         return;
     };
     let destination = PathBuf::from(destination);
     assert!(destination.is_absolute() && !destination.exists());
-    let nonce = nonce.to_str().expect("V3 proof nonce is UTF-8");
+    let nonce = nonce.to_str().expect("staged proof nonce is UTF-8");
     assert!(
         nonce.len() == 64
             && nonce
@@ -75,17 +75,19 @@ fn publish_models_package_fragment(results: Vec<Value>) {
         "run_nonce": nonce,
         "semantic_profile": support::sdk_profile_matrix::requested("models").semantic_profile,
     });
-    let mut bytes = to_canonical_json(&fragment).expect("V3 package fragment canonicalizes");
+    let mut bytes = to_canonical_json(&fragment).expect("staged package fragment canonicalizes");
     bytes.push(b'\n');
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
-        .expect("V3 package fragment destination is created once");
+        .expect("staged package fragment destination is created once");
     output
         .write_all(&bytes)
-        .expect("V3 package fragment writes");
-    output.sync_all().expect("V3 package fragment is durable");
+        .expect("staged package fragment writes");
+    output
+        .sync_all()
+        .expect("staged package fragment is durable");
 }
 
 #[test]
@@ -4023,7 +4025,7 @@ fn sdk_models_generated_package_integrity() {
     let projection = support::rust_projection_on(&source, "rust-acceptance.yaml", &profile);
     assert!(
         !projection.models().is_empty(),
-        "V3 projection has generated models"
+        "staged projection has generated models"
     );
     let package = emit_on(&source, &profile);
     let emitted = package

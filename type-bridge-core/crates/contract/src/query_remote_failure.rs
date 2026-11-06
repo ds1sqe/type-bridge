@@ -50,7 +50,7 @@ fn encode_minimal_signed_failure(
     advertisement: &RemoteCapabilitiesFingerprint,
     signer: &impl RemoteReplySigner,
 ) -> Vec<u8> {
-    const PREFIX: &[u8] = b"{\"category\":\"integrity\",\"code\":\"query_remote_internal_failure\",\"details\":{},\"format\":\"typebridge.query-remote-failure/v3\",\"message\":\"executor could not encode the original V3 remote failure\",\"nonce\":";
+    const PREFIX: &[u8] = b"{\"category\":\"integrity\",\"code\":\"query_remote_internal_failure\",\"details\":{},\"format\":\"typebridge.query-remote-failure/v3\",\"message\":\"executor could not encode the original staged remote failure\",\"nonce\":";
     let nonce = original
         .nonce
         .as_deref()
@@ -89,7 +89,7 @@ pub struct StagedFailure {
 }
 
 impl StagedFailure {
-    /// Construct an uncorrelated V3 failure for a pre-request transport error.
+    /// Construct an uncorrelated staged failure for a pre-request transport error.
     pub fn new(nonce: Option<String>, diagnostic: &Diagnostic) -> Result<Self, Diagnostic> {
         let diagnostic = RemoteDiagnostic::new(diagnostic)?;
         if let Some(nonce) = nonce.as_deref() {
@@ -107,7 +107,7 @@ impl StagedFailure {
         })
     }
 
-    /// Encode one authenticated V3 failure in the unchanged signed outer
+    /// Encode one authenticated staged failure in the unchanged signed outer
     /// envelope.
     pub fn encode_signed(
         &self,
@@ -122,7 +122,7 @@ impl StagedFailure {
     }
 
     /// Encode an authenticated failure, replacing an unencodable diagnostic
-    /// with a fixed bounded V3 internal failure while retaining a safe nonce.
+    /// with a fixed bounded staged internal failure while retaining a safe nonce.
     #[must_use]
     pub fn encode_signed_or_fallback(
         &self,
@@ -149,14 +149,14 @@ impl StagedFailure {
         to_canonical_json_with_limits(self, REMOTE_ENVELOPE_CODEC_LIMITS)
     }
 
-    /// Decode an already authenticated V3 failure payload.
+    /// Decode an already authenticated staged failure payload.
     pub fn decode_payload(bytes: &[u8]) -> Result<Self, Diagnostic> {
         let maximum = MAX_DIAGNOSTIC_BYTES.saturating_add(FAILURE_FRAMING_ALLOWANCE_BYTES);
         if bytes.len() > maximum {
             return Err(diagnostic_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_remote_diagnostic_too_large",
-                "V3 remote diagnostic exceeds the canonical byte ceiling",
+                "staged remote diagnostic exceeds the canonical byte ceiling",
             ));
         }
         let failure = from_canonical_json_with_limits::<Self>(bytes, REMOTE_ENVELOPE_CODEC_LIMITS)?;
@@ -180,7 +180,7 @@ impl StagedFailure {
             return Err(diagnostic_failure(
                 DiagnosticCategory::Integrity,
                 "query_remote_failure_wire_mismatch",
-                "V3 failure bytes normalize after trusted reconstruction",
+                "staged failure bytes normalize after trusted reconstruction",
             ));
         }
         Ok(failure)
@@ -210,7 +210,7 @@ impl StagedFailure {
     }
 }
 
-/// Authenticate and decode an uncorrelated V3 pre-request failure.
+/// Authenticate and decode an uncorrelated staged pre-request failure.
 pub fn decode_signed_staged_failure(
     bytes: &[u8],
     expected_advertisement: &RemoteCapabilitiesFingerprint,

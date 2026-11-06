@@ -285,7 +285,7 @@ impl StagedSection {
         )
         .map_err(|error| format!("staged.query_limits is rejected: {error}"))
     }
-    /// Resolve V3 output columns without widening the released staged policy.
+    /// Resolve staged output columns without widening the released staged policy.
     pub fn resolved_staged_query_limits(
         &self,
     ) -> Result<type_bridge_contract::limits::QueryLimits, String> {

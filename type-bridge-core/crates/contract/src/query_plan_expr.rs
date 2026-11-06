@@ -1,4 +1,4 @@
-//! Closed V3 expression syntax and TypeDB 3.13.6 scalar inference.
+//! Closed staged expression syntax and TypeDB 3.13.6 scalar inference.
 
 use super::*;
 

@@ -181,7 +181,7 @@ pub enum OperationSpec {
         /// Player type name.
         player_type_name: String,
     },
-    /// Execute a canonical native V3 data program under planning authority.
+    /// Execute a canonical native staged data program under planning authority.
     RunPlan {
         /// Canonical query-plan/v3 object, validated by the planner.
         forward: serde_json::Value,
