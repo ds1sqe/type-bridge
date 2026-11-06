@@ -86,24 +86,15 @@ which generated acceptance proves each retained operation. Handwritten tests
 that were replaced are accounted for by
 `tests/fixtures/handwritten-operation-removal-map.json`.
 
-## Adopt archived migration history
+## Retained adopted migration history
 
-Archived root Python/JSON migrations remain readable but cannot be authored or
-used as new active authority. Materialize the old history as bounded regular
-files, generate its trusted sidecar under the old environment if required, and
-adopt it once:
-
-```bash
-type-bridge --manifest typebridge.yaml migration adopt \
-  --environment production \
-  --archive-directory path/to/archived-history
-```
-
-Treat adoption as a writer cutover. Quiesce the old migrator and revoke its
-writer credential before adoption. The native adopter verifies dependencies,
-original checksums, snapshots, metadata, and the applied ledger, then records
-the one-way frontier. It never re-executes archived callbacks such as
-`RunPython`.
+TypeBridge 3.0 does not expose `migration adopt`. Complete any required archive
+adoption with the compatible 2.x tooling before upgrading, then stop the 2.x
+migration runners. Keep the adopted genesis, canonical manifests, managed
+database and old companion journal together. The first 3.0 migration apply
+imports their verified evidence once; it does not replay archived callbacks.
+See [the migration upgrade procedure](migrations.md) for import diagnostics,
+backup requirements and the history-directory move.
 
 Continue only with canonical migration commands:
 
@@ -163,3 +154,10 @@ retry over plaintext.
 
 The exact removed and retained surfaces are listed in
 [V2.1 cutover inventory](migrations.md).
+
+### C migration callback handles
+
+A callback's transaction becomes unusable when the callback finishes, but the
+C handle allocation remains retained until its catalog and every derived plan
+are closed. Close those owners before closing the database: database close is
+refused while retained callback handles still hold it.

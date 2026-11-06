@@ -125,7 +125,7 @@ impl fmt::Display for WorkspaceLockError {
                 formatter.write_str("workspace lock version is unsupported")
             }
             Self::Stale => {
-                formatter.write_str("workspace lock does not match the source workspace; regenerate it with `generate_workspace_lock` (3.0 uses migration_directory instead of migration_v2_directory)")
+                formatter.write_str("workspace lock does not match the source workspace; regenerate it with `generate_workspace_lock`")
             }
         }
     }

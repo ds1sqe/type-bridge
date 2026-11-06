@@ -1215,7 +1215,7 @@ impl TypeBridgeConfig {
 
     /// Return the V2 migration directory resolved under the root.
     #[must_use]
-    pub fn migration_v2_absolute_path(&self) -> PathBuf {
+    pub fn migration_absolute_path(&self) -> PathBuf {
         self.workspace_root
             .as_path()
             .join(self.migration_directory.as_path())
@@ -1653,11 +1653,16 @@ impl TypeBridgeConfigBuilder {
                 if left_endpoints.is_disjoint(right_endpoints) {
                     continue;
                 }
-                let left_journal =
-                    format!("{}{TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX}", left.database());
-                let right_journal =
-                    format!("{}{TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX}", right.database());
-                if left_journal == right.database() || right_journal == left.database() {
+                let aliases_journal = [
+                    TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX,
+                    type_bridge_contract::reserved::IMPORT_LEGACY_JOURNAL_SUFFIX,
+                ]
+                .iter()
+                .any(|suffix| {
+                    format!("{}{suffix}", left.database()) == right.database()
+                        || format!("{}{suffix}", right.database()) == left.database()
+                });
+                if aliases_journal {
                     return Err(WorkspaceConfigError::new(
                         WorkspaceConfigErrorCode::EnvironmentDatabaseCollision,
                         "one environment's managed database aliases another environment's reserved migration journal on overlapping TypeDB endpoint sets",

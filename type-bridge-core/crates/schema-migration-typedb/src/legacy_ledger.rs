@@ -428,9 +428,9 @@ fn extract_scalar(value: &serde_json::Value) -> Option<String> {
 /// Pure and TypeDB-free so the document-shape contract is unit-testable. Each
 /// document is the `fetch { "app": ..., "name": ..., "applied": ...,
 /// "checksum": ... }` shape from the `load_applied` query (ported from
-/// `state.py:179-191`). A document missing any of `app` / `name` / `checksum`
-/// is skipped, matching the Python `if all([...])` guard (`state.py:206`);
-/// `applied` is carried through as the optional ISO string.
+/// `state.py:179-191`). Missing `app` / `name` / `checksum` fields are refused
+/// so a damaged row cannot disappear from import evidence. `applied` remains
+/// part of the record as an optional ISO string.
 pub fn parse_applied_documents(
     values: &[serde_json::Value],
 ) -> Result<Vec<AppliedMigrationRecord>> {
@@ -441,8 +441,9 @@ pub fn parse_applied_documents(
             extract_value(doc, "name"),
             extract_value(doc, "checksum"),
         ) else {
-            // Skip incomplete rows (mirrors the Python `all([...])` guard).
-            continue;
+            return Err(LegacyReadError::State {
+                message: "legacy applied row is missing app, name or checksum".into(),
+            });
         };
         let applied_at = extract_value(doc, "applied");
         records.push(AppliedMigrationRecord {
@@ -601,5 +602,42 @@ mod tests {
                 .unwrap_err()
                 .is_contract_violation()
         );
+    }
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::*;
+
+    #[test]
+    fn plain_and_wrapped_rows_preserve_order_and_optional_timestamp() {
+        let rows = parse_applied_documents(&[
+            serde_json::json!({"app":"app", "name":"first", "checksum":"abc"}),
+            serde_json::json!({"app":{"value":"app"}, "name":{"value":"second"}, "checksum":{"value":"def"}, "applied":{"value":"2026-01-01T00:00:00"}}),
+        ]).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "first");
+        assert_eq!(rows[0].applied_at, None);
+        assert_eq!(rows[1].checksum, "def");
+        assert_eq!(rows[1].applied_at.as_deref(), Some("2026-01-01T00:00:00"));
+    }
+
+    #[test]
+    fn incomplete_rows_cannot_disappear_from_import_evidence() {
+        for field in ["app", "name", "checksum"] {
+            for bad in [
+                serde_json::Value::Null,
+                serde_json::json!([]),
+                serde_json::json!({}),
+            ] {
+                let mut row = serde_json::json!({"app":"app", "name":"first", "checksum":"abc"});
+                row[field] = bad;
+                assert!(parse_applied_documents(&[row.clone()]).is_err());
+                assert!(
+                    verify_partition_documents(&[row], LegacyCutoverSentinelExpectation::Absent)
+                        .is_err()
+                );
+            }
+        }
     }
 }

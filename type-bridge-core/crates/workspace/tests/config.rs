@@ -196,7 +196,7 @@ fn typed_builder_retains_exact_policy_and_uses_injected_services() {
         Path::new(VIRTUAL_ROOT).join("schema/schema.yaml")
     );
     assert_eq!(
-        config.migration_v2_absolute_path(),
+        config.migration_absolute_path(),
         Path::new(VIRTUAL_ROOT).join("migrations/v2")
     );
     assert_eq!(config.app_label().as_str(), "example");
@@ -909,22 +909,24 @@ fn normalized_endpoint_sets_reject_managed_and_reserved_journal_aliases() {
     let source = CanonicalSource::new();
     let secrets = AcceptSecrets::new();
     let extensions = AcceptExtensions::new();
-    let error = base_builder()
-        .environment(
-            "primary",
-            environment("DB-1.EXAMPLE.:1729,[2001:0db8::1]:01730", "production"),
-        )
-        .environment(
-            "journal-alias",
-            environment("[2001:db8::1]:1730", "production__tb_journal"),
-        )
-        .build(&services(&source, &secrets, &extensions))
-        .unwrap_err();
-    assert_eq!(
-        error.code(),
-        WorkspaceConfigErrorCode::EnvironmentDatabaseCollision
-    );
-    assert_eq!(error.detail(), Some("journal-alias,primary"));
+    for suffix in ["__tb_journal", "__tbv2_journal"] {
+        let error = base_builder()
+            .environment(
+                "primary",
+                environment("DB-1.EXAMPLE.:1729,[2001:0db8::1]:01730", "production"),
+            )
+            .environment(
+                "journal-alias",
+                environment("[2001:db8::1]:1730", &format!("production{suffix}")),
+            )
+            .build(&services(&source, &secrets, &extensions))
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            WorkspaceConfigErrorCode::EnvironmentDatabaseCollision
+        );
+        assert_eq!(error.detail(), Some("journal-alias,primary"));
+    }
 
     base_builder()
         .environment("primary", environment("db-1.example:1729", "production"))
