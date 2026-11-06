@@ -90,10 +90,3 @@ impl OwnedTransaction {
         self.inner.tx_type()
     }
 }
-
-/// Released eager transaction name, retained until 3.0.
-#[deprecated(
-    since = "2.3.0",
-    note = "Use OwnedTransaction; staged Transaction takes the session-level name in 3.0"
-)]
-pub type Transaction = OwnedTransaction;

@@ -830,18 +830,6 @@ pub fn require_supported_migration_server_for_profile(
     )
 }
 
-/// Require TypeDB 3.12.3+, the patch floor for semantic profile `typedb-3.12.1/v1`.
-#[deprecated(
-    since = "2.3.0",
-    note = "use require_supported_migration_server_for_profile; removed in 3.0"
-)]
-pub fn require_supported_migration_server(database: &Database) -> Result<(), Diagnostic> {
-    require_supported_migration_server_for_profile(
-        database,
-        &MigrationProfile::Typedb3_12_1.semantic_profile_id(),
-    )
-}
-
 /// Require a supported semantic profile and, on both members of one
 /// managed/journal pair, a server meeting that profile's patch floors.
 ///

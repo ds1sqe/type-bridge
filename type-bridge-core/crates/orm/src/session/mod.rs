@@ -36,13 +36,10 @@ pub use database::{
 pub use direct_connection::DirectConnectionPolicy;
 pub use legacy_writer::{require_legacy_writer_open, require_legacy_writer_open_in_transaction};
 pub use proxy_connection::{ProxyEndpoint, ProxyHttpTransport};
+pub use staged::Transaction;
 pub use staged_proxy::{StagedExchangeFn, StagedTransport};
-#[allow(deprecated)]
-pub use tls_policy::DirectTls;
 pub use tls_policy::TlsPolicy;
 pub use transaction::OwnedTransaction;
-#[allow(deprecated)]
-pub use transaction::Transaction;
 
 #[cfg(feature = "typedb")]
 pub use real_driver::embedded_driver_versions;

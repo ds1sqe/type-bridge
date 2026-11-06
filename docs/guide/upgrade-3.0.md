@@ -401,3 +401,29 @@ those slots, like other policy-aware preflight failures.
 | `type_bridge_write_transaction_relation_insert_v2` | `type_bridge_write_transaction_relation_insert` |
 | `type_bridge_write_transaction_relation_put_v2` | `type_bridge_write_transaction_relation_put` |
 | `type_bridge_write_transaction_relation_update_v2` | `type_bridge_write_transaction_relation_update` |
+
+## Removed Rust compatibility helpers
+
+`Transaction` now refers to the staged transaction at the ORM session/root and
+Rust SDK root. Code using the old eager ORM alias must name `OwnedTransaction`.
+Checked schema generation returns `Result` instead of silently returning an
+empty string on invalid input. Select the semantic profile explicitly when
+constructing a schema-lowering binding or validating a migration server.
+
+| Removed Rust API | Replacement |
+| --- | --- |
+| `DirectTls` | TlsPolicy |
+| `MAX_QUERY_ITEMS` | DEFAULT_PROXY_QUERY_ITEMS |
+| `MAX_QUERY_BYTES` | DEFAULT_PROXY_QUERY_BYTES |
+| `MAX_QUERY_GRAPH_NODES` | DEFAULT_PROXY_QUERY_GRAPH_NODES |
+| `MAX_QUERY_ATTRIBUTE_VALUES` | DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES |
+| `MAX_QUERY_COLLECTION_MEMBERS` | DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS |
+| `MAX_QUERY_ROLE_PLAYERS` | DEFAULT_PROXY_QUERY_ROLE_PLAYERS |
+| `type_bridge_orm::Transaction; type_bridge_orm::session::Transaction (eager alias)` | OwnedTransaction for eager calls; Transaction now stages plans |
+| `SchemaLoweringProfileFingerprint::compute(bytes)` | compute_for_profile(profile, bytes) |
+| `SchemaLoweringBinding::current(capabilities)` | for_semantic_profile(profile, capabilities) or for_context(context) |
+| `require_supported_migration_server(database)` | require_supported_migration_server_for_profile(database, profile) |
+| `generate_define_block(info)` | try_generate_define_block(info), handling its Result |
+| `card_annotation(min, max)` | checked tql::schema_card plus render_schema_annotations |
+| `attribute_definition(attribute)` | attribute_node(attribute, true) plus tql::render_schema_definition |
+| `attribute_constraint_definition(attribute)` | attribute_node(attribute, false) plus tql::render_schema_definition |

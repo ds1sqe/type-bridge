@@ -151,14 +151,7 @@ pub use query_execution_limits::{
     QueryExecutionDeadline, QueryExecutionLimitOutOfRange, QueryExecutionLimitsError,
     QueryExecutionResourceLimits, QueryTimeout,
 };
-#[allow(deprecated)]
-pub use query_execution_limits::{
-    MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
-    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS,
-};
 pub use runtime_projection::InstalledRuntimeProjection;
-#[allow(deprecated)]
-pub use session::DirectTls;
 #[doc(hidden)]
 pub use session::TransactionContextState;
 pub use session::backend::AnswerCancellation;

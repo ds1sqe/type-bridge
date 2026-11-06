@@ -523,9 +523,15 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
             "successor wrapper {wrapper} does not have header-local static-inline linkage",
         );
     }
-    assert!(header.contains("static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_unkeyed_database_put("));
-    assert!(header.contains("static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_unkeyed_write_transaction_put("));
-    assert!(header.contains("static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_gathering_database_put("));
+    assert!(header.contains(
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_unkeyed_database_put("
+    ));
+    assert!(header.contains(
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_unkeyed_write_transaction_put("
+    ));
+    assert!(header.contains(
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_gathering_database_put("
+    ));
     assert!(header.contains("static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_gathering_write_transaction_put("));
     for forbidden in [
         "acme_v3_unkeyed_put_batch_builder",
@@ -1191,7 +1197,9 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
     }
     assert!(header.contains("status = type_bridge_database_entity_insert("));
     assert!(header.contains("owner, &acme_projected_model_token_"));
-    assert!(header.contains("(const type_bridge_projected_create_t *)create, limits, cancellation,"));
+    assert!(
+        header.contains("(const type_bridge_projected_create_t *)create, limits, cancellation,")
+    );
     assert!(header.contains("status = type_bridge_read_transaction_entity_get_by_iid("));
     assert!(header.contains("status = type_bridge_database_relation_insert("));
     assert!(header.contains("status = type_bridge_read_transaction_relation_get_by_iid("));
