@@ -2880,7 +2880,7 @@ return decodeQueryResult<Connection, Page<Output>>(state, result, decodePage);
     return decodeQueryResult<Connection, boolean>(state, result, decodeExists);
   }
 
-  async aggregate<
+  async reduce<
     Root extends object,
     const Terms extends readonly [Aggregate<unknown>, ...Aggregate<unknown>[]],
   >(
@@ -2934,7 +2934,7 @@ return decodeQueryResult<Connection, Page<Output>>(state, result, decodePage);
       "generated aggregate root",
     );
     const group = runtimeReductionGroup(groups, state.projection);
-    // The core refuses too many group fields here, not at aggregate().
+    // The core refuses too many group fields here, not at reduce().
     if (group.kind !== "binding") {
       const fields =
         group.kind === "field" ? [group.handle] : [...group.handles];
@@ -3065,7 +3065,7 @@ export class GroupedQuery<out Group extends object, Connection extends QueryConn
     );
   }
 
-  async aggregate<
+  async reduce<
     const Terms extends readonly [Aggregate<unknown>, ...Aggregate<unknown>[]],
   >(
     terms: Terms & AtMostSixteen<Terms>,

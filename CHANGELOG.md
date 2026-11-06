@@ -338,6 +338,13 @@ All notable changes to TypeBridge will be documented in this file.
 
 <!-- --8<-- [start:breaking-3-0] -->
 
+Python, TypeScript and Rust query/grouped-query `aggregate(...)` terminals
+are renamed to `reduce(...)`. Aggregate constructors and type namespaces
+(such as `aggregate.count()`) keep their names. Generated C explicit-root
+terminal factories `*_query_page`, `*_query_count` and `*_query_exists`
+become `*_query_page_by`, `*_query_count_by` and `*_query_exists_by`.
+Manager `count`/`exists` methods and C result-owner/accessor names are unchanged.
+
 Role-edge predicates use `links`, matching the TypeQL pattern they lower to.
 Additional query bindings use `match` (Rust `matching`) and are not added to
 the selected output.

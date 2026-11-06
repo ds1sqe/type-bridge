@@ -1196,7 +1196,7 @@ class Query(_Frozen):
         self.__require_root(root, "query root")
         return await self.__run(_EXISTS_BY, _decode_exists, root.native_handle())
 
-    async def aggregate(
+    async def reduce(
         self, root: BoundVar, *terms: Aggregate
     ) -> tuple[object, ...] | Pending[tuple[object, ...]]:
         def decode(result: ValidatedMatchResultHandle) -> tuple[object, ...]:
@@ -1212,7 +1212,7 @@ class Query(_Frozen):
         group = _require_aggregate_groups(groups, self.__projection, "aggregate group")
         fields = (group,) if isinstance(group, BoundField) else group
         if isinstance(fields, tuple):
-            # The core refuses too many group fields here, not at aggregate().
+            # The core refuses too many group fields here, not at reduce().
             self.__handle.check_group_fields([field.native_handle() for field in fields])
         return GroupedQuery(self.clone(), root, group)
 
@@ -1448,7 +1448,7 @@ class GroupedQuery(_Frozen):
             self.__group,
         )
 
-    async def aggregate(
+    async def reduce(
         self, *terms: Aggregate
     ) -> (
         tuple[tuple[object, tuple[object, ...]], ...]

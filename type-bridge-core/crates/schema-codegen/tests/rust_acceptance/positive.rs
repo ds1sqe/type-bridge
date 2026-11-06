@@ -179,7 +179,7 @@ async fn reusable_read_context_compiles(
         person.field(PersonType::score),
     ))?;
     let _: Vec<((ValBool, Score), (u64,))> = tuple_field_grouped
-        .aggregate((type_bridge::aggregate::count(),))
+        .reduce((type_bridge::aggregate::count(),))
         .await?;
     let _ = query.count().await?;
     let _ = query.exists().await?;

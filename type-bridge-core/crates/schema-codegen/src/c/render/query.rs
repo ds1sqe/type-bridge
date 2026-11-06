@@ -375,9 +375,9 @@ pub(super) fn function_names(
         "query_one",
         "query_first",
         "query_rows",
-        "query_page",
-        "query_count",
-        "query_exists",
+        "query_page_by",
+        "query_count_by",
+        "query_exists_by",
         "query_rows_terminal_close",
         "query_first_terminal_close",
         "query_page_terminal_close",
@@ -1074,17 +1074,17 @@ fn render_package_query_declarations(
            const {order} *const *sorts, size_t sort_count,\n\
            uint64_t offset, uint64_t limit, {rows_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
-         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_page(\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_page_by(\n\
            {root_ref} root,\n\
            const {order} *const *sorts, size_t sort_count,\n\
            uint64_t offset, uint64_t limit, uint8_t include_total,\n\
            {page_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
-         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_count(\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_count_by(\n\
            {root_ref} root,\n\
            {count_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
-         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_exists(\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_exists_by(\n\
            {root_ref} root,\n\
            {exists_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n",
@@ -1533,7 +1533,7 @@ fn render_package_definitions(
     render_terminal_definition(
         output,
         prefix,
-        "page",
+        "page_by",
         "TYPE_BRIDGE_QUERY_TERMINAL_PAGE",
         "TYPE_BRIDGE_QUERY_ROWS_BOUNDED_MANY",
         &query,
@@ -1544,9 +1544,13 @@ fn render_package_definitions(
         true,
     );
     for (suffix, kind, terminal) in [
-        ("count", "TYPE_BRIDGE_QUERY_TERMINAL_COUNT", &count_terminal),
         (
-            "exists",
+            "count_by",
+            "TYPE_BRIDGE_QUERY_TERMINAL_COUNT",
+            &count_terminal,
+        ),
+        (
+            "exists_by",
             "TYPE_BRIDGE_QUERY_TERMINAL_EXISTS",
             &exists_terminal,
         ),

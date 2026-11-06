@@ -359,7 +359,7 @@ static int run_staged_counter_count(
   CHECK(fixture_counter_query_exact_binding_open(session, &binding, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_query_exact_one_selection_open(binding, &selection, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_positional_1(session, fixture_counter_query_exact_one_selection_ref(selection), &query, diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_query_count(fixture_counter_query_exact_binding_root(query, binding), &terminal, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_count_by(fixture_counter_query_exact_binding_root(query, binding), &terminal, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_database_transaction(database, TYPE_BRIDGE_TRANSACTION_READ, &transaction, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_staged_query_stage(transaction, (const type_bridge_query_terminal_t *)terminal,
       TYPE_BRIDGE_QUERY_TERMINAL_COUNT, NULL, NULL, &pending, diagnostics) == TYPE_BRIDGE_STATUS_OK);

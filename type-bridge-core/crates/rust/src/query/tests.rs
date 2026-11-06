@@ -1282,7 +1282,7 @@ async fn successor_grouped_thing_aggregate_retains_the_group_origin() {
     let rows = query
         .group_by(group)
         .unwrap()
-        .aggregate((aggregate::count(),))
+        .reduce((aggregate::count(),))
         .await
         .unwrap();
     let [(group, (count,))] = rows.as_slice() else {
@@ -2319,8 +2319,7 @@ async fn staged_typed_terminals_own_their_context_and_resolve_after_commit() {
             .unwrap();
         let count: Pending<u64> = query.count().await.unwrap();
         let exists: Pending<bool> = query.exists().await.unwrap();
-        let aggregate: Pending<(u64,)> =
-            query.aggregate((crate::aggregate::count(),)).await.unwrap();
+        let aggregate: Pending<(u64,)> = query.reduce((crate::aggregate::count(),)).await.unwrap();
         (one, rows, first, page, count, exists, aggregate)
     };
     assert_eq!(state.opened.load(Ordering::SeqCst), 0);
@@ -2385,5 +2384,5 @@ fn direct_query_futures_remain_send() {
     let query = session.query(root).unwrap();
     assert_send(query.one());
     assert_send(query.count());
-    assert_send(query.aggregate((crate::aggregate::count(),)));
+    assert_send(query.reduce((crate::aggregate::count(),)));
 }

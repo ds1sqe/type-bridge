@@ -2411,7 +2411,7 @@ mod tests {
         assert!(page.items().is_empty());
         assert_eq!(page.total(), Some(0));
         let reduction = query
-            .aggregate((crate::aggregate::count(),))
+            .reduce((crate::aggregate::count(),))
             .await
             .expect("typed reductions use the same authenticated exchange");
         assert_eq!(reduction, (7,));

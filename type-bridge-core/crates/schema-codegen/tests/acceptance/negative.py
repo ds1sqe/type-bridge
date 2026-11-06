@@ -157,10 +157,10 @@ def wrong_function_call_domain(call: FunctionCall[bool]) -> None:
     )
 
 
-query_session.query(person_var).aggregate(  # E: empty_aggregate:reportCallIssue
+query_session.query(person_var).reduce(  # E: empty_aggregate:reportCallIssue
     person_var,
 )
-query_session.query(person_var).aggregate(  # E: too_many_aggregate_terms:reportCallIssue
+query_session.query(person_var).reduce(  # E: too_many_aggregate_terms:reportCallIssue
     person_var,
     aggregate.count(),
     aggregate.count(),

@@ -710,3 +710,11 @@ Rust queries add additional bindings through `.matching(binding)`, replacing
 `.match_(binding)`. C uses `*_query_match` instead of `*_query_add_hidden`;
 this adds a binding to match without projecting it in the selected output.
 Generated C role predicates end in `_query_role_links`.
+
+## Query terminals
+
+Replace query and grouped-query `.aggregate(terms)` calls with `.reduce(terms)`
+in Python, TypeScript and Rust. Keep the `aggregate` namespace used to build
+those terms, such as `aggregate.count()`. In generated C, explicit-root page,
+count and exists factories are `*_query_page_by`, `*_query_count_by` and
+`*_query_exists_by`; their result types and manager terminals keep their names.

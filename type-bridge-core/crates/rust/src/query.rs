@@ -3856,7 +3856,7 @@ impl<'s, 'db, S: Schema, B: Selectable<S>, Target: QueryTarget> Query<'s, 'db, S
 
     /// Reduce the distinct selected stream to one typed tuple of aggregate
     /// values.
-    pub async fn aggregate<T: crate::aggregate::AggregateTuple<S>>(
+    pub async fn reduce<T: crate::aggregate::AggregateTuple<S>>(
         &self,
         terms: T,
     ) -> Result<Target::Out<T::Output>> {
@@ -3967,7 +3967,7 @@ impl<'s, 'db, S: Schema, B: Selectable<S>, G: Selectable<S>, Target: QueryTarget
 
     /// Reduce each witnessed distinct group identity to one typed tuple,
     /// returning materialized group keys with their aggregate values.
-    pub async fn aggregate<T: crate::aggregate::AggregateTuple<S>>(
+    pub async fn reduce<T: crate::aggregate::AggregateTuple<S>>(
         &self,
         terms: T,
     ) -> Result<Target::Out<Vec<(G::Output, T::Output)>>> {
@@ -4083,7 +4083,7 @@ where
 
     /// Reduce each witnessed distinct field value to one typed tuple,
     /// returning its exact generated attribute wrapper with the aggregates.
-    pub async fn aggregate<T: crate::aggregate::AggregateTuple<S>>(
+    pub async fn reduce<T: crate::aggregate::AggregateTuple<S>>(
         &self,
         terms: T,
     ) -> Result<Target::Out<Vec<(V, T::Output)>>> {
@@ -4372,7 +4372,7 @@ where
 
     /// Reduce each witnessed distinct field-value tuple to one typed tuple,
     /// returning exact generated attribute wrappers with the aggregates.
-    pub async fn aggregate<T: crate::aggregate::AggregateTuple<S>>(
+    pub async fn reduce<T: crate::aggregate::AggregateTuple<S>>(
         &self,
         terms: T,
     ) -> Result<Target::Out<Vec<(G::Output, T::Output)>>> {

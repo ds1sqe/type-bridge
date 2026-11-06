@@ -3138,14 +3138,14 @@ class _Query[ModeT: bool, *Slots]:
     async def exists_by[RootT: ModelBase](self: _Query[Literal[True], *Slots], root: BoundVar[RootT]) -> Pending[bool]: ...
     # BEGIN GENERATED AGGREGATE OVERLOADS
     @overload
-    async def aggregate[RootT: ModelBase, Output1T](
+    async def reduce[RootT: ModelBase, Output1T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
         /,
     ) -> tuple[Output1T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T](
+    async def reduce[RootT: ModelBase, Output1T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3153,7 +3153,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3161,7 +3161,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3170,7 +3170,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3179,7 +3179,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3189,7 +3189,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3199,7 +3199,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3210,7 +3210,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3221,7 +3221,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3233,7 +3233,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T, Output5T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3245,7 +3245,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3258,7 +3258,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3271,7 +3271,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3285,7 +3285,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3299,7 +3299,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3314,7 +3314,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3329,7 +3329,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3345,7 +3345,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3361,7 +3361,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3378,7 +3378,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3395,7 +3395,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3413,7 +3413,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3431,7 +3431,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3450,7 +3450,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3469,7 +3469,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3489,7 +3489,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3509,7 +3509,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3530,7 +3530,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3551,7 +3551,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3573,7 +3573,7 @@ class _Query[ModeT: bool, *Slots]:
     ) -> Pending[tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T]]: ...
 
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T, Output16T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T, Output16T](
         self: _Query[Literal[False], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3595,7 +3595,7 @@ class _Query[ModeT: bool, *Slots]:
         /,
     ) -> tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T, Output16T]: ...
     @overload
-    async def aggregate[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T, Output16T](
+    async def reduce[RootT: ModelBase, Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T, Output16T](
         self: _Query[Literal[True], *Slots],
         root: BoundVar[RootT],
         term1: Aggregate[Output1T],
@@ -3878,27 +3878,27 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> _GroupedQuery[ModeT, GroupT]: ...
     # BEGIN GENERATED GROUPED AGGREGATE OVERLOADS
     @overload
-    async def aggregate[Output1T](
+    async def reduce[Output1T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T]], ...]: ...
     @overload
-    async def aggregate[Output1T](
+    async def reduce[Output1T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         /,
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T](
+    async def reduce[Output1T, Output2T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T](
+    async def reduce[Output1T, Output2T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -3906,7 +3906,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T](
+    async def reduce[Output1T, Output2T, Output3T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -3914,7 +3914,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T](
+    async def reduce[Output1T, Output2T, Output3T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -3923,7 +3923,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -3932,7 +3932,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -3942,7 +3942,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -3952,7 +3952,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -3963,7 +3963,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -3974,7 +3974,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -3986,7 +3986,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -3998,7 +3998,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4011,7 +4011,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4024,7 +4024,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4038,7 +4038,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4052,7 +4052,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4067,7 +4067,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4082,7 +4082,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4098,7 +4098,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4114,7 +4114,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4131,7 +4131,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4148,7 +4148,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4166,7 +4166,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4184,7 +4184,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4203,7 +4203,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4222,7 +4222,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4242,7 +4242,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4262,7 +4262,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4283,7 +4283,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
     ) -> Pending[tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T]], ...]]: ...
 
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T, Output16T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T, Output16T](
         self: _GroupedQuery[Literal[False], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],
@@ -4304,7 +4304,7 @@ class _GroupedQuery[ModeT: bool, GroupT]:
         /,
     ) -> tuple[tuple[GroupT, tuple[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T, Output16T]], ...]: ...
     @overload
-    async def aggregate[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T, Output16T](
+    async def reduce[Output1T, Output2T, Output3T, Output4T, Output5T, Output6T, Output7T, Output8T, Output9T, Output10T, Output11T, Output12T, Output13T, Output14T, Output15T, Output16T](
         self: _GroupedQuery[Literal[True], GroupT],
         term1: Aggregate[Output1T],
         term2: Aggregate[Output2T],

@@ -2449,7 +2449,7 @@ static int check_staged_write_then_typed_read(
   CHECK(fixture_robot_query_exact_binding_open(session, &binding, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_robot_query_exact_one_selection_open(binding, &selection, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_positional_1(session, fixture_robot_query_exact_one_selection_ref(selection), &query, diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_query_count(fixture_robot_query_exact_binding_root(query, binding), &terminal, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_count_by(fixture_robot_query_exact_binding_root(query, binding), &terminal, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK((connection->proxy != NULL
       ? type_bridge_proxy_connection_transaction(connection->proxy, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, diagnostics)
       : type_bridge_database_transaction(connection->database, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
@@ -2851,11 +2851,11 @@ static int run_typed_query_function_and_remote(
     fixture_query_root_v1_t root =
         fixture_person_query_exact_binding_root(sdk_query,
                                                 person_binding);
-    CHECK(fixture_query_page(root, orders, 1u, 0u, 1u, 1u, &page_terminal,
+    CHECK(fixture_query_page_by(root, orders, 1u, 0u, 1u, 1u, &page_terminal,
                              out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_count(root, &count_terminal, out_diagnostics) ==
+    CHECK(fixture_query_count_by(root, &count_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_exists(root, &exists_terminal, out_diagnostics) ==
+    CHECK(fixture_query_exists_by(root, &exists_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
   }
   CHECK(fixture_database_query_execute_rows(
@@ -5088,7 +5088,7 @@ static int run_typed_query_function_and_remote(
     {
       fixture_query_root_v1_t named_root =
           fixture_person_query_exact_binding_root(named_query, origin);
-      CHECK(fixture_query_page(named_root, origin_orders, 1u, 0u, 1u, 1u,
+      CHECK(fixture_query_page_by(named_root, origin_orders, 1u, 0u, 1u, 1u,
                                &named_terminal, out_diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
     }
@@ -5137,7 +5137,7 @@ static int run_typed_query_function_and_remote(
     {
       fixture_query_root_v1_t positional_root =
           fixture_person_query_exact_binding_root(positional_query, origin);
-      CHECK(fixture_query_page(positional_root, origin_orders, 1u, 0u, 1u, 1u,
+      CHECK(fixture_query_page_by(positional_root, origin_orders, 1u, 0u, 1u, 1u,
                                &positional_terminal, out_diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
     }

@@ -153,7 +153,7 @@ generated contract.
 from app_models import aggregate
 
 score = person.field(Person.score)
-count, total, mean = await session.query(person).aggregate(
+count, total, mean = await session.query(person).reduce(
     person,
     aggregate.count(),
     aggregate.sum(score),
@@ -164,7 +164,7 @@ grouped = await (
     session.query(person, employment)
     .where(employee)
     .group_by(person, employment)
-    .aggregate(aggregate.count(), aggregate.max(score))
+    .reduce(aggregate.count(), aggregate.max(score))
 )
 ```
 

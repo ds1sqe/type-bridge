@@ -1281,14 +1281,14 @@ for (const sessionSlots of [undefined, 4n]) {
   );
   await assert.rejects(
     async () =>
-      coreQuery.aggregate(
+      coreQuery.reduce(
         corePerson,
         Array.from({ length: slots + 1 }, () => aggregate.count()),
       ),
     (error) => expectCoreRefusal(error, "reducer_cap_exceeded", slots),
   );
   await assert.rejects(
-    async () => coreQuery.aggregate(corePerson, []),
+    async () => coreQuery.reduce(corePerson, []),
     (error) => expectCoreRefusal(error, "empty_reducers"),
   );
   await assert.rejects(
@@ -1484,16 +1484,16 @@ await rejectsClosedRemoteTerminal(() =>
   remoteLifecycleExists.existsBy(generatedRemotePerson),
 );
 await rejectsClosedRemoteTerminal(() =>
-  remoteLifecycleReduce.aggregate(generatedRemotePerson, [aggregate.count()]),
+  remoteLifecycleReduce.reduce(generatedRemotePerson, [aggregate.count()]),
 );
 await rejectsClosedRemoteTerminal(() =>
-  remoteLifecycleGrouped.aggregate([aggregate.count()]),
+  remoteLifecycleGrouped.reduce([aggregate.count()]),
 );
 await rejectsClosedRemoteTerminal(() =>
-  remoteLifecycleGroupedByField.aggregate([aggregate.count()]),
+  remoteLifecycleGroupedByField.reduce([aggregate.count()]),
 );
 await rejectsClosedRemoteTerminal(() =>
-  remoteLifecycleGroupedByFields.aggregate([aggregate.count()]),
+  remoteLifecycleGroupedByFields.reduce([aggregate.count()]),
 );
 remoteLifecycleDerived.close();
 assert.equal(remoteLifecycleClone.isClosed, false);

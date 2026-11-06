@@ -1482,7 +1482,7 @@ async function sdkQueriesQueryLane(
       .rows({ limit: 2n, sort: [identifier.asc()] }),
   );
   capture?.mark("grouped_reducer.global");
-  const values = await query.aggregate(person, [
+  const values = await query.reduce(person, [
     aggregate.count(),
     aggregate.sum(score),
     aggregate.min(score),
@@ -1498,15 +1498,15 @@ async function sdkQueriesQueryLane(
     .match(groupPerson)
     .where(identifier.eqField(groupIdentifier))
     .groupBy(person, groupPerson)
-    .aggregate([aggregate.count()] as const);
+    .reduce([aggregate.count()] as const);
   capture?.mark("grouped_reducer.field");
   const field = await query
     .groupBy(person, score)
-    .aggregate([aggregate.count()] as const);
+    .reduce([aggregate.count()] as const);
   capture?.mark("grouped_reducer.field_tuple");
   const tuple = await query
     .groupBy(person, score, person.field(Person.scoreGte))
-    .aggregate([aggregate.count()] as const);
+    .reduce([aggregate.count()] as const);
   const reducers = sdkQueriesReducers(
     values,
     binding,
@@ -3030,7 +3030,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       const allFirst = await terminal(() =>
         allPeopleQuery.first({ sort: [identifierOrder] }));
       const scoreField = personVariable.field(Person.score);
-      const reducers = await terminal(() => allPeopleQuery.aggregate(personVariable, [
+      const reducers = await terminal(() => allPeopleQuery.reduce(personVariable, [
         aggregate.count(),
         aggregate.sum(scoreField),
         aggregate.min(scoreField),
@@ -3041,19 +3041,19 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       ] as const));
       const fieldGrouped = await terminal(() => allPeopleQuery
         .groupBy(personVariable, personVariable.field(Person.valBool))
-        .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const));
+        .reduce([aggregate.count(), aggregate.sum(scoreField)] as const));
       const tupleGrouped = await terminal(() => allPeopleQuery
         .groupBy(personVariable, personVariable.field(Person.valBool), scoreField)
-        .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const));
+        .reduce([aggregate.count(), aggregate.sum(scoreField)] as const));
       await assert.rejects(
-        async () => allPeopleQuery.aggregate(personVariable, [
+        async () => allPeopleQuery.reduce(personVariable, [
           aggregate.sum(personVariable.field(Person.identifier)),
         ] as const),
         /long|double|numeric|reduc/i,
       );
       const eventGrouped = await terminal(() => pairQuery
         .groupBy(personVariable, eventVariable)
-        .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const));
+        .reduce([aggregate.count(), aggregate.sum(scoreField)] as const));
       const named = await terminal(() => session
         .queryNamed({ person: personVariable })
         .where(personPredicate)
@@ -3272,8 +3272,8 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         const page = await query.pageBy(root, { limit: 2n, sort, includeTotal: true });
         const count = await query.countBy(root);
         const exists = await query.existsBy(root);
-        const reduced = await query.aggregate(root, [aggregate.count()] as const);
-        const grouped = await query.groupBy(root, root.field(Robot.robotId)).aggregate([aggregate.count()] as const);
+        const reduced = await query.reduce(root, [aggregate.count()] as const);
+        const grouped = await query.groupBy(root, root.field(Robot.robotId)).reduce([aggregate.count()] as const);
         assert.ok(one instanceof Pending);
         assert.throws(() => one.result(), /Transaction has not committed/);
         session.close();
@@ -3386,13 +3386,13 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
               ),
             ),
             terms: await coreRefusal("aggregate.seventeen-terms", () =>
-              query.aggregate(
+              query.reduce(
                 person,
                 Array.from({ length: width + 1 }, () => aggregate.count()) as any,
               ),
             ),
             emptyTerms: await coreRefusal("aggregate.empty-terms", () =>
-              query.aggregate(person, [] as any),
+              query.reduce(person, [] as any),
             ),
             zeroLimit: await coreRefusal("bounds.public-invalid-limit", () =>
               query.rows({ limit: 0n }),

@@ -1262,11 +1262,11 @@ for session_slots in (None, 4):
         slots,
     )
     expect_core_refusal(
-        lambda: core_query.aggregate(core_person, *(aggregate.count() for _ in range(slots + 1))),
+        lambda: core_query.reduce(core_person, *(aggregate.count() for _ in range(slots + 1))),
         "reducer_cap_exceeded",
         slots,
     )
-    expect_core_refusal(lambda: core_query.aggregate(core_person), "empty_reducers")
+    expect_core_refusal(lambda: core_query.reduce(core_person), "empty_reducers")
     expect_core_refusal(lambda: core_query.rows(limit=0), "zero_window_limit")
     expect_core_refusal(lambda: core_query.page_by(core_person, limit=0), "zero_window_limit")
     expect_core_refusal(lambda: core_query.rows(offset=2**64 - 2, limit=2), "window_overflow")
@@ -2040,14 +2040,14 @@ try:
     assert remote_page.total == 1
     remote_score = remote_person.field(Person.score)
     assert asyncio.run(
-        remote_query.aggregate(
+        remote_query.reduce(
             remote_person,
             aggregate.count(),
             aggregate.sum(remote_score),
         )
     ) == (1, 2)
     assert asyncio.run(
-        remote_query.group_by(remote_person, remote_person).aggregate(aggregate.count())
+        remote_query.group_by(remote_person, remote_person).reduce(aggregate.count())
     ) == ((person, (1,)),)
     assert reduce_calls[0][3] is None
     assert reduce_calls[0][4] == ["count", "sum"]
@@ -2055,14 +2055,14 @@ try:
     # The host forwards any term count; the core refuses it (checked with a
     # real native prepare above).
     for invalid_terms in ((), tuple(aggregate.count() for _ in range(17))):
-        asyncio.run(remote_query.aggregate(remote_person, *invalid_terms))
+        asyncio.run(remote_query.reduce(remote_person, *invalid_terms))
         assert len(reduce_calls[-1][4]) == len(invalid_terms)
     # The blocking facade runs the same coroutine terminals to completion.
     blocking_query = blocking(remote_session).query(remote_person)
     assert blocking_query.one() is person
     assert blocking_query.rows(limit=1) == [person]
     assert blocking_query.count_by(remote_person) == 1
-    assert blocking_query.group_by(remote_person, remote_person).aggregate(aggregate.count()) == (
+    assert blocking_query.group_by(remote_person, remote_person).reduce(aggregate.count()) == (
         (person, (1,)),
     )
 finally:

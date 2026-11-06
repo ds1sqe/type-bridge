@@ -3348,10 +3348,10 @@ int main(void) {
   {
     acme_query_root_v1_t root =
         acme_personzhrecord_query_exact_binding_root(query, person);
-    (void)acme_query_page(
+    (void)acme_query_page_by(
         root, orders, 1u, 0u, 16u, 1u, &page_terminal, &diagnostics);
-    (void)acme_query_count(root, &count_terminal, &diagnostics);
-    (void)acme_query_exists(root, &exists_terminal, &diagnostics);
+    (void)acme_query_count_by(root, &count_terminal, &diagnostics);
+    (void)acme_query_exists_by(root, &exists_terminal, &diagnostics);
     reducers[0] = acme_query_reducer_count();
     reducers[1] =
         acme_personzhrecord_countzhvalue_query_field_reduce_sum_long(count_field);
@@ -3774,8 +3774,8 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_selection_open(
       descriptor->expected_model != person_model ||
       descriptor->expected_mode != TYPE_BRIDGE_QUERY_MATCH_EXACT ||
       descriptor->kind != TYPE_BRIDGE_QUERY_SELECTION_ONE ||
-      descriptor->distinct != 0u || descriptor->orders != NULL ||
-      descriptor->order_count != 0u || out_selection == NULL) {
+      descriptor->distinct != 0u || descriptor->sorts != NULL ||
+      descriptor->sort_count != 0u || out_selection == NULL) {
     valid = 0;
   } else {
     *out_selection = HANDLE(type_bridge_query_selection_t, 40u);
@@ -3913,7 +3913,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_terminal_open(
         descriptor->root != HANDLE(type_bridge_query_binding_t, 12u) ||
         descriptor->expected_root_model != person_model ||
         descriptor->expected_root_mode != TYPE_BRIDGE_QUERY_MATCH_EXACT ||
-        descriptor->orders != NULL || descriptor->order_count != 0u ||
+        descriptor->sorts != NULL || descriptor->sort_count != 0u ||
         descriptor->offset != 0u || descriptor->limit != 0u ||
         descriptor->include_total != 0u || descriptor->group_binding != NULL ||
         descriptor->expected_group_model != NULL ||
@@ -4017,9 +4017,9 @@ int main(void) {
   {
     acme_query_root_v1_t root =
         acme_personzhrecord_query_exact_binding_root(positional, sibling);
-    status |= acme_query_page(
+    status |= acme_query_page_by(
         root, NULL, 0u, 2u, 4u, 1u, &page, &diagnostics);
-    status |= acme_query_count(root, &count, &diagnostics);
+    status |= acme_query_count_by(root, &count, &diagnostics);
     reducer = acme_query_reducer_count();
     status |= acme_query_reduce(
         root, &reducer, 1u, &reduction, &diagnostics);
@@ -5528,7 +5528,7 @@ int main(void) {
   const acme_personzhrecord_query_exact_binding *wrong = 0;
   acme_query_page_terminal *terminal = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
-  return acme_query_page(
+  return acme_query_page_by(
       wrong, 0, 0u, 0u, 1u, 0u, &terminal, &diagnostics);
 }
 "#,

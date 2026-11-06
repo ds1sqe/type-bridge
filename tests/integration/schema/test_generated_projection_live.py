@@ -158,11 +158,11 @@ async def _core_rule_refusals(
         (
             "terms",
             "aggregate.seventeen-terms",
-            lambda: query.aggregate(
+            lambda: query.reduce(
                 person, *(generated.aggregate.count() for _ in range(width + 1))
             ),
         ),
-        ("empty_terms", "aggregate.empty-terms", lambda: query.aggregate(person)),
+        ("empty_terms", "aggregate.empty-terms", lambda: query.reduce(person)),
         ("zero_limit", "bounds.public-invalid-limit", lambda: query.rows(limit=0)),
         ("zero_page", "bounds.public-invalid-limit", lambda: query.page_by(person, limit=0)),
         (
@@ -212,13 +212,13 @@ async def _one_program(generated: ModuleType, connection: object) -> dict[str, o
     page = await people.page_by(person, limit=2, sort=ordered, include_total=True)
     count = await people.count_by(person)
     exists = await people.exists_by(person)
-    totals = await people.aggregate(
+    totals = await people.reduce(
         person,
         generated.aggregate.count(),
         generated.aggregate.sum(score),
         generated.aggregate.max(score),
     )
-    grouped = await people.group_by(person, person.field(generated.Person.val_bool)).aggregate(
+    grouped = await people.group_by(person, person.field(generated.Person.val_bool)).reduce(
         generated.aggregate.count()
     )
     employment = session.exact(generated.Employment)
@@ -748,7 +748,7 @@ def _sdk_queries_reducers(
 ) -> dict[str, object]:
     score = person.field(generated.Person.score)
     mark("grouped_reducer.global")
-    values = query.aggregate(
+    values = query.reduce(
         person,
         generated.aggregate.count(),
         generated.aggregate.sum(score),
@@ -765,13 +765,13 @@ def _sdk_queries_reducers(
         query.match(group_person)
         .where(person.field(generated.Person.identifier).eq_field(group_identifier))
         .group_by(person, group_person)
-        .aggregate(generated.aggregate.count())
+        .reduce(generated.aggregate.count())
     )
     mark("grouped_reducer.field")
-    field = query.group_by(person, score).aggregate(generated.aggregate.count())
+    field = query.group_by(person, score).reduce(generated.aggregate.count())
     score_gte = person.field(generated.Person.score__gte)
     mark("grouped_reducer.field_tuple")
-    field_tuple = query.group_by(person, score, score_gte).aggregate(generated.aggregate.count())
+    field_tuple = query.group_by(person, score, score_gte).reduce(generated.aggregate.count())
 
     def bits(value: object) -> str:
         assert type(value) is float
@@ -4533,7 +4533,7 @@ def test_generated_projection_round_trips_live_models(
     )
     assert tuple(candidate.iid for candidate in cross_pair) == (person.iid, batch_people[0].iid)
     score_field = person_var.field(generated.Person.score)
-    direct_aggregate = all_people_query.aggregate(
+    direct_aggregate = all_people_query.reduce(
         person_var,
         generated.aggregate.count(),
         generated.aggregate.sum(score_field),
@@ -4548,7 +4548,7 @@ def test_generated_projection_round_trips_live_models(
     direct_field_grouped = all_people_query.group_by(
         person_var,
         person_var.field(generated.Person.val_bool),
-    ).aggregate(
+    ).reduce(
         generated.aggregate.count(),
         generated.aggregate.sum(score_field),
     )
@@ -4561,7 +4561,7 @@ def test_generated_projection_round_trips_live_models(
         person_var,
         person_var.field(generated.Person.val_bool),
         score_field,
-    ).aggregate(
+    ).reduce(
         generated.aggregate.count(),
         generated.aggregate.sum(score_field),
     )
@@ -4578,7 +4578,7 @@ def test_generated_projection_round_trips_live_models(
         MatchRequestError,
         match="The typed query plan does not satisfy the generated query contract",
     ) as non_numeric_reducer_error:
-        all_people_query.aggregate(
+        all_people_query.reduce(
             person_var,
             generated.aggregate.sum(person_var.field(generated.Person.identifier)),
         )
@@ -4794,7 +4794,7 @@ def test_generated_projection_round_trips_live_models(
         query_session.query(person_var, aggregate_employment_var)
         .where(aggregate_employment_var.role(generated.Employment.employee).links(person_var))
         .group_by(person_var, aggregate_employment_var)
-        .aggregate(
+        .reduce(
             generated.aggregate.count(),
             generated.aggregate.sum(score_field),
         )
@@ -5191,7 +5191,7 @@ def test_generated_projection_round_trips_live_models(
         remote_score_field = remote_person.field(generated.Person.score)
         requests_before_reduction = len(remote_requests)
         remote_aggregate = asyncio.run(
-            remote_all_people.aggregate(
+            remote_all_people.reduce(
                 remote_person,
                 generated.aggregate.count(),
                 generated.aggregate.sum(remote_score_field),
@@ -5210,7 +5210,7 @@ def test_generated_projection_round_trips_live_models(
             remote_all_people.group_by(
                 remote_person,
                 remote_person.field(generated.Person.val_bool),
-            ).aggregate(
+            ).reduce(
                 generated.aggregate.count(),
                 generated.aggregate.sum(remote_score_field),
             )
@@ -5224,7 +5224,7 @@ def test_generated_projection_round_trips_live_models(
                 remote_person,
                 remote_person.field(generated.Person.val_bool),
                 remote_score_field,
-            ).aggregate(
+            ).reduce(
                 generated.aggregate.count(),
                 generated.aggregate.sum(remote_score_field),
             )
@@ -5249,7 +5249,7 @@ def test_generated_projection_round_trips_live_models(
         assert remote_employment_value.iid == employment.iid
         requests_before_grouped_reduction = len(remote_requests)
         remote_grouped_aggregate = asyncio.run(
-            remote_person_employment.group_by(remote_person, remote_employment).aggregate(
+            remote_person_employment.group_by(remote_person, remote_employment).reduce(
                 generated.aggregate.count(),
                 generated.aggregate.sum(remote_score_field),
             )
@@ -5390,9 +5390,9 @@ def test_generated_projection_round_trips_live_models(
             )
             count = asyncio.run(query.count_by(root))
             exists = asyncio.run(query.exists_by(root))
-            reduced = asyncio.run(query.aggregate(root, generated.aggregate.count()))
+            reduced = asyncio.run(query.reduce(root, generated.aggregate.count()))
             grouped = asyncio.run(
-                query.group_by(root, root.field(generated.Robot.robot_id)).aggregate(
+                query.group_by(root, root.field(generated.Robot.robot_id)).reduce(
                     generated.aggregate.count()
                 )
             )

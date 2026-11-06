@@ -108,9 +108,9 @@ querySession.query(personVar, personVar, personVar, personVar, personVar, person
 // @ts-expect-error aggregate fields must carry a generated long or double value
 aggregate.mean(personVar.field(Person.identifier));
 // @ts-expect-error generated aggregate terms are non-empty
-querySession.query(personVar).aggregate(personVar, [] as const);
+querySession.query(personVar).reduce(personVar, [] as const);
 // @ts-expect-error generated aggregate typing is capped at sixteen terms
-querySession.query(personVar).aggregate(personVar, [
+querySession.query(personVar).reduce(personVar, [
   aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),
   aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),
   aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),

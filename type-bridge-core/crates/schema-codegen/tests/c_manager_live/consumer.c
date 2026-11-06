@@ -374,7 +374,7 @@ static int sibling_query_count(
   if (ok) {
     manager_query_root_v1_t count_root =
         manager_person_query_exact_binding_root(filtered, person);
-    ok = manager_query_count(count_root, &terminal, diagnostics) ==
+    ok = manager_query_count_by(count_root, &terminal, diagnostics) ==
              TYPE_BRIDGE_STATUS_OK &&
          manager_read_transaction_query_execute_count(
              read, terminal, limits, NULL, &result, diagnostics) ==

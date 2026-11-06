@@ -264,7 +264,7 @@ async def check_direct() -> None:
     assert_type(await people_query.count_by(person_var), int)
     assert_type(await people_query.exists_by(person_var), bool)
     assert_type(
-        await people_query.aggregate(
+        await people_query.reduce(
             person_var,
             aggregate.count(),
             aggregate.sum(score_field),
@@ -273,11 +273,11 @@ async def check_direct() -> None:
         tuple[int, int, float | None],
     )
     assert_type(
-        await people_query.group_by(person_var, bool_field).aggregate(aggregate.count()),
+        await people_query.group_by(person_var, bool_field).reduce(aggregate.count()),
         tuple[tuple[ValBool, tuple[int]], ...],
     )
     assert_type(
-        await people_query.group_by(person_var, bool_field, score_field).aggregate(
+        await people_query.group_by(person_var, bool_field, score_field).reduce(
             aggregate.count()
         ),
         tuple[tuple[tuple[ValBool, Score], tuple[int]], ...],
@@ -310,7 +310,7 @@ async def check_direct() -> None:
     )
     assert_type(await joined.one(), tuple[Person, Employment])
     assert_type(
-        await joined.group_by(person_var, employment_var).aggregate(
+        await joined.group_by(person_var, employment_var).reduce(
             aggregate.count(),
             aggregate.max(score_field),
         ),
@@ -411,7 +411,7 @@ async def check_proxy(session: QuerySession) -> None:
     assert_type(await session.query(remote_party).rows(limit=10), list[Party])
     remote_score = remote_person.field(Person.score)
     assert_type(
-        await remote.aggregate(
+        await remote.reduce(
             remote_person,
             aggregate.count(),
             aggregate.sum(remote_score),
@@ -419,7 +419,7 @@ async def check_proxy(session: QuerySession) -> None:
         tuple[int, int],
     )
     assert_type(
-        await remote.group_by(remote_person, remote_employment).aggregate(
+        await remote.group_by(remote_person, remote_employment).reduce(
             aggregate.mean(remote_score),
         ),
         tuple[tuple[Employment, tuple[float | None]], ...],
@@ -504,10 +504,10 @@ async def staged_query_outputs(tx: StagedTransaction) -> None:
     exists = await query.exists_by(person)
     assert_type(exists, Pending[bool])
     assert_type(exists.result(), bool)
-    reduced = await query.aggregate(person, aggregate.count())
+    reduced = await query.reduce(person, aggregate.count())
     assert_type(reduced, Pending[tuple[int]])
     assert_type(reduced.result(), tuple[int])
-    groups = await query.group_by(person, person.field(Person.score)).aggregate(aggregate.count())
+    groups = await query.group_by(person, person.field(Person.score)).reduce(aggregate.count())
     assert_type(groups, Pending[tuple[tuple[Score, tuple[int]], ...]])
     assert_type(groups.result(), tuple[tuple[Score, tuple[int]], ...])
     explicit_session = QuerySession(tx)

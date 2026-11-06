@@ -186,7 +186,7 @@ const personCount: bigint = await personQuery.countBy(personVar);
 const personExists: boolean = await personQuery.existsBy(personVar);
 const scoreField = personVar.field(Person.score);
 const boolField = personVar.field(Person.valBool);
-const personAggregate: readonly [bigint, bigint, number | null] = await personQuery.aggregate(
+const personAggregate: readonly [bigint, bigint, number | null] = await personQuery.reduce(
   personVar,
   [aggregate.count(), aggregate.sum(scoreField), aggregate.mean(scoreField)] as const,
 );
@@ -196,17 +196,17 @@ const groupedAggregate: readonly (
   .query(personVar, employmentVar)
   .where(employeePredicate)
   .groupBy(personVar, employmentVar)
-  .aggregate([aggregate.count(), aggregate.max(scoreField)] as const);
+  .reduce([aggregate.count(), aggregate.max(scoreField)] as const);
 const fieldGroupedAggregate: readonly (
   readonly [ValBool, readonly [bigint, bigint]]
 )[] = await personQuery
   .groupBy(personVar, boolField)
-  .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const);
+  .reduce([aggregate.count(), aggregate.sum(scoreField)] as const);
 const tupleFieldGroupedAggregate: readonly (
   readonly [readonly [ValBool, Score], readonly [bigint]]
 )[] = await personQuery
   .groupBy(personVar, boolField, scoreField)
-  .aggregate([aggregate.count()] as const);
+  .reduce([aggregate.count()] as const);
 declare const advertisement: Uint8Array;
 declare const exchange: (
   request: Uint8Array,
@@ -260,7 +260,7 @@ const remoteCount: Promise<bigint> = remotePersonQuery.countBy(remotePersonVar);
 const remoteExists: Promise<boolean> = remotePersonQuery.existsBy(remotePersonVar);
 const remoteFirst: Promise<Person | null> = remotePersonQuery.first();
 const remoteScoreField = remotePersonVar.field(Person.score);
-const remoteAggregate: Promise<readonly [bigint, bigint]> = remotePersonQuery.aggregate(
+const remoteAggregate: Promise<readonly [bigint, bigint]> = remotePersonQuery.reduce(
   remotePersonVar,
   [aggregate.count(), aggregate.sum(remoteScoreField)] as const,
 );
@@ -268,7 +268,7 @@ const remoteGroupedAggregate: Promise<readonly (
   readonly [Person, readonly [number | null]]
 )[]> = remotePersonQuery
   .groupBy(remotePersonVar, remotePersonVar)
-  .aggregate([aggregate.mean(remoteScoreField)] as const);
+  .reduce([aggregate.mean(remoteScoreField)] as const);
 
 void reference;
 void event;
@@ -350,8 +350,8 @@ const stagedRows: Promise<Pending<readonly Person[]>> = stagedQuery.rows({ limit
 const stagedPage: Promise<Pending<Page<Person>>> = stagedQuery.pageBy(stagedRoot, { limit: 2n });
 const stagedCount: Promise<Pending<bigint>> = stagedQuery.countBy(stagedRoot);
 const stagedExists: Promise<Pending<boolean>> = stagedQuery.existsBy(stagedRoot);
-const stagedAggregate: Promise<Pending<readonly [bigint]>> = stagedQuery.aggregate(stagedRoot, [aggregate.count()] as const);
-const stagedGrouped: Promise<Pending<readonly (readonly [Score, readonly [bigint]])[]>> = stagedQuery.groupBy(stagedRoot, stagedRoot.field(Person.score)).aggregate([aggregate.count()] as const);
+const stagedAggregate: Promise<Pending<readonly [bigint]>> = stagedQuery.reduce(stagedRoot, [aggregate.count()] as const);
+const stagedGrouped: Promise<Pending<readonly (readonly [Score, readonly [bigint]])[]>> = stagedQuery.groupBy(stagedRoot, stagedRoot.field(Person.score)).reduce([aggregate.count()] as const);
 const stagedMinimum: IntegerInput = integerInput(stagedSession, Score.create(2n));
 const stagedFunction: IntegerCall = qualifyingScore(stagedSession, stagedRoot, stagedMinimum);
 void [stagedOne, stagedFirst, stagedRows, stagedPage, stagedCount, stagedExists, stagedAggregate, stagedGrouped, stagedFunction];

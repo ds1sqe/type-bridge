@@ -2035,7 +2035,7 @@ async fn sdk_queries_query_observations(
         Option<f64>,
         Option<f64>,
     ) = people_query
-        .aggregate((
+        .reduce((
             aggregate::count(),
             score.sum(),
             score.min(),
@@ -2054,7 +2054,7 @@ async fn sdk_queries_query_observations(
         .expect("queries grouped person identity join")
         .group_by(grouped_person)
         .expect("queries binding groups")
-        .aggregate((aggregate::count(),))
+        .reduce((aggregate::count(),))
         .await
         .expect("queries binding-grouped reductions")
         .into_iter()
@@ -2071,7 +2071,7 @@ async fn sdk_queries_query_observations(
     let mut field_groups = people_query
         .group_by_field(score)
         .expect("queries score groups")
-        .aggregate((aggregate::count(),))
+        .reduce((aggregate::count(),))
         .await
         .expect("queries score-grouped reductions")
         .into_iter()
@@ -2082,7 +2082,7 @@ async fn sdk_queries_query_observations(
     let mut tuple_groups = people_query
         .group_by_fields((score, score_gte))
         .expect("queries score tuple groups")
-        .aggregate((aggregate::count(),))
+        .reduce((aggregate::count(),))
         .await
         .expect("queries score tuple-grouped reductions")
         .into_iter()
@@ -4660,7 +4660,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             Option<f64>,
             Option<f64>,
         ) = worker_query
-            .aggregate((
+            .reduce((
                 aggregate::count(),
                 score.sum(),
                 score.min(),
@@ -4687,7 +4687,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         let field_grouped = worker_query
             .group_by_field(val_bool)
             .expect("worker boolean field group")
-            .aggregate((aggregate::count(), score.sum()))
+            .reduce((aggregate::count(), score.sum()))
             .await
             .expect("worker field-grouped aggregate");
         assert_eq!(field_grouped.len(), 1);
@@ -4697,7 +4697,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         let tuple_field_grouped = worker_query
             .group_by_fields((val_bool, score))
             .expect("worker tuple field group")
-            .aggregate((aggregate::count(), score.sum()))
+            .reduce((aggregate::count(), score.sum()))
             .await
             .expect("worker tuple-field-grouped aggregate");
         assert_eq!(tuple_field_grouped.len(), 1);
@@ -4712,7 +4712,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .expect("employment role predicate")
             .group_by(person_binding)
             .expect("employment group")
-            .aggregate((aggregate::count(), score.mean()))
+            .reduce((aggregate::count(), score.mean()))
             .await
             .expect("employment grouped aggregate");
         let mut grouped = grouped
@@ -4893,7 +4893,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         Option<f64>,
         Option<f64>,
     ) = remote_worker_query
-        .aggregate((
+        .reduce((
             aggregate::count(),
             remote_score.sum(),
             remote_score.min(),
@@ -4919,7 +4919,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
     let remote_field_grouped = remote_worker_query
         .group_by_field(remote_val_bool)
         .expect("F4 remote field group")
-        .aggregate((aggregate::count(), remote_score.sum()))
+        .reduce((aggregate::count(), remote_score.sum()))
         .await
         .expect("F4 remote field-grouped aggregate");
     assert_eq!(remote_field_grouped.len(), 1);
@@ -4928,7 +4928,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
     let remote_tuple_grouped = remote_worker_query
         .group_by_fields((remote_val_bool, remote_score))
         .expect("F4 remote tuple group")
-        .aggregate((aggregate::count(), remote_score.sum()))
+        .reduce((aggregate::count(), remote_score.sum()))
         .await
         .expect("F4 remote tuple-field-grouped aggregate");
     assert_eq!(remote_tuple_grouped.len(), 1);
@@ -4947,7 +4947,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .expect("F4 remote employment aggregate predicate")
         .group_by(person_binding)
         .expect("F4 remote binding group")
-        .aggregate((aggregate::count(), remote_score.mean()))
+        .reduce((aggregate::count(), remote_score.mean()))
         .await
         .expect("F4 remote binding-grouped aggregate");
     let mut remote_binding_grouped = remote_binding_grouped
@@ -5240,7 +5240,7 @@ async fn one_program(connection: &Connection<AppSchema>) -> Value {
         .await
         .expect("one-program page");
     let totals: (u64, i64) = people
-        .aggregate((aggregate::count(), score.sum()))
+        .reduce((aggregate::count(), score.sum()))
         .await
         .expect("one-program aggregate");
     let employed = session
