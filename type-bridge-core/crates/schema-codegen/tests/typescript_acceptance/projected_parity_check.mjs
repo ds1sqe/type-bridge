@@ -970,7 +970,7 @@ async function orderedLinkObservation(package_, model, graph, rootNode) {
     const diagnostic = diagnosticFrom(error);
     requireCondition(diagnostic.code === "query_plan_hydration_ordered_role", "unexpected ordered-role diagnostic");
     requireCondition(JSON.stringify(diagnostic.path) === JSON.stringify([{kind:"provider_evidence"}]), "ordered-role diagnostic path changed");
-    console.log("INTENDED_V3_DIFFERENCE ordered roles refused: network-link:participant");
+    console.log("INTENDED_STAGED_DIFFERENCE ordered roles refused: network-link:participant");
   }
   const empty = structuredClone(graph);
   empty.nodes[rootNode].roles.find(role => role.role.label === "participant").players = [];

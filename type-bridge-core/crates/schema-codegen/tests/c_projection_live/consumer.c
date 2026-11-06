@@ -77,7 +77,7 @@ static int copy_stable_text(type_bridge_byte_view_t value, char *output,
   return 1;
 }
 
-static int emit_v2_observation(const char *observation_ref,
+static int emit_observation(const char *observation_ref,
                                const char *proof_kind,
                                const char *canonical_json) {
   const char *cursor;
@@ -94,7 +94,7 @@ static int emit_v2_observation(const char *observation_ref,
                 proof_kind, canonical_json) > 0;
 }
 
-static int emit_v2_observationf(const char *observation_ref,
+static int emit_observationf(const char *observation_ref,
                                 const char *proof_kind,
                                 const char *format, ...) {
   char canonical_json[4096];
@@ -106,7 +106,7 @@ static int emit_v2_observationf(const char *observation_ref,
   if (length < 0 || (size_t)length >= sizeof(canonical_json)) {
     return 0;
   }
-  return emit_v2_observation(observation_ref, proof_kind, canonical_json);
+  return emit_observation(observation_ref, proof_kind, canonical_json);
 }
 
 typedef struct sdk_person_rows_observation {
@@ -204,7 +204,7 @@ static int emit_model_values_observation(
           SDK_SCALAR_DOMAIN_MASK_ALL) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "model_values_and_references", proof_kind,
       "{\"aliases\":[\"%s\"],\"key\":\"%s\",\"model\":\"person\","
       "\"nickname\":\"%s\",\"reference\":{\"key\":\"%s\",\"model\":"
@@ -223,7 +223,7 @@ static int emit_owner_iid_observation(
       optional->count != 1u) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "owner_iid_set", proof_kind,
       "{\"iid_set_keys\":[\"%s\",\"%s\"],\"optional_field\":\"nickname\","
       "\"optional_present_keys\":[\"%s\"],\"owner_field\":\"score\","
@@ -240,7 +240,7 @@ static int emit_scalar_domain_observation(
       comparison != TYPE_BRIDGE_QUERY_COMPARE_GREATER_THAN_OR_EQUAL) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "scalar_domain", proof_kind,
       "{\"domain\":\"long\",\"keys\":[\"%s\"],\"operand\":%" PRId64
       ",\"operator\":\"gte\"}",
@@ -255,7 +255,7 @@ static int emit_schema_function_observation(
       nested->count != 2u) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "schema_function", proof_kind,
       "{\"minimum\":%" PRId64 ",\"nested_values\":[%" PRId64 ",%" PRId64
       "],\"values\":[%" PRId64 ",%" PRId64 "]}",
@@ -268,7 +268,7 @@ static int emit_grouped_reducer_observation(
   if (value == NULL) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "grouped_reducer", proof_kind,
       "{\"groups\":{\"binding\":[{\"count\":%" PRIu64
       ",\"key\":\"%s\",\"model\":\"person\"},{\"count\":%" PRIu64
@@ -295,7 +295,7 @@ static int emit_exact_subtypes_observation(const char *proof_kind,
                                            const char *exact_key,
                                            const char *employee_key,
                                            const char *manager_key) {
-  return emit_v2_observationf(
+  return emit_observationf(
       "exact_subtypes", proof_kind,
       "{\"declared_model\":\"employee\",\"exact\":[{\"key\":\"%s\","
       "\"model\":\"employee\"}],\"subtypes\":[{\"key\":\"%s\",\"model\":"
@@ -305,7 +305,7 @@ static int emit_exact_subtypes_observation(const char *proof_kind,
 
 static int emit_hydrated_result_observation(const char *proof_kind,
                                             const char *member_key) {
-  return emit_v2_observationf(
+  return emit_observationf(
       "hydrated_result", proof_kind,
       "{\"rows\":[{\"model\":\"membership\",\"roles\":{\"member\":[{"
       "\"key\":\"%s\",\"model\":\"person\"}]}}]}",
@@ -318,7 +318,7 @@ static int emit_roles_observation(const char *proof_kind,
                                   const char *destination_key,
                                   const char *first_participant_key,
                                   const char *second_participant_key) {
-  return emit_v2_observationf(
+  return emit_observationf(
       "roles", proof_kind,
       "{\"membership\":{\"players\":[{\"key\":\"%s\",\"model\":"
       "\"person\"}],\"relation\":\"membership\",\"role\":\"member\"},"
@@ -338,7 +338,7 @@ static int emit_scalar_boolean_observation(
       or_rows == NULL || or_rows->count != 2u) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "scalar_boolean", proof_kind,
       "{\"and_keys\":[\"%s\"],\"field_comparison_keys\":[\"%s\"],"
       "\"not_keys\":[\"%s\"],\"or_keys\":[\"%s\",\"%s\"]}",
@@ -355,7 +355,7 @@ static int emit_selection_shapes_observation(
       observation->collection_order != TYPE_BRIDGE_QUERY_SORT_ASCENDING) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "selection_shapes", proof_kind,
       "{\"collected_distinct\":%s,\"collection_order\":\"identifier_asc\","
       "\"named\":{\"origin\":\"%s\",\"participants\":[\"%s\",\"%s\"]},"
@@ -374,7 +374,7 @@ static int emit_topology_observation(
       observation->max_hops == 0u) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "topology", proof_kind,
       "{\"cross_join_pairs\":[[\"%s\",\"%s\"],[\"%s\",\"%s\"],[\"%s\","
       "\"%s\"],[\"%s\",\"%s\"]],\"reachable\":[{\"from\":\"%s\","
@@ -396,7 +396,7 @@ static int emit_terminals_observation(
   if (page == NULL || page->count != 1u || rows == NULL || rows->count != 2u) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "terminals", proof_kind,
       "{\"count\":%" PRIu64 ",\"exists\":%s,\"first\":\"%s\",\"one\":"
       "\"%s\",\"page\":{\"items\":[\"%s\"],\"limit\":%" PRIu64
@@ -416,7 +416,7 @@ static int emit_structured_query_diagnostic_observation(
       !observation->redacted) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "structured_query_diagnostic", "diagnostic",
       "{\"category\":\"invalid_input\",\"code\":\"%s\",\"details\":{"
       "\"%s\":{\"kind\":\"count\",\"value\":\"%" PRIu64
@@ -432,7 +432,7 @@ static int emit_query_lifecycle_observation(
       !observation->remote_lane_observed) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "query_resource_lifecycle", "lifecycle",
       "{\"lanes\":[\"direct\",\"remote\"],\"query\":{"
       "\"ancestor_usable_after_descendant_close\":%s,\"close_idempotent\":%s,"
@@ -460,7 +460,7 @@ static int emit_resource_limits_observation(
       observation->code[0] == '\0' || observation->dimension[0] == '\0') {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "resource_limits", proof_kind,
       "{\"defaults\":{\"attribute_values\":%" PRIu64
       ",\"bytes\":%" PRIu64 ",\"collection_members\":%" PRIu64
@@ -3228,7 +3228,7 @@ static int run_typed_query_function_and_remote(
             package, database, remote_port, rows_terminal, first_terminal,
             nickname_terminal, page_terminal, count_terminal, exists_terminal,
             out_diagnostics) == 0);
-  CHECK(emit_v2_observationf(
+  CHECK(emit_observationf(
       "remote_one_exchange", "remote_runtime",
       "{\"exchange_count\":%zu,\"terminal\":\"one\"}",
       remote_one_exchange_count));
@@ -6041,7 +6041,7 @@ int main(void) {
                                         query_membership_iid_length}, &iid_argument), NULL,
               NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     relation_deleted = 1;
-    CHECK(emit_v2_observationf(
+    CHECK(emit_observationf(
         "relation_lifecycle", "direct_runtime",
         "{\"created\":%s,\"deleted\":%s,\"model\":\"membership\","
         "\"player_key\":\"%s\",\"role\":\"member\"}",
@@ -6265,7 +6265,7 @@ int main(void) {
   CHECK(fixture_person_database_count(database, NULL,  NULL, &count, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(count == 0u);
-  CHECK(emit_v2_observationf(
+  CHECK(emit_observationf(
       "entity_lifecycle", "direct_runtime",
       "{\"created\":%s,\"deleted\":%s,\"key\":\"%s\","
       "\"model\":\"person\",\"read_after_create\":%s}",

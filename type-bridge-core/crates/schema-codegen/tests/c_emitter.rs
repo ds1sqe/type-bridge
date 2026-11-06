@@ -724,7 +724,7 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
 
 #[cfg(unix)]
 #[test]
-fn ordered_c_v3_nominal_successors_compile_strictly_and_reject_cross_model_or_omitted_names() {
+fn ordered_c_nominal_successors_compile_strictly_and_reject_cross_model_or_omitted_names() {
     let emitter = CEmitter::new();
     let (projection, authority) = ordered_successor_projected();
     let package = emitter
@@ -862,7 +862,7 @@ fn ordered_c_v3_nominal_successors_compile_strictly_and_reject_cross_model_or_om
 
 #[cfg(unix)]
 #[test]
-fn ordered_c_v3_nominal_alias_and_recovery_wrappers_execute_provider_free() {
+fn ordered_c_nominal_alias_and_recovery_wrappers_execute_provider_free() {
     let emitter = CEmitter::new();
     let (projection, authority) = ordered_successor_projected();
     let package = emitter

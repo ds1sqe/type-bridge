@@ -79,7 +79,7 @@ def _step_index(job: dict[str, Any], name: str) -> int:
     return next(index for index, step in enumerate(job["steps"]) if step["name"] == name)
 
 
-def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
+def test_exact_producer_bound_fragments_precede_each_live_report() -> None:
     jobs = _jobs()
     python_remote = next(
         step

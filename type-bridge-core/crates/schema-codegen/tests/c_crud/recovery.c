@@ -1,4 +1,4 @@
-#include <acme_v3/models.h>
+#include <acme_nominal/models.h>
 
 #include <stddef.h>
 #include <string.h>
@@ -12,7 +12,7 @@ const type_bridge_projected_token_v1_t @MODEL_TOKEN@ = {
     {0u, 0u, 0u, 0u},
 };
 
-const type_bridge_projected_token_v1_t acme_v3_projected_field_token_0 = {
+const type_bridge_projected_token_v1_t acme_nominal_projected_field_token_0 = {
     sizeof(type_bridge_projected_token_v1_t),
     TYPE_BRIDGE_PROJECTED_TOKEN_VERSION,
     TYPE_BRIDGE_PROJECTED_TOKEN_FIELD,
@@ -53,25 +53,25 @@ static max_align_t alternate_storage;
 #define DATABASE CONST_HANDLE(type_bridge_database_t, database_storage)
 #define PACKAGE CONST_HANDLE(type_bridge_schema_package_t, package_storage)
 #define CANCELLATION CONST_HANDLE(type_bridge_cancellation_t, cancellation_storage)
-#define CREATE CONST_HANDLE(acme_v3_keyed_create, create_storage)
+#define CREATE CONST_HANDLE(acme_nominal_keyed_create, create_storage)
 #define GENERIC_CREATE CONST_HANDLE(type_bridge_projected_create_t, create_storage)
 #define BUILDER HANDLE(type_bridge_projected_batch_builder_t, builder_storage)
-#define NOMINAL_BUILDER HANDLE(acme_v3_keyed_insert_batch_builder, builder_storage)
+#define NOMINAL_BUILDER HANDLE(acme_nominal_keyed_insert_batch_builder, builder_storage)
 #define BATCH HANDLE(type_bridge_projected_batch_t, batch_storage)
-#define NOMINAL_BATCH HANDLE(acme_v3_keyed_insert_batch, batch_storage)
+#define NOMINAL_BATCH HANDLE(acme_nominal_keyed_insert_batch, batch_storage)
 #define RESULT HANDLE(type_bridge_projected_batch_result_t, result_storage)
-#define NOMINAL_RESULT HANDLE(acme_v3_keyed_insert_batch_result, result_storage)
+#define NOMINAL_RESULT HANDLE(acme_nominal_keyed_insert_batch_result, result_storage)
 #define THING HANDLE(type_bridge_projected_thing_t, thing_storage)
-#define NOMINAL_THING HANDLE(acme_v3_keyed, thing_storage)
+#define NOMINAL_THING HANDLE(acme_nominal_keyed, thing_storage)
 #define QUERY_BINDING HANDLE(type_bridge_query_binding_t, query_binding_storage)
 #define NOMINAL_QUERY_BINDING                                                   \
-  HANDLE(acme_v3_keyed_query_exact_binding, query_binding_storage)
+  HANDLE(acme_nominal_keyed_query_exact_binding, query_binding_storage)
 #define QUERY HANDLE(type_bridge_manager_filter_t, query_storage)
-#define NOMINAL_QUERY HANDLE(acme_v3_query, query_storage)
-#define NOMINAL_FILTER HANDLE(acme_v3_keyed_manager_filter, query_storage)
+#define NOMINAL_QUERY HANDLE(acme_nominal_query, query_storage)
+#define NOMINAL_FILTER HANDLE(acme_nominal_keyed_manager_filter, query_storage)
 #define QUERY_RESULT HANDLE(type_bridge_manager_result_t, query_result_storage)
 #define NOMINAL_MANAGER_RESULT                                                  \
-  HANDLE(acme_v3_keyed_manager_all_result, query_result_storage)
+  HANDLE(acme_nominal_keyed_manager_all_result, query_result_storage)
 #define DIAGNOSTICS HANDLE(type_bridge_execution_diagnostics_t, diagnostics_storage)
 #define ALTERNATE(type) HANDLE(type, alternate_storage)
 
@@ -477,27 +477,27 @@ int main(void) {
   type_bridge_query_execution_limits_v1_t limits =
       TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
   type_bridge_status_t status;
-  acme_v3_keyed *thing;
-  acme_v3_keyed_insert_batch_builder *builder;
-  acme_v3_keyed_insert_batch *batch;
-  acme_v3_keyed_insert_batch_result *result;
-  acme_v3_keyed_manager manager;
-  acme_v3_keyed_manager manager_snapshot;
-  acme_v3_keyed_manager_filter *filter;
-  acme_v3_keyed_manager_filter_ref_v1_t filter_ref;
-  acme_v3_keyed_manager_all_result *manager_result;
+  acme_nominal_keyed *thing;
+  acme_nominal_keyed_insert_batch_builder *builder;
+  acme_nominal_keyed_insert_batch *batch;
+  acme_nominal_keyed_insert_batch_result *result;
+  acme_nominal_keyed_manager manager;
+  acme_nominal_keyed_manager manager_snapshot;
+  acme_nominal_keyed_manager_filter *filter;
+  acme_nominal_keyed_manager_filter_ref_v1_t filter_ref;
+  acme_nominal_keyed_manager_all_result *manager_result;
   type_bridge_execution_diagnostics_t *diagnostics;
   uint64_t manager_count;
   size_t count;
 
   reset_probe();
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
-  result = ALTERNATE(acme_v3_keyed_insert_batch_result);
+  result = ALTERNATE(acme_nominal_keyed_insert_batch_result);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_database_insert(
+  status = acme_nominal_keyed_database_insert(
       DATABASE, CREATE, &limits, CANCELLATION, &result, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
-  CHECK(result == ALTERNATE(acme_v3_keyed_insert_batch_result));
+  CHECK(result == ALTERNATE(acme_nominal_keyed_insert_batch_result));
   CHECK(diagnostics == ALTERNATE(type_bridge_execution_diagnostics_t));
   CHECK(crud_calls == 0u && preflight_calls == 1u && stub_error == 0);
   CHECK(preflight_records[0].input_count == 5u);
@@ -512,9 +512,9 @@ int main(void) {
   CHECK_OUTPUT(0, 1, &diagnostics, sizeof(diagnostics));
 
   reset_probe();
-  result = ALTERNATE(acme_v3_keyed_insert_batch_result);
+  result = ALTERNATE(acme_nominal_keyed_insert_batch_result);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_database_insert(
+  status = acme_nominal_keyed_database_insert(
       DATABASE, CREATE, &limits, CANCELLATION, &result, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && result == NOMINAL_RESULT);
   CHECK(diagnostics == NULL && crud_calls == 1u && stub_error == 0);
@@ -522,19 +522,19 @@ int main(void) {
 
   reset_probe();
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
-  builder = ALTERNATE(acme_v3_keyed_insert_batch_builder);
+  builder = ALTERNATE(acme_nominal_keyed_insert_batch_builder);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_insert_batch_builder_open(
+  status = acme_nominal_keyed_insert_batch_builder_open(
       PACKAGE, &limits, CANCELLATION, &builder, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
-  CHECK(builder == ALTERNATE(acme_v3_keyed_insert_batch_builder));
+  CHECK(builder == ALTERNATE(acme_nominal_keyed_insert_batch_builder));
   CHECK(diagnostics == ALTERNATE(type_bridge_execution_diagnostics_t));
   CHECK(builder_open_calls == 0u && preflight_calls == 1u && stub_error == 0);
 
   reset_probe();
-  builder = ALTERNATE(acme_v3_keyed_insert_batch_builder);
+  builder = ALTERNATE(acme_nominal_keyed_insert_batch_builder);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_insert_batch_builder_open(
+  status = acme_nominal_keyed_insert_batch_builder_open(
       PACKAGE, &limits, CANCELLATION, &builder, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && builder == NOMINAL_BUILDER);
   CHECK(diagnostics == NULL && builder_open_calls == 1u && stub_error == 0);
@@ -543,7 +543,7 @@ int main(void) {
   reset_probe();
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_insert_batch_builder_add(builder, CREATE, &diagnostics);
+  status = acme_nominal_keyed_insert_batch_builder_add(builder, CREATE, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
   CHECK(diagnostics == ALTERNATE(type_bridge_execution_diagnostics_t));
   CHECK(builder_add_calls == 0u && preflight_calls == 1u && stub_error == 0);
@@ -554,20 +554,20 @@ int main(void) {
 
   reset_probe();
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_insert_batch_builder_add(builder, CREATE, &diagnostics);
+  status = acme_nominal_keyed_insert_batch_builder_add(builder, CREATE, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && diagnostics == NULL);
   CHECK(builder_add_calls == 1u && stub_error == 0);
 
   reset_probe();
   preflight_statuses[1] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
   builder = NOMINAL_BUILDER;
-  batch = ALTERNATE(acme_v3_keyed_insert_batch);
+  batch = ALTERNATE(acme_nominal_keyed_insert_batch);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_insert_batch_builder_finish(
+  status = acme_nominal_keyed_insert_batch_builder_finish(
       &builder, &batch, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
   CHECK(builder == NOMINAL_BUILDER);
-  CHECK(batch == ALTERNATE(acme_v3_keyed_insert_batch));
+  CHECK(batch == ALTERNATE(acme_nominal_keyed_insert_batch));
   CHECK(diagnostics == ALTERNATE(type_bridge_execution_diagnostics_t));
   CHECK(builder_finish_calls == 0u && preflight_calls == 2u && stub_error == 0);
   CHECK(preflight_records[0].input_count == 1u);
@@ -588,9 +588,9 @@ int main(void) {
   reset_probe();
   builder_finish_status = TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
   builder = NOMINAL_BUILDER;
-  batch = ALTERNATE(acme_v3_keyed_insert_batch);
+  batch = ALTERNATE(acme_nominal_keyed_insert_batch);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_insert_batch_builder_finish(
+  status = acme_nominal_keyed_insert_batch_builder_finish(
       &builder, &batch, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
   CHECK(builder == NOMINAL_BUILDER && batch == NULL && diagnostics == DIAGNOSTICS);
@@ -600,9 +600,9 @@ int main(void) {
 
   reset_probe();
   builder = NOMINAL_BUILDER;
-  batch = ALTERNATE(acme_v3_keyed_insert_batch);
+  batch = ALTERNATE(acme_nominal_keyed_insert_batch);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_insert_batch_builder_finish(
+  status = acme_nominal_keyed_insert_batch_builder_finish(
       &builder, &batch, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_OK);
   CHECK(builder == NULL && batch == NOMINAL_BATCH && diagnostics == NULL);
@@ -610,19 +610,19 @@ int main(void) {
 
   reset_probe();
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
-  result = ALTERNATE(acme_v3_keyed_insert_batch_result);
+  result = ALTERNATE(acme_nominal_keyed_insert_batch_result);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_database_insert_batch_execute(
+  status = acme_nominal_keyed_database_insert_batch_execute(
       DATABASE, batch, &limits, CANCELLATION, &result, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
-  CHECK(result == ALTERNATE(acme_v3_keyed_insert_batch_result));
+  CHECK(result == ALTERNATE(acme_nominal_keyed_insert_batch_result));
   CHECK(diagnostics == ALTERNATE(type_bridge_execution_diagnostics_t));
   CHECK(execute_calls == 0u && preflight_calls == 1u && stub_error == 0);
 
   reset_probe();
-  result = ALTERNATE(acme_v3_keyed_insert_batch_result);
+  result = ALTERNATE(acme_nominal_keyed_insert_batch_result);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_database_insert_batch_execute(
+  status = acme_nominal_keyed_database_insert_batch_execute(
       DATABASE, batch, &limits, CANCELLATION, &result, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && result == NOMINAL_RESULT);
   CHECK(diagnostics == NULL && execute_calls == 1u && stub_error == 0);
@@ -632,7 +632,7 @@ int main(void) {
   reset_probe();
   count = 99u;
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_insert_batch_result_count(result, &count, &diagnostics);
+  status = acme_nominal_keyed_insert_batch_result_count(result, &count, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && count == 3u && diagnostics == NULL);
   CHECK(result_count_calls == 1u && stub_error == 0);
   CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT,
@@ -641,9 +641,9 @@ int main(void) {
               &@MODEL_TOKEN@, 1u);
 
   reset_probe();
-  thing = ALTERNATE(acme_v3_keyed);
+  thing = ALTERNATE(acme_nominal_keyed);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_insert_batch_result_thing_at(
+  status = acme_nominal_keyed_insert_batch_result_thing_at(
       result, 2u, &thing, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && thing == NOMINAL_THING);
   CHECK(diagnostics == NULL && result_thing_calls == 1u && stub_error == 0);
@@ -652,7 +652,7 @@ int main(void) {
   reset_probe();
   builder = NOMINAL_BUILDER;
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
-  status = acme_v3_keyed_insert_batch_builder_close(&builder);
+  status = acme_nominal_keyed_insert_batch_builder_close(&builder);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT && builder == NOMINAL_BUILDER);
   CHECK(builder_close_calls == 0u && stub_error == 0);
   CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_BUILDER,
@@ -660,18 +660,18 @@ int main(void) {
 
   reset_probe();
   builder = NOMINAL_BUILDER;
-  status = acme_v3_keyed_insert_batch_builder_close(&builder);
+  status = acme_nominal_keyed_insert_batch_builder_close(&builder);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && builder == NULL);
   CHECK(builder_close_calls == 1u && stub_error == 0);
 
   reset_probe();
-  status = acme_v3_keyed_insert_batch_close(&batch);
+  status = acme_nominal_keyed_insert_batch_close(&batch);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && batch == NULL);
   CHECK(batch_close_calls == 1u && stub_error == 0);
   CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH, BATCH, 1u);
 
   reset_probe();
-  status = acme_v3_keyed_insert_batch_result_close(&result);
+  status = acme_nominal_keyed_insert_batch_result_close(&result);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && result == NULL);
   CHECK(result_close_calls == 1u && stub_error == 0);
   CHECK_INPUT(0, 0, TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT,
@@ -682,7 +682,7 @@ int main(void) {
   manager.root_filter = QUERY;
   manager.reserved[2] = 1u;
   manager_snapshot = manager;
-  status = acme_v3_keyed_manager_close(&manager);
+  status = acme_nominal_keyed_manager_close(&manager);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
   CHECK(memcmp(&manager, &manager_snapshot, sizeof(manager)) == 0);
   CHECK(preflight_calls == 1u && query_close_calls == 0u &&
@@ -695,7 +695,7 @@ int main(void) {
   manager.reserved[2] = 0u;
   manager_snapshot = manager;
   query_close_status = TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
-  status = acme_v3_keyed_manager_close(&manager);
+  status = acme_nominal_keyed_manager_close(&manager);
   CHECK(status == TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
   CHECK(memcmp(&manager, &manager_snapshot, sizeof(manager)) == 0);
   CHECK(query_close_calls == 1u && query_binding_close_calls == 0u &&
@@ -703,7 +703,7 @@ int main(void) {
   CHECK(query_close_generic_owner_slot != (void *)&manager.root_filter);
 
   reset_probe();
-  status = acme_v3_keyed_manager_close(&manager);
+  status = acme_nominal_keyed_manager_close(&manager);
   CHECK(status == TYPE_BRIDGE_STATUS_OK);
   CHECK(manager.root_filter == NULL);
   CHECK(query_close_calls == 1u && query_binding_close_calls == 0u && stub_error == 0);
@@ -711,44 +711,44 @@ int main(void) {
   reset_probe();
   memset(&manager, 0, sizeof(manager));
   manager.root_filter = QUERY;
-  filter_ref = acme_v3_keyed_manager_filter_root(&manager);
+  filter_ref = acme_nominal_keyed_manager_filter_root(&manager);
   manager.reserved[0] = 1u;
   manager_snapshot = manager;
-  filter = ALTERNATE(acme_v3_keyed_manager_filter);
+  filter = ALTERNATE(acme_nominal_keyed_manager_filter);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_manager_filter_identifier_eq(
-      &manager, filter_ref, CONST_HANDLE(acme_v3_identifier, create_storage),
+  status = acme_nominal_keyed_manager_filter_identifier_eq(
+      &manager, filter_ref, CONST_HANDLE(acme_nominal_identifier, create_storage),
       &filter, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
   CHECK(memcmp(&manager, &manager_snapshot, sizeof(manager)) == 0);
-  CHECK(filter == ALTERNATE(acme_v3_keyed_manager_filter));
+  CHECK(filter == ALTERNATE(acme_nominal_keyed_manager_filter));
   CHECK(diagnostics == ALTERNATE(type_bridge_execution_diagnostics_t));
   CHECK(preflight_calls == 1u && manager_dependency_calls == 0u &&
         stub_error == 0);
 
   reset_probe();
   manager.reserved[0] = 0u;
-  filter_ref = acme_v3_keyed_manager_filter_root(&manager);
+  filter_ref = acme_nominal_keyed_manager_filter_root(&manager);
   filter_ref.reserved[1] = 1u;
-  filter = ALTERNATE(acme_v3_keyed_manager_filter);
+  filter = ALTERNATE(acme_nominal_keyed_manager_filter);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_manager_filter_identifier_eq(
-      &manager, filter_ref, CONST_HANDLE(acme_v3_identifier, create_storage),
+  status = acme_nominal_keyed_manager_filter_identifier_eq(
+      &manager, filter_ref, CONST_HANDLE(acme_nominal_identifier, create_storage),
       &filter, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
-  CHECK(filter == ALTERNATE(acme_v3_keyed_manager_filter));
+  CHECK(filter == ALTERNATE(acme_nominal_keyed_manager_filter));
   CHECK(diagnostics == ALTERNATE(type_bridge_execution_diagnostics_t));
   CHECK(preflight_calls == 1u && manager_dependency_calls == 0u &&
         stub_error == 0);
 
   reset_probe();
-  filter_ref = acme_v3_keyed_manager_filter_root(&manager);
+  filter_ref = acme_nominal_keyed_manager_filter_root(&manager);
   manager_snapshot = manager;
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
-  status = acme_v3_keyed_manager_filter_identifier_eq(
-      &manager, filter_ref, CONST_HANDLE(acme_v3_identifier, create_storage),
-      (acme_v3_keyed_manager_filter **)(void *)&manager.root_filter,
+  status = acme_nominal_keyed_manager_filter_identifier_eq(
+      &manager, filter_ref, CONST_HANDLE(acme_nominal_identifier, create_storage),
+      (acme_nominal_keyed_manager_filter **)(void *)&manager.root_filter,
       &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
   CHECK(memcmp(&manager, &manager_snapshot, sizeof(manager)) == 0);
@@ -760,10 +760,10 @@ int main(void) {
   reset_probe();
   manager.reserved[0] = 1u;
   manager_snapshot = manager;
-  filter_ref = acme_v3_keyed_manager_filter_root(&manager);
+  filter_ref = acme_nominal_keyed_manager_filter_root(&manager);
   manager_count = UINT64_C(99);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_manager_database_count(
+  status = acme_nominal_keyed_manager_database_count(
       DATABASE, &manager, filter_ref, &limits, CANCELLATION, &manager_count,
       &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
@@ -775,11 +775,11 @@ int main(void) {
 
   reset_probe();
   manager.reserved[0] = 0u;
-  filter_ref = acme_v3_keyed_manager_filter_root(&manager);
+  filter_ref = acme_nominal_keyed_manager_filter_root(&manager);
   filter_ref.reserved[3] = 1u;
   manager_count = UINT64_C(99);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_manager_database_count(
+  status = acme_nominal_keyed_manager_database_count(
       DATABASE, &manager, filter_ref, &limits, CANCELLATION, &manager_count,
       &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
@@ -789,11 +789,11 @@ int main(void) {
         stub_error == 0);
 
   reset_probe();
-  filter_ref = acme_v3_keyed_manager_filter_root(&manager);
+  filter_ref = acme_nominal_keyed_manager_filter_root(&manager);
   manager_snapshot = manager;
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
-  status = acme_v3_keyed_manager_database_count(
+  status = acme_nominal_keyed_manager_database_count(
       DATABASE, &manager, filter_ref, &limits, CANCELLATION,
       &manager.reserved[0], &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
@@ -806,7 +806,7 @@ int main(void) {
   reset_probe();
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
   filter = NOMINAL_FILTER;
-  status = acme_v3_keyed_manager_filter_close(&filter);
+  status = acme_nominal_keyed_manager_filter_close(&filter);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT &&
         filter == NOMINAL_FILTER);
   CHECK(query_close_calls == 0u && preflight_calls == 1u && stub_error == 0);
@@ -816,7 +816,7 @@ int main(void) {
   reset_probe();
   query_close_status = TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
   filter = NOMINAL_FILTER;
-  status = acme_v3_keyed_manager_filter_close(&filter);
+  status = acme_nominal_keyed_manager_filter_close(&filter);
   CHECK(status == TYPE_BRIDGE_STATUS_EXECUTION_FAILED &&
         filter == NOMINAL_FILTER);
   CHECK(query_close_calls == 1u && stub_error == 0);
@@ -824,7 +824,7 @@ int main(void) {
 
   reset_probe();
   filter = NOMINAL_FILTER;
-  status = acme_v3_keyed_manager_filter_close(&filter);
+  status = acme_nominal_keyed_manager_filter_close(&filter);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && filter == NULL);
   CHECK(query_close_calls == 1u && stub_error == 0);
   CHECK(query_close_generic_owner_slot != (void *)&filter);
@@ -832,12 +832,12 @@ int main(void) {
   reset_probe();
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
   manager_result = NOMINAL_MANAGER_RESULT;
-  thing = ALTERNATE(acme_v3_keyed);
+  thing = ALTERNATE(acme_nominal_keyed);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_manager_all_result_at(
+  status = acme_nominal_keyed_manager_all_result_at(
       manager_result, 2u, &thing, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
-  CHECK(thing == ALTERNATE(acme_v3_keyed));
+  CHECK(thing == ALTERNATE(acme_nominal_keyed));
   CHECK(diagnostics == ALTERNATE(type_bridge_execution_diagnostics_t));
   CHECK(query_result_thing_calls == 0u && thing_close_calls == 0u &&
         preflight_calls == 1u && stub_error == 0);
@@ -852,9 +852,9 @@ int main(void) {
   reset_probe();
   query_result_thing_status = TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
   manager_result = NOMINAL_MANAGER_RESULT;
-  thing = ALTERNATE(acme_v3_keyed);
+  thing = ALTERNATE(acme_nominal_keyed);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_manager_all_result_at(
+  status = acme_nominal_keyed_manager_all_result_at(
       manager_result, 2u, &thing, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
   CHECK(thing == NULL && diagnostics == DIAGNOSTICS);
@@ -864,9 +864,9 @@ int main(void) {
 
   reset_probe();
   manager_result = NOMINAL_MANAGER_RESULT;
-  thing = ALTERNATE(acme_v3_keyed);
+  thing = ALTERNATE(acme_nominal_keyed);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_manager_all_result_at(
+  status = acme_nominal_keyed_manager_all_result_at(
       manager_result, 2u, &thing, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && thing == NOMINAL_THING &&
         diagnostics == NULL);
@@ -877,7 +877,7 @@ int main(void) {
   reset_probe();
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
   manager_result = NOMINAL_MANAGER_RESULT;
-  status = acme_v3_keyed_manager_all_result_close(&manager_result);
+  status = acme_nominal_keyed_manager_all_result_close(&manager_result);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT &&
         manager_result == NOMINAL_MANAGER_RESULT);
   CHECK(query_result_close_calls == 0u && preflight_calls == 1u &&
@@ -889,7 +889,7 @@ int main(void) {
   reset_probe();
   query_result_close_status = TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
   manager_result = NOMINAL_MANAGER_RESULT;
-  status = acme_v3_keyed_manager_all_result_close(&manager_result);
+  status = acme_nominal_keyed_manager_all_result_close(&manager_result);
   CHECK(status == TYPE_BRIDGE_STATUS_EXECUTION_FAILED &&
         manager_result == NOMINAL_MANAGER_RESULT);
   CHECK(query_result_close_calls == 1u && stub_error == 0);
@@ -897,7 +897,7 @@ int main(void) {
 
   reset_probe();
   manager_result = NOMINAL_MANAGER_RESULT;
-  status = acme_v3_keyed_manager_all_result_close(&manager_result);
+  status = acme_nominal_keyed_manager_all_result_close(&manager_result);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && manager_result == NULL);
   CHECK(query_result_close_calls == 1u && stub_error == 0);
   CHECK(query_result_close_generic_owner_slot != (void *)&manager_result);
