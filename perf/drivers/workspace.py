@@ -116,7 +116,8 @@ def drop(address: str, http_port: int, username: str, password: str, database: s
     """Delete a managed database and its migration journal, if they exist."""
     from type_bridge_core import PyDatabase
 
-    for name in (database, f"{database}__tbv2_journal"):
+    # Mirrors type_bridge_contract::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX.
+    for name in (database, f"{database}__tb_journal"):
         db = PyDatabase.connect(
             address, name, username=username, password=password, http_port=http_port
         )
