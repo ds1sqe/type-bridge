@@ -654,27 +654,29 @@ pub unsafe extern "C" fn type_bridge_migration_transaction_execute_query(
             }
             // SAFETY: output was fenced and initialized.
             Err(error) => {
-                use type_bridge_contract::diagnostic::{
-                    Diagnostic, DiagnosticCategory, DiagnosticCode,
-                };
                 use type_bridge_contract::sdk_diagnostic::{
                     SdkExecutionDiagnostic, SdkProviderOperation,
                 };
-                let cause = Diagnostic::new(
-                    DiagnosticCategory::InvalidContract,
-                    DiagnosticCode::new("migration_callback_raw_query_failed")
-                        .expect("static diagnostic code"),
-                    error.message,
-                )
-                .with_detail("status", i64::from(error.status))
-                .with_detail("provider_code", error.code);
-                let handle = crate::execution_diagnostic::admission_diagnostics_handle(
-                    SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Write),
-                    vec![cause],
+                let diagnostic = match error.code.as_str() {
+                    "provider_cancelled" | "query_cancelled" | "cancelled_before_dispatch" => {
+                        SdkExecutionDiagnostic::data_operation_cancelled()
+                    }
+                    "transaction_deadline_exceeded" | "query_deadline_exceeded" => {
+                        SdkExecutionDiagnostic::data_operation_deadline_exceeded()
+                    }
+                    _ if error.status == 499 => SdkExecutionDiagnostic::data_operation_cancelled(),
+                    _ if error.status == 408 || error.status == 504 => {
+                        SdkExecutionDiagnostic::data_operation_deadline_exceeded()
+                    }
+                    _ => SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Write),
+                };
+                let status = crate::execution_diagnostic::status_for(&diagnostic);
+                let handle = crate::execution_diagnostic::raw_execution_diagnostics_handle(
+                    diagnostic, error,
                 );
                 // SAFETY: output was fenced and initialized.
                 unsafe { errors.write_unaligned(Box::into_raw(Box::new(handle))) };
-                TypeBridgeStatus::ExecutionFailed
+                status
             }
         }
     })
@@ -776,6 +778,150 @@ mod tests {
             TypeBridgeStatus::Ok
         );
         value
+    }
+
+    #[test]
+    fn migration_callback_raw_errors_preserve_category_status_and_cause() {
+        use crate::execution_diagnostic::{
+            self, TypeBridgeExecutionDiagnosticCategory as Category,
+        };
+        struct CallbackBackend;
+        impl DriverBackend for CallbackBackend {
+            fn is_open(&self) -> bool {
+                true
+            }
+            fn open_transaction(
+                &self,
+                _: &str,
+                _: TxType,
+            ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+                Box::pin(async { Ok(Box::new(CallbackBackend) as Box<dyn TransactionOps>) })
+            }
+        }
+        impl TransactionOps for CallbackBackend {
+            fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+                panic!("raw callback")
+            }
+            fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+                panic!("callback cannot commit")
+            }
+            fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+                panic!("callback cannot roll back")
+            }
+            fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn query_raw<'a>(
+                &'a mut self,
+                query: &'a str,
+            ) -> BoxFuture<'a, Result<Vec<u8>, RawQueryError>> {
+                Box::pin(async move {
+                    let (code, status) = match query {
+                        "cancel" => ("provider_cancelled", 499),
+                        "deadline" => ("transaction_deadline_exceeded", 504),
+                        _ => ("provider.CODE/23", 409),
+                    };
+                    Err(RawQueryError {
+                        code: code.into(),
+                        message: "original raw cause".into(),
+                        status,
+                        provider_code: Some("native-code".into()),
+                        commit_outcome: None,
+                    })
+                })
+            }
+        }
+        unsafe extern "C" fn callback(
+            tx: *mut crate::runtime::TypeBridgeWriteTransaction,
+            context: *mut std::ffi::c_void,
+            errors: *mut *mut execution_diagnostic::TypeBridgeExecutionDiagnostics,
+        ) -> TypeBridgeStatus {
+            let query = match context as usize {
+                0 => "cancel",
+                1 => "deadline",
+                _ => "provider",
+            };
+            let mut result = ptr::null_mut();
+            // SAFETY: the engine-owned transaction and output slots belong to this test callback.
+            let status = unsafe {
+                type_bridge_migration_transaction_execute_query(
+                    tx,
+                    byte_view(query.as_bytes()),
+                    &mut result,
+                    errors,
+                )
+            };
+            assert!(result.is_null());
+            status
+        }
+        for (index, status, category, label, http_status) in [
+            (
+                0,
+                TypeBridgeStatus::Cancelled,
+                Category::Cancelled,
+                "cancelled",
+                499,
+            ),
+            (
+                1,
+                TypeBridgeStatus::ResourceLimit,
+                Category::ResourceLimit,
+                "resource_limit",
+                504,
+            ),
+            (
+                2,
+                TypeBridgeStatus::ExecutionFailed,
+                Category::Provider,
+                "provider",
+                409,
+            ),
+        ] {
+            let package = package("raw_callback");
+            let orm =
+                crate::runtime::test_orm_database(Box::new(CallbackBackend), "raw-callback", None);
+            let database = TypeBridgeDatabase::from_test_database(Arc::clone(package.state()), orm);
+            let context = database.open_transaction_context(TxType::Write).unwrap();
+            let mut borrowed =
+                crate::runtime::TypeBridgeWriteTransaction::from_borrowed(&database, context)
+                    .unwrap();
+            let mut errors = ptr::null_mut();
+            // SAFETY: all callback arguments are live and disjoint for the call.
+            assert_eq!(
+                unsafe { callback(&mut borrowed, index as *mut std::ffi::c_void, &mut errors) },
+                status
+            );
+            let mut view = execution_diagnostic::empty_diagnostic_view();
+            // SAFETY: the callback transferred this live diagnostics owner.
+            assert_eq!(
+                unsafe {
+                    execution_diagnostic::type_bridge_execution_diagnostics_get_v1(
+                        errors, 0, &mut view,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(view.category, category);
+            // SAFETY: diagnostics remain live until explicitly closed below.
+            let cause = unsafe { &*errors }.callback_cause();
+            assert!(cause.contains("original raw cause"));
+            assert!(
+                cause.contains(&format!("\"category\":\"{label}\"")),
+                "{cause}"
+            );
+            assert!(
+                cause.contains(&format!("\"status\":{http_status}")),
+                "{cause}"
+            );
+            assert!(cause.contains("native-code"));
+            // SAFETY: return the unique diagnostics owner.
+            assert_eq!(
+                unsafe {
+                    execution_diagnostic::type_bridge_execution_diagnostics_close(&mut errors)
+                },
+                TypeBridgeStatus::Ok
+            );
+        }
     }
 
     #[test]

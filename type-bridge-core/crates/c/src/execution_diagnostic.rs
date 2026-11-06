@@ -707,6 +707,31 @@ pub(crate) fn admission_diagnostics_handle(
     diagnostic: SdkExecutionDiagnostic,
     cause: Vec<type_bridge_contract::diagnostic::Diagnostic>,
 ) -> TypeBridgeExecutionDiagnostics {
+    diagnostics_with_encoded_cause(
+        diagnostic,
+        crate::diagnostic::diagnostics_handle(cause).encoded,
+    )
+}
+
+/// Raw callback causes preserve provider spelling and category without treating
+/// provider text as a canonical contract diagnostic code.
+pub(crate) fn raw_execution_diagnostics_handle(
+    diagnostic: SdkExecutionDiagnostic,
+    error: type_bridge_orm::session::raw::RawQueryError,
+) -> TypeBridgeExecutionDiagnostics {
+    let cause = serde_json::to_vec(&serde_json::json!([{
+        "category": diagnostic.category().as_str(), "code": error.code,
+        "message": error.message, "path": [],
+        "details": {"status": error.status, "provider_code": error.provider_code},
+    }]))
+    .expect("raw error fields are JSON primitives");
+    diagnostics_with_encoded_cause(diagnostic, cause)
+}
+
+fn diagnostics_with_encoded_cause(
+    diagnostic: SdkExecutionDiagnostic,
+    cause: Vec<u8>,
+) -> TypeBridgeExecutionDiagnostics {
     let mut item = OwnedDiagnostic::from(diagnostic);
     item.details.push(OwnedDetail {
         key: b"admission_cause".to_vec(),
@@ -714,12 +739,7 @@ pub(crate) fn admission_diagnostics_handle(
         boolean_value: false,
         unsigned_value: 0,
         signed_value: 0,
-        text: [
-            crate::diagnostic::diagnostics_handle(cause).encoded,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ],
+        text: [cause, Vec::new(), Vec::new(), Vec::new()],
         list: Vec::new(),
         timeline: None,
     });
