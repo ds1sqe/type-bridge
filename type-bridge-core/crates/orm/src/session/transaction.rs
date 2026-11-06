@@ -16,7 +16,7 @@ impl OwnedTransaction {
     /// queries. The scope owns invalidation; borrowed contexts cannot commit,
     /// roll back or close. Call `finish` before resuming engine execution.
     #[doc(hidden)]
-    pub fn borrow_context<'a>(
+    pub(crate) fn borrow_context<'a>(
         &'a mut self,
         database: &super::database::Database,
     ) -> BorrowedTransactionContext<'a> {
@@ -28,6 +28,24 @@ impl OwnedTransaction {
             context,
             finished: false,
         }
+    }
+
+    /// Lend a write transaction only after proving its active migration fence.
+    /// The scope and held lease must match in this same provider transaction.
+    pub async fn borrow_migration_context<'a>(
+        &'a mut self,
+        database: &super::database::Database,
+        scope: &type_bridge_contract::managed_scope::ManagedScopeId,
+        fence: u64,
+        holder: &str,
+    ) -> Result<BorrowedTransactionContext<'a>> {
+        if self.tx_type() != TxType::Write {
+            return Err(crate::OrmError::Transaction(
+                "migration callback requires a Write transaction".into(),
+            ));
+        }
+        super::legacy_writer::require_migration_callback_fence(self, scope, fence, holder).await?;
+        Ok(self.borrow_context(database))
     }
 
     pub(crate) fn from_eager(inner: super::eager::EagerTransaction) -> Self {

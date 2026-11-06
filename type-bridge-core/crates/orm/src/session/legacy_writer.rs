@@ -45,6 +45,52 @@ macro_rules! guard_read {
     }};
 }
 
+pub(crate) async fn require_migration_callback_fence(
+    transaction: &mut super::OwnedTransaction,
+    scope: &type_bridge_contract::managed_scope::ManagedScopeId,
+    fence: u64,
+    holder: &str,
+) -> Result<()> {
+    let query = guard_read!(
+        false,
+        MANAGED_CONTROL_ENTITY,
+        &[],
+        &[
+            (MANAGED_CONTROL_SCOPE, "scope"),
+            (MANAGED_CONTROL_LEASE_FENCE, "fence"),
+            (MANAGED_CONTROL_LEASE_STATE, "state"),
+            (MANAGED_CONTROL_LEASE_HOLDER, "holder"),
+        ]
+    );
+    let answers = transaction
+        .execute_plans(
+            std::slice::from_ref(&query.plan),
+            &crate::QueryExecutionResourceLimits::default(),
+            &super::backend::AnswerCancellation::default(),
+            crate::QueryExecutionDeadline::from_timeout_milliseconds(0),
+        )
+        .await?;
+    let answer = answers
+        .into_iter()
+        .next()
+        .ok_or_else(|| integrity_error("migration fence read returned no answer"))?;
+    let rows = query
+        .documents(answer)
+        .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+    if fence == 0
+        || rows
+            != [serde_json::json!({
+                "scope": scope.as_str(), "fence": fence.to_string(),
+                "state": MANAGED_CONTROL_LEASE_HELD, "holder": holder,
+            })]
+    {
+        return Err(integrity_error(
+            "migration callback requires its exact active held fence",
+        ));
+    }
+    Ok(())
+}
+
 /// Reject a TypeBridge-owned V1 writer through its already-open mutation
 /// transaction after the database completes V2 adoption.
 ///

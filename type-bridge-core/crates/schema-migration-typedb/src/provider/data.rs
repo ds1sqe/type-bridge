@@ -199,7 +199,15 @@ impl TypeDbMigrationProvider {
                     tx.query(text).await.map_err(map_orm_error)?;
                 }
                 DataProgram::User { step_id } => {
-                    let borrowed = tx.borrow_context(&self.binding.managed_database);
+                    let borrowed = tx
+                        .borrow_migration_context(
+                            &self.binding.managed_database,
+                            lease.scope().managed_scope_id(),
+                            lease.fence().get(),
+                            lease.holder().as_str(),
+                        )
+                        .await
+                        .map_err(map_orm_error)?;
                     let result = self
                         .user_steps
                         .execute(step_id, direction, borrowed.context().clone())

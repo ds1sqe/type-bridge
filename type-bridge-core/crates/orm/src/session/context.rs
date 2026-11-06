@@ -369,20 +369,32 @@ impl TransactionContext {
             }
             Err(_) => None,
         };
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                let transaction = match transaction {
-                    Some(transaction) => transaction,
-                    None => {
-                        let mut state = inner.lock().await;
-                        state.state = TransactionContextState::Closed;
-                        state.transaction.take()
-                    }
-                };
-                if let Some(mut transaction) = transaction {
-                    let _ = transaction.close().await;
+        let close = async move {
+            let transaction = match transaction {
+                Some(transaction) => transaction,
+                None => {
+                    let mut state = inner.lock().await;
+                    state.state = TransactionContextState::Closed;
+                    state.transaction.take()
                 }
-            });
+            };
+            if let Some(mut transaction) = transaction {
+                let _ = transaction.close().await;
+            }
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(close);
+        } else {
+            // A future can be cancelled after leaving its runtime's context.
+            match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime.block_on(close),
+                Err(error) => {
+                    tracing::error!(%error, "could not run abandoned migration transaction cleanup")
+                }
+            }
         }
     }
 
@@ -1354,6 +1366,24 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
         assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn abandoned_callback_closes_outside_a_tokio_runtime() {
+        let (context, calls) = active_context();
+        let context = context.borrowed();
+        context.abandon_borrowed();
+        assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(
+            runtime
+                .block_on(context.query("insert $p isa person;"))
+                .is_err()
+        );
     }
 
     struct PlanTransaction {

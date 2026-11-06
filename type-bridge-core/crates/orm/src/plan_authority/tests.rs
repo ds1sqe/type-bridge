@@ -244,3 +244,53 @@ async fn native_control_reads_obey_inflight_deadline_and_cancellation() {
         tx.close().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn callback_borrow_requires_the_exact_active_write_fence() {
+    for (rows, allowed) in [
+        (vec![], false),
+        (
+            vec![
+                serde_json::json!({"scope":"scope", "fence":"1", "state":"free", "holder":"engine"}),
+            ],
+            false,
+        ),
+        (
+            vec![
+                serde_json::json!({"scope":"scope", "fence":"2", "state":"held", "holder":"engine"}),
+            ],
+            false,
+        ),
+        (
+            vec![
+                serde_json::json!({"scope":"other", "fence":"1", "state":"held", "holder":"engine"}),
+            ],
+            false,
+        ),
+        (
+            vec![
+                serde_json::json!({"scope":"scope", "fence":"1", "state":"held", "holder":"engine"}),
+            ],
+            true,
+        ),
+    ] {
+        let evidence = Arc::new(Mutex::new(Evidence {
+            answers: VecDeque::from([typed_rows(rows)]),
+            ..Default::default()
+        }));
+        let db =
+            crate::Database::with_backend(Box::new(Backend(Arc::clone(&evidence))), "authority");
+        let mut tx = db.write_transaction().await.unwrap();
+        let scope = ManagedScopeId::new("scope").unwrap();
+        {
+            let borrowed = tx.borrow_migration_context(&db, &scope, 1, "engine").await;
+            assert_eq!(borrowed.is_ok(), allowed);
+            if let Ok(borrowed) = borrowed {
+                assert!(borrowed.context().commit().await.is_err());
+                borrowed.finish().await.unwrap();
+            }
+        }
+        assert_eq!(evidence.lock().unwrap().canonical_calls, 1);
+        tx.close().await.unwrap();
+    }
+}
