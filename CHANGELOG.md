@@ -14,6 +14,9 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- Generated C managers expose typed `filter_iid` and `filter_iids` builders.
+  IID lists retain empty-list matches-none behavior and fence both the pointer
+  array and each IID owner before initializing outputs.
 - C manager filters expose exact-model validation against a manager root and
   generated token, rejecting foreign package brands before dispatch.
 - C proxy connections execute projected batches and returning delete batches

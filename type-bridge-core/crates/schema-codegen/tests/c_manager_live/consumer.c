@@ -564,6 +564,43 @@ static int check_manager_networkzhlink_terminal_twins(
   return 0;
 }
 
+static int check_manager_iid_filters(
+    const type_bridge_database_t *database, const manager_person_manager *manager,
+    const type_bridge_iid_t *first_iid, const type_bridge_iid_t *second_iid,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  const type_bridge_iid_t *iids[] = {first_iid, second_iid};
+  manager_person_manager_filter *filter = NULL;
+  manager_person *person = NULL;
+  uint64_t count = UINT64_MAX;
+  uint8_t exists = 1u;
+  CHECK(manager_person_manager_filter_iids(manager, manager_person_manager_filter_root(manager),
+            iids, 2u, (manager_person_manager_filter **)(void *)&iids[0], diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
+  CHECK(iids[0] == first_iid && iids[1] == second_iid && *diagnostics == NULL);
+  CHECK(manager_person_manager_filter_iid(manager, manager_person_manager_filter_root(manager),
+            first_iid, &filter, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_database_count(database, manager, manager_person_manager_filter_ref(filter),
+            NULL, NULL, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 1u);
+  CHECK(manager_person_manager_database_first(database, manager, manager_person_manager_filter_ref(filter),
+            NULL, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK && person != NULL);
+  CHECK(manager_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_filter_close(&filter) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_filter_iids(manager, manager_person_manager_filter_root(manager),
+            iids, 2u, &filter, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_database_count(database, manager, manager_person_manager_filter_ref(filter),
+            NULL, NULL, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 2u);
+  CHECK(manager_person_manager_filter_close(&filter) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_filter_iids(manager, manager_person_manager_filter_root(manager),
+            NULL, 0u, &filter, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_manager_database_count(database, manager, manager_person_manager_filter_ref(filter),
+            NULL, NULL, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
+  CHECK(manager_person_manager_database_exists(database, manager, manager_person_manager_filter_ref(filter),
+            NULL, NULL, &exists, diagnostics) == TYPE_BRIDGE_STATUS_OK && exists == 0u);
+  CHECK(manager_person_manager_database_first(database, manager, manager_person_manager_filter_ref(filter),
+            NULL, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK && person == NULL);
+  CHECK(manager_person_manager_filter_close(&filter) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
 static int check_manager_read_twins(
     const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database,
@@ -782,6 +819,7 @@ int main(void) {
         manager_identifier_open(package, view_of("wrong-domain"), &wrong_domain,
                                &diagnostics) == TYPE_BRIDGE_STATUS_OK);
 
+  CHECK(check_manager_iid_filters(database, &manager, ada_iid.typed, dana_iid.typed, &diagnostics) == 0);
   CHECK(wrong_owner_hostile_cast_fails_closed(package, &diagnostics));
   CHECK(manager_person_manager_filter_foozuzubar_eq(
             &manager, manager_person_manager_filter_root(&manager),

@@ -86,6 +86,8 @@ pub(super) fn function_names(
             "filter_root",
             "filter_ref",
             "filter_close",
+            "filter_iid",
+            "filter_iids",
             "database_all",
             "database_first",
             "database_count",
@@ -151,6 +153,23 @@ pub(super) fn render_declarations(
              type_bridge_status_t TYPE_BRIDGE_CALL {manager}_filter_close(\n\
                {filter} **filter);\n"
         );
+        for (suffix, arguments) in [
+            ("iid", "const type_bridge_iid_t *iid"),
+            (
+                "iids",
+                "const type_bridge_iid_t *const *iids, size_t iid_count",
+            ),
+        ] {
+            let _ = write!(
+                output,
+                r#"
+type_bridge_status_t TYPE_BRIDGE_CALL {manager}_filter_{suffix}(
+    const {manager} *manager, {filter_ref} source,
+    {arguments}, {filter} **out_filter,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+"#
+            );
+        }
         for field in model.query_tokens().fields().values() {
             let attribute = projection
                 .models()
@@ -348,6 +367,78 @@ type_bridge_status_t TYPE_BRIDGE_CALL {manager}_filter_close({filter} **filter) 
 }}
 "#
     );
+
+    for (suffix, arguments, call_arguments) in [
+        ("iid", "const type_bridge_iid_t *iid", "iid"),
+        (
+            "iids",
+            "const type_bridge_iid_t *const *iids, size_t iid_count",
+            "iids, iid_count",
+        ),
+    ] {
+        let _ = write!(
+            output,
+            r#"
+type_bridge_status_t TYPE_BRIDGE_CALL {manager}_filter_{suffix}(
+    const {manager} *manager, {filter_ref} source,
+    {arguments}, {filter} **out_filter,
+    type_bridge_execution_diagnostics_t **out_diagnostics) {{
+  type_bridge_manager_filter_t *generic_filter = NULL;
+"#
+        );
+        let extra = if suffix == "iid" {
+            format!(
+                "  {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n"
+            )
+        } else {
+            let _ = writeln!(
+                output,
+                "  size_t iid_index;\n  if (iid_count > SIZE_MAX / sizeof(*iids) || (iid_count != 0u && iids == NULL)) {{ return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; }}"
+            );
+            format!(
+                "  {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_BYTES, iids, iid_count * sizeof(*iids));\n"
+            )
+        };
+        input_fence(
+            output,
+            "source",
+            &model_token,
+            &add_input,
+            &preflight,
+            &extra,
+            "out_filter",
+        );
+        if suffix == "iids" {
+            let _ = write!(
+                output,
+                r#"
+  for (iid_index = 0u; iid_index < iid_count; ++iid_index) {{
+    const type_bridge_iid_t *iid;
+    memcpy(&iid, (const unsigned char *)iids + iid_index * sizeof(*iids), sizeof(iid));
+    alias_input_count = 0u;
+    {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);
+    status = {preflight}(alias_inputs, alias_input_count,
+        out_filter, sizeof(*out_filter), out_diagnostics, sizeof(*out_diagnostics));
+    if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}
+  }}
+"#
+            );
+        }
+        let _ = write!(
+            output,
+            r#"
+  if (out_filter != NULL) {{ *out_filter = NULL; }}
+  if (out_diagnostics != NULL) {{ *out_diagnostics = NULL; }}
+  if (out_filter == NULL || out_diagnostics == NULL) {{ return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; }}
+  status = type_bridge_manager_filter_validate_model(source.value, manager->root_filter, &{model_token}, out_diagnostics);
+  if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}
+  status = type_bridge_manager_filter_{suffix}(source.value, {call_arguments}, &generic_filter, out_diagnostics);
+  if (status == TYPE_BRIDGE_STATUS_OK) {{ *out_filter = ({filter} *)generic_filter; }}
+  return status;
+}}
+"#
+        );
+    }
 
     for field in model.query_tokens().fields().values() {
         let field_token = field_token_symbol(projection, prefix, model.id(), field.id())?;
