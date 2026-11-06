@@ -607,6 +607,24 @@ impl WriteTarget<'_> {
         }
     }
 
+    fn manager_target(
+        &self,
+        kind: CrudKind,
+    ) -> Result<crate::manager_target::Target<'_>, CrudFailure> {
+        match self {
+            Self::Database(value) => Ok(crate::manager_target::Target::Database(value)),
+            Self::Transaction(value) => {
+                if value.is_poisoned() {
+                    return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
+                }
+                if value.context().is_none() {
+                    return Err(CrudFailure::Diagnostic(kind.inactive_transaction()));
+                }
+                Ok(crate::manager_target::Target::Write(value))
+            }
+        }
+    }
+
     fn run_thing_mutation(
         &self,
         kind: CrudKind,
@@ -614,118 +632,15 @@ impl WriteTarget<'_> {
         _expected_model: &TypeId,
         create: &TypeBridgeProjectedCreate,
     ) -> Result<TypeBridgeProjectedBatchResult, CrudFailure> {
-        match self {
-            Self::Database(database) => {
-                let executor =
-                    ProjectedCrudExecutor::new(&database.package_state().installed_projection);
-                let context = catch_unwind(AssertUnwindSafe(|| {
-                    database.open_transaction_context(TxType::Write)
-                }))
-                .map_err(|_| CrudFailure::Panic)?
-                .map_err(|error| {
-                    CrudFailure::Diagnostic(lower_execution_error(
-                        error,
-                        SdkProviderOperation::OpenWriteTransaction,
-                    ))
-                })?;
-                let executed = catch_unwind(AssertUnwindSafe(|| {
-                    match (kind, operation) {
-                        (CrudKind::Entity, ThingMutation::Insert) => database.block_on(
-                            executor.insert_entity_in_transaction(&context, &create.value),
-                        ),
-                        (CrudKind::Entity, ThingMutation::Put) => database
-                            .block_on(executor.put_entity_in_transaction(&context, &create.value)),
-                        (CrudKind::Entity, ThingMutation::Update(iid)) => database.block_on(
-                            executor.update_entity_in_transaction(&context, iid, &create.value),
-                        ),
-                        (CrudKind::Relation, ThingMutation::Insert) => database.block_on(
-                            executor.insert_relation_in_transaction(&context, &create.value),
-                        ),
-                        (CrudKind::Relation, ThingMutation::Put) => database.block_on(
-                            executor.put_relation_in_transaction(&context, &create.value),
-                        ),
-                        (CrudKind::Relation, ThingMutation::Update(iid)) => database.block_on(
-                            executor.update_relation_in_transaction(&context, iid, &create.value),
-                        ),
-                    }
-                    .and_then(|result| {
-                        TypeBridgeProjectedBatchResult::from_write(
-                            Arc::clone(self.package_state()),
-                            create.value.type_id().clone(),
-                            operation.operation(),
-                            result,
-                        )
-                    })
-                }));
-                let thing = match executed {
-                    Ok(Ok(thing)) => thing,
-                    Ok(Err(diagnostic)) => {
-                        let _ = catch_unwind(AssertUnwindSafe(|| {
-                            database.rollback_transaction_context(&context)
-                        }));
-                        return Err(CrudFailure::Diagnostic(diagnostic));
-                    }
-                    Err(_) => {
-                        let _ = catch_unwind(AssertUnwindSafe(|| {
-                            database.rollback_transaction_context(&context)
-                        }));
-                        return Err(CrudFailure::Panic);
-                    }
-                };
-
-                database
-                    .commit_transaction_context_classified(&context)
-                    .map_err(CrudFailure::Diagnostic)?;
-                Ok(thing)
-            }
-            Self::Transaction(transaction) => {
-                if transaction.is_poisoned() {
-                    return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
-                }
-                let context = transaction
-                    .context()
-                    .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
-                let executor =
-                    ProjectedCrudExecutor::new(&transaction.package_state().installed_projection);
-                let thing = match catch_unwind(AssertUnwindSafe(|| match (kind, operation) {
-                    (CrudKind::Entity, ThingMutation::Insert) => transaction
-                        .block_on(executor.insert_entity_in_transaction(context, &create.value)),
-                    (CrudKind::Entity, ThingMutation::Put) => transaction
-                        .block_on(executor.put_entity_in_transaction(context, &create.value)),
-                    (CrudKind::Entity, ThingMutation::Update(iid)) => transaction.block_on(
-                        executor.update_entity_in_transaction(context, iid, &create.value),
-                    ),
-                    (CrudKind::Relation, ThingMutation::Insert) => transaction
-                        .block_on(executor.insert_relation_in_transaction(context, &create.value)),
-                    (CrudKind::Relation, ThingMutation::Put) => transaction
-                        .block_on(executor.put_relation_in_transaction(context, &create.value)),
-                    (CrudKind::Relation, ThingMutation::Update(iid)) => transaction.block_on(
-                        executor.update_relation_in_transaction(context, iid, &create.value),
-                    ),
-                })) {
-                    Ok(result) => {
-                        let result = result.and_then(|result| {
-                            TypeBridgeProjectedBatchResult::from_write(
-                                Arc::clone(self.package_state()),
-                                create.value.type_id().clone(),
-                                operation.operation(),
-                                result,
-                            )
-                            .inspect_err(|diagnostic| {
-                                transaction.block_on(context.latch_rollback_only(diagnostic));
-                            })
-                        });
-                        result.map_err(CrudFailure::Diagnostic)
-                    }
-                    Err(_) => {
-                        transaction.mark_poisoned();
-                        Err(CrudFailure::Panic)
-                    }
-                }?;
-
-                Ok(thing)
-            }
-        }
+        self.run_thing_mutation_controlled(
+            kind,
+            operation,
+            create,
+            ProjectedBatchInvocationControl::capture(
+                self.answer_ceiling(),
+                AnswerCancellation::default(),
+            ),
+        )
     }
 
     fn run_thing_mutation_controlled(
@@ -735,83 +650,65 @@ impl WriteTarget<'_> {
         create: &TypeBridgeProjectedCreate,
         control: ProjectedBatchInvocationControl,
     ) -> Result<TypeBridgeProjectedBatchResult, CrudFailure> {
-        let executor = ProjectedCrudExecutor::new(&self.package_state().installed_projection);
+        let target = self.manager_target(kind)?;
+        let query_target = target.query_target().map_err(CrudFailure::Diagnostic)?;
+        let installed = &self.package_state().installed_projection;
         let result_operation = operation.operation();
+        let mapper = |result| {
+            TypeBridgeProjectedBatchResult::from_write(
+                Arc::clone(self.package_state()),
+                create.value.type_id().clone(),
+                result_operation,
+                result,
+            )
+        };
         let executed = catch_unwind(AssertUnwindSafe(|| {
-            let (operation, row) = match operation {
-                ThingMutation::Insert => (
-                    type_bridge_orm::ProjectedBatchOperation::Insert,
-                    type_bridge_orm::ProjectedBatchRow::Create(create.value.clone()),
-                ),
-                ThingMutation::Put => (
-                    type_bridge_orm::ProjectedBatchOperation::Put,
-                    type_bridge_orm::ProjectedBatchRow::Create(create.value.clone()),
-                ),
-                ThingMutation::Update(iid) => (
-                    type_bridge_orm::ProjectedBatchOperation::Update,
-                    type_bridge_orm::ProjectedBatchRow::Update {
-                        iid: iid.to_owned(),
-                        replacement: create.value.clone(),
-                    },
-                ),
-            };
-            let batch = executor
-                .single_controlled_write_batch(create.value.type_id(), operation, row, &control)
-                .map_err(CrudFailure::Diagnostic)?;
-            match self {
-                Self::Database(database) => database
-                    .block_on(executor.execute_controlled_single_write(
-                        type_bridge_orm::projected_crud::ProjectedWriteTarget::Database(
-                            database.orm_database(),
-                        ),
-                        &batch,
+            if let ThingMutation::Update(iid) = operation {
+                let iid = Iid::new(iid).map_err(|_| CrudFailure::Diagnostic(kind.invalid_iid()))?;
+                let filter =
+                    ProjectedManagerFilter::try_new(installed, create.value.type_id().clone())
+                        .and_then(|filter| filter.try_and_iid(installed, &iid))
+                        .map_err(CrudFailure::Diagnostic)?;
+                let (limits, deadline, cancellation) = control.into_parts();
+                let control = ProjectedManagerFilterInvocationControl::from_parts(
+                    limits,
+                    deadline,
+                    cancellation,
+                );
+                let executor = ProjectedManagerFilterExecutor::new(installed);
+                return target
+                    .block_on(executor.update_on_target_mapped(
+                        query_target,
+                        &filter,
+                        create.value.clone(),
                         control,
-                        |result| {
-                            TypeBridgeProjectedBatchResult::from_write(
-                                Arc::clone(self.package_state()),
-                                create.value.type_id().clone(),
-                                result_operation,
-                                result,
-                            )
-                        },
+                        mapper,
                     ))
-                    .map_err(CrudFailure::Diagnostic),
-                Self::Transaction(transaction) => {
-                    if transaction.is_poisoned() {
-                        return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
-                    }
-                    let context = transaction
-                        .context()
-                        .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
-                    transaction
-                        .block_on(executor.execute_controlled_single_write(
-                            type_bridge_orm::projected_crud::ProjectedWriteTarget::Transaction(
-                                context,
-                            ),
-                            &batch,
-                            control,
-                            |result| {
-                                TypeBridgeProjectedBatchResult::from_write(
-                                    Arc::clone(self.package_state()),
-                                    create.value.type_id().clone(),
-                                    result_operation,
-                                    result,
-                                )
-                            },
-                        ))
-                        .map_err(CrudFailure::Diagnostic)
-                }
+                    .map_err(|error| {
+                        CrudFailure::Diagnostic(error.into_diagnostic(SdkProviderOperation::Write))
+                    });
             }
+            let executor = ProjectedCrudExecutor::new(installed);
+            let batch = executor
+                .single_controlled_write_batch(
+                    create.value.type_id(),
+                    result_operation,
+                    type_bridge_orm::ProjectedBatchRow::Create(create.value.clone()),
+                    &control,
+                )
+                .map_err(CrudFailure::Diagnostic)?;
+            target
+                .block_on(executor.execute_single_write_on_target(
+                    query_target,
+                    &batch,
+                    control,
+                    mapper,
+                ))
+                .map_err(|error| {
+                    CrudFailure::Diagnostic(error.into_diagnostic(SdkProviderOperation::Write))
+                })
         }));
-        match executed {
-            Ok(result) => result,
-            Err(_) => {
-                if let Self::Transaction(transaction) = self {
-                    transaction.mark_poisoned();
-                }
-                Err(CrudFailure::Panic)
-            }
-        }
+        executed.map_err(|_| CrudFailure::Panic)?
     }
 
     fn preflight_thing_mutation(
@@ -852,72 +749,15 @@ impl WriteTarget<'_> {
     }
 
     fn run_delete(&self, kind: CrudKind, type_id: &TypeId, iid: &str) -> Result<(), CrudFailure> {
-        match self {
-            Self::Database(database) => {
-                let context = catch_unwind(AssertUnwindSafe(|| {
-                    database.open_transaction_context(TxType::Write)
-                }))
-                .map_err(|_| CrudFailure::Panic)?
-                .map_err(|error| {
-                    CrudFailure::Diagnostic(lower_execution_error(
-                        error,
-                        SdkProviderOperation::OpenWriteTransaction,
-                    ))
-                })?;
-                let executor =
-                    ProjectedCrudExecutor::new(&database.package_state().installed_projection);
-                let executed = catch_unwind(AssertUnwindSafe(|| match kind {
-                    CrudKind::Entity => database.block_on(
-                        executor.delete_entity_by_iid_in_transaction(&context, type_id, iid),
-                    ),
-                    CrudKind::Relation => database.block_on(
-                        executor.delete_relation_by_iid_in_transaction(&context, type_id, iid),
-                    ),
-                }));
-                match executed {
-                    Ok(Ok(())) => {}
-                    Ok(Err(diagnostic)) => {
-                        let _ = catch_unwind(AssertUnwindSafe(|| {
-                            database.rollback_transaction_context(&context)
-                        }));
-                        return Err(CrudFailure::Diagnostic(diagnostic));
-                    }
-                    Err(_) => {
-                        let _ = catch_unwind(AssertUnwindSafe(|| {
-                            database.rollback_transaction_context(&context)
-                        }));
-                        return Err(CrudFailure::Panic);
-                    }
-                }
-                database
-                    .commit_transaction_context_classified(&context)
-                    .map_err(CrudFailure::Diagnostic)
-            }
-            Self::Transaction(transaction) => {
-                if transaction.is_poisoned() {
-                    return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
-                }
-                let context = transaction
-                    .context()
-                    .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
-                let executor =
-                    ProjectedCrudExecutor::new(&transaction.package_state().installed_projection);
-                match catch_unwind(AssertUnwindSafe(|| match kind {
-                    CrudKind::Entity => transaction.block_on(
-                        executor.delete_entity_by_iid_in_transaction(context, type_id, iid),
-                    ),
-                    CrudKind::Relation => transaction.block_on(
-                        executor.delete_relation_by_iid_in_transaction(context, type_id, iid),
-                    ),
-                })) {
-                    Ok(result) => result.map_err(CrudFailure::Diagnostic),
-                    Err(_) => {
-                        transaction.mark_poisoned();
-                        Err(CrudFailure::Panic)
-                    }
-                }
-            }
-        }
+        self.run_delete_controlled(
+            kind,
+            type_id,
+            iid,
+            ProjectedBatchInvocationControl::capture(
+                self.answer_ceiling(),
+                AnswerCancellation::default(),
+            ),
+        )
     }
 
     fn run_delete_controlled(
@@ -927,58 +767,24 @@ impl WriteTarget<'_> {
         iid: &str,
         control: ProjectedBatchInvocationControl,
     ) -> Result<(), CrudFailure> {
-        let executor = ProjectedCrudExecutor::new(&self.package_state().installed_projection);
-        let executed = catch_unwind(AssertUnwindSafe(|| match self {
-            Self::Database(database) => (match kind {
-                CrudKind::Entity => {
-                    database.block_on(executor.delete_entity_by_iid_controlled_with_control(
-                        database.orm_database(),
-                        type_id,
-                        iid,
-                        control,
-                    ))
-                }
-                CrudKind::Relation => {
-                    database.block_on(executor.delete_relation_by_iid_controlled_with_control(
-                        database.orm_database(),
-                        type_id,
-                        iid,
-                        control,
-                    ))
-                }
-            })
-            .map_err(CrudFailure::Diagnostic),
-            Self::Transaction(transaction) => {
-                if transaction.is_poisoned() {
-                    return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
-                }
-                let context = transaction
-                    .context()
-                    .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
-                (match kind {
-                    CrudKind::Entity => transaction.block_on(
-                        executor.delete_entity_by_iid_in_transaction_controlled_with_control(
-                            context, type_id, iid, control,
-                        ),
-                    ),
-                    CrudKind::Relation => transaction.block_on(
-                        executor.delete_relation_by_iid_in_transaction_controlled_with_control(
-                            context, type_id, iid, control,
-                        ),
-                    ),
-                })
-                .map_err(CrudFailure::Diagnostic)
-            }
-        }));
-        match executed {
-            Ok(result) => result,
-            Err(_) => {
-                if let Self::Transaction(transaction) = self {
-                    transaction.mark_poisoned();
-                }
-                Err(CrudFailure::Panic)
-            }
-        }
+        let target = self.manager_target(kind)?;
+        let query_target = target.query_target().map_err(CrudFailure::Diagnostic)?;
+        let installed = &self.package_state().installed_projection;
+        let iid = Iid::new(iid).map_err(|_| CrudFailure::Diagnostic(kind.invalid_iid()))?;
+        let filter = ProjectedManagerFilter::try_new(installed, type_id.clone())
+            .and_then(|filter| filter.try_and_iid(installed, &iid))
+            .map_err(CrudFailure::Diagnostic)?;
+        let (limits, deadline, cancellation) = control.into_parts();
+        let control =
+            ProjectedManagerFilterInvocationControl::from_parts(limits, deadline, cancellation);
+        let executor = ProjectedManagerFilterExecutor::new(installed);
+        catch_unwind(AssertUnwindSafe(|| {
+            target.block_on(executor.delete_on_target(query_target, &filter, control))
+        }))
+        .map_err(|_| CrudFailure::Panic)?
+        .map_err(|error| {
+            CrudFailure::Diagnostic(error.into_diagnostic(SdkProviderOperation::Write))
+        })
     }
 }
 

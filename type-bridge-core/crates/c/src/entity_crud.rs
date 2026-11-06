@@ -1071,13 +1071,17 @@ functions:
     }
 
     #[test]
-    fn by_iid_reads_match_canonical_filter_provider_bytes() {
+    fn by_iid_terminals_match_canonical_filter_provider_bytes() {
         for relation in [false, true] {
-            let (database, package, token, state) = if relation {
+            let (database, package, token, create, state) = if relation {
                 let fixture = relation_fixture(
                     vec![
                         documents(vec![membership_document("0x20")]),
                         documents(vec![membership_document("0x20")]),
+                        documents(vec![membership_document("0x20")]),
+                        documents(vec![membership_document("0x20")]),
+                        documents(vec![]),
+                        documents(vec![]),
                     ],
                     COMMIT_SUCCESS,
                 );
@@ -1085,6 +1089,7 @@ functions:
                     fixture.database,
                     fixture.package,
                     fixture.token,
+                    fixture.create,
                     fixture.state,
                 )
             } else {
@@ -1092,6 +1097,10 @@ functions:
                     vec![
                         documents(vec![person_document("0x10")]),
                         documents(vec![person_document("0x10")]),
+                        documents(vec![person_document("0x10")]),
+                        documents(vec![person_document("0x10")]),
+                        documents(vec![]),
+                        documents(vec![]),
                     ],
                     COMMIT_SUCCESS,
                 );
@@ -1099,6 +1108,7 @@ functions:
                     fixture.database,
                     fixture.package,
                     fixture.token,
+                    fixture.create,
                     fixture.state,
                 )
             };
@@ -1158,6 +1168,63 @@ functions:
                 TypeBridgeStatus::Ok
             );
             close_thing(&mut thing);
+            let update = if relation {
+                crate::relation_crud::type_bridge_database_relation_update
+            } else {
+                type_bridge_database_entity_update
+            };
+            let delete = if relation {
+                crate::relation_crud::type_bridge_database_relation_delete_by_iid
+            } else {
+                type_bridge_database_entity_delete_by_iid
+            };
+            let mut result = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    update(
+                        &*database,
+                        &token,
+                        &iid,
+                        &*create,
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            close_result(&mut result);
+            assert_eq!(
+                unsafe {
+                    crate::manager_write::type_bridge_database_manager_update(
+                        &*database,
+                        filter,
+                        &*create,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            close_result(&mut result);
+            assert_eq!(
+                unsafe { delete(&*database, &token, &iid, ptr::null(), &mut diagnostics) },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe {
+                    crate::manager_write::type_bridge_database_manager_delete(
+                        &*database,
+                        filter,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
             assert_eq!(
                 unsafe { crate::manager_filter::filter_close(&mut filter) },
                 TypeBridgeStatus::Ok
@@ -1167,8 +1234,11 @@ functions:
                 TypeBridgeStatus::Ok
             );
             let queries = state.queries.lock().unwrap();
-            assert_eq!(queries.len(), 2);
-            assert_eq!(queries[0].as_bytes(), queries[1].as_bytes());
+            assert_eq!(queries.len(), 6);
+            for pair in queries.chunks_exact(2) {
+                assert_eq!(pair[0].as_bytes(), pair[1].as_bytes());
+            }
+            assert_eq!(state.commits.load(Ordering::Acquire), 4);
             assert_eq!(state.closes.load(Ordering::Acquire), 2);
         }
     }

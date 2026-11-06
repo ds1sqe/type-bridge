@@ -379,13 +379,6 @@ impl TypeBridgeDatabase {
         self.block_on(context.rollback())
     }
 
-    pub(crate) fn commit_transaction_context_classified(
-        &self,
-        context: &TransactionContext,
-    ) -> Result<(), SdkExecutionDiagnostic> {
-        commit_context_sdk(&self.state.runtime.runtime, context)
-    }
-
     #[cfg(test)]
     pub(crate) fn from_test_database(package: Arc<SchemaPackageState>, database: Database) -> Self {
         let runtime = Builder::new_current_thread()

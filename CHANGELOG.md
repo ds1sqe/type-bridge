@@ -115,6 +115,8 @@ All notable changes to TypeBridge will be documented in this file.
   keyword filter's read terminal and explicit instance operations instead.
 
 ### Changed
+- C typed-IID update/delete exports now redirect to canonical filter terminals.
+  Legacy insert/put exports also use the shared controlled single-write path.
 - C entity/relation get-by-IID exports now redirect to an IID filter and the
   canonical `first` terminal, retaining the existing typed-IID signatures.
 
