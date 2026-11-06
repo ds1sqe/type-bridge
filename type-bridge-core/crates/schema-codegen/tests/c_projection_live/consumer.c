@@ -453,8 +453,9 @@ static int emit_query_lifecycle_observation(
 
 static int emit_resource_limits_observation(
     const char *proof_kind,
+    const type_bridge_query_execution_limits_v1_t *policy,
     const sdk_resource_limit_observation_t *observation) {
-  if (observation == NULL ||
+  if (policy == NULL || observation == NULL ||
       observation->category != TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_RESOURCE_LIMIT ||
       observation->code[0] == '\0' || observation->dimension[0] == '\0') {
     return 0;
@@ -470,16 +471,16 @@ static int emit_resource_limits_observation(
       "\"dimension\":\"%s\","
       "\"no_partial_result\":%s},\"past_maximum_refused\":%s,"
       "\"plus_one_kept_all\":%s,\"zero_tightening_all\":%s}",
-      TYPE_BRIDGE_QUERY_DEFAULT_ATTRIBUTE_VALUES,
-      TYPE_BRIDGE_QUERY_DEFAULT_BYTES,
-      TYPE_BRIDGE_QUERY_DEFAULT_COLLECTION_MEMBERS,
-      TYPE_BRIDGE_QUERY_DEFAULT_GRAPH_NODES, TYPE_BRIDGE_QUERY_DEFAULT_ITEMS,
-      TYPE_BRIDGE_QUERY_DEFAULT_ROLE_PLAYERS,
-      TYPE_BRIDGE_QUERY_DEFAULT_STATEMENTS,
-      TYPE_BRIDGE_QUERY_DEFAULT_TIMEOUT_MILLISECONDS,
+      policy->attribute_values,
+      policy->bytes,
+      policy->collection_members,
+      policy->graph_nodes, policy->items,
+      policy->role_players,
+      policy->statements,
+      (uint64_t)policy->timeout_milliseconds,
       observation->code, observation->dimension,
       observation->no_partial_result ? "true" : "false",
-      observation->past_maximum_refusals == 2u ? "true" : "false",
+      observation->past_maximum_refusals == 1u ? "true" : "false",
       observation->plus_one_dimensions == 7u ? "true" : "false",
       observation->zero_dimensions == 8u ? "true" : "false");
 }
@@ -489,10 +490,13 @@ static int execution_code_is(
     const char *expected) {
   type_bridge_execution_diagnostic_view_v1_t diagnostic = {0};
   const size_t expected_length = strlen(expected);
-  return type_bridge_execution_diagnostics_get_v1(
-             diagnostics, 0u, &diagnostic) == TYPE_BRIDGE_STATUS_OK &&
-         diagnostic.code.length == expected_length &&
-         memcmp(diagnostic.code.data, expected, expected_length) == 0;
+  if (type_bridge_execution_diagnostics_get_v1(diagnostics, 0u, &diagnostic) !=
+      TYPE_BRIDGE_STATUS_OK) return 0;
+  if (diagnostic.code.length == expected_length &&
+      memcmp(diagnostic.code.data, expected, expected_length) == 0) return 1;
+  fprintf(stderr, "expected diagnostic %s, got %.*s\n", expected,
+          (int)diagnostic.code.length, (const char *)diagnostic.code.data);
+  return 0;
 }
 
 static int check_structured_execution_diagnostic(
@@ -2660,7 +2664,7 @@ static int run_typed_query_function_and_remote(
   type_bridge_byte_view_t request = {NULL, 0u};
   const type_bridge_query_execution_limits_v1_t current_defaults =
       TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
-  /* Historical-policy replay: 07.0 moved other SDKs to 60 s; C stays 30 s until 06.11. */
+  /* Replay the frozen 30 s policy explicitly; the ABI 2.0 default is 60 s. */
   type_bridge_query_execution_limits_v1_t limits = {
       .struct_size = (uint32_t)sizeof(type_bridge_query_execution_limits_v1_t),
       .version = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_VERSION,
@@ -2728,7 +2732,7 @@ static int run_typed_query_function_and_remote(
 
   (void)network_link_iid;
 
-  CHECK(current_defaults.timeout_milliseconds == 30000u);
+  CHECK(current_defaults.timeout_milliseconds == 60000u);
   CHECK(remote_port != 0u);
   CHECK(fixture_query_session_open(package, &session, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
@@ -3438,8 +3442,7 @@ static int run_typed_query_function_and_remote(
         TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
     size_t limit_index;
 
-    CHECK(limits.timeout_milliseconds ==
-              TYPE_BRIDGE_QUERY_DEFAULT_TIMEOUT_MILLISECONDS &&
+    CHECK(limits.timeout_milliseconds == 30000u &&
           limits.items == TYPE_BRIDGE_QUERY_DEFAULT_ITEMS &&
           limits.bytes == TYPE_BRIDGE_QUERY_DEFAULT_BYTES &&
           limits.graph_nodes == TYPE_BRIDGE_QUERY_DEFAULT_GRAPH_NODES &&
@@ -3458,7 +3461,16 @@ static int run_typed_query_function_and_remote(
     zero_limits[3].graph_nodes = 0u;
     zero_limits[4].attribute_values = 0u;
     zero_limits[5].statements = 0u;
-    for (limit_index = 0u; limit_index < 6u; ++limit_index) {
+    /* Zero timeout is unbounded; zero resource counters still refuse. */
+    CHECK(fixture_database_query_execute_rows(
+              database, rows_terminal, &zero_limits[0], NULL,
+              &rejected_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(rejected_result != NULL && *out_diagnostics == NULL);
+    CHECK(check_rows_identifiers(rejected_result, expected_rows, 2u,
+                                 out_diagnostics) == 0);
+    CHECK(fixture_query_rows_result_close(&rejected_result) == TYPE_BRIDGE_STATUS_OK);
+    ++zero_limit_dimension_count;
+    for (limit_index = 1u; limit_index < 6u; ++limit_index) {
       CHECK(fixture_database_query_execute_rows(
                 database, rows_terminal, &zero_limits[limit_index], NULL,
                 &rejected_result, out_diagnostics) ==
@@ -3467,7 +3479,7 @@ static int run_typed_query_function_and_remote(
       CHECK(check_structured_execution_diagnostic(
                 *out_diagnostics,
                 TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_RESOURCE_LIMIT,
-                limit_index == 0u ? "transaction_deadline_exceeded" : NULL) ==
+                NULL) ==
             0);
       CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
@@ -3514,7 +3526,8 @@ static int run_typed_query_function_and_remote(
     CHECK(type_bridge_cancellation_close(&cancellation) ==
           TYPE_BRIDGE_STATUS_OK);
 
-    zero_remote_limits.timeout_milliseconds = 0u;
+    zero_remote_limits.timeout_milliseconds = 0;
+    zero_remote_limits.items = 0u;
     CHECK(caller_http_exchange(remote_port, "GET", "/v3/capabilities", NULL,
                                0u, 1024u * 1024u, &advertisement));
     CHECK(fixture_query_remote_context_open(
@@ -3530,10 +3543,20 @@ static int run_typed_query_function_and_remote(
               zero_context, rows_terminal, NULL, &rejected_pending,
               out_diagnostics) == TYPE_BRIDGE_STATUS_RESOURCE_LIMIT);
     CHECK(rejected_pending == NULL);
-    CHECK(check_structured_execution_diagnostic(
-              *out_diagnostics,
-              TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_RESOURCE_LIMIT,
-              "transaction_deadline_exceeded") == 0);
+    /* The staged envelope requires a positive item budget. This is a
+     * whole-request admission refusal, so it has no model/field path. */
+    {
+      type_bridge_execution_diagnostic_view_v1_t zero_diagnostic = {0};
+      size_t zero_diagnostic_count = 0u;
+      CHECK(type_bridge_execution_diagnostics_count(
+                *out_diagnostics, &zero_diagnostic_count) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(zero_diagnostic_count == 1u);
+      CHECK(type_bridge_execution_diagnostics_get_v1(
+                *out_diagnostics, 0u, &zero_diagnostic) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(zero_diagnostic.category == TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_RESOURCE_LIMIT);
+      CHECK(zero_diagnostic.path_count == 0u);
+      CHECK(execution_code_is(*out_diagnostics, "query_remote_limits"));
+    }
     CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_remote_context_close(&zero_context) ==
@@ -3565,21 +3588,22 @@ static int run_typed_query_function_and_remote(
             TYPE_BRIDGE_STATUS_OK);
       ++plus_one_limit_dimension_count;
     }
-    /* Past a supported maximum a value is refused by name, never clamped. */
-    /* One millisecond past the longest supported duration, a day. */
-    plus_one_limits[0].timeout_milliseconds = UINT64_C(86400001);
-    for (limit_index = 0u; limit_index < 8u; limit_index += 7u) {
-      CHECK(fixture_database_query_execute_count(
-                database, count_terminal, &plus_one_limits[limit_index], NULL,
-                &clamped_direct, out_diagnostics) ==
-            TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
-      CHECK(clamped_direct == NULL);
-      CHECK(execution_code_is(*out_diagnostics,
-                              "c_query_execution_limits_invalid"));
-      CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
-            TYPE_BRIDGE_STATUS_OK);
-      ++past_maximum_refusal_count;
-    }
+    /* Durations beyond a day are valid; only statement count has this ceiling. */
+    plus_one_limits[0].timeout_milliseconds = INT64_C(86400001);
+    CHECK(fixture_database_query_execute_count(
+              database, count_terminal, &plus_one_limits[0], NULL,
+              &clamped_direct, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_count_result_value(clamped_direct, &count_value,
+                                           out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(count_value == 2u);
+    CHECK(fixture_query_count_result_close(&clamped_direct) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_database_query_execute_count(
+              database, count_terminal, &plus_one_limits[7], NULL,
+              &clamped_direct, out_diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
+    CHECK(clamped_direct == NULL);
+    CHECK(execution_code_is(*out_diagnostics, "c_query_execution_limits_invalid"));
+    CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    ++past_maximum_refusal_count;
     clamped_limits.timeout_milliseconds += 1u;
     clamped_limits.items += 1u;
     clamped_limits.bytes += 1u;
@@ -3642,7 +3666,7 @@ static int run_typed_query_function_and_remote(
           TYPE_BRIDGE_STATUS_OK);
     remote_plus_one_kept_all = 1;
     CHECK(plus_one_limit_dimension_count == 7u);
-    CHECK(past_maximum_refusal_count == 2u);
+    CHECK(past_maximum_refusal_count == 1u);
     puts("G05 pre-dispatch cancellation direct/remote: passed");
     puts("G06 raised limits kept, unsupported ones refused, remote limit: passed");
     puts("G08 live structured cancellation/resource diagnostics: passed");
@@ -4276,13 +4300,13 @@ static int run_typed_query_function_and_remote(
       resource_limit_observation.no_partial_result =
           role_limit_result == NULL;
       CHECK(emit_resource_limits_observation(
-          "direct_runtime", &resource_limit_observation));
+          "direct_runtime", &limits, &resource_limit_observation));
       resource_limit_observation.no_partial_result =
           role_limit_result == NULL && remote_representative_zero_limit &&
           remote_plus_one_kept_all;
       CHECK(emit_resource_limits_observation(
-          "remote_runtime", &resource_limit_observation));
-      puts("G06 all-eight independent zero ceilings: passed");
+          "remote_runtime", &limits, &resource_limit_observation));
+      puts("G06 unbounded zero timeout and seven independent zero resource ceilings: passed");
     }
     CHECK(fixture_database_query_execute_rows(
               database, role_terminal, NULL, NULL, &role_result,
@@ -5773,10 +5797,11 @@ int main(void) {
   CHECK(fixture_robotzuid_close(&robot_id) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzuconstrained_close(&robot_constrained) ==
         TYPE_BRIDGE_STATUS_OK);
-  person = (fixture_person *)(uintptr_t)1u;
-  CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_database_insert(
-            database, (const fixture_person_create *)robot_create, NULL,  NULL,&fixture_person_insert_result, &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
-  CHECK(person == NULL && diagnostics != NULL);
+  fixture_person_insert_result = (fixture_person_insert_batch_result *)(uintptr_t)1u;
+  CHECK(fixture_person_database_insert(
+            database, (const fixture_person_create *)robot_create, NULL, NULL,
+            &fixture_person_insert_result, &diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
+  CHECK(fixture_person_insert_result == NULL && diagnostics != NULL);
   CHECK(execution_code_is(diagnostics, "c_entity_create_model_mismatch"));
   CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
