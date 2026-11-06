@@ -36,18 +36,25 @@ impl EagerTransaction {
     }
 
     /// Open with the backend's certified schema-exclusion guarantee.
-    #[allow(deprecated)]
     pub(crate) async fn open_fenced(
         backend: &dyn super::backend::DriverBackend,
         database: &str,
         timeout: std::time::Duration,
         server_version: Option<Version>,
     ) -> Result<(Self, String)> {
-        // In 3.0 an options flag replaces the released backend fence hook.
-        let fenced = backend
-            .open_schema_fenced_read_transaction(database, timeout)
+        let options = super::staged::TransactionOptions::default()
+            .with_deadline(timeout)
+            .with_never_commit(true);
+        let mut provider = backend
+            .open_with_options(database, TxType::Write, &options)
             .await?;
-        let (provider, schema) = fenced.into_parts();
+        let schema = match backend.schema_text(database).await {
+            Ok(schema) => schema,
+            Err(error) => {
+                let _ = provider.close().await;
+                return Err(error);
+            }
+        };
         let mut transaction = Self::new(provider, TxType::Write, server_version);
         transaction.set_never_commit(true);
         Ok((transaction, schema))
@@ -258,5 +265,104 @@ impl EagerTransaction {
             )?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::backend::{BoxFuture, DriverBackend};
+    use crate::session::staged::TransactionOptions;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    struct FenceBackend {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        fail_export: bool,
+    }
+
+    struct FenceTransaction(Arc<Mutex<Vec<&'static str>>>);
+
+    impl TransactionOps for FenceTransaction {
+        fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult>> {
+            Box::pin(async { Ok(QueryResult::Ok) })
+        }
+        fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
+            panic!("fenced transactions must never commit")
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&mut self) -> BoxFuture<'_, Result<()>> {
+            self.0.lock().unwrap().push("close");
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    impl DriverBackend for FenceBackend {
+        fn open_transaction(
+            &self,
+            _: &str,
+            _: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>>> {
+            panic!("fenced opens must retain transaction options")
+        }
+        fn open_with_options(
+            &self,
+            database: &str,
+            kind: TxType,
+            options: &TransactionOptions,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>>> {
+            assert_eq!(database, "fenced");
+            assert_eq!(kind, TxType::Write);
+            assert_eq!(options.deadline, Some(Duration::from_secs(7)));
+            assert!(options.never_commit);
+            self.events.lock().unwrap().push("open");
+            let transaction = FenceTransaction(Arc::clone(&self.events));
+            Box::pin(async { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+        }
+        fn schema_text(&self, _: &str) -> BoxFuture<'_, Result<String>> {
+            self.events.lock().unwrap().push("export");
+            Box::pin(async {
+                if self.fail_export {
+                    Err(OrmError::Connection("schema export failed".into()))
+                } else {
+                    Ok("define entity marker;".into())
+                }
+            })
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn fenced_open_keeps_options_and_never_commits() {
+        let backend = FenceBackend {
+            events: Arc::default(),
+            fail_export: false,
+        };
+        let (mut transaction, schema) =
+            EagerTransaction::open_fenced(&backend, "fenced", Duration::from_secs(7), None)
+                .await
+                .unwrap();
+        assert_eq!(schema, "define entity marker;");
+        assert_eq!(*backend.events.lock().unwrap(), ["open", "export"]);
+        transaction.commit().await.unwrap();
+        assert_eq!(*backend.events.lock().unwrap(), ["open", "export", "close"]);
+    }
+
+    #[tokio::test]
+    async fn fenced_export_failure_closes_transaction() {
+        let backend = FenceBackend {
+            events: Arc::default(),
+            fail_export: true,
+        };
+        let error = EagerTransaction::open_fenced(&backend, "fenced", Duration::from_secs(7), None)
+            .await
+            .err()
+            .expect("export failed");
+        assert!(error.to_string().contains("schema export failed"));
+        assert_eq!(*backend.events.lock().unwrap(), ["open", "export", "close"]);
     }
 }

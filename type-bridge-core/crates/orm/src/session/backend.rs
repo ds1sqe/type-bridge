@@ -925,7 +925,12 @@ pub trait DriverBackend: Send + Sync {
         tx_type: TxType,
     ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>>;
 
-    /// Open with transaction-level options. Legacy providers reject unsupported deadlines.
+    /// Open with transaction-level options. Providers reject unsupported deadlines.
+    ///
+    /// Write transactions must exclude schema commits until they close. A deadline
+    /// bounds both acquiring that exclusion and the transaction lifetime. Internal
+    /// schema-fenced reads export the schema after this method returns, while the
+    /// write transaction retains the guard.
     fn open_with_options(
         &self,
         database: &str,
@@ -940,34 +945,6 @@ pub trait DriverBackend: Send + Sync {
             });
         }
         self.open_transaction(database, tx_type)
-    }
-
-    /// Open a read-capable V2 transaction that excludes schema commits until
-    /// the transaction reaches a terminal state.
-    ///
-    /// The explicit seam is fail-closed: an ordinary read transaction does
-    /// not prove that its schema snapshot matches an export observed before
-    /// or after it. The returned export must be captured after acquiring the
-    /// guard and before releasing it, and must describe the exact schema
-    /// snapshot used by the returned transaction. Implementations must also
-    /// enforce `timeout` both while acquiring the schema lock and over the
-    /// transaction lifetime, so a lost client cannot retain or later acquire
-    /// schema exclusion indefinitely.
-    #[deprecated(
-        since = "2.3.0",
-        note = "Use the core transaction options; retained until 3.0"
-    )]
-    fn open_schema_fenced_read_transaction(
-        &self,
-        database: &str,
-        timeout: Duration,
-    ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
-        let _ = (database, timeout);
-        Box::pin(async {
-            Err(OrmError::QueryExecution(
-                "V2 schema-fenced read transactions are not supported by this backend".into(),
-            ))
-        })
     }
 
     /// Check if the underlying connection is still alive.
@@ -1041,31 +1018,6 @@ pub trait DriverBackend: Send + Sync {
                 "Schema export is not supported by this backend for database '{database}'"
             )))
         })
-    }
-}
-
-/// One V2 read-capable transaction and the exact schema export captured under
-/// its retained schema-exclusion guard.
-pub struct SchemaFencedReadTransaction {
-    transaction: Box<dyn TransactionOps>,
-    schema_text: String,
-}
-
-impl SchemaFencedReadTransaction {
-    /// Bind one transaction to the schema export its backend captured after
-    /// acquiring schema exclusion and before releasing that guard.
-    #[must_use]
-    pub fn new(transaction: Box<dyn TransactionOps>, schema_text: String) -> Self {
-        Self {
-            transaction,
-            schema_text,
-        }
-    }
-
-    /// Consume the proof and return its transaction and fenced schema export.
-    #[must_use]
-    pub fn into_parts(self) -> (Box<dyn TransactionOps>, String) {
-        (self.transaction, self.schema_text)
     }
 }
 

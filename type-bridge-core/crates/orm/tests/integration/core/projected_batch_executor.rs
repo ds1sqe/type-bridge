@@ -15,7 +15,7 @@ use type_bridge_core_lib::ast::{
 };
 use type_bridge_orm::session::backend::{
     AnswerConsumer, AnswerLimits, BoundedAnswerLimits, BoundedAnswerStats, BoxFuture,
-    DriverBackend, GivenRowsSpec, QueryResult, SchemaFencedReadTransaction, TransactionOps,
+    DriverBackend, GivenRowsSpec, QueryResult, TransactionOps,
 };
 use type_bridge_orm::session::real_driver::RealBackend;
 use type_bridge_orm::session::staged::TransactionOptions;
@@ -881,15 +881,6 @@ impl DriverBackend for CountingBackend {
             tx_type,
             self.inner.open_with_options(database, tx_type, options),
         )
-    }
-    #[allow(deprecated)]
-    fn open_schema_fenced_read_transaction(
-        &self,
-        database: &str,
-        timeout: std::time::Duration,
-    ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
-        self.inner
-            .open_schema_fenced_read_transaction(database, timeout)
     }
     fn is_open(&self) -> bool {
         self.inner.is_open()

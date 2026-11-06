@@ -20,9 +20,8 @@ pub use runtime::{
 use super::backend::{
     AnswerConsumer, AnswerControl, AnswerItem, AnswerLimits, BoundedAnswerLimits,
     BoundedAnswerStats, BoxFuture, DriverBackend, GivenRowsSpec, GivenValue, MAX_ERROR_DRAIN_BYTES,
-    MAX_ERROR_DRAIN_ITEMS, QueryResult, SchemaFencedReadTransaction, TransactionOps, TxType,
-    execute_typed_provider_statement, typed_fetch_provider_statement,
-    typed_root_provider_statement, typed_tuple_provider_statement,
+    MAX_ERROR_DRAIN_ITEMS, QueryResult, TransactionOps, TxType, execute_typed_provider_statement,
+    typed_fetch_provider_statement, typed_root_provider_statement, typed_tuple_provider_statement,
 };
 use crate::error::{ClassifiedCommitError, CommitFailureCertainty, OrmError};
 use crate::match_request::{
@@ -247,30 +246,6 @@ impl DriverBackend for RealBackend {
                 runtime,
                 database,
             }) as Box<dyn TransactionOps>)
-        })
-    }
-
-    fn open_schema_fenced_read_transaction(
-        &self,
-        database: &str,
-        timeout: std::time::Duration,
-    ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
-        let database = database.to_owned();
-        Box::pin(async move {
-            let options = super::staged::TransactionOptions::default()
-                .with_deadline(timeout)
-                .with_never_commit(true);
-            let mut transaction = self
-                .open_with_options(&database, TxType::Write, &options)
-                .await?;
-            let schema_text = match self.schema_text(&database).await {
-                Ok(schema) => schema,
-                Err(error) => {
-                    let _ = transaction.close().await;
-                    return Err(error);
-                }
-            };
-            Ok(SchemaFencedReadTransaction::new(transaction, schema_text))
         })
     }
 

@@ -825,7 +825,7 @@ mod tests {
     use type_bridge_contract::value::ValueTypeTag;
     use type_bridge_orm::error::OrmError;
     use type_bridge_orm::session::backend::{
-        BoxFuture, DriverBackend, QueryResult, SchemaFencedReadTransaction, TransactionOps, TxType,
+        BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType,
     };
     use type_bridge_schema::managed_schema_state;
 
@@ -900,17 +900,13 @@ mod tests {
             Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
         }
 
-        fn open_schema_fenced_read_transaction(
+        fn open_with_options(
             &self,
             database: &str,
-            _timeout: Duration,
-        ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
-            let database = database.to_owned();
-            Box::pin(async move {
-                let transaction = self.open_transaction(&database, TxType::Write).await?;
-                let schema_text = self.schema_text(&database).await?;
-                Ok(SchemaFencedReadTransaction::new(transaction, schema_text))
-            })
+            tx_type: TxType,
+            _options: &type_bridge_orm::session::staged::TransactionOptions,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            self.open_transaction(database, tx_type)
         }
 
         fn is_open(&self) -> bool {

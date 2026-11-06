@@ -334,6 +334,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Remove `DriverBackend::open_schema_fenced_read_transaction` and its public
+  `SchemaFencedReadTransaction` return wrapper (`new`, `into_parts`). Backend
+  implementations use `open_with_options`; fenced reads retain Write mode,
+  deadlines, never-commit behavior, and close on schema-export failure.
+
 The deprecated Rust aliases and implicit-profile/string helpers are removed.
 
 | Removed Rust API | Replacement |

@@ -427,3 +427,10 @@ constructing a schema-lowering binding or validating a migration server.
 | `card_annotation(min, max)` | checked tql::schema_card plus render_schema_annotations |
 | `attribute_definition(attribute)` | attribute_node(attribute, true) plus tql::render_schema_definition |
 | `attribute_constraint_definition(attribute)` | attribute_node(attribute, false) plus tql::render_schema_definition |
+
+The backend hook `DriverBackend::open_schema_fenced_read_transaction` and its
+`SchemaFencedReadTransaction::{new, into_parts}` wrapper are removed. Implement
+`DriverBackend::open_with_options` with Write transactions that exclude schema
+commits and enforce the deadline while opening and throughout their lifetime.
+The existing database fenced-read entry point exports the schema while holding
+that transaction, closes it on export failure, and never commits it.
