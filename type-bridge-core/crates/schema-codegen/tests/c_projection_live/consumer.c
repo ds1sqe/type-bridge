@@ -682,7 +682,7 @@ static void witness_mark(const char *name) {
 }
 
 static void witness_exchange(const uint8_t *request, size_t length) {
-  const char *policy = "{\"timeout_milliseconds\":30000,\"items\":65536,"
+  const char *policy = "{\"timeout_milliseconds\":60000,\"items\":65536,"
       "\"bytes\":33554432,\"graph_nodes\":65536,\"attribute_values\":65536,"
       "\"collection_members\":65536,\"role_players\":65536,\"statements\":null}";
   if (plan_witness == NULL || !plan_call_open) return;
@@ -690,7 +690,7 @@ static void witness_exchange(const uint8_t *request, size_t length) {
   fputs("{\"request_hex\":\"", plan_witness);
   witness_hex(plan_witness, request, length);
   fprintf(plan_witness, "\",\"advertisement_hex\":\"%s\",\"caller\":%s,"
-      "\"session\":%s,\"proxy_defaults\":%s,\"caller_deadline_ms\":30000}",
+      "\"session\":%s,\"proxy_defaults\":%s,\"caller_deadline_ms\":60000}",
       plan_advertisement, policy, policy, policy);
 }
 
