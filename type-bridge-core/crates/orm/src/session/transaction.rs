@@ -38,13 +38,23 @@ impl OwnedTransaction {
         scope: &type_bridge_contract::managed_scope::ManagedScopeId,
         fence: u64,
         holder: &str,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
     ) -> Result<BorrowedTransactionContext<'a>> {
         if self.tx_type() != TxType::Write {
             return Err(crate::OrmError::Transaction(
                 "migration callback requires a Write transaction".into(),
             ));
         }
-        super::legacy_writer::require_migration_callback_fence(self, scope, fence, holder).await?;
+        super::legacy_writer::require_migration_callback_fence(
+            self,
+            scope,
+            fence,
+            holder,
+            cancellation,
+            deadline,
+        )
+        .await?;
         Ok(self.borrow_context(database))
     }
 

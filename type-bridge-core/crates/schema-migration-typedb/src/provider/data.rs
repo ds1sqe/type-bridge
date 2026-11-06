@@ -199,12 +199,27 @@ impl TypeDbMigrationProvider {
                     tx.query(text).await.map_err(map_orm_error)?;
                 }
                 DataProgram::User { step_id } => {
+                    // The outer interruptible step owns this signal: dropping
+                    // its future on cancellation also wakes provider cleanup.
+                    struct CancelOnDrop(type_bridge_orm::AnswerCancellation);
+                    impl Drop for CancelOnDrop {
+                        fn drop(&mut self) {
+                            self.0.cancel();
+                        }
+                    }
+                    let cancellation = CancelOnDrop(type_bridge_orm::AnswerCancellation::default());
+                    let deadline = control.deadline().map_or_else(
+                        || type_bridge_orm::QueryExecutionDeadline::from_timeout_milliseconds(0),
+                        type_bridge_orm::QueryExecutionDeadline::from_instant,
+                    );
                     let borrowed = tx
                         .borrow_migration_context(
                             &self.binding.managed_database,
                             lease.scope().managed_scope_id(),
                             lease.fence().get(),
                             lease.holder().as_str(),
+                            &cancellation.0,
+                            deadline,
                         )
                         .await
                         .map_err(map_orm_error)?;

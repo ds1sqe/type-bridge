@@ -283,7 +283,16 @@ async fn callback_borrow_requires_the_exact_active_write_fence() {
         let mut tx = db.write_transaction().await.unwrap();
         let scope = ManagedScopeId::new("scope").unwrap();
         {
-            let borrowed = tx.borrow_migration_context(&db, &scope, 1, "engine").await;
+            let borrowed = tx
+                .borrow_migration_context(
+                    &db,
+                    &scope,
+                    1,
+                    "engine",
+                    &AnswerCancellation::default(),
+                    crate::QueryExecutionDeadline::from_timeout_milliseconds(0),
+                )
+                .await;
             assert_eq!(borrowed.is_ok(), allowed);
             if let Ok(borrowed) = borrowed {
                 assert!(borrowed.context().commit().await.is_err());
@@ -327,5 +336,44 @@ async fn import_fallback_requires_all_current_authority_rows_absent() {
             assert!(result.unwrap());
         }
         tx.close().await.unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn callback_fence_read_observes_inflight_cancellation_and_deadline() {
+    for cancel in [true, false] {
+        let evidence = Arc::new(Mutex::new(Evidence {
+            hold: true,
+            ..Default::default()
+        }));
+        let entered = Arc::clone(&evidence.lock().unwrap().holding);
+        let db =
+            crate::Database::with_backend(Box::new(Backend(Arc::clone(&evidence))), "authority");
+        let mut tx = db.write_transaction().await.unwrap();
+        let cancellation = AnswerCancellation::default();
+        let scope = ManagedScopeId::new("scope").unwrap();
+        let deadline = crate::QueryExecutionDeadline::from_instant(
+            std::time::Instant::now() + std::time::Duration::from_secs(3600),
+        );
+        let completed = async {
+            let result = tx
+                .borrow_migration_context(&db, &scope, 1, "engine", &cancellation, deadline)
+                .await;
+            assert!(result.is_err());
+        };
+        tokio::pin!(completed);
+        tokio::select! {
+            () = &mut completed => panic!("fence read returned before pending provider I/O"),
+            () = entered.notified() => {},
+        }
+        if cancel {
+            cancellation.cancel();
+        } else {
+            tokio::time::advance(std::time::Duration::from_secs(3601)).await;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), &mut completed)
+            .await
+            .unwrap();
+        assert_eq!(evidence.lock().unwrap().canonical_calls, 1);
     }
 }

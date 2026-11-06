@@ -50,6 +50,8 @@ pub(crate) async fn require_migration_callback_fence(
     scope: &type_bridge_contract::managed_scope::ManagedScopeId,
     fence: u64,
     holder: &str,
+    cancellation: &super::backend::AnswerCancellation,
+    deadline: crate::QueryExecutionDeadline,
 ) -> Result<()> {
     let query = guard_read!(
         false,
@@ -66,8 +68,8 @@ pub(crate) async fn require_migration_callback_fence(
         .execute_plans(
             std::slice::from_ref(&query.plan),
             &crate::QueryExecutionResourceLimits::default(),
-            &super::backend::AnswerCancellation::default(),
-            crate::QueryExecutionDeadline::from_timeout_milliseconds(0),
+            cancellation,
+            deadline,
         )
         .await?;
     let answer = answers
