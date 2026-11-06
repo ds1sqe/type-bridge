@@ -1183,8 +1183,8 @@ fn rust_abi_layout() -> Vec<usize> {
         offset_of!(TypeBridgeQuerySelectionDescriptorV1, kind),
         offset_of!(TypeBridgeQuerySelectionDescriptorV1, distinct),
         offset_of!(TypeBridgeQuerySelectionDescriptorV1, reserved0),
-        offset_of!(TypeBridgeQuerySelectionDescriptorV1, orders),
-        offset_of!(TypeBridgeQuerySelectionDescriptorV1, order_count),
+        offset_of!(TypeBridgeQuerySelectionDescriptorV1, sorts),
+        offset_of!(TypeBridgeQuerySelectionDescriptorV1, sort_count),
         offset_of!(TypeBridgeQuerySelectionDescriptorV1, reserved),
         size_of::<TypeBridgeQueryShapeSlotV1>(),
         align_of::<TypeBridgeQueryShapeSlotV1>(),
@@ -1232,8 +1232,8 @@ fn rust_abi_layout() -> Vec<usize> {
         offset_of!(TypeBridgeQueryTerminalDescriptorV1, expected_root_model),
         offset_of!(TypeBridgeQueryTerminalDescriptorV1, expected_root_mode),
         offset_of!(TypeBridgeQueryTerminalDescriptorV1, reserved1),
-        offset_of!(TypeBridgeQueryTerminalDescriptorV1, orders),
-        offset_of!(TypeBridgeQueryTerminalDescriptorV1, order_count),
+        offset_of!(TypeBridgeQueryTerminalDescriptorV1, sorts),
+        offset_of!(TypeBridgeQueryTerminalDescriptorV1, sort_count),
         offset_of!(TypeBridgeQueryTerminalDescriptorV1, offset),
         offset_of!(TypeBridgeQueryTerminalDescriptorV1, limit),
         offset_of!(TypeBridgeQueryTerminalDescriptorV1, include_total),
@@ -2255,8 +2255,8 @@ int main(void) {
   PRINT_VALUE(offsetof(type_bridge_query_selection_descriptor_v1_t, kind));
   PRINT_VALUE(offsetof(type_bridge_query_selection_descriptor_v1_t, distinct));
   PRINT_VALUE(offsetof(type_bridge_query_selection_descriptor_v1_t, reserved0));
-  PRINT_VALUE(offsetof(type_bridge_query_selection_descriptor_v1_t, orders));
-  PRINT_VALUE(offsetof(type_bridge_query_selection_descriptor_v1_t, order_count));
+  PRINT_VALUE(offsetof(type_bridge_query_selection_descriptor_v1_t, sorts));
+  PRINT_VALUE(offsetof(type_bridge_query_selection_descriptor_v1_t, sort_count));
   PRINT_VALUE(offsetof(type_bridge_query_selection_descriptor_v1_t, reserved));
   PRINT_VALUE(sizeof(type_bridge_query_shape_slot_v1_t));
   PRINT_VALUE(TYPE_BRIDGE_ALIGNOF(type_bridge_query_shape_slot_v1_t));
@@ -2304,8 +2304,8 @@ int main(void) {
   PRINT_VALUE(offsetof(type_bridge_query_terminal_descriptor_v1_t, expected_root_model));
   PRINT_VALUE(offsetof(type_bridge_query_terminal_descriptor_v1_t, expected_root_mode));
   PRINT_VALUE(offsetof(type_bridge_query_terminal_descriptor_v1_t, reserved1));
-  PRINT_VALUE(offsetof(type_bridge_query_terminal_descriptor_v1_t, orders));
-  PRINT_VALUE(offsetof(type_bridge_query_terminal_descriptor_v1_t, order_count));
+  PRINT_VALUE(offsetof(type_bridge_query_terminal_descriptor_v1_t, sorts));
+  PRINT_VALUE(offsetof(type_bridge_query_terminal_descriptor_v1_t, sort_count));
   PRINT_VALUE(offsetof(type_bridge_query_terminal_descriptor_v1_t, offset));
   PRINT_VALUE(offsetof(type_bridge_query_terminal_descriptor_v1_t, limit));
   PRINT_VALUE(offsetof(type_bridge_query_terminal_descriptor_v1_t, include_total));

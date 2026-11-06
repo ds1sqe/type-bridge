@@ -269,7 +269,7 @@ let query = session
     .where_(employee_id.starts_with(Text::new("EMP-")?))?;
 
 let people: Vec<Person> = query
-    .rows(RowsOptions::new(50).order_by(employee_id.asc()))
+    .rows(RowsOptions::new(50).sort(employee_id.asc()))
     .await?;
 let exists = query.exists().await?;
 let count = query.count().await?;

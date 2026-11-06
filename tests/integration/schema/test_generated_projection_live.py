@@ -207,9 +207,9 @@ async def _one_program(generated: ModuleType, connection: object) -> dict[str, o
     ordered = (identifier.asc(),)
     people = session.query(person)
     one = await people.where(identifier.eq(generated.Identifier("person-1"))).one()
-    first = await people.first(order_by=ordered)
-    rows = await people.rows(limit=10, order_by=ordered)
-    page = await people.page_by(person, limit=2, order_by=ordered, include_total=True)
+    first = await people.first(sort=ordered)
+    rows = await people.rows(limit=10, sort=ordered)
+    page = await people.page_by(person, limit=2, sort=ordered, include_total=True)
     count = await people.count_by(person)
     exists = await people.exists_by(person)
     totals = await people.aggregate(
@@ -1189,7 +1189,7 @@ def _run_sdk_queries_journey(
         direct_query = direct_session.query(direct_person).where(scoped)
         direct_keys = [
             row.identifier.value
-            for row in direct_query.rows(limit=2, order_by=(direct_identifier.asc(),))
+            for row in direct_query.rows(limit=2, sort=(direct_identifier.asc(),))
         ]
         assert direct_keys == ["query-ada", "query-dana"]
         direct_ada = (
@@ -1237,17 +1237,17 @@ def _run_sdk_queries_journey(
         direct_owner_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(direct_person.field(generated.Person.score).is_present(), scoped)
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_optional_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(direct_person.field(generated.Person.nickname).is_present(), scoped)
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_iid_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(direct_person.iid_in(person_iids))
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
 
         direct_employee_exact = direct_session.exact(generated.Employee)
@@ -1258,7 +1258,7 @@ def _run_sdk_queries_journey(
                 direct_employee_exact_id.eq(generated.Identifier("query-employee"))
                 | direct_employee_exact_id.eq(generated.Identifier("query-manager"))
             )
-            .rows(limit=2, order_by=(direct_employee_exact_id.asc(),))
+            .rows(limit=2, sort=(direct_employee_exact_id.asc(),))
         )
         direct_employee_subtypes = direct_session.subtypes(generated.Employee)
         direct_employee_subtypes_id = direct_employee_subtypes.field(generated.Employee.identifier)
@@ -1268,7 +1268,7 @@ def _run_sdk_queries_journey(
                 direct_employee_subtypes_id.eq(generated.Identifier("query-employee"))
                 | direct_employee_subtypes_id.eq(generated.Identifier("query-manager"))
             )
-            .rows(limit=2, order_by=(direct_employee_subtypes_id.asc(),))
+            .rows(limit=2, sort=(direct_employee_subtypes_id.asc(),))
         )
 
         direct_score = direct_person.field(generated.Person.score)
@@ -1280,22 +1280,22 @@ def _run_sdk_queries_journey(
                 scoped,
                 direct_score.ge(generated.Score(40)) & direct_boolean.eq(generated.ValBool(True)),
             )
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_or_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(scoped)
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_not_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(scoped, ~direct_boolean.eq(generated.ValBool(True)))
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_field_comparison_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(scoped, direct_score.ge_field(direct_score_gte))
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
 
         direct_source = direct_session.exact(generated.Person)
@@ -1341,7 +1341,7 @@ def _run_sdk_queries_journey(
                 .where(direct_cross_scope)
                 .rows(
                     limit=4,
-                    order_by=(direct_cross_left_id.asc(), direct_cross_right_id.asc()),
+                    sort=(direct_cross_left_id.asc(), direct_cross_right_id.asc()),
                 )
             )
         ]
@@ -1359,14 +1359,14 @@ def _run_sdk_queries_journey(
                 selection_origin,
                 selection_participant.collect()
                 .distinct()
-                .order_by(selection_participant.field(generated.Person.identifier).asc()),
+                .sort(selection_participant.field(generated.Person.identifier).asc()),
             )
             .match(selection_link)
             .where(*selection_predicates)
             .page_by(
                 selection_origin,
                 limit=1,
-                order_by=(selection_origin.field(generated.Person.identifier).asc(),),
+                sort=(selection_origin.field(generated.Person.identifier).asc(),),
                 include_total=True,
             )
         )
@@ -1388,14 +1388,14 @@ def _run_sdk_queries_journey(
                 origin=selection_origin,
                 participants=selection_participant.collect()
                 .distinct()
-                .order_by(selection_participant.field(generated.Person.identifier).asc()),
+                .sort(selection_participant.field(generated.Person.identifier).asc()),
             )
             .match(selection_link)
             .where(*selection_predicates)
             .page_by(
                 selection_origin,
                 limit=1,
-                order_by=(selection_origin.field(generated.Person.identifier).asc(),),
+                sort=(selection_origin.field(generated.Person.identifier).asc(),),
                 include_total=True,
             )
         )
@@ -1421,11 +1421,11 @@ def _run_sdk_queries_journey(
             .where(direct_identifier.eq(generated.Identifier("query-dana")))
             .one()
         )
-        direct_first = direct_query.first(order_by=(direct_identifier.asc(),))
+        direct_first = direct_query.first(sort=(direct_identifier.asc(),))
         direct_page = direct_query.page_by(
             direct_person,
             limit=1,
-            order_by=(direct_identifier.asc(),),
+            sort=(direct_identifier.asc(),),
             include_total=True,
         )
         direct_terminals = {
@@ -1451,7 +1451,7 @@ def _run_sdk_queries_journey(
         direct_scalar_domain_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(scoped, direct_score.ge(generated.Score(40)))
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_reducers = _sdk_queries_reducers(
             generated,
@@ -1471,7 +1471,7 @@ def _run_sdk_queries_journey(
             row.score.value
             for row in direct_query.where(direct_call.ge_field(direct_score)).rows(
                 limit=2,
-                order_by=(direct_identifier.asc(),),
+                sort=(direct_identifier.asc(),),
             )
         ]
         direct_nested = generated.qualifying_score(
@@ -1483,7 +1483,7 @@ def _run_sdk_queries_journey(
             row.score.value
             for row in direct_query.where(direct_nested.ge_field(direct_score)).rows(
                 limit=2,
-                order_by=(direct_identifier.asc(),),
+                sort=(direct_identifier.asc(),),
             )
         ]
         assert direct_function_values == expected["schema_function"]["values"]
@@ -1497,7 +1497,7 @@ def _run_sdk_queries_journey(
         mark_plan("terminals.rows")
         remote_keys = [
             row.identifier.value
-            for row in asyncio.run(remote_query.rows(limit=2, order_by=(remote_identifier.asc(),)))
+            for row in asyncio.run(remote_query.rows(limit=2, sort=(remote_identifier.asc(),)))
         ]
         assert remote_keys == direct_keys
         mark_plan("model_values_and_references.person")
@@ -1550,7 +1550,7 @@ def _run_sdk_queries_journey(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.field(generated.Person.score).is_present(), remote_scoped)
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
         mark_plan("owner_iid_set.optional_present_keys")
@@ -1558,7 +1558,7 @@ def _run_sdk_queries_journey(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.field(generated.Person.nickname).is_present(), remote_scoped)
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
         mark_plan("owner_iid_set.iid_set_keys")
@@ -1566,7 +1566,7 @@ def _run_sdk_queries_journey(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.iid_in(person_iids))
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
 
@@ -1579,7 +1579,7 @@ def _run_sdk_queries_journey(
                 remote_employee_exact_id.eq(generated.Identifier("query-employee"))
                 | remote_employee_exact_id.eq(generated.Identifier("query-manager"))
             )
-            .rows(limit=2, order_by=(remote_employee_exact_id.asc(),))
+            .rows(limit=2, sort=(remote_employee_exact_id.asc(),))
         )
         remote_employee_subtypes = remote_session.subtypes(generated.Employee)
         remote_employee_subtypes_id = remote_employee_subtypes.field(generated.Employee.identifier)
@@ -1590,7 +1590,7 @@ def _run_sdk_queries_journey(
                 remote_employee_subtypes_id.eq(generated.Identifier("query-employee"))
                 | remote_employee_subtypes_id.eq(generated.Identifier("query-manager"))
             )
-            .rows(limit=2, order_by=(remote_employee_subtypes_id.asc(),))
+            .rows(limit=2, sort=(remote_employee_subtypes_id.asc(),))
         )
 
         remote_score = remote_person.field(generated.Person.score)
@@ -1605,7 +1605,7 @@ def _run_sdk_queries_journey(
                     remote_score.ge(generated.Score(40))
                     & remote_boolean.eq(generated.ValBool(True)),
                 )
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
         mark_plan("scalar_boolean.or")
@@ -1613,7 +1613,7 @@ def _run_sdk_queries_journey(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped)
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
         mark_plan("scalar_boolean.not")
@@ -1621,7 +1621,7 @@ def _run_sdk_queries_journey(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped, ~remote_boolean.eq(generated.ValBool(True)))
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
         mark_plan("scalar_boolean.field_comparison")
@@ -1629,7 +1629,7 @@ def _run_sdk_queries_journey(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped, remote_score.ge_field(remote_score_gte))
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
 
@@ -1678,7 +1678,7 @@ def _run_sdk_queries_journey(
                 .where(remote_cross_scope)
                 .rows(
                     limit=4,
-                    order_by=(remote_cross_left_id.asc(), remote_cross_right_id.asc()),
+                    sort=(remote_cross_left_id.asc(), remote_cross_right_id.asc()),
                 )
             )
         ]
@@ -1701,14 +1701,14 @@ def _run_sdk_queries_journey(
                 remote_selection_origin,
                 remote_selection_participant.collect()
                 .distinct()
-                .order_by(remote_selection_participant.field(generated.Person.identifier).asc()),
+                .sort(remote_selection_participant.field(generated.Person.identifier).asc()),
             )
             .match(remote_selection_link)
             .where(*remote_selection_predicates)
             .page_by(
                 remote_selection_origin,
                 limit=1,
-                order_by=(remote_selection_origin.field(generated.Person.identifier).asc(),),
+                sort=(remote_selection_origin.field(generated.Person.identifier).asc(),),
                 include_total=True,
             )
         )
@@ -1722,14 +1722,14 @@ def _run_sdk_queries_journey(
                 origin=remote_selection_origin,
                 participants=remote_selection_participant.collect()
                 .distinct()
-                .order_by(remote_selection_participant.field(generated.Person.identifier).asc()),
+                .sort(remote_selection_participant.field(generated.Person.identifier).asc()),
             )
             .match(remote_selection_link)
             .where(*remote_selection_predicates)
             .page_by(
                 remote_selection_origin,
                 limit=1,
-                order_by=(remote_selection_origin.field(generated.Person.identifier).asc(),),
+                sort=(remote_selection_origin.field(generated.Person.identifier).asc(),),
                 include_total=True,
             )
         )
@@ -1759,13 +1759,13 @@ def _run_sdk_queries_journey(
         )
         remote_one_exchange = len(remote_requests) - requests_before_one
         mark_plan("terminals.first")
-        remote_first = asyncio.run(remote_query.first(order_by=(remote_identifier.asc(),)))
+        remote_first = asyncio.run(remote_query.first(sort=(remote_identifier.asc(),)))
         mark_plan("terminals.page")
         remote_page = asyncio.run(
             remote_query.page_by(
                 remote_person,
                 limit=1,
-                order_by=(remote_identifier.asc(),),
+                sort=(remote_identifier.asc(),),
                 include_total=True,
             )
         )
@@ -1792,7 +1792,7 @@ def _run_sdk_queries_journey(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped, remote_score.ge(generated.Score(40)))
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
         if plan_capture is not None:
@@ -1818,7 +1818,7 @@ def _run_sdk_queries_journey(
             for row in asyncio.run(
                 remote_query.where(remote_call.ge_field(remote_score)).rows(
                     limit=2,
-                    order_by=(remote_identifier.asc(),),
+                    sort=(remote_identifier.asc(),),
                 )
             )
         ]
@@ -1834,7 +1834,7 @@ def _run_sdk_queries_journey(
             for row in asyncio.run(
                 remote_query.where(remote_nested.ge_field(remote_score)).rows(
                     limit=2,
-                    order_by=(remote_identifier.asc(),),
+                    sort=(remote_identifier.asc(),),
                 )
             )
         ]
@@ -4483,7 +4483,7 @@ def test_generated_projection_round_trips_live_models(
     assert person_manager.count() == 4
     all_people_query = query_session.query(person_var)
     assert (
-        all_people_query.first(order_by=(person_var.field(generated.Person.identifier).asc(),)).iid
+        all_people_query.first(sort=(person_var.field(generated.Person.identifier).asc(),)).iid
         == person.iid
     )
     assert [
@@ -4491,7 +4491,7 @@ def test_generated_projection_round_trips_live_models(
         for candidate in all_people_query.rows(
             limit=2,
             offset=1,
-            order_by=(person_var.field(generated.Person.identifier).asc(),),
+            sort=(person_var.field(generated.Person.identifier).asc(),),
         )
     ] == ["person-2", "person-3"]
     identifier_field = person_var.field(generated.Person.identifier)
@@ -4601,7 +4601,7 @@ def test_generated_projection_round_trips_live_models(
     party_var = query_session.subtypes(generated.Party)
     party_rows = query_session.query(party_var).rows(
         limit=10,
-        order_by=(party_var.field(generated.Party.identifier).asc(),),
+        sort=(party_var.field(generated.Party.identifier).asc(),),
     )
     assert [type(candidate) for candidate in party_rows] == [
         generated.Employee,
@@ -4692,7 +4692,7 @@ def test_generated_projection_round_trips_live_models(
         )
         .rows(
             limit=10,
-            order_by=(interaction_var.field(generated.Interaction.identifier).asc(),),
+            sort=(interaction_var.field(generated.Interaction.identifier).asc(),),
         )
     )
     assert {type(relation.actor) for relation in polymorphic_actor_rows} == {
@@ -4895,7 +4895,7 @@ def test_generated_projection_round_trips_live_models(
     participant = network_var.role(generated.NetworkLink.participant).connects(participant_var)
     network_rows = network_session.query(network_var).rows(
         limit=10,
-        order_by=(network_var.field(generated.NetworkLink.identifier).asc(),),
+        sort=(network_var.field(generated.NetworkLink.identifier).asc(),),
     )
     assert [candidate.iid for candidate in network_rows] == [network.iid]
 
@@ -4943,13 +4943,13 @@ def test_generated_projection_round_trips_live_models(
             network=network_var,
             participants=participant_var.collect()
             .distinct()
-            .order_by(participant_var.field(generated.Person.identifier).asc()),
+            .sort(participant_var.field(generated.Person.identifier).asc()),
         )
         .where(participant)
         .page_by(
             network_var,
             limit=10,
-            order_by=(network_var.field(generated.NetworkLink.identifier).asc(),),
+            sort=(network_var.field(generated.NetworkLink.identifier).asc(),),
             include_total=True,
         )
     )
@@ -5079,7 +5079,7 @@ def test_generated_projection_round_trips_live_models(
             capture_party = remote_session.subtypes(generated.Party)
             capture_parties = asyncio.run(
                 remote_session.query(capture_party).rows(
-                    limit=10, order_by=(capture_party.field(generated.Party.identifier).asc(),)
+                    limit=10, sort=(capture_party.field(generated.Party.identifier).asc(),)
                 )
             )
             assert [type(value) for value in capture_parties] == [
@@ -5090,7 +5090,7 @@ def test_generated_projection_round_trips_live_models(
                 remote_people.page_by(
                     remote_person,
                     limit=1,
-                    order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                    sort=(remote_person.field(generated.Person.identifier).asc(),),
                     include_total=False,
                 )
             )
@@ -5100,7 +5100,7 @@ def test_generated_projection_round_trips_live_models(
         assert type(remote_person_one) is generated.Person
         assert remote_person_one.iid == person.iid
         remote_person_first = asyncio.run(
-            remote_people.first(order_by=(remote_person.field(generated.Person.identifier).asc(),))
+            remote_people.first(sort=(remote_person.field(generated.Person.identifier).asc(),))
         )
         assert type(remote_person_first) is generated.Person
         assert remote_person_first.iid == person.iid
@@ -5109,7 +5109,7 @@ def test_generated_projection_round_trips_live_models(
             .where(remote_person.field(generated.Person.aliases).is_present())
             .rows(
                 limit=10,
-                order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                sort=(remote_person.field(generated.Person.identifier).asc(),),
             )
         )
         assert [candidate.iid for candidate in remote_present_aliases] == [person.iid]
@@ -5118,7 +5118,7 @@ def test_generated_projection_round_trips_live_models(
             .where(remote_person.field(generated.Person.aliases).is_missing())
             .rows(
                 limit=10,
-                order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                sort=(remote_person.field(generated.Person.identifier).asc(),),
             )
         )
         assert {candidate.iid for candidate in remote_missing_aliases} == {
@@ -5136,7 +5136,7 @@ def test_generated_projection_round_trips_live_models(
             .where(remote_person.iid_in((person.iid, batch_people[0].iid)))
             .rows(
                 limit=10,
-                order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                sort=(remote_person.field(generated.Person.identifier).asc(),),
             )
         )
         assert [candidate.iid for candidate in remote_iid_set] == [
@@ -5157,7 +5157,7 @@ def test_generated_projection_round_trips_live_models(
         remote_person_rows = asyncio.run(
             remote_people.rows(
                 limit=10,
-                order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                sort=(remote_person.field(generated.Person.identifier).asc(),),
             )
         )
         assert [candidate.iid for candidate in remote_person_rows] == [person.iid]
@@ -5165,7 +5165,7 @@ def test_generated_projection_round_trips_live_models(
             remote_people.page_by(
                 remote_person,
                 limit=10,
-                order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                sort=(remote_person.field(generated.Person.identifier).asc(),),
                 include_total=True,
             )
         )
@@ -5178,7 +5178,7 @@ def test_generated_projection_round_trips_live_models(
         remote_party_rows = asyncio.run(
             remote_session.query(remote_party).rows(
                 limit=10,
-                order_by=(remote_party.field(generated.Party.identifier).asc(),),
+                sort=(remote_party.field(generated.Party.identifier).asc(),),
             )
         )
         assert [type(candidate) for candidate in remote_party_rows] == [
@@ -5269,7 +5269,7 @@ def test_generated_projection_round_trips_live_models(
                 network=remote_network,
                 participants=remote_participant.collect()
                 .distinct()
-                .order_by(remote_participant.field(generated.Person.identifier).asc()),
+                .sort(remote_participant.field(generated.Person.identifier).asc()),
             )
             .where(
                 remote_network.role(generated.NetworkLink.participant).connects(remote_participant)
@@ -5277,7 +5277,7 @@ def test_generated_projection_round_trips_live_models(
             .page_by(
                 remote_network,
                 limit=10,
-                order_by=(remote_network.field(generated.NetworkLink.identifier).asc(),),
+                sort=(remote_network.field(generated.NetworkLink.identifier).asc(),),
                 include_total=True,
             )
         )
@@ -5377,14 +5377,14 @@ def test_generated_projection_round_trips_live_models(
             )
             pending = asyncio.run(query.one())
             rows = asyncio.run(
-                query.rows(limit=2, order_by=[root.field(generated.Robot.robot_id).asc()])
+                query.rows(limit=2, sort=[root.field(generated.Robot.robot_id).asc()])
             )
-            first = asyncio.run(query.first(order_by=[root.field(generated.Robot.robot_id).asc()]))
+            first = asyncio.run(query.first(sort=[root.field(generated.Robot.robot_id).asc()]))
             page = asyncio.run(
                 query.page_by(
                     root,
                     limit=2,
-                    order_by=[root.field(generated.Robot.robot_id).asc()],
+                    sort=[root.field(generated.Robot.robot_id).asc()],
                     include_total=True,
                 )
             )

@@ -1135,7 +1135,7 @@ async fn successor_named_collected_page_retains_root_and_member_origins() {
     let members = member
         .collect()
         .distinct()
-        .order_by(member.field(NAME).asc())
+        .sort(member.field(NAME).asc())
         .unwrap();
     let query = session
         .query(OriginGraph::select(root, members).unwrap())
@@ -1143,7 +1143,7 @@ async fn successor_named_collected_page_retains_root_and_member_origins() {
         .allow_cross_join(root, member)
         .unwrap();
     let page = query
-        .page_by(root, PageOptions::new(2).order_by(root.field(NAME).asc()))
+        .page_by(root, PageOptions::new(2).sort(root.field(NAME).asc()))
         .await
         .unwrap();
     assert_eq!(page.offset(), 0);
@@ -1324,7 +1324,7 @@ async fn successor_cancellation_during_generated_materialization_publishes_no_pa
         cancellation.cancel();
     });
     let result = query
-        .rows(RowsOptions::new(2).order_by(record.field(NAME).asc()))
+        .rows(RowsOptions::new(2).sort(record.field(NAME).asc()))
         .await;
     canceller.join().unwrap();
     let error = result.expect_err("cancellation must discard the partially built output vector");
@@ -1889,17 +1889,13 @@ async fn collected_named_shapes_validate_root_pages_and_owned_envelopes() {
     let member = session.exact::<Record>().unwrap();
     let connected = root.field(NAME).eq_field(member.field(NAME));
 
-    let wrong_order = root
-        .collect()
-        .order_by(member.field(NAME).asc())
-        .err()
-        .unwrap();
+    let wrong_order = root.collect().sort(member.field(NAME).asc()).err().unwrap();
     assert_model_error(wrong_order, "collection_order_binding_mismatch");
 
     let collected = member
         .collect()
         .distinct()
-        .order_by(member.field(NAME).desc())
+        .sort(member.field(NAME).desc())
         .unwrap();
     let named = Graph::select(root, collected).unwrap();
     let query = session
@@ -2307,7 +2303,7 @@ async fn staged_typed_terminals_own_their_context_and_resolve_after_commit() {
         let query = session.query(root).unwrap();
         let one: Pending<OriginRecord> = query.one().await.unwrap();
         let rows: Pending<Vec<OriginRecord>> = query
-            .rows(RowsOptions::new(2).order_by(root.field(NAME).asc()))
+            .rows(RowsOptions::new(2).sort(root.field(NAME).asc()))
             .await
             .unwrap();
         let first: Pending<Option<OriginRecord>> =
@@ -2317,7 +2313,7 @@ async fn staged_typed_terminals_own_their_context_and_resolve_after_commit() {
                 root,
                 PageOptions::new(2)
                     .include_total(true)
-                    .order_by(root.field(NAME).asc()),
+                    .sort(root.field(NAME).asc()),
             )
             .await
             .unwrap();

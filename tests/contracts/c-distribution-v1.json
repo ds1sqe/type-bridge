@@ -15,7 +15,7 @@
     "package_metadata_version": "2.0.0",
     "package_metadata_description": "CMake and pkg-config require ABI 2.0.0; regenerate all ABI 1.x schema packages.",
     "contract_path": "tests/contracts/c-abi.json",
-    "contract_sha256": "a022731ad95128c2e48684549c475e11dca58633020b408cc6e5fd9cba30db34",
+    "contract_sha256": "6f55915afe3361daa17e3c9c5e0cae188fd853d409eeebe6eafabccc1a175ed7",
     "static_linkage": "unsupported",
     "shared_linkage": "artifact",
     "accepted_descriptor_minors": [
@@ -539,7 +539,7 @@
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-      "sha256": "5e5947f58e41ab84db6b803078de59878c570ece5039e12948d7eef783f523fd"
+      "sha256": "f2980b711899cdeb277002c382f8791ba14b66a94fb595d58341e4b4690e1bc8"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",

@@ -655,8 +655,8 @@ fn selection_descriptor(
         kind: SELECTION_ONE,
         distinct: 0,
         reserved0: [0; 7],
-        orders: ptr::null(),
-        order_count: 0,
+        sorts: ptr::null(),
+        sort_count: 0,
         reserved: [0; 4],
     }
 }
@@ -671,8 +671,8 @@ fn terminal(kind: u32) -> TypeBridgeQueryTerminalDescriptorV1 {
         expected_root_model: ptr::null(),
         expected_root_mode: 0,
         reserved1: 0,
-        orders: ptr::null(),
-        order_count: 0,
+        sorts: ptr::null(),
+        sort_count: 0,
         offset: 0,
         limit: 0,
         include_total: 0,

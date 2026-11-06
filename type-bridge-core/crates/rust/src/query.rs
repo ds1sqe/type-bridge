@@ -2082,7 +2082,7 @@ impl<S: Schema, B: Selectable<S>> Collected<S, B> {
     }
 
     /// Append one stable order term owned by this collected binding.
-    pub fn order_by(mut self, order: Order<S>) -> Result<Self> {
+    pub fn sort(mut self, order: Order<S>) -> Result<Self> {
         if order.key != self.selection.binding_key() {
             return Err(Error::model_validation(
                 ModelValidationPhase::Input,
@@ -3051,7 +3051,7 @@ impl<S: Schema> RowsOptions<S> {
 
     /// Append one stable public ordering term.
     #[must_use]
-    pub fn order_by(mut self, order: Order<S>) -> Self {
+    pub fn sort(mut self, order: Order<S>) -> Self {
         self.order.push(order);
         self
     }
@@ -3105,7 +3105,7 @@ impl<S: Schema> PageOptions<S> {
 
     /// Append one stable root-ordering term.
     #[must_use]
-    pub fn order_by(mut self, order: Order<S>) -> Self {
+    pub fn sort(mut self, order: Order<S>) -> Self {
         self.order.push(order);
         self
     }

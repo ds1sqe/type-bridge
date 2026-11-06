@@ -329,7 +329,7 @@ async def check_direct() -> None:
     page = await collected.page_by(
         person_var,
         limit=10,
-        order_by=(person_var.field(Person.identifier).asc(),),
+        sort=(person_var.field(Person.identifier).asc(),),
         include_total=True,
     )
     assert_type(page.items, tuple[tuple[Person, tuple[Employment, ...]], ...])
@@ -439,7 +439,7 @@ async def check_proxy(session: QuerySession) -> None:
             await remote_page.page_by(
                 remote_person,
                 limit=10,
-                order_by=(remote_person.field(Person.identifier).asc(),),
+                sort=(remote_person.field(Person.identifier).asc(),),
             )
         ).items,
         tuple[tuple[Person, tuple[Employment, ...]], ...],

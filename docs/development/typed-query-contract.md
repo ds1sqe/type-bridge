@@ -198,7 +198,7 @@ async def terminals() -> None:
     ordered_people = await one_person.rows(
         limit=50,
         offset=0,
-        order_by=(person.field(Person.identifier).asc(),),
+        sort=(person.field(Person.identifier).asc(),),
     )
     assert_type(ordered_people, list[Person])
 
@@ -210,7 +210,7 @@ async def terminals() -> None:
         person,
         limit=50,
         offset=0,
-        order_by=(person.field(Person.identifier).asc(),),
+        sort=(person.field(Person.identifier).asc(),),
         include_total=True,
     )
     assert_type(page.items, tuple[PersonEvents, ...])
@@ -346,7 +346,7 @@ void independentPairs;
 const orderedPeople: readonly Person[] = await onePerson.rows({
   limit: 50n,
   offset: 0n,
-  orderBy: [person.field(Person.identifier).asc()],
+  sort: [person.field(Person.identifier).asc()],
 });
 
 const personCount: bigint = await twoSlots.countBy(person);
@@ -366,7 +366,7 @@ const page: Page<Readonly<{
 }>> = await work.pageBy(person, {
   limit: 50n,
   offset: 0n,
-  orderBy: [person.field(Person.identifier).asc()],
+  sort: [person.field(Person.identifier).asc()],
   includeTotal: true,
 });
 

@@ -693,3 +693,11 @@ corresponding manager and schema-function comparison names; use
 Manager keyword filters retain their protocol: `field__gte`, `field__lte`,
 and explicit comparison tokens `eq`, `ne`, `lt`, `lte`, `gt`, `gte` keep their
 meaning. Those lookup tokens are separate from typed method names.
+
+## Sorting
+
+Replace Python `order_by=` and TypeScript `orderBy:` options with `sort=`
+and `sort:`. Collected selections use `.sort(order)` in all three SDKs;
+Rust row/page option builders also use `.sort(order)`. In C descriptors,
+rename `orders` and `order_count` to `sorts` and `sort_count`. Their order
+and binary layout are unchanged; only the source spelling changes.

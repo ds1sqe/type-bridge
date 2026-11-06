@@ -116,7 +116,7 @@ const person = session.exact(Person);
 
 const page = await session.query(person).pageBy(person, {
   limit: 25n,
-  orderBy: [person.field(Person.name).asc()],
+  sort: [person.field(Person.name).asc()],
   includeTotal: true,
 });
 ```

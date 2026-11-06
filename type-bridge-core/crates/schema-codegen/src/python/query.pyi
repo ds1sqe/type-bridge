@@ -187,7 +187,7 @@ class SubtypeBoundVar[ModelT: ModelBase](BoundVar[ModelT]): ...
 
 class Collected[ModelT: ModelBase](Selection[tuple[ModelT, ...]]):
     def distinct(self, enabled: bool = ...) -> Collected[ModelT]: ...
-    def order_by(self, order: QueryOrder) -> Collected[ModelT]: ...
+    def sort(self, order: QueryOrder) -> Collected[ModelT]: ...
 
 type Query[*Slots] = _Query[Literal[False], *Slots]
 
@@ -219,25 +219,25 @@ class _Query[ModeT: bool, *Slots]:
     async def first[SlotT](
         self: _Query[Literal[False], SlotT],
         *,
-        order_by: Iterable[QueryOrder] = ...,
+        sort: Iterable[QueryOrder] = ...,
     ) -> SlotT | None: ...
     @overload
     async def first[SlotT](
         self: _Query[Literal[True], SlotT],
         *,
-        order_by: Iterable[QueryOrder] = ...,
+        sort: Iterable[QueryOrder] = ...,
     ) -> Pending[SlotT | None]: ...
     @overload
     async def first[Slot1T, Slot2T, *RestT](
         self: _Query[Literal[False], Slot1T, Slot2T, *RestT],
         *,
-        order_by: Iterable[QueryOrder] = ...,
+        sort: Iterable[QueryOrder] = ...,
     ) -> tuple[Slot1T, Slot2T, *RestT] | None: ...
     @overload
     async def first[Slot1T, Slot2T, *RestT](
         self: _Query[Literal[True], Slot1T, Slot2T, *RestT],
         *,
-        order_by: Iterable[QueryOrder] = ...,
+        sort: Iterable[QueryOrder] = ...,
     ) -> Pending[tuple[Slot1T, Slot2T, *RestT] | None]: ...
     @overload
     async def rows[SlotT](
@@ -245,7 +245,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = ...,
-        order_by: Iterable[QueryOrder] = ...,
+        sort: Iterable[QueryOrder] = ...,
     ) -> list[SlotT]: ...
     @overload
     async def rows[SlotT](
@@ -253,7 +253,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = ...,
-        order_by: Iterable[QueryOrder] = ...,
+        sort: Iterable[QueryOrder] = ...,
     ) -> Pending[list[SlotT]]: ...
     @overload
     async def rows[Slot1T, Slot2T, *RestT](
@@ -261,7 +261,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = ...,
-        order_by: Iterable[QueryOrder] = ...,
+        sort: Iterable[QueryOrder] = ...,
     ) -> list[tuple[Slot1T, Slot2T, *RestT]]: ...
     @overload
     async def rows[Slot1T, Slot2T, *RestT](
@@ -269,7 +269,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = ...,
-        order_by: Iterable[QueryOrder] = ...,
+        sort: Iterable[QueryOrder] = ...,
     ) -> Pending[list[tuple[Slot1T, Slot2T, *RestT]]]: ...
     # BEGIN GENERATED PAGE OVERLOADS
     @overload
@@ -279,7 +279,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[SlotT]: ...
     @overload
@@ -289,7 +289,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[SlotT]]: ...
 
@@ -300,7 +300,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...]]]: ...
     @overload
@@ -310,7 +310,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...]]]]: ...
 
@@ -321,7 +321,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT]]: ...
     @overload
@@ -331,7 +331,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT]]]: ...
 
@@ -342,7 +342,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...]]]: ...
     @overload
@@ -352,7 +352,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...]]]]: ...
 
@@ -363,7 +363,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...]]]: ...
     @overload
@@ -373,7 +373,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...]]]]: ...
 
@@ -384,7 +384,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT]]: ...
     @overload
@@ -394,7 +394,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT]]]: ...
 
@@ -405,7 +405,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...]]]: ...
     @overload
@@ -415,7 +415,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...]]]]: ...
 
@@ -426,7 +426,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...]]]: ...
     @overload
@@ -436,7 +436,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...]]]]: ...
 
@@ -447,7 +447,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...]]]: ...
     @overload
@@ -457,7 +457,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...]]]]: ...
 
@@ -468,7 +468,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT]]: ...
     @overload
@@ -478,7 +478,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT]]]: ...
 
@@ -489,7 +489,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...]]]: ...
     @overload
@@ -499,7 +499,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...]]]]: ...
 
@@ -510,7 +510,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...]]]: ...
     @overload
@@ -520,7 +520,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...]]]]: ...
 
@@ -531,7 +531,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...]]]: ...
     @overload
@@ -541,7 +541,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...]]]]: ...
 
@@ -552,7 +552,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...]]]: ...
     @overload
@@ -562,7 +562,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...]]]]: ...
 
@@ -573,7 +573,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT]]: ...
     @overload
@@ -583,7 +583,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT]]]: ...
 
@@ -594,7 +594,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...]]]: ...
     @overload
@@ -604,7 +604,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...]]]]: ...
 
@@ -615,7 +615,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...]]]: ...
     @overload
@@ -625,7 +625,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...]]]]: ...
 
@@ -636,7 +636,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...]]]: ...
     @overload
@@ -646,7 +646,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...]]]]: ...
 
@@ -657,7 +657,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...]]]: ...
     @overload
@@ -667,7 +667,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...]]]]: ...
 
@@ -678,7 +678,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...]]]: ...
     @overload
@@ -688,7 +688,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...]]]]: ...
 
@@ -699,7 +699,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT]]: ...
     @overload
@@ -709,7 +709,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT]]]: ...
 
@@ -720,7 +720,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...]]]: ...
     @overload
@@ -730,7 +730,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...]]]]: ...
 
@@ -741,7 +741,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...]]]: ...
     @overload
@@ -751,7 +751,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...]]]]: ...
 
@@ -762,7 +762,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...]]]: ...
     @overload
@@ -772,7 +772,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...]]]]: ...
 
@@ -783,7 +783,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...]]]: ...
     @overload
@@ -793,7 +793,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...]]]]: ...
 
@@ -804,7 +804,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...]]]: ...
     @overload
@@ -814,7 +814,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...]]]]: ...
 
@@ -825,7 +825,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...]]]: ...
     @overload
@@ -835,7 +835,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...]]]]: ...
 
@@ -846,7 +846,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT]]: ...
     @overload
@@ -856,7 +856,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT]]]: ...
 
@@ -867,7 +867,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...]]]: ...
     @overload
@@ -877,7 +877,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...]]]]: ...
 
@@ -888,7 +888,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...]]]: ...
     @overload
@@ -898,7 +898,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...]]]]: ...
 
@@ -909,7 +909,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...]]]: ...
     @overload
@@ -919,7 +919,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...]]]]: ...
 
@@ -930,7 +930,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...]]]: ...
     @overload
@@ -940,7 +940,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...]]]]: ...
 
@@ -951,7 +951,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...]]]: ...
     @overload
@@ -961,7 +961,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...]]]]: ...
 
@@ -972,7 +972,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...]]]: ...
     @overload
@@ -982,7 +982,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...]]]]: ...
 
@@ -993,7 +993,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...]]]: ...
     @overload
@@ -1003,7 +1003,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...]]]]: ...
 
@@ -1014,7 +1014,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT]]: ...
     @overload
@@ -1024,7 +1024,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT]]]: ...
 
@@ -1035,7 +1035,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]: ...
     @overload
@@ -1045,7 +1045,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]]: ...
 
@@ -1056,7 +1056,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]: ...
     @overload
@@ -1066,7 +1066,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]]: ...
 
@@ -1077,7 +1077,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]: ...
     @overload
@@ -1087,7 +1087,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]]: ...
 
@@ -1098,7 +1098,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]: ...
     @overload
@@ -1108,7 +1108,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]]: ...
 
@@ -1119,7 +1119,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]: ...
     @overload
@@ -1129,7 +1129,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]]: ...
 
@@ -1140,7 +1140,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]: ...
     @overload
@@ -1150,7 +1150,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...]]]]: ...
 
@@ -1161,7 +1161,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...]]]: ...
     @overload
@@ -1171,7 +1171,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...]]]]: ...
 
@@ -1182,7 +1182,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...]]]: ...
     @overload
@@ -1192,7 +1192,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...]]]]: ...
 
@@ -1203,7 +1203,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT]]: ...
     @overload
@@ -1213,7 +1213,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT]]]: ...
 
@@ -1224,7 +1224,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]: ...
     @overload
@@ -1234,7 +1234,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]]: ...
 
@@ -1245,7 +1245,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]: ...
     @overload
@@ -1255,7 +1255,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]]: ...
 
@@ -1266,7 +1266,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]: ...
     @overload
@@ -1276,7 +1276,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]]: ...
 
@@ -1287,7 +1287,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]: ...
     @overload
@@ -1297,7 +1297,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]]: ...
 
@@ -1308,7 +1308,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]: ...
     @overload
@@ -1318,7 +1318,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]]: ...
 
@@ -1329,7 +1329,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]: ...
     @overload
@@ -1339,7 +1339,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]]: ...
 
@@ -1350,7 +1350,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]: ...
     @overload
@@ -1360,7 +1360,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...]]]]: ...
 
@@ -1371,7 +1371,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...]]]: ...
     @overload
@@ -1381,7 +1381,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...]]]]: ...
 
@@ -1392,7 +1392,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...]]]: ...
     @overload
@@ -1402,7 +1402,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...]]]]: ...
 
@@ -1413,7 +1413,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT]]: ...
     @overload
@@ -1423,7 +1423,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT]]]: ...
 
@@ -1434,7 +1434,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]: ...
     @overload
@@ -1444,7 +1444,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]]: ...
 
@@ -1455,7 +1455,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]: ...
     @overload
@@ -1465,7 +1465,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]]: ...
 
@@ -1476,7 +1476,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]: ...
     @overload
@@ -1486,7 +1486,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]]: ...
 
@@ -1497,7 +1497,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]: ...
     @overload
@@ -1507,7 +1507,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]]: ...
 
@@ -1518,7 +1518,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]: ...
     @overload
@@ -1528,7 +1528,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]]: ...
 
@@ -1539,7 +1539,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]: ...
     @overload
@@ -1549,7 +1549,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]]: ...
 
@@ -1560,7 +1560,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]: ...
     @overload
@@ -1570,7 +1570,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]]: ...
 
@@ -1581,7 +1581,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]: ...
     @overload
@@ -1591,7 +1591,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...]]]]: ...
 
@@ -1602,7 +1602,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...]]]: ...
     @overload
@@ -1612,7 +1612,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...]]]]: ...
 
@@ -1623,7 +1623,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...]]]: ...
     @overload
@@ -1633,7 +1633,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...]]]]: ...
 
@@ -1644,7 +1644,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT]]: ...
     @overload
@@ -1654,7 +1654,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT]]]: ...
 
@@ -1665,7 +1665,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]: ...
     @overload
@@ -1675,7 +1675,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]]: ...
 
@@ -1686,7 +1686,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]: ...
     @overload
@@ -1696,7 +1696,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]]: ...
 
@@ -1707,7 +1707,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]: ...
     @overload
@@ -1717,7 +1717,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]]: ...
 
@@ -1728,7 +1728,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]: ...
     @overload
@@ -1738,7 +1738,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]]: ...
 
@@ -1749,7 +1749,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]: ...
     @overload
@@ -1759,7 +1759,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]]: ...
 
@@ -1770,7 +1770,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]: ...
     @overload
@@ -1780,7 +1780,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]]: ...
 
@@ -1791,7 +1791,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]: ...
     @overload
@@ -1801,7 +1801,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]]: ...
 
@@ -1812,7 +1812,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]: ...
     @overload
@@ -1822,7 +1822,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]]: ...
 
@@ -1833,7 +1833,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]: ...
     @overload
@@ -1843,7 +1843,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...]]]]: ...
 
@@ -1854,7 +1854,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...], tuple[Collected12T, ...]]]: ...
     @overload
@@ -1864,7 +1864,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...], tuple[Collected12T, ...]]]]: ...
 
@@ -1875,7 +1875,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT, tuple[Collected12T, ...]]]: ...
     @overload
@@ -1885,7 +1885,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT, tuple[Collected12T, ...]]]]: ...
 
@@ -1896,7 +1896,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], RootT]]: ...
     @overload
@@ -1906,7 +1906,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], RootT]]]: ...
 
@@ -1917,7 +1917,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]: ...
     @overload
@@ -1927,7 +1927,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]]: ...
 
@@ -1938,7 +1938,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]: ...
     @overload
@@ -1948,7 +1948,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]]: ...
 
@@ -1959,7 +1959,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]: ...
     @overload
@@ -1969,7 +1969,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]]: ...
 
@@ -1980,7 +1980,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]: ...
     @overload
@@ -1990,7 +1990,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]]: ...
 
@@ -2001,7 +2001,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]: ...
     @overload
@@ -2011,7 +2011,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]]: ...
 
@@ -2022,7 +2022,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]: ...
     @overload
@@ -2032,7 +2032,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]]: ...
 
@@ -2043,7 +2043,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]: ...
     @overload
@@ -2053,7 +2053,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]]: ...
 
@@ -2064,7 +2064,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]: ...
     @overload
@@ -2074,7 +2074,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]]: ...
 
@@ -2085,7 +2085,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]: ...
     @overload
@@ -2095,7 +2095,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]]: ...
 
@@ -2106,7 +2106,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]: ...
     @overload
@@ -2116,7 +2116,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...]]]]: ...
 
@@ -2127,7 +2127,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT, tuple[Collected12T, ...], tuple[Collected13T, ...]]]: ...
     @overload
@@ -2137,7 +2137,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT, tuple[Collected12T, ...], tuple[Collected13T, ...]]]]: ...
 
@@ -2148,7 +2148,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], RootT, tuple[Collected13T, ...]]]: ...
     @overload
@@ -2158,7 +2158,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], RootT, tuple[Collected13T, ...]]]]: ...
 
@@ -2169,7 +2169,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], RootT]]: ...
     @overload
@@ -2179,7 +2179,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], RootT]]]: ...
 
@@ -2190,7 +2190,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2200,7 +2200,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2211,7 +2211,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2221,7 +2221,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2232,7 +2232,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2242,7 +2242,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2253,7 +2253,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2263,7 +2263,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2274,7 +2274,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2284,7 +2284,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2295,7 +2295,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2305,7 +2305,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2316,7 +2316,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2326,7 +2326,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2337,7 +2337,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2347,7 +2347,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2358,7 +2358,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2368,7 +2368,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2379,7 +2379,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2389,7 +2389,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2400,7 +2400,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT, tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2410,7 +2410,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT, tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2421,7 +2421,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], RootT, tuple[Collected13T, ...], tuple[Collected14T, ...]]]: ...
     @overload
@@ -2431,7 +2431,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], RootT, tuple[Collected13T, ...], tuple[Collected14T, ...]]]]: ...
 
@@ -2442,7 +2442,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], RootT, tuple[Collected14T, ...]]]: ...
     @overload
@@ -2452,7 +2452,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], RootT, tuple[Collected14T, ...]]]]: ...
 
@@ -2463,7 +2463,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], RootT]]: ...
     @overload
@@ -2473,7 +2473,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], RootT]]]: ...
 
@@ -2484,7 +2484,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2494,7 +2494,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2505,7 +2505,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2515,7 +2515,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2526,7 +2526,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2536,7 +2536,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2547,7 +2547,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2557,7 +2557,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2568,7 +2568,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2578,7 +2578,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2589,7 +2589,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2599,7 +2599,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2610,7 +2610,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2620,7 +2620,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2631,7 +2631,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2641,7 +2641,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2652,7 +2652,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2662,7 +2662,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2673,7 +2673,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2683,7 +2683,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2694,7 +2694,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT, tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2704,7 +2704,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT, tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2715,7 +2715,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], RootT, tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2725,7 +2725,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], RootT, tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2736,7 +2736,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], RootT, tuple[Collected14T, ...], tuple[Collected15T, ...]]]: ...
     @overload
@@ -2746,7 +2746,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], RootT, tuple[Collected14T, ...], tuple[Collected15T, ...]]]]: ...
 
@@ -2757,7 +2757,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], RootT, tuple[Collected15T, ...]]]: ...
     @overload
@@ -2767,7 +2767,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], RootT, tuple[Collected15T, ...]]]]: ...
 
@@ -2778,7 +2778,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], RootT]]: ...
     @overload
@@ -2788,7 +2788,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], RootT]]]: ...
 
@@ -2799,7 +2799,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -2809,7 +2809,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[RootT, tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -2820,7 +2820,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -2830,7 +2830,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], RootT, tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -2841,7 +2841,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -2851,7 +2851,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], RootT, tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -2862,7 +2862,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -2872,7 +2872,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], RootT, tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -2883,7 +2883,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -2893,7 +2893,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], RootT, tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -2904,7 +2904,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -2914,7 +2914,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], RootT, tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -2925,7 +2925,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -2935,7 +2935,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], RootT, tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -2946,7 +2946,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -2956,7 +2956,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], RootT, tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -2967,7 +2967,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -2977,7 +2977,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], RootT, tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -2988,7 +2988,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -2998,7 +2998,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], RootT, tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -3009,7 +3009,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT, tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -3019,7 +3019,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], RootT, tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -3030,7 +3030,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], RootT, tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -3040,7 +3040,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], RootT, tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -3051,7 +3051,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], RootT, tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -3061,7 +3061,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], RootT, tuple[Collected14T, ...], tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -3072,7 +3072,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], RootT, tuple[Collected15T, ...], tuple[Collected16T, ...]]]: ...
     @overload
@@ -3082,7 +3082,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], RootT, tuple[Collected15T, ...], tuple[Collected16T, ...]]]]: ...
 
@@ -3093,7 +3093,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], RootT, tuple[Collected16T, ...]]]: ...
     @overload
@@ -3103,7 +3103,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], RootT, tuple[Collected16T, ...]]]]: ...
 
@@ -3114,7 +3114,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], RootT]]: ...
     @overload
@@ -3124,7 +3124,7 @@ class _Query[ModeT: bool, *Slots]:
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Pending[Page[tuple[tuple[Collected1T, ...], tuple[Collected2T, ...], tuple[Collected3T, ...], tuple[Collected4T, ...], tuple[Collected5T, ...], tuple[Collected6T, ...], tuple[Collected7T, ...], tuple[Collected8T, ...], tuple[Collected9T, ...], tuple[Collected10T, ...], tuple[Collected11T, ...], tuple[Collected12T, ...], tuple[Collected13T, ...], tuple[Collected14T, ...], tuple[Collected15T, ...], RootT]]]: ...
 

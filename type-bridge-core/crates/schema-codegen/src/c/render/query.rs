@@ -718,7 +718,7 @@ fn render_model_declarations(
                     output,
                     "type_bridge_status_t TYPE_BRIDGE_CALL {selection_open}(\n\
                        const {binding} *binding, uint8_t distinct,\n\
-                       const {order} *const *orders, size_t order_count,\n\
+                       const {order} *const *sorts, size_t sort_count,\n\
                        {selection} **out_selection,\n\
                        type_bridge_execution_diagnostics_t **out_diagnostics);\n",
                 );
@@ -1061,22 +1061,22 @@ fn render_package_query_declarations(
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_close({query} **query);\n\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_one(\n\
            const {query} *query,\n\
-           const {order} *const *orders, size_t order_count,\n\
+           const {order} *const *sorts, size_t sort_count,\n\
            {rows_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_first(\n\
            const {query} *query,\n\
-           const {order} *const *orders, size_t order_count,\n\
+           const {order} *const *sorts, size_t sort_count,\n\
            {first_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_rows(\n\
            const {query} *query,\n\
-           const {order} *const *orders, size_t order_count,\n\
+           const {order} *const *sorts, size_t sort_count,\n\
            uint64_t offset, uint64_t limit, {rows_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_page(\n\
            {root_ref} root,\n\
-           const {order} *const *orders, size_t order_count,\n\
+           const {order} *const *sorts, size_t sort_count,\n\
            uint64_t offset, uint64_t limit, uint8_t include_total,\n\
            {page_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
@@ -1894,16 +1894,16 @@ fn render_model_definitions(
             let selection_open = generated_symbol(&selection, "open")?;
             let selection_to_ref = generated_symbol(&selection, "ref")?;
             let selection_close = generated_symbol(&selection, "close")?;
-            let (parameters, distinct, orders, order_count) = if kind == "one" {
+            let (parameters, distinct, sorts, sort_count) = if kind == "one" {
                 (String::new(), "0u", "NULL", "0u")
             } else {
                 (
                     format!(
-                        "  uint8_t distinct, const {order} *const *orders, size_t order_count,\n"
+                        "  uint8_t distinct, const {order} *const *sorts, size_t sort_count,\n"
                     ),
                     "distinct",
-                    "(const type_bridge_query_order_t *const *)orders",
-                    "order_count",
+                    "(const type_bridge_query_order_t *const *)sorts",
+                    "sort_count",
                 )
             };
             let _ = write!(
@@ -1918,7 +1918,7 @@ fn render_model_definitions(
                      (const type_bridge_query_binding_t *)binding, &{model_token},\n\
                      {mode_constant}, {kind_constant}, {distinct},\n\
                      {{ 0u, 0u, 0u, 0u, 0u, 0u, 0u }},\n\
-                     {orders}, {order_count}, {{ 0u, 0u, 0u, 0u }}\n\
+                     {sorts}, {sort_count}, {{ 0u, 0u, 0u, 0u }}\n\
                    }};\n\
                    return type_bridge_query_selection_open(\n\
                        &descriptor, (type_bridge_query_selection_t **)out_selection,\n\
@@ -2457,7 +2457,7 @@ fn render_terminal_definition(
         output,
         "type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_{suffix}(\n\
          {query_parameter}{root_parameter}\
-           const {order} *const *orders, size_t order_count,\n\
+           const {order} *const *sorts, size_t sort_count,\n\
          {window_parameters}{total_parameter}\
            {terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
@@ -2465,7 +2465,7 @@ fn render_terminal_definition(
              sizeof(type_bridge_query_terminal_descriptor_v1_t),\n\
              TYPE_BRIDGE_QUERY_DESCRIPTOR_VERSION, {kind}, {cardinality},\n\
              {root_handle}, {root_model}, {root_mode}, 0u,\n\
-             (const type_bridge_query_order_t *const *)orders, order_count,\n\
+             (const type_bridge_query_order_t *const *)sorts, sort_count,\n\
              {offset}, {limit}, {include_total},\n\
              {{ 0u, 0u, 0u, 0u, 0u, 0u, 0u }},\n\
              NULL, NULL, 0u, 0u, NULL, 0u, NULL, 0u,\n\

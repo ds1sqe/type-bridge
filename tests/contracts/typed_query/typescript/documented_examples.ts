@@ -90,7 +90,7 @@ void independentPairs;
 const orderedPeople: readonly Person[] = await onePerson.rows({
   limit: 50n,
   offset: 0n,
-  orderBy: [person.field(Person.identifier).asc()],
+  sort: [person.field(Person.identifier).asc()],
 });
 
 const personCount: bigint = await twoSlots.countBy(person);
@@ -110,7 +110,7 @@ const page: Page<Readonly<{
 }>> = await work.pageBy(person, {
   limit: 50n,
   offset: 0n,
-  orderBy: [person.field(Person.identifier).asc()],
+  sort: [person.field(Person.identifier).asc()],
   includeTotal: true,
 });
 

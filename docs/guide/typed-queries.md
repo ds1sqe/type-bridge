@@ -136,7 +136,7 @@ pagination distinct from collection membership.
 
 ```python
 await query.one()
-await query.first(order_by=(person.field(Person.person_id).asc(),))
+await query.first(sort=(person.field(Person.person_id).asc(),))
 await query.rows(limit=100, offset=0)
 await query.page_by(person, limit=25, include_total=True)
 await query.count_by(person)

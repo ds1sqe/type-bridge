@@ -176,8 +176,8 @@ pub struct TypeBridgeQuerySelectionDescriptorV1 {
     pub kind: u32,
     pub distinct: u8,
     pub reserved0: [u8; 7],
-    pub orders: *const *const TypeBridgeQueryOrder,
-    pub order_count: usize,
+    pub sorts: *const *const TypeBridgeQueryOrder,
+    pub sort_count: usize,
     pub reserved: [u64; 4],
 }
 
@@ -245,8 +245,8 @@ pub struct TypeBridgeQueryTerminalDescriptorV1 {
     pub expected_root_model: *const TypeBridgeProjectedTokenV1,
     pub expected_root_mode: u32,
     pub reserved1: u32,
-    pub orders: *const *const TypeBridgeQueryOrder,
-    pub order_count: usize,
+    pub sorts: *const *const TypeBridgeQueryOrder,
+    pub sort_count: usize,
     pub offset: u64,
     pub limit: u64,
     pub include_total: u8,
@@ -2979,11 +2979,11 @@ pub unsafe extern "C" fn type_bridge_query_selection_open(
             && matches!(value.kind, SELECTION_ONE | SELECTION_COLLECT)
             && value.distinct <= 1
             && collection_pointer_is_canonical(
-                value.orders,
-                value.order_count,
+                value.sorts,
+                value.sort_count,
                 COLLECTION_ORDER_TERM_MAX,
             )
-            && (value.kind != SELECTION_ONE || (value.distinct == 0 && value.order_count == 0))
+            && (value.kind != SELECTION_ONE || (value.distinct == 0 && value.sort_count == 0))
     });
     if layout_active {
         let value = snapshot.expect("checked as present");
@@ -2996,10 +2996,10 @@ pub unsafe extern "C" fn type_bridge_query_selection_open(
                 return status;
             }
         }
-        if value.order_count != 0 {
+        if value.sort_count != 0 {
             // SAFETY: pointer/count canonicality and hard ceiling were checked above.
             if let Err(status) =
-                unsafe { preflight.check_pointer_array(value.orders, value.order_count) }
+                unsafe { preflight.check_pointer_array(value.sorts, value.sort_count) }
             {
                 return status;
             }
@@ -3010,9 +3010,9 @@ pub unsafe extern "C" fn type_bridge_query_selection_open(
         {
             return status;
         }
-        for index in 0..value.order_count {
+        for index in 0..value.sort_count {
             // SAFETY: the complete bounded pointer table was checked above.
-            let pointer = unsafe { value.orders.add(index).read_unaligned() };
+            let pointer = unsafe { value.sorts.add(index).read_unaligned() };
             if !pointer.is_null()
                 // SAFETY: caller retains every immutable order handle.
                 && let Err(status) = unsafe { &*pointer }.check_borrowed_ranges(&preflight)
@@ -3050,7 +3050,7 @@ pub unsafe extern "C" fn type_bridge_query_selection_open(
         };
         // SAFETY: the pointer table was completely checked and remains immutable.
         let orders = match unsafe {
-            snapshot_orders(&binding.state, descriptor.orders, descriptor.order_count)
+            snapshot_orders(&binding.state, descriptor.sorts, descriptor.sort_count)
         } {
             Ok(value) => value,
             Err(error) => return return_execution_error(error, out_diagnostics),
@@ -3552,8 +3552,8 @@ fn manager_terminal_marker(
         || value.root.is_null()
         || value.expected_root_model.is_null()
         || value.expected_root_mode != MATCH_EXACT
-        || !value.orders.is_null()
-        || value.order_count != 0
+        || !value.sorts.is_null()
+        || value.sort_count != 0
         || value.offset != 0
         || value.limit != 0
         || value.include_total != 0
@@ -3636,12 +3636,12 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
         return false;
     }
     if !matches!(value.kind, TERMINAL_ROWS | TERMINAL_FIRST | TERMINAL_PAGE)
-        && (!value.orders.is_null() || value.order_count != 0)
+        && (!value.sorts.is_null() || value.sort_count != 0)
     {
         return false;
     }
     if matches!(value.kind, TERMINAL_ROWS | TERMINAL_FIRST | TERMINAL_PAGE)
-        && !collection_pointer_is_canonical(value.orders, value.order_count, usize::MAX)
+        && !collection_pointer_is_canonical(value.sorts, value.sort_count, usize::MAX)
     {
         return false;
     }
@@ -3735,7 +3735,7 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
 /// Whether a terminal table is longer than the core's absolute ceiling, so it
 /// is not read and the core's refusal is returned instead.
 fn terminal_table_over_ceiling(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
-    value.order_count > ORDER_TERM_MAX
+    value.sort_count > ORDER_TERM_MAX
         || value.group_field_count > SELECTED_SLOT_MAX
         || value.reducer_count > SELECTED_SLOT_MAX
 }
@@ -3745,7 +3745,7 @@ fn terminal_ceiling_refusal(
     limits: StructuralLimits,
     value: &TypeBridgeQueryTerminalDescriptorV1,
 ) -> SdkExecutionDiagnostic {
-    validate_order_term_count(value.order_count, limits)
+    validate_order_term_count(value.sort_count, limits)
         .and_then(|()| validate_field_group_count(limits, value.group_field_count))
         .and_then(|()| validate_reducer_count(limits, value.reducer_count))
         .err()
@@ -3803,12 +3803,12 @@ unsafe fn terminal_active_preflight(
         // SAFETY: caller retains the active immutable group binding.
         unsafe { &*value.group_binding }.check_borrowed_ranges(preflight)?;
     }
-    if tables_readable && value.order_count != 0 {
+    if tables_readable && value.sort_count != 0 {
         // SAFETY: lane validation bounded the canonical active pointer table.
-        unsafe { preflight.check_pointer_array(value.orders, value.order_count) }?;
-        for index in 0..value.order_count {
+        unsafe { preflight.check_pointer_array(value.sorts, value.sort_count) }?;
+        for index in 0..value.sort_count {
             // SAFETY: the complete bounded pointer table was checked above.
-            let pointer = unsafe { value.orders.add(index).read_unaligned() };
+            let pointer = unsafe { value.sorts.add(index).read_unaligned() };
             if !pointer.is_null() {
                 // SAFETY: caller retains every active immutable order handle.
                 unsafe { &*pointer }.check_borrowed_ranges(preflight)?;
@@ -3976,13 +3976,12 @@ pub unsafe extern "C" fn type_bridge_query_terminal_open(
         if manager_operation.is_some() && !manager_terminal_package_allowed(&query.state.package) {
             return return_execution_error(layout_invalid(), out_diagnostics);
         }
-        let orders = if descriptor.order_count == 0 {
+        let orders = if descriptor.sort_count == 0 {
             Vec::new()
         } else {
             // SAFETY: active bounded pointer table and pointees were completely preflighted.
-            match unsafe {
-                snapshot_orders(&query.state, descriptor.orders, descriptor.order_count)
-            } {
+            match unsafe { snapshot_orders(&query.state, descriptor.sorts, descriptor.sort_count) }
+            {
                 Ok(value) => value,
                 Err(error) => return return_execution_error(error, out_diagnostics),
             }
@@ -8695,8 +8694,8 @@ mod tests {
                 kind: SELECTION_ONE,
                 distinct: 0,
                 reserved0: [0; 7],
-                orders: ptr::null(),
-                order_count: 0,
+                sorts: ptr::null(),
+                sort_count: 0,
                 reserved: [0; 4],
             };
             let mut selection = ptr::null_mut();
@@ -9332,8 +9331,8 @@ mod tests {
             expected_root_model: ptr::null(),
             expected_root_mode: 0,
             reserved1: 0,
-            orders: ptr::null(),
-            order_count: 0,
+            sorts: ptr::null(),
+            sort_count: 0,
             offset: 0,
             limit: u64::from(has_window),
             include_total: 0,
@@ -11414,8 +11413,8 @@ mod tests {
             kind: SELECTION_ONE,
             distinct: 0,
             reserved0: [0; 7],
-            orders: ptr::null(),
-            order_count: 0,
+            sorts: ptr::null(),
+            sort_count: 0,
             reserved: [0; 4],
         };
         let mut second_selection = ptr::null_mut();

@@ -1844,11 +1844,11 @@ export interface Collected<in out Model extends object> extends Selection<
   readonly Model[]
 > {
   distinct(distinct?: boolean): Collected<Model>;
-  orderBy(order: QueryOrder): Collected<Model>;
+  sort(order: QueryOrder): Collected<Model>;
 }
 
 export interface RowsOptions {
-  readonly orderBy?: readonly QueryOrder[];
+  readonly sort?: readonly QueryOrder[];
   readonly offset?: bigint;
   readonly limit: bigint;
 }
@@ -1866,7 +1866,7 @@ export interface Page<out Item> {
 }
 
 export interface FirstOptions {
-  readonly orderBy?: readonly QueryOrder[];
+  readonly sort?: readonly QueryOrder[];
 }
 
 type AttributeScalar<Value> = Value extends { readonly value: infer Scalar }
@@ -2705,7 +2705,7 @@ class CollectedValue<Model extends object> implements Collected<Model> {
     });
   }
 
-  orderBy(order: QueryOrder): Collected<Model> {
+  sort(order: QueryOrder): Collected<Model> {
     const own = selectionState(this);
     const term = orderState(order);
     requireSameProjection(own.projection, term.projection, "generated order");
@@ -2824,7 +2824,7 @@ export class Query<out Output, Connection extends QueryConnection = DirectQueryC
     const state = queryState(this);
     const result = await state.executor.rows(
       state.handle,
-      nativeOrders(options.orderBy ?? [], state.projection),
+      nativeOrders(options.sort ?? [], state.projection),
       0n,
       1n,
       "bounded_many",
@@ -2836,7 +2836,7 @@ export class Query<out Output, Connection extends QueryConnection = DirectQueryC
     const state = queryState(this);
     const result = await state.executor.rows(
       state.handle,
-      nativeOrders(options.orderBy ?? [], state.projection),
+      nativeOrders(options.sort ?? [], state.projection),
       options.offset ?? 0n,
       options.limit,
       "bounded_many",
@@ -2858,7 +2858,7 @@ export class Query<out Output, Connection extends QueryConnection = DirectQueryC
     const result = await state.executor.page(
       state.handle,
       rootState.binding,
-      nativeOrders(options.orderBy ?? [], state.projection),
+      nativeOrders(options.sort ?? [], state.projection),
       options.offset ?? 0n,
       options.limit,
       options.includeTotal ?? false,

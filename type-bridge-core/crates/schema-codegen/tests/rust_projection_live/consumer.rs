@@ -1576,7 +1576,7 @@ async fn sdk_queries_query_observations(
             .expect("queries presence selection")
             .where_(score.is_present() & scope.clone())
             .expect("queries score owner predicate")
-            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .rows(RowsOptions::new(2).sort(identifier.asc()))
             .await
             .expect("queries score owner rows"),
     );
@@ -1590,7 +1590,7 @@ async fn sdk_queries_query_observations(
             .expect("queries presence selection")
             .where_(person.field(PersonType::nickname).is_present() & scope.clone())
             .expect("queries nickname presence predicate")
-            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .rows(RowsOptions::new(2).sort(identifier.asc()))
             .await
             .expect("queries nickname presence rows"),
     );
@@ -1601,7 +1601,7 @@ async fn sdk_queries_query_observations(
             .expect("queries IID-set query")
             .where_(person.iid_in(typed_iids(&[person_iids[0].clone(), person_iids[1].clone()]).iter()))
             .expect("queries IID-set predicate")
-            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .rows(RowsOptions::new(2).sort(identifier.asc()))
             .await
             .expect("queries IID-set rows"),
     );
@@ -1625,7 +1625,7 @@ async fn sdk_queries_query_observations(
                     .eq(Identifier::new(manager_key.clone()).expect("queries manager key")),
         )
         .expect("queries exact employee predicate")
-        .rows(RowsOptions::new(2).order_by(employee_identifier.asc()))
+        .rows(RowsOptions::new(2).sort(employee_identifier.asc()))
         .await
         .expect("queries exact employee rows");
     let exact = exact_employees
@@ -1647,7 +1647,7 @@ async fn sdk_queries_query_observations(
         .expect("queries employee subtype query")
         .where_(employee_scope)
         .expect("queries employee subtype scope")
-        .rows(RowsOptions::new(2).order_by(family_identifier.asc()))
+        .rows(RowsOptions::new(2).sort(family_identifier.asc()))
         .await
         .expect("queries employee subtype rows")
         .iter()
@@ -1669,7 +1669,7 @@ async fn sdk_queries_query_observations(
                         .eq(ValBool::new(true).expect("queries true value")),
             )
             .expect("queries conjunction")
-            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .rows(RowsOptions::new(2).sort(identifier.asc()))
             .await
             .expect("queries conjunction rows"),
     );
@@ -1683,7 +1683,7 @@ async fn sdk_queries_query_observations(
                     | identifier.eq(Identifier::new(dana_key.clone()).expect("queries Dana key")),
             )
             .expect("queries disjunction")
-            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .rows(RowsOptions::new(2).sort(identifier.asc()))
             .await
             .expect("queries disjunction rows"),
     );
@@ -1696,7 +1696,7 @@ async fn sdk_queries_query_observations(
                     .eq(ValBool::new(true).expect("queries true value")),
             )
             .expect("queries negation")
-            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .rows(RowsOptions::new(2).sort(identifier.asc()))
             .await
             .expect("queries negation rows"),
     );
@@ -1705,7 +1705,7 @@ async fn sdk_queries_query_observations(
         &people_query
             .where_(score.ge_field(score_gte))
             .expect("queries field comparison")
-            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .rows(RowsOptions::new(2).sort(identifier.asc()))
             .await
             .expect("queries field comparison rows"),
     );
@@ -1866,8 +1866,8 @@ async fn sdk_queries_query_observations(
         .expect("queries cross-join scope")
         .rows(
             RowsOptions::new(4)
-                .order_by(cross_left_identifier.asc())
-                .order_by(cross_right_identifier.asc()),
+                .sort(cross_left_identifier.asc())
+                .sort(cross_right_identifier.asc()),
         )
         .await
         .expect("queries cross-join rows")
@@ -1883,7 +1883,7 @@ async fn sdk_queries_query_observations(
     let collected = shape_participant
         .collect()
         .distinct()
-        .order_by(shape_participant_identifier.asc())
+        .sort(shape_participant_identifier.asc())
         .expect("queries collection order");
     let shape_predicate = shape_link.iid(&type_bridge::Iid::new(network_iid).unwrap())
         & shape_link
@@ -1904,7 +1904,7 @@ async fn sdk_queries_query_observations(
             shape_origin,
             PageOptions::new(1)
                 .include_total(true)
-                .order_by(shape_origin.field(PersonType::identifier).asc()),
+                .sort(shape_origin.field(PersonType::identifier).asc()),
         )
         .await
         .expect("queries positional page");
@@ -1935,7 +1935,7 @@ async fn sdk_queries_query_observations(
             shape_origin,
             PageOptions::new(1)
                 .include_total(true)
-                .order_by(shape_origin.field(PersonType::identifier).asc()),
+                .sort(shape_origin.field(PersonType::identifier).asc()),
         )
         .await
         .expect("queries named page");
@@ -1989,7 +1989,7 @@ async fn sdk_queries_query_observations(
     witness_mark("terminals.rows", exchange_count.is_some());
     let rows = sdk_queries_keys(
         &people_query
-            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .rows(RowsOptions::new(2).sort(identifier.asc()))
             .await
             .expect("queries rows terminal"),
     );
@@ -1999,7 +1999,7 @@ async fn sdk_queries_query_observations(
             person,
             PageOptions::new(1)
                 .include_total(true)
-                .order_by(identifier.asc()),
+                .sort(identifier.asc()),
         )
         .await
         .expect("queries page terminal");
@@ -2118,7 +2118,7 @@ async fn sdk_queries_query_observations(
         &people_query
             .where_(call.ge_field(score))
             .expect("queries function field predicate")
-            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .rows(RowsOptions::new(2).sort(identifier.asc()))
             .await
             .expect("queries function field rows"),
     );
@@ -2128,7 +2128,7 @@ async fn sdk_queries_query_observations(
     let nested_people = people_query
         .where_(nested.ge_field(score))
         .expect("queries nested function filter")
-        .rows(RowsOptions::new(2).order_by(identifier.asc()))
+        .rows(RowsOptions::new(2).sort(identifier.asc()))
         .await
         .expect("queries nested function rows");
     let function_values = values
@@ -2158,7 +2158,7 @@ async fn sdk_queries_query_observations(
         &people_query
             .where_(score.ge(scalar_operand))
             .expect("queries scalar predicate")
-            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .rows(RowsOptions::new(2).sort(identifier.asc()))
             .await
             .expect("queries scalar rows"),
     );
@@ -4050,7 +4050,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
             .expect("party first row");
         assert_eq!(first.party_name().value(), "contractor");
         let page = party_query
-            .rows(RowsOptions::new(1).offset(1).order_by(party_name.asc()))
+            .rows(RowsOptions::new(1).offset(1).sort(party_name.asc()))
             .await
             .expect("party ordered page");
         assert_eq!(page.len(), 1);
@@ -4411,7 +4411,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
                     & target_identifier.starts_with(Text::new("p-2").expect("target prefix")),
             )
             .expect("F5 reachability filters")
-            .rows(RowsOptions::new(10).order_by(target_identifier.asc()))
+            .rows(RowsOptions::new(10).sort(target_identifier.asc()))
             .await
             .expect("F5 reachable rows");
         assert_eq!(
@@ -4579,7 +4579,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         assert!(worker_query.exists().await.expect("worker exists"));
 
         let workers = worker_query
-            .rows(RowsOptions::new(2).offset(1).order_by(identifier.asc()))
+            .rows(RowsOptions::new(2).offset(1).sort(identifier.asc()))
             .await
             .expect("worker ordered page");
         assert_eq!(
@@ -4623,7 +4623,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             .expect("worker IID set query")
             .where_(person_binding.iid_in([worker_a.iid(), worker_b.iid()]))
             .expect("worker IID set predicate")
-            .rows(RowsOptions::new(10).order_by(identifier.asc()))
+            .rows(RowsOptions::new(10).sort(identifier.asc()))
             .await
             .expect("worker IID set rows");
         assert_eq!(
@@ -4763,7 +4763,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         let members = member_binding
             .collect()
             .distinct()
-            .order_by(member_identifier.asc())
+            .sort(member_identifier.asc())
             .expect("F4 local collection order");
         let graph = PersonGraph::select(person_binding, members).expect("F4 local selected graph");
         let query = session
@@ -4779,7 +4779,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
                 person_binding,
                 PageOptions::new(2)
                     .include_total(true)
-                    .order_by(identifier.asc()),
+                    .sort(identifier.asc()),
             )
             .await
             .expect("F4 local collected page");
@@ -4834,7 +4834,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
     let members = member_binding
         .collect()
         .distinct()
-        .order_by(member_identifier.asc())
+        .sort(member_identifier.asc())
         .expect("F4 remote collection order");
     let graph = PersonGraph::select(person_binding, members).expect("F4 remote selected graph");
     let query = session
@@ -4863,7 +4863,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
             person_binding,
             PageOptions::new(2)
                 .include_total(true)
-                .order_by(identifier.asc()),
+                .sort(identifier.asc()),
         )
         .await
         .expect("F4 remote collected page");
@@ -4982,7 +4982,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .expect("F4 remote worker IID set query")
         .where_(person_binding.iid_in([worker_a.iid(), worker_b.iid()]))
         .expect("F4 remote worker IID set predicate")
-        .rows(RowsOptions::new(10).order_by(identifier.asc()))
+        .rows(RowsOptions::new(10).sort(identifier.asc()))
         .await
         .expect("F4 remote worker IID set rows");
     assert_eq!(
@@ -5222,7 +5222,7 @@ async fn one_program(connection: &Connection<AppSchema>) -> Value {
             .collect::<Vec<_>>()
     };
     let rows = people
-        .rows(RowsOptions::new(10).order_by(identifier.asc()))
+        .rows(RowsOptions::new(10).sort(identifier.asc()))
         .await
         .expect("one-program rows");
     let first = people
@@ -5235,7 +5235,7 @@ async fn one_program(connection: &Connection<AppSchema>) -> Value {
             person,
             PageOptions::new(1)
                 .include_total(true)
-                .order_by(identifier.asc()),
+                .sort(identifier.asc()),
         )
         .await
         .expect("one-program page");
@@ -5803,7 +5803,7 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
             .expect("integer range query")
             .where_(robot_id.ge(1_i64) & robot_id.le(100_i64))
             .expect("integer range predicates")
-            .rows(RowsOptions::new(10).order_by(robot_id.asc()))
+            .rows(RowsOptions::new(10).sort(robot_id.asc()))
             .await
             .expect("ordered integer-key rows");
         assert_eq!(
@@ -5832,7 +5832,7 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
             )
             .expect("abstract-root role predicate")
             .rows(
-                RowsOptions::new(10).order_by(interaction.field(InteractionType::identifier).asc()),
+                RowsOptions::new(10).sort(interaction.field(InteractionType::identifier).asc()),
             )
             .await
             .expect("polymorphic interaction rows")

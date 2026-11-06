@@ -87,7 +87,7 @@ rows = await (
     .rows(
         limit=25,
         offset=50,
-        order_by=(person.field(Person.person_id).asc(),),
+        sort=(person.field(Person.person_id).asc(),),
     )
 )
 ```

@@ -738,7 +738,7 @@ class Collected(_Frozen):
     def distinct(self, enabled: bool = True) -> Collected:
         return Collected(self.__handle.distinct(enabled), self.__model, self.__projection)
 
-    def order_by(self, order: QueryOrder) -> Collected:
+    def sort(self, order: QueryOrder) -> Collected:
         _require_projection(order.projection_identity(), self.__projection, "selection order")
         return Collected(
             self.__handle.order_by(order.native_handle()),
@@ -1143,8 +1143,8 @@ class Query(_Frozen):
             raise RuntimeError("validated exactly-one result did not contain one row")
         return self.materialize_row(result.row(0))
 
-    async def first(self, *, order_by: Iterable[QueryOrder] = ()) -> object | None:
-        return await self.__fetch(self.__first, 0, 1, "bounded_many", order_by)
+    async def first(self, *, sort: Iterable[QueryOrder] = ()) -> object | None:
+        return await self.__fetch(self.__first, 0, 1, "bounded_many", sort)
 
     def __first(self, result: ValidatedMatchResultHandle) -> object | None:
         if result.row_count() == 0:
@@ -1156,7 +1156,7 @@ class Query(_Frozen):
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
     ) -> list[object] | Pending[list[object]]:
         return await self.__fetch(
             lambda result: [
@@ -1165,7 +1165,7 @@ class Query(_Frozen):
             offset,
             limit,
             "bounded_many",
-            order_by,
+            sort,
         )
 
     async def page_by(
@@ -1174,13 +1174,13 @@ class Query(_Frozen):
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
     ) -> Page | Pending[Page]:
         self.__require_root(root, "query root")
         if type(include_total) is not bool:
             raise TypeError("include_total must be an exact bool")
-        handles = self.order_handles(order_by)
+        handles = self.order_handles(sort)
         return await self.__run(
             _PAGE_BY,
             self.materialize_page,
@@ -1322,9 +1322,9 @@ class Query(_Frozen):
         offset: int,
         limit: int,
         cardinality: _Cardinality,
-        order_by: Iterable[QueryOrder],
+        sort: Iterable[QueryOrder],
     ) -> OutputT | Pending[OutputT]:
-        handles = self.order_handles(order_by)
+        handles = self.order_handles(sort)
         return await self.__run(_FETCH_ROWS, decode, handles, offset, limit, cardinality)
 
     async def __run[OutputT, *ArgsT](
@@ -1389,11 +1389,11 @@ class Query(_Frozen):
             total=result.page_total(),
         )
 
-    def order_handles(self, order_by: Iterable[object]) -> list[MatchOrderHandle]:
+    def order_handles(self, sort: Iterable[object]) -> list[MatchOrderHandle]:
         handles: list[MatchOrderHandle] = []
-        for order in order_by:
+        for order in sort:
             if not isinstance(order, QueryOrder):
-                raise TypeError("order_by entries must be generated QueryOrder values")
+                raise TypeError("sort entries must be generated QueryOrder values")
             _require_projection(order.projection_identity(), self.__projection, "query order")
             handles.append(order.native_handle())
         return handles

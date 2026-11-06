@@ -1235,7 +1235,7 @@ async function sdkQueriesQueryLane(
   capture?.mark("terminals.rows");
   const keys = (await query.rows({
     limit: 2n,
-    orderBy: [identifier.asc()],
+    sort: [identifier.asc()],
   })).map((person: any) => person.identifier.value);
   capture?.mark("model_values_and_references.person");
   const ada = await session
@@ -1275,21 +1275,21 @@ async function sdkQueriesQueryLane(
     await session
       .query(person)
       .where(person.field(Person.score).isPresent(), scope)
-      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+      .rows({ limit: 2n, sort: [identifier.asc()] }),
   );
   capture?.mark("owner_iid_set.optional_present_keys");
   const optionalKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(person.field(Person.nickname).isPresent(), scope)
-      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+      .rows({ limit: 2n, sort: [identifier.asc()] }),
   );
   capture?.mark("owner_iid_set.iid_set_keys");
   const iidKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(person.iidIn(personIids))
-      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+      .rows({ limit: 2n, sort: [identifier.asc()] }),
   );
 
   const employeeExact = session.exact(Employee);
@@ -1301,7 +1301,7 @@ async function sdkQueriesQueryLane(
       employeeExactId.eq(Identifier.create("query-employee"))
         .or(employeeExactId.eq(Identifier.create("query-manager"))),
     )
-    .rows({ limit: 2n, orderBy: [employeeExactId.asc()] });
+    .rows({ limit: 2n, sort: [employeeExactId.asc()] });
   const employeeSubtypes = session.subtypes(Employee);
   const employeeSubtypesId = employeeSubtypes.field(Employee.identifier);
   capture?.mark("exact_subtypes.subtypes");
@@ -1311,7 +1311,7 @@ async function sdkQueriesQueryLane(
       employeeSubtypesId.eq(Identifier.create("query-employee"))
         .or(employeeSubtypesId.eq(Identifier.create("query-manager"))),
     )
-    .rows({ limit: 2n, orderBy: [employeeSubtypesId.asc()] });
+    .rows({ limit: 2n, sort: [employeeSubtypesId.asc()] });
 
   const score = person.field(Person.score);
   const scoreGte = person.field(Person.scoreGte);
@@ -1324,28 +1324,28 @@ async function sdkQueriesQueryLane(
         scope,
         score.ge(Score.create(40n)).and(boolean.eq(ValBool.create(true))),
       )
-      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+      .rows({ limit: 2n, sort: [identifier.asc()] }),
   );
   capture?.mark("scalar_boolean.or");
   const orKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(scope)
-      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+      .rows({ limit: 2n, sort: [identifier.asc()] }),
   );
   capture?.mark("scalar_boolean.not");
   const notKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(scope, boolean.eq(ValBool.create(true)).not())
-      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+      .rows({ limit: 2n, sort: [identifier.asc()] }),
   );
   capture?.mark("scalar_boolean.field_comparison");
   const fieldComparisonKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(scope, score.geField(scoreGte))
-      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+      .rows({ limit: 2n, sort: [identifier.asc()] }),
   );
 
   const source = session.exact(Person);
@@ -1384,7 +1384,7 @@ async function sdkQueriesQueryLane(
     .where(crossScope)
     .rows({
       limit: 4n,
-      orderBy: [crossLeftId.asc(), crossRightId.asc()],
+      sort: [crossLeftId.asc(), crossRightId.asc()],
     }))
     .map(([left, right]: readonly any[]) => [sdkQueriesKey(left), sdkQueriesKey(right)]);
 
@@ -1399,7 +1399,7 @@ async function sdkQueriesQueryLane(
   const selectionParticipants = selectionParticipant
     .collect()
     .distinct()
-    .orderBy(selectionParticipant.field(Person.identifier).asc());
+    .sort(selectionParticipant.field(Person.identifier).asc());
   capture?.mark("selection_shapes.positional");
   const positionalPage = await session
     .query(selectionOrigin, selectionParticipants)
@@ -1407,7 +1407,7 @@ async function sdkQueriesQueryLane(
     .where(...selectionPredicates)
     .pageBy(selectionOrigin, {
       limit: 1n,
-      orderBy: [selectionOrigin.field(Person.identifier).asc()],
+      sort: [selectionOrigin.field(Person.identifier).asc()],
       includeTotal: true,
     });
   assert.equal(Number(positionalPage.total), 1);
@@ -1421,7 +1421,7 @@ async function sdkQueriesQueryLane(
     .where(...selectionPredicates)
     .pageBy(selectionOrigin, {
       limit: 1n,
-      orderBy: [selectionOrigin.field(Person.identifier).asc()],
+      sort: [selectionOrigin.field(Person.identifier).asc()],
       includeTotal: true,
     });
   assert.equal(Number(namedPage.total), 1);
@@ -1450,11 +1450,11 @@ async function sdkQueriesQueryLane(
     .one();
   const oneExchange = requests.length - requestsBeforeOne;
   capture?.mark("terminals.first");
-  const first = await query.first({ orderBy: [identifier.asc()] });
+  const first = await query.first({ sort: [identifier.asc()] });
   capture?.mark("terminals.page");
   const page = await query.pageBy(person, {
     limit: 1n,
-    orderBy: [identifier.asc()],
+    sort: [identifier.asc()],
     includeTotal: true,
   });
   capture?.mark("terminals.count");
@@ -1479,7 +1479,7 @@ async function sdkQueriesQueryLane(
     await session
       .query(person)
       .where(scope, score.ge(Score.create(40n)))
-      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+      .rows({ limit: 2n, sort: [identifier.asc()] }),
   );
   capture?.mark("grouped_reducer.global");
   const values = await query.aggregate(person, [
@@ -1519,13 +1519,13 @@ async function sdkQueriesQueryLane(
   capture?.mark("schema_function.simple");
   const functionValues = (await query
     .where(call.geField(score))
-    .rows({ limit: 2n, orderBy: [identifier.asc()] }))
+    .rows({ limit: 2n, sort: [identifier.asc()] }))
     .map((person: any) => Number(person.score.value));
   const nested = qualifyingScore(session, person, call);
   capture?.mark("schema_function.nested");
   const nestedFunctionValues = (await query
     .where(nested.geField(score))
-    .rows({ limit: 2n, orderBy: [identifier.asc()] }))
+    .rows({ limit: 2n, sort: [identifier.asc()] }))
     .map((person: any) => Number(person.score.value));
   capture?.mark("structured_query_diagnostic.one");
   let diagnostic: Record<string, unknown> | undefined;
@@ -2852,7 +2852,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       )
       .rows({
         limit: 10n,
-        orderBy: [interactionVariable.field(Interaction.identifier).asc()],
+        sort: [interactionVariable.field(Interaction.identifier).asc()],
       });
     assert.deepEqual(
       new Set(polymorphicActorRows.map((relation) => relation.actor?.__typebridgeModel)),
@@ -2935,11 +2935,11 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         .query(personVariable, eventVariable)
         .where(personPredicate, eventPredicate);
       const personQuery = session.query(personVariable).where(personPredicate);
-      const ordered = { limit: 10n, orderBy: [identifierOrder] };
+      const ordered = { limit: 10n, sort: [identifierOrder] };
 
       const [onePerson, oneEvent] = await terminal(() => pairQuery.one());
       const rows = await terminal(() => personQuery.rows(ordered));
-      const first = await terminal(() => personQuery.first({ orderBy: [identifierOrder] }));
+      const first = await terminal(() => personQuery.first({ sort: [identifierOrder] }));
       const aliasesPresent = await terminal(() => session
         .query(personVariable)
         .where(personVariable.field(Person.aliases).isPresent())
@@ -2958,7 +2958,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         .rows(ordered));
       const offsetRows = await terminal(() => session
         .query(personVariable)
-        .rows({ limit: 2n, offset: 1n, orderBy: [identifierOrder] }));
+        .rows({ limit: 2n, offset: 1n, sort: [identifierOrder] }));
       const identifierField = personVariable.field(Person.identifier);
       const identifierValue = Identifier.create("person-1");
       const generatedExpression = identifierField.startsWith(Identifier.create("person-"))
@@ -2986,7 +2986,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       const partyVariable = session.subtypes(Party);
       const partyRows = await terminal(() => session.query(partyVariable).rows({
         limit: 10n,
-        orderBy: [partyVariable.field(Party.identifier).asc()],
+        sort: [partyVariable.field(Party.identifier).asc()],
       }));
       const membershipSubtypeVariable = session.subtypes(Membership);
       const membershipFamily = session.query(membershipSubtypeVariable);
@@ -3028,7 +3028,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
       const allPeopleQuery = session.query(personVariable);
       const allFirst = await terminal(() =>
-        allPeopleQuery.first({ orderBy: [identifierOrder] }));
+        allPeopleQuery.first({ sort: [identifierOrder] }));
       const scoreField = personVariable.field(Person.score);
       const reducers = await terminal(() => allPeopleQuery.aggregate(personVariable, [
         aggregate.count(),
@@ -3265,11 +3265,11 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         });
         const root = session.exact(Robot);
         const query = session.query(root).where(root.field(Robot.robotId).eq(RobotId.create(key)));
-        const orderBy = [root.field(Robot.robotId).asc()];
+        const sort = [root.field(Robot.robotId).asc()];
         const one = await query.one();
-        const rows = await query.rows({ limit: 2n, orderBy });
-        const first = await query.first({ orderBy });
-        const page = await query.pageBy(root, { limit: 2n, orderBy, includeTotal: true });
+        const rows = await query.rows({ limit: 2n, sort });
+        const first = await query.first({ sort });
+        const page = await query.pageBy(root, { limit: 2n, sort, includeTotal: true });
         const count = await query.countBy(root);
         const exists = await query.existsBy(root);
         const reduced = await query.aggregate(root, [aggregate.count()] as const);

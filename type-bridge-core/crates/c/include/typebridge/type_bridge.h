@@ -393,8 +393,8 @@ typedef struct type_bridge_query_selection_descriptor_v1 {
   type_bridge_query_selection_kind_t kind;
   uint8_t distinct;
   uint8_t reserved0[7];
-  const type_bridge_query_order_t *const *orders;
-  size_t order_count;
+  const type_bridge_query_order_t *const *sorts;
+  size_t sort_count;
   uint64_t reserved[4];
 } type_bridge_query_selection_descriptor_v1_t;
 
@@ -447,8 +447,8 @@ typedef struct type_bridge_query_terminal_descriptor_v1 {
   const type_bridge_projected_token_v1_t *expected_root_model;
   type_bridge_query_match_mode_t expected_root_mode;
   uint32_t reserved1;
-  const type_bridge_query_order_t *const *orders;
-  size_t order_count;
+  const type_bridge_query_order_t *const *sorts;
+  size_t sort_count;
   uint64_t offset;
   uint64_t limit;
   uint8_t include_total;

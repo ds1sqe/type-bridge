@@ -338,6 +338,21 @@ All notable changes to TypeBridge will be documented in this file.
 
 <!-- --8<-- [start:breaking-3-0] -->
 
+Typed query sorting uses `sort` in every SDK. Regenerate projections and
+update source calls and option names; ordering behavior and plan bytes are
+unchanged.
+
+| Removed sorting API | Replacement |
+| --- | --- |
+| Python `Collected.order_by`; `Query.first`, `rows` and `page_by` keyword `order_by` | `Collected.sort`; keyword `sort` |
+| TypeScript `Collected.orderBy`; query option `orderBy` | `Collected.sort`; option `sort` |
+| Rust `Collected::order_by`, `RowsOptions::order_by`, `PageOptions::order_by` | `sort` on each type |
+| C `type_bridge_query_selection_descriptor_v1_t.orders` / `.order_count` | `.sorts` / `.sort_count` |
+| C `type_bridge_query_terminal_descriptor_v1_t.orders` / `.order_count` | `.sorts` / `.sort_count` |
+
+The C descriptor field order, sizes and offsets are unchanged. Generated C
+sorting-array parameter names follow `sorts` / `sort_count`.
+
 Typed comparison methods use `ne`, `le`, `ge` and `like` consistently.
 Manager lookup tokens (`lte`, `gte`, `regex`, and keyword suffixes such as
 `field__gte`) remain the existing lookup protocol.
