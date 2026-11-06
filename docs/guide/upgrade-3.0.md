@@ -341,3 +341,63 @@ changing arguments. `NULL` selects the shared direct default policy; supply a
 commit retain the owning database or transaction ceilings. Cancellation uses
 the current policy-aware diagnostics, including `provider_cancelled` when a
 cancellation is already requested before transaction dispatch.
+
+## C CRUD policy arguments
+
+The C entity and relation CRUD functions now have one policy-aware signature.
+Remove `_v2` from existing policy-aware calls. For old unsuffixed calls, insert
+`limits` at the position below (`NULL` preserves the default policy). Runtime
+names are `type_bridge_{target}_{kind}_{operation}`, where `kind` is `entity`
+or `relation`; `target` is `database` or `write_transaction` for every row, and
+`read_transaction` for `get_by_iid` and `count`.
+
+| Operation | Current runtime arguments |
+| --- | --- |
+| `insert`, `put` | `target, model, create, limits, cancellation, out_result, diagnostics` |
+| `get_by_iid` | `target, model, iid, limits, cancellation, out_thing, diagnostics` |
+| `update` | `target, model, iid, create, limits, cancellation, out_result, diagnostics` |
+| `delete_by_iid` | `target, model, iid, limits, cancellation, diagnostics` |
+| `count` | `target, model, limits, cancellation, out_count, diagnostics` |
+
+Generated `{model}_{target}_{operation}` wrappers have the same argument
+order with the implicit `model` argument omitted and nominal input/result
+owners. Regenerate packages; every supported profile now emits these wrappers
+as static inline functions. Unkeyed single `put` wrappers remain available;
+the existing key-admission behavior is unchanged. By-IID reads and mutations
+continue to build a typed IID filter and use the shared terminal.
+
+NULL-policy CRUD calls now use the same in-flight cancellation handling as
+explicit policies: cancellation returns `provider_cancelled`, and owned writes
+roll back. Invalid overlapping output slots are rejected without modifying
+those slots, like other policy-aware preflight failures.
+
+| Removed C symbol | Replacement |
+| --- | --- |
+| `type_bridge_database_entity_count_v2` | `type_bridge_database_entity_count` |
+| `type_bridge_database_entity_delete_by_iid_v2` | `type_bridge_database_entity_delete_by_iid` |
+| `type_bridge_database_entity_get_by_iid_v2` | `type_bridge_database_entity_get_by_iid` |
+| `type_bridge_database_entity_insert_v2` | `type_bridge_database_entity_insert` |
+| `type_bridge_database_entity_put_v2` | `type_bridge_database_entity_put` |
+| `type_bridge_database_entity_update_v2` | `type_bridge_database_entity_update` |
+| `type_bridge_database_relation_count_v2` | `type_bridge_database_relation_count` |
+| `type_bridge_database_relation_delete_by_iid_v2` | `type_bridge_database_relation_delete_by_iid` |
+| `type_bridge_database_relation_get_by_iid_v2` | `type_bridge_database_relation_get_by_iid` |
+| `type_bridge_database_relation_insert_v2` | `type_bridge_database_relation_insert` |
+| `type_bridge_database_relation_put_v2` | `type_bridge_database_relation_put` |
+| `type_bridge_database_relation_update_v2` | `type_bridge_database_relation_update` |
+| `type_bridge_read_transaction_entity_count_v2` | `type_bridge_read_transaction_entity_count` |
+| `type_bridge_read_transaction_entity_get_by_iid_v2` | `type_bridge_read_transaction_entity_get_by_iid` |
+| `type_bridge_read_transaction_relation_count_v2` | `type_bridge_read_transaction_relation_count` |
+| `type_bridge_read_transaction_relation_get_by_iid_v2` | `type_bridge_read_transaction_relation_get_by_iid` |
+| `type_bridge_write_transaction_entity_count_v2` | `type_bridge_write_transaction_entity_count` |
+| `type_bridge_write_transaction_entity_delete_by_iid_v2` | `type_bridge_write_transaction_entity_delete_by_iid` |
+| `type_bridge_write_transaction_entity_get_by_iid_v2` | `type_bridge_write_transaction_entity_get_by_iid` |
+| `type_bridge_write_transaction_entity_insert_v2` | `type_bridge_write_transaction_entity_insert` |
+| `type_bridge_write_transaction_entity_put_v2` | `type_bridge_write_transaction_entity_put` |
+| `type_bridge_write_transaction_entity_update_v2` | `type_bridge_write_transaction_entity_update` |
+| `type_bridge_write_transaction_relation_count_v2` | `type_bridge_write_transaction_relation_count` |
+| `type_bridge_write_transaction_relation_delete_by_iid_v2` | `type_bridge_write_transaction_relation_delete_by_iid` |
+| `type_bridge_write_transaction_relation_get_by_iid_v2` | `type_bridge_write_transaction_relation_get_by_iid` |
+| `type_bridge_write_transaction_relation_insert_v2` | `type_bridge_write_transaction_relation_insert` |
+| `type_bridge_write_transaction_relation_put_v2` | `type_bridge_write_transaction_relation_put` |
+| `type_bridge_write_transaction_relation_update_v2` | `type_bridge_write_transaction_relation_update` |

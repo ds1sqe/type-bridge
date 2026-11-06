@@ -1,66 +1,15 @@
-//! Generated-only exact entity CRUD exports.
+//! Shared C CRUD test fixtures and canonical operation regressions.
+#![cfg(test)]
 
 use crate::abi::TypeBridgeStatus;
+use crate::crud_v2::*;
 use crate::execution_diagnostic::TypeBridgeExecutionDiagnostics;
 use crate::iid::TypeBridgeIid;
 use crate::projected_batch::TypeBridgeProjectedBatchResult;
 use crate::projected_model::{TypeBridgeProjectedCreate, TypeBridgeProjectedThing};
 use crate::projected_token::TypeBridgeProjectedTokenV1;
-use crate::runtime::{
-    TypeBridgeCancellation, TypeBridgeDatabase, TypeBridgeReadTransaction,
-    TypeBridgeWriteTransaction,
-};
-use crate::thing_crud::{
-    CrudKind, LegacyPolicyTarget, MemoryRange, ReadTarget, WriteTarget,
-    prepare_count_outputs_for_legacy_policy_target,
-    prepare_diagnostics_output_for_legacy_policy_target,
-    prepare_thing_outputs_for_legacy_policy_target, run_count_call, run_delete_call, run_get_call,
-    run_put_call, run_write_thing_call,
-};
+use crate::runtime::TypeBridgeDatabase;
 
-/// Insert one exact projected entity using one owned write transaction and commit.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_insert(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    create: *const TypeBridgeProjectedCreate,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(create),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_write_thing_call(
-            CrudKind::Entity,
-            WriteTarget::Database(&*database),
-            prepared,
-            model,
-            create,
-            None,
-            cancellation,
-        )
-    }
-}
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::abi::TypeBridgeByteView;
@@ -120,7 +69,6 @@ pub(crate) mod tests {
         TypeBridgeProjectedReference, type_bridge_projected_reference_clone,
         type_bridge_projected_reference_close, type_bridge_projected_thing_close,
     };
-    use crate::relation_crud::*;
     use crate::runtime::{
         type_bridge_cancellation_close, type_bridge_cancellation_is_requested,
         type_bridge_cancellation_open, type_bridge_cancellation_request,
@@ -202,6 +150,10 @@ functions:
                 closes: AtomicUsize::new(0),
                 commit: AtomicU8::new(commit),
             })
+        }
+
+        pub(crate) fn query_texts(&self) -> Vec<String> {
+            self.queries.lock().unwrap().clone()
         }
 
         pub(crate) fn query_count(&self) -> usize {
@@ -806,6 +758,7 @@ functions:
                 &token,
                 &create,
                 ptr::null(),
+                ptr::null(),
                 &mut thing,
                 &mut diagnostics,
             )
@@ -836,6 +789,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*fixture.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -871,6 +825,7 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -893,6 +848,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*fixture.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -937,6 +893,7 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -958,6 +915,7 @@ functions:
                     transaction,
                     &fixture.token,
                     &*fixture.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1011,6 +969,7 @@ functions:
                         &fixture.token,
                         &*fixture.create,
                         ptr::null(),
+                        ptr::null(),
                         &mut thing,
                         &mut diagnostics,
                     )
@@ -1053,6 +1012,7 @@ functions:
                         &*fixture.database,
                         &fixture.token,
                         &*fixture.create,
+                        ptr::null(),
                         ptr::null(),
                         &mut thing,
                         &mut diagnostics,
@@ -1118,7 +1078,7 @@ functions:
             let mut thing = ptr::null_mut();
             let mut diagnostics = ptr::null_mut();
             let get = if relation {
-                crate::relation_crud::type_bridge_database_relation_get_by_iid
+                crate::crud_v2::type_bridge_database_relation_get_by_iid
             } else {
                 type_bridge_database_entity_get_by_iid
             };
@@ -1128,6 +1088,7 @@ functions:
                         &*database,
                         &token,
                         &iid,
+                        ptr::null(),
                         ptr::null(),
                         &mut thing,
                         &mut diagnostics,
@@ -1170,12 +1131,12 @@ functions:
             );
             close_thing(&mut thing);
             let update = if relation {
-                crate::relation_crud::type_bridge_database_relation_update
+                crate::crud_v2::type_bridge_database_relation_update
             } else {
                 type_bridge_database_entity_update
             };
             let delete = if relation {
-                crate::relation_crud::type_bridge_database_relation_delete_by_iid
+                crate::crud_v2::type_bridge_database_relation_delete_by_iid
             } else {
                 type_bridge_database_entity_delete_by_iid
             };
@@ -1187,6 +1148,7 @@ functions:
                         &token,
                         &iid,
                         &*create,
+                        ptr::null(),
                         ptr::null(),
                         &mut result,
                         &mut diagnostics,
@@ -1211,7 +1173,16 @@ functions:
             );
             close_result(&mut result);
             assert_eq!(
-                unsafe { delete(&*database, &token, &iid, ptr::null(), &mut diagnostics) },
+                unsafe {
+                    delete(
+                        &*database,
+                        &token,
+                        &iid,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut diagnostics,
+                    )
+                },
                 TypeBridgeStatus::Ok
             );
             assert_eq!(
@@ -1265,6 +1236,7 @@ functions:
                     &fixture.token,
                     iid,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -1282,6 +1254,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -1298,6 +1271,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     iid,
+                    ptr::null(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -1353,6 +1327,7 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -1371,6 +1346,7 @@ functions:
                 type_bridge_write_transaction_entity_count(
                     transaction,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1424,6 +1400,7 @@ functions:
                     transaction,
                     &fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -1441,6 +1418,7 @@ functions:
                 type_bridge_write_transaction_entity_count(
                     transaction,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1517,6 +1495,7 @@ functions:
                     read,
                     &read_fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -1529,6 +1508,7 @@ functions:
                 type_bridge_read_transaction_entity_count(
                     read,
                     &read_fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1571,6 +1551,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*fixture.create,
+                    ptr::null(),
                     cancellation,
                     &mut thing,
                     &mut diagnostics,
@@ -1579,7 +1560,7 @@ functions:
             TypeBridgeStatus::Cancelled
         );
         assert!(thing.is_null());
-        assert_eq!(diagnostic(diagnostics).1, "cancelled_before_dispatch");
+        assert_eq!(diagnostic(diagnostics).1, "provider_cancelled");
         close_diagnostics(&mut diagnostics);
 
         let foreign = package("foreigncrud");
@@ -1591,6 +1572,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*foreign_create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1613,6 +1595,7 @@ functions:
                     &fixture.token,
                     &*other_create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -1634,6 +1617,7 @@ functions:
                     &*fixture.database,
                     &forged,
                     &TypeBridgeIid::new("0x10").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1659,6 +1643,7 @@ functions:
                     &*fixture.database,
                     &attribute_token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -1675,6 +1660,7 @@ functions:
                 type_bridge_database_entity_get_by_iid(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     ptr::null(),
                     &mut thing,
@@ -1698,7 +1684,7 @@ functions:
     struct AlignedBytes([u8; 24]);
 
     #[test]
-    fn overlap_preflight_never_corrupts_live_inputs_and_clears_overlapping_outputs() {
+    fn overlap_preflight_preserves_live_inputs_and_overlapping_outputs() {
         let fixture = fixture(
             vec![Response::Result(QueryResult::Rows(vec![
                 serde_json::json!({
@@ -1719,6 +1705,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     database_output,
                     &mut untouched_diagnostics,
                 )
@@ -1738,6 +1725,7 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     create_output.cast(),
                     &mut untouched_diagnostics,
                 )
@@ -1755,6 +1743,7 @@ functions:
                 type_bridge_database_entity_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     model_output,
                     &mut untouched_diagnostics,
@@ -1776,6 +1765,7 @@ functions:
                 type_bridge_database_entity_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     cancellation,
                     cancellation_output,
                     &mut untouched_diagnostics,
@@ -1801,6 +1791,7 @@ functions:
                     &fixture.token,
                     iid,
                     ptr::null(),
+                    ptr::null(),
                     ptr::addr_of_mut!(iid_storage).cast(),
                     &mut untouched_diagnostics,
                 )
@@ -1825,13 +1816,14 @@ functions:
                     &fixture.token,
                     &TypeBridgeIid::new("0x10").unwrap(),
                     ptr::null(),
+                    ptr::null(),
                     first,
                     second,
                 )
             },
             TypeBridgeStatus::InvalidArgument
         );
-        assert_eq!(&overlapping.0[..9], &[0; 9]);
+        assert_eq!(overlapping.0, [0xaa; 24]);
         assert_eq!(fixture.state.query_count(), 0);
 
         let mut count = u64::MAX;
@@ -1842,6 +1834,7 @@ functions:
                 type_bridge_database_entity_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1893,6 +1886,7 @@ functions:
                     transaction,
                     &fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     transaction_output,
                     &mut untouched_diagnostics,
                 )
@@ -1909,6 +1903,7 @@ functions:
                 type_bridge_write_transaction_entity_count(
                     transaction,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1941,6 +1936,7 @@ functions:
                     &put_fixture.token,
                     &*put_fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -1966,6 +1962,7 @@ functions:
                     &update_fixture.token,
                     &TypeBridgeIid::new("0x20").unwrap(),
                     &*update_fixture.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2003,6 +2000,7 @@ functions:
                     read,
                     &read_fixture.token,
                     &TypeBridgeIid::new("0x20").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut read_thing,
                     &mut diagnostics,
@@ -2050,6 +2048,7 @@ functions:
                     &write_fixture.token,
                     &*write_fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -2064,6 +2063,7 @@ functions:
                     write,
                     &write_fixture.token,
                     &TypeBridgeIid::new("0x30").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut read_thing,
                     &mut diagnostics,
@@ -2081,6 +2081,7 @@ functions:
                     &TypeBridgeIid::new("0x30").unwrap(),
                     &*write_fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -2095,6 +2096,7 @@ functions:
                     write,
                     &write_fixture.token,
                     &TypeBridgeIid::new("0x30").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -2128,6 +2130,7 @@ functions:
                     &insert.token,
                     &*insert.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -2152,6 +2155,7 @@ functions:
                     &put.token,
                     &*put.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -2175,6 +2179,7 @@ functions:
                     &update.token,
                     &TypeBridgeIid::new("0x22").unwrap(),
                     &*update.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2208,6 +2213,7 @@ functions:
                     &owned.token,
                     &TypeBridgeIid::new("0x20").unwrap(),
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -2222,6 +2228,7 @@ functions:
                     &*owned.database,
                     &owned.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -2235,6 +2242,7 @@ functions:
                     &*owned.database,
                     &owned.token,
                     &TypeBridgeIid::new("0x20").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -2272,6 +2280,7 @@ functions:
                     &read_fixture.token,
                     &TypeBridgeIid::new("0x20").unwrap(),
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -2284,6 +2293,7 @@ functions:
                 type_bridge_read_transaction_relation_count(
                     read,
                     &read_fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -2330,6 +2340,7 @@ functions:
                     &write_fixture.token,
                     &*write_fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut result,
                     &mut diagnostics,
                 )
@@ -2341,6 +2352,7 @@ functions:
                         write,
                         &write_fixture.token,
                         &*write_fixture.create,
+                        ptr::null(),
                         ptr::null(),
                         &mut result,
                         &mut diagnostics,
@@ -2355,6 +2367,7 @@ functions:
                         &write_fixture.token,
                         &TypeBridgeIid::new("0x31").unwrap(),
                         ptr::null(),
+                        ptr::null(),
                         &mut thing,
                         &mut diagnostics,
                     )
@@ -2368,6 +2381,7 @@ functions:
                         &write_fixture.token,
                         &TypeBridgeIid::new("0x31").unwrap(),
                         &*write_fixture.create,
+                        ptr::null(),
                         ptr::null(),
                         &mut result,
                         &mut diagnostics,
@@ -2385,6 +2399,7 @@ functions:
                     &write_fixture.token,
                     &TypeBridgeIid::new("0x31").unwrap(),
                     ptr::null(),
+                    ptr::null(),
                     &mut diagnostics,
                 )
             },
@@ -2395,6 +2410,7 @@ functions:
                 type_bridge_write_transaction_relation_count(
                     write,
                     &write_fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -2431,6 +2447,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2469,6 +2486,7 @@ functions:
                         &*ambiguous.database,
                         &ambiguous.token,
                         &*ambiguous.create,
+                        ptr::null(),
                         ptr::null(),
                         &mut thing,
                         &mut diagnostics,
@@ -2570,6 +2588,7 @@ functions:
                     &event_token,
                     &TypeBridgeIid::new("0x11").unwrap(),
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -2639,6 +2658,7 @@ functions:
                 &membership_token,
                 &*create,
                 ptr::null(),
+                ptr::null(),
                 &mut thing,
                 &mut diagnostics,
             )
@@ -2649,6 +2669,7 @@ functions:
                 &*target_database,
                 &membership_token,
                 &*create,
+                ptr::null(),
                 ptr::null(),
                 &mut thing,
                 &mut diagnostics,
@@ -2661,6 +2682,7 @@ functions:
                 &membership_token,
                 &TypeBridgeIid::new("0x20").unwrap(),
                 &*create,
+                ptr::null(),
                 ptr::null(),
                 &mut thing,
                 &mut diagnostics,
@@ -2690,6 +2712,7 @@ functions:
                     &*provider_failure.database,
                     &provider_failure.token,
                     &*provider_failure.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2731,6 +2754,7 @@ functions:
                         &*fixture.database,
                         &fixture.token,
                         &*fixture.create,
+                        ptr::null(),
                         ptr::null(),
                         &mut thing,
                         &mut diagnostics,
@@ -2775,6 +2799,7 @@ functions:
                     transaction,
                     &fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -2790,6 +2815,7 @@ functions:
                 type_bridge_write_transaction_relation_count(
                     transaction,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -2844,6 +2870,7 @@ functions:
                     read,
                     &read_fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -2855,6 +2882,7 @@ functions:
                 type_bridge_read_transaction_relation_count(
                     read,
                     &read_fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -2890,6 +2918,7 @@ functions:
                         &*fixture.database,
                         &fixture.token,
                         &TypeBridgeIid::new("0x20").unwrap(),
+                        ptr::null(),
                         ptr::null(),
                         &mut diagnostics,
                     )
@@ -2940,6 +2969,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*fixture.create,
+                    ptr::null(),
                     cancellation,
                     &mut thing,
                     &mut diagnostics,
@@ -2947,7 +2977,7 @@ functions:
             },
             TypeBridgeStatus::Cancelled
         );
-        assert_eq!(diagnostic(diagnostics).1, "cancelled_before_dispatch");
+        assert_eq!(diagnostic(diagnostics).1, "provider_cancelled");
         close_diagnostics(&mut diagnostics);
 
         let foreign = package("foreignrelation");
@@ -2958,6 +2988,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*foreign_create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2987,6 +3018,7 @@ functions:
                     &fixture.token,
                     &*event_create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -3006,6 +3038,7 @@ functions:
                 type_bridge_database_relation_count(
                     &*fixture.database,
                     &entity_token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -3027,6 +3060,7 @@ functions:
                     &forged,
                     &TypeBridgeIid::new("0x20").unwrap(),
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -3043,6 +3077,7 @@ functions:
                 type_bridge_database_relation_get_by_iid(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     ptr::null(),
                     &mut thing,
@@ -3064,6 +3099,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     database_output,
                     &mut untouched,
                 )
@@ -3079,6 +3115,7 @@ functions:
                 type_bridge_database_relation_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     model_output,
                     &mut untouched,
@@ -3096,6 +3133,7 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     create_output.cast(),
                     &mut untouched,
                 )
@@ -3108,6 +3146,7 @@ functions:
                 type_bridge_database_relation_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     cancellation,
                     cancellation_output,
                     &mut untouched,
@@ -3135,6 +3174,7 @@ functions:
                     &fixture.token,
                     iid,
                     ptr::null(),
+                    ptr::null(),
                     ptr::addr_of_mut!(iid_storage).cast(),
                     &mut untouched,
                 )
@@ -3151,6 +3191,7 @@ functions:
                 type_bridge_database_relation_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -3191,6 +3232,7 @@ functions:
                     transaction,
                     &transaction_fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     transaction_output,
                     &mut untouched,
                 )
@@ -3205,6 +3247,7 @@ functions:
                     transaction,
                     &transaction_fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -3216,547 +3259,5 @@ functions:
             unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
-    }
-}
-
-/// Put one exact projected entity using one owned write transaction and commit.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_put(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    create: *const TypeBridgeProjectedCreate,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(create),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_put_call(
-            CrudKind::Entity,
-            WriteTarget::Database(&*database),
-            prepared,
-            model,
-            create,
-            cancellation,
-        )
-    }
-}
-
-/// Read one exact projected entity by IID using one owned read transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_get_by_iid(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: *const TypeBridgeIid,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(iid),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_get_call(
-            CrudKind::Entity,
-            ReadTarget::Database(&*database),
-            prepared,
-            model,
-            iid,
-            cancellation,
-        )
-    }
-}
-
-/// Replace and rehydrate one exact projected entity, then commit once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_update(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: *const TypeBridgeIid,
-    create: *const TypeBridgeProjectedCreate,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(iid),
-                MemoryRange::of_object(create),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_write_thing_call(
-            CrudKind::Entity,
-            WriteTarget::Database(&*database),
-            prepared,
-            model,
-            create,
-            Some(iid),
-            cancellation,
-        )
-    }
-}
-
-/// Blind-delete one exact projected entity by IID and commit once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_delete_by_iid(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: *const TypeBridgeIid,
-    cancellation: *const TypeBridgeCancellation,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges and the complete target are retained until preparation.
-    let prepared = match unsafe {
-        prepare_diagnostics_output_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(iid),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_delete_call(
-            CrudKind::Entity,
-            WriteTarget::Database(&*database),
-            prepared,
-            model,
-            iid,
-            cancellation,
-        )
-    }
-}
-
-/// Count exact projected entity instances using one owned read transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_count(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    cancellation: *const TypeBridgeCancellation,
-    out_count: *mut u64,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges and the complete target are retained until preparation.
-    let prepared = match unsafe {
-        prepare_count_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_count,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_count_call(
-            CrudKind::Entity,
-            ReadTarget::Database(&*database),
-            prepared,
-            model,
-            cancellation,
-        )
-    }
-}
-
-/// Read one exact entity without consuming the caller's read transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_read_transaction_entity_get_by_iid(
-    transaction: *const TypeBridgeReadTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: *const TypeBridgeIid,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::ReadTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(iid),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_get_call(
-            CrudKind::Entity,
-            ReadTarget::ReadTransaction(&*transaction),
-            prepared,
-            model,
-            iid,
-            cancellation,
-        )
-    }
-}
-
-/// Count exact entities without consuming the caller's read transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_read_transaction_entity_count(
-    transaction: *const TypeBridgeReadTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    cancellation: *const TypeBridgeCancellation,
-    out_count: *mut u64,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges and the complete target are retained until preparation.
-    let prepared = match unsafe {
-        prepare_count_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::ReadTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_count,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_count_call(
-            CrudKind::Entity,
-            ReadTarget::ReadTransaction(&*transaction),
-            prepared,
-            model,
-            cancellation,
-        )
-    }
-}
-
-macro_rules! invoke_write_transaction_create {
-    (insert, $target:expr, $prepared:expr, $model:expr, $create:expr, $cancellation:expr, $out_thing:expr, $out_diagnostics:expr $(,)?) => {
-        run_write_thing_call(
-            CrudKind::Entity,
-            $target,
-            $prepared,
-            $model,
-            $create,
-            None,
-            $cancellation,
-        )
-    };
-    (put, $target:expr, $prepared:expr, $model:expr, $create:expr, $cancellation:expr, $out_thing:expr, $out_diagnostics:expr $(,)?) => {
-        run_put_call(
-            CrudKind::Entity,
-            $target,
-            $prepared,
-            $model,
-            $create,
-            $cancellation,
-        )
-    };
-}
-
-macro_rules! write_transaction_create_operation {
-    ($name:ident, $operation:ident) => {
-        #[doc = "Execute one exact entity mutation without terminally consuming the write transaction."]
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(
-            transaction: *const TypeBridgeWriteTransaction,
-            model: *const TypeBridgeProjectedTokenV1,
-            create: *const TypeBridgeProjectedCreate,
-            cancellation: *const TypeBridgeCancellation,
-            out_thing: *mut *mut TypeBridgeProjectedBatchResult,
-            out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-        ) -> TypeBridgeStatus {
-            // SAFETY: all caller input ranges are described before any output write.
-            let prepared = match unsafe {
-                prepare_thing_outputs_for_legacy_policy_target(
-                    LegacyPolicyTarget::WriteTransaction(transaction),
-                    &[
-                        MemoryRange::of_object(transaction),
-                        MemoryRange::of_object(model),
-                        MemoryRange::of_object(create),
-                        MemoryRange::of_object(cancellation),
-                    ],
-                    out_thing,
-                    out_diagnostics,
-                )
-            } {
-                Ok(value) => value,
-                Err(status) => return status,
-            };
-            if transaction.is_null() {
-                return TypeBridgeStatus::InvalidArgument;
-            }
-            // SAFETY: caller provides serialized access to the live transaction handle.
-            unsafe {
-                invoke_write_transaction_create!(
-                    $operation,
-                    WriteTarget::Transaction(&*transaction),
-                    prepared,
-                    model,
-                    create,
-                    cancellation,
-                    out_thing,
-                    out_diagnostics,
-                )
-            }
-        }
-    };
-}
-
-write_transaction_create_operation!(type_bridge_write_transaction_entity_insert, insert);
-write_transaction_create_operation!(type_bridge_write_transaction_entity_put, put);
-
-/// Update one exact entity without consuming the caller's write transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_write_transaction_entity_update(
-    transaction: *const TypeBridgeWriteTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: *const TypeBridgeIid,
-    create: *const TypeBridgeProjectedCreate,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedBatchResult,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::WriteTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(iid),
-                MemoryRange::of_object(create),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_write_thing_call(
-            CrudKind::Entity,
-            WriteTarget::Transaction(&*transaction),
-            prepared,
-            model,
-            create,
-            Some(iid),
-            cancellation,
-        )
-    }
-}
-
-/// Read one exact entity without consuming the caller's write transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_write_transaction_entity_get_by_iid(
-    transaction: *const TypeBridgeWriteTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: *const TypeBridgeIid,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::WriteTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(iid),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_get_call(
-            CrudKind::Entity,
-            ReadTarget::WriteTransaction(&*transaction),
-            prepared,
-            model,
-            iid,
-            cancellation,
-        )
-    }
-}
-
-/// Blind-delete one entity without consuming the caller's write transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_write_transaction_entity_delete_by_iid(
-    transaction: *const TypeBridgeWriteTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: *const TypeBridgeIid,
-    cancellation: *const TypeBridgeCancellation,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges and the complete target are retained until preparation.
-    let prepared = match unsafe {
-        prepare_diagnostics_output_for_legacy_policy_target(
-            LegacyPolicyTarget::WriteTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(iid),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_delete_call(
-            CrudKind::Entity,
-            WriteTarget::Transaction(&*transaction),
-            prepared,
-            model,
-            iid,
-            cancellation,
-        )
-    }
-}
-
-/// Count exact entities without consuming the caller's write transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_write_transaction_entity_count(
-    transaction: *const TypeBridgeWriteTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    cancellation: *const TypeBridgeCancellation,
-    out_count: *mut u64,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges and the complete target are retained until preparation.
-    let prepared = match unsafe {
-        prepare_count_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::WriteTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_count,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_count_call(
-            CrudKind::Entity,
-            ReadTarget::WriteTransaction(&*transaction),
-            prepared,
-            model,
-            cancellation,
-        )
     }
 }

@@ -771,190 +771,190 @@ macro_rules! define_count {
 }
 
 define_database_create!(
-    type_bridge_database_entity_insert_v2_impl,
-    "type_bridge_database_entity_insert_v2",
+    type_bridge_database_entity_insert,
+    "type_bridge_database_entity_insert",
     CrudKind::Entity,
     CreateOperation::Insert
 );
 define_database_create!(
-    type_bridge_database_entity_put_v2_impl,
-    "type_bridge_database_entity_put_v2",
+    type_bridge_database_entity_put,
+    "type_bridge_database_entity_put",
     CrudKind::Entity,
     CreateOperation::Put
 );
 define_get!(
-    type_bridge_database_entity_get_by_iid_v2_impl,
-    "type_bridge_database_entity_get_by_iid_v2",
+    type_bridge_database_entity_get_by_iid,
+    "type_bridge_database_entity_get_by_iid",
     CrudKind::Entity,
     TypeBridgeDatabase,
     Database
 );
 define_update!(
-    type_bridge_database_entity_update_v2_impl,
-    "type_bridge_database_entity_update_v2",
+    type_bridge_database_entity_update,
+    "type_bridge_database_entity_update",
     CrudKind::Entity,
     TypeBridgeDatabase,
     Database
 );
 define_delete!(
-    type_bridge_database_entity_delete_by_iid_v2_impl,
-    "type_bridge_database_entity_delete_by_iid_v2",
+    type_bridge_database_entity_delete_by_iid,
+    "type_bridge_database_entity_delete_by_iid",
     CrudKind::Entity,
     TypeBridgeDatabase,
     Database
 );
 define_count!(
-    type_bridge_database_entity_count_v2_impl,
-    "type_bridge_database_entity_count_v2",
+    type_bridge_database_entity_count,
+    "type_bridge_database_entity_count",
     CrudKind::Entity,
     TypeBridgeDatabase,
     Database
 );
 define_get!(
-    type_bridge_read_transaction_entity_get_by_iid_v2_impl,
-    "type_bridge_read_transaction_entity_get_by_iid_v2",
+    type_bridge_read_transaction_entity_get_by_iid,
+    "type_bridge_read_transaction_entity_get_by_iid",
     CrudKind::Entity,
     TypeBridgeReadTransaction,
     ReadTransaction
 );
 define_count!(
-    type_bridge_read_transaction_entity_count_v2_impl,
-    "type_bridge_read_transaction_entity_count_v2",
+    type_bridge_read_transaction_entity_count,
+    "type_bridge_read_transaction_entity_count",
     CrudKind::Entity,
     TypeBridgeReadTransaction,
     ReadTransaction
 );
 define_write_transaction_create!(
-    type_bridge_write_transaction_entity_insert_v2_impl,
-    "type_bridge_write_transaction_entity_insert_v2",
+    type_bridge_write_transaction_entity_insert,
+    "type_bridge_write_transaction_entity_insert",
     CrudKind::Entity,
     CreateOperation::Insert
 );
 define_write_transaction_create!(
-    type_bridge_write_transaction_entity_put_v2_impl,
-    "type_bridge_write_transaction_entity_put_v2",
+    type_bridge_write_transaction_entity_put,
+    "type_bridge_write_transaction_entity_put",
     CrudKind::Entity,
     CreateOperation::Put
 );
 define_get!(
-    type_bridge_write_transaction_entity_get_by_iid_v2_impl,
-    "type_bridge_write_transaction_entity_get_by_iid_v2",
+    type_bridge_write_transaction_entity_get_by_iid,
+    "type_bridge_write_transaction_entity_get_by_iid",
     CrudKind::Entity,
     TypeBridgeWriteTransaction,
     WriteTransaction
 );
 define_update!(
-    type_bridge_write_transaction_entity_update_v2_impl,
-    "type_bridge_write_transaction_entity_update_v2",
+    type_bridge_write_transaction_entity_update,
+    "type_bridge_write_transaction_entity_update",
     CrudKind::Entity,
     TypeBridgeWriteTransaction,
     Transaction
 );
 define_delete!(
-    type_bridge_write_transaction_entity_delete_by_iid_v2_impl,
-    "type_bridge_write_transaction_entity_delete_by_iid_v2",
+    type_bridge_write_transaction_entity_delete_by_iid,
+    "type_bridge_write_transaction_entity_delete_by_iid",
     CrudKind::Entity,
     TypeBridgeWriteTransaction,
     Transaction
 );
 define_count!(
-    type_bridge_write_transaction_entity_count_v2_impl,
-    "type_bridge_write_transaction_entity_count_v2",
+    type_bridge_write_transaction_entity_count,
+    "type_bridge_write_transaction_entity_count",
     CrudKind::Entity,
     TypeBridgeWriteTransaction,
     WriteTransaction
 );
 
 define_database_create!(
-    type_bridge_database_relation_insert_v2_impl,
-    "type_bridge_database_relation_insert_v2",
+    type_bridge_database_relation_insert,
+    "type_bridge_database_relation_insert",
     CrudKind::Relation,
     CreateOperation::Insert
 );
 define_database_create!(
-    type_bridge_database_relation_put_v2_impl,
-    "type_bridge_database_relation_put_v2",
+    type_bridge_database_relation_put,
+    "type_bridge_database_relation_put",
     CrudKind::Relation,
     CreateOperation::Put
 );
 define_get!(
-    type_bridge_database_relation_get_by_iid_v2_impl,
-    "type_bridge_database_relation_get_by_iid_v2",
+    type_bridge_database_relation_get_by_iid,
+    "type_bridge_database_relation_get_by_iid",
     CrudKind::Relation,
     TypeBridgeDatabase,
     Database
 );
 define_update!(
-    type_bridge_database_relation_update_v2_impl,
-    "type_bridge_database_relation_update_v2",
+    type_bridge_database_relation_update,
+    "type_bridge_database_relation_update",
     CrudKind::Relation,
     TypeBridgeDatabase,
     Database
 );
 define_delete!(
-    type_bridge_database_relation_delete_by_iid_v2_impl,
-    "type_bridge_database_relation_delete_by_iid_v2",
+    type_bridge_database_relation_delete_by_iid,
+    "type_bridge_database_relation_delete_by_iid",
     CrudKind::Relation,
     TypeBridgeDatabase,
     Database
 );
 define_count!(
-    type_bridge_database_relation_count_v2_impl,
-    "type_bridge_database_relation_count_v2",
+    type_bridge_database_relation_count,
+    "type_bridge_database_relation_count",
     CrudKind::Relation,
     TypeBridgeDatabase,
     Database
 );
 define_get!(
-    type_bridge_read_transaction_relation_get_by_iid_v2_impl,
-    "type_bridge_read_transaction_relation_get_by_iid_v2",
+    type_bridge_read_transaction_relation_get_by_iid,
+    "type_bridge_read_transaction_relation_get_by_iid",
     CrudKind::Relation,
     TypeBridgeReadTransaction,
     ReadTransaction
 );
 define_count!(
-    type_bridge_read_transaction_relation_count_v2_impl,
-    "type_bridge_read_transaction_relation_count_v2",
+    type_bridge_read_transaction_relation_count,
+    "type_bridge_read_transaction_relation_count",
     CrudKind::Relation,
     TypeBridgeReadTransaction,
     ReadTransaction
 );
 define_write_transaction_create!(
-    type_bridge_write_transaction_relation_insert_v2_impl,
-    "type_bridge_write_transaction_relation_insert_v2",
+    type_bridge_write_transaction_relation_insert,
+    "type_bridge_write_transaction_relation_insert",
     CrudKind::Relation,
     CreateOperation::Insert
 );
 define_write_transaction_create!(
-    type_bridge_write_transaction_relation_put_v2_impl,
-    "type_bridge_write_transaction_relation_put_v2",
+    type_bridge_write_transaction_relation_put,
+    "type_bridge_write_transaction_relation_put",
     CrudKind::Relation,
     CreateOperation::Put
 );
 define_get!(
-    type_bridge_write_transaction_relation_get_by_iid_v2_impl,
-    "type_bridge_write_transaction_relation_get_by_iid_v2",
+    type_bridge_write_transaction_relation_get_by_iid,
+    "type_bridge_write_transaction_relation_get_by_iid",
     CrudKind::Relation,
     TypeBridgeWriteTransaction,
     WriteTransaction
 );
 define_update!(
-    type_bridge_write_transaction_relation_update_v2_impl,
-    "type_bridge_write_transaction_relation_update_v2",
+    type_bridge_write_transaction_relation_update,
+    "type_bridge_write_transaction_relation_update",
     CrudKind::Relation,
     TypeBridgeWriteTransaction,
     Transaction
 );
 define_delete!(
-    type_bridge_write_transaction_relation_delete_by_iid_v2_impl,
-    "type_bridge_write_transaction_relation_delete_by_iid_v2",
+    type_bridge_write_transaction_relation_delete_by_iid,
+    "type_bridge_write_transaction_relation_delete_by_iid",
     CrudKind::Relation,
     TypeBridgeWriteTransaction,
     Transaction
 );
 define_count!(
-    type_bridge_write_transaction_relation_count_v2_impl,
-    "type_bridge_write_transaction_relation_count_v2",
+    type_bridge_write_transaction_relation_count,
+    "type_bridge_write_transaction_relation_count",
     CrudKind::Relation,
     TypeBridgeWriteTransaction,
     WriteTransaction
@@ -978,10 +978,6 @@ mod tests {
         diagnostic, documents, fixture, fixture_with_answer_ceiling, membership_document,
         person_document, relation_fixture, relation_fixture_with_answer_ceiling,
     };
-    use crate::entity_crud::{
-        type_bridge_database_entity_insert, type_bridge_write_transaction_entity_delete_by_iid,
-    };
-    use crate::relation_crud::type_bridge_read_transaction_relation_count;
     use crate::runtime::{
         type_bridge_cancellation_close, type_bridge_cancellation_open,
         type_bridge_cancellation_request, type_bridge_database_server_version,
@@ -1100,8 +1096,10 @@ mod tests {
         create_call: DatabaseCreate,
         get_call: DatabaseGet,
         count_call: DatabaseCount,
+        use_null: bool,
     ) {
-        let limits = default_limits();
+        let descriptor = default_limits();
+        let limits = if use_null { ptr::null() } else { &descriptor };
         let mut thing = ptr::dangling_mut();
         let mut diagnostics = ptr::dangling_mut();
         // SAFETY: the fixture retains all immutable inputs and distinct outputs.
@@ -1110,7 +1108,7 @@ mod tests {
                 database,
                 token,
                 create,
-                &limits,
+                limits,
                 ptr::null(),
                 &mut thing,
                 &mut diagnostics,
@@ -1140,7 +1138,7 @@ mod tests {
                     database,
                     token,
                     &TypeBridgeIid::new(std::str::from_utf8(iid).unwrap()).unwrap(),
-                    &limits,
+                    limits,
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1158,7 +1156,7 @@ mod tests {
                 count_call(
                     database,
                     token,
-                    &limits,
+                    limits,
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1177,8 +1175,10 @@ mod tests {
         iid: &[u8],
         get_call: ReadGet,
         count_call: ReadCount,
+        use_null: bool,
     ) {
-        let limits = default_limits();
+        let descriptor = default_limits();
+        let limits = if use_null { ptr::null() } else { &descriptor };
         let mut transaction = ptr::null_mut();
         let mut diagnostics = ptr::dangling_mut();
         // SAFETY: both output owner slots are distinct and writable.
@@ -1202,7 +1202,7 @@ mod tests {
                     transaction,
                     token,
                     &TypeBridgeIid::new(std::str::from_utf8(iid).unwrap()).unwrap(),
-                    &limits,
+                    limits,
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1218,7 +1218,7 @@ mod tests {
                 count_call(
                     transaction,
                     token,
-                    &limits,
+                    limits,
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1243,8 +1243,10 @@ mod tests {
         create_call: WriteCreate,
         get_call: WriteGet,
         count_call: WriteCount,
+        use_null: bool,
     ) {
-        let limits = default_limits();
+        let descriptor = default_limits();
+        let limits = if use_null { ptr::null() } else { &descriptor };
         let mut transaction = ptr::null_mut();
         let mut diagnostics = ptr::dangling_mut();
         // SAFETY: both output owner slots are distinct and writable.
@@ -1268,7 +1270,7 @@ mod tests {
                     transaction,
                     token,
                     create,
-                    &limits,
+                    limits,
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1285,7 +1287,7 @@ mod tests {
                     transaction,
                     token,
                     &TypeBridgeIid::new(std::str::from_utf8(iid).unwrap()).unwrap(),
-                    &limits,
+                    limits,
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1301,7 +1303,7 @@ mod tests {
                 count_call(
                     transaction,
                     token,
-                    &limits,
+                    limits,
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1318,117 +1320,161 @@ mod tests {
     }
 
     #[test]
-    fn entity_relation_database_read_and_write_matrix_is_policy_aware_and_owned() {
-        let entity_database = fixture(
-            vec![
-                documents(vec![person_document("0x10")]),
-                documents(vec![person_document("0x10")]),
-                count_response(1),
-            ],
-            COMMIT_SUCCESS,
-        );
-        exercise_database_lane(
-            &entity_database.database,
-            &entity_database.token,
-            &entity_database.create,
-            b"0x10",
-            type_bridge_database_entity_insert_v2_impl,
-            type_bridge_database_entity_get_by_iid_v2_impl,
-            type_bridge_database_entity_count_v2_impl,
-        );
-        assert_eq!(entity_database.state.commits.load(Ordering::Acquire), 1);
-        assert_eq!(entity_database.state.query_count(), 3);
+    fn database_null_policy_preserves_default_provider_bytes_and_results() {
+        let mut observations = Vec::new();
+        for use_null in [true, false] {
+            let entity_database = fixture(
+                vec![
+                    documents(vec![person_document("0x10")]),
+                    documents(vec![person_document("0x10")]),
+                    count_response(1),
+                ],
+                COMMIT_SUCCESS,
+            );
+            exercise_database_lane(
+                &entity_database.database,
+                &entity_database.token,
+                &entity_database.create,
+                b"0x10",
+                type_bridge_database_entity_insert,
+                type_bridge_database_entity_get_by_iid,
+                type_bridge_database_entity_count,
+                use_null,
+            );
+            assert_eq!(entity_database.state.commits.load(Ordering::Acquire), 1);
+            assert_eq!(entity_database.state.query_count(), 3);
 
-        let relation_database = relation_fixture(
-            vec![
-                documents(vec![membership_document("0x20")]),
-                documents(vec![membership_document("0x20")]),
-                count_response(1),
-            ],
-            COMMIT_SUCCESS,
-        );
-        exercise_database_lane(
-            &relation_database.database,
-            &relation_database.token,
-            &relation_database.create,
-            b"0x20",
-            type_bridge_database_relation_insert_v2_impl,
-            type_bridge_database_relation_get_by_iid_v2_impl,
-            type_bridge_database_relation_count_v2_impl,
-        );
-        assert_eq!(relation_database.state.commits.load(Ordering::Acquire), 1);
-        assert_eq!(relation_database.state.query_count(), 3);
+            let relation_database = relation_fixture(
+                vec![
+                    documents(vec![membership_document("0x20")]),
+                    documents(vec![membership_document("0x20")]),
+                    count_response(1),
+                ],
+                COMMIT_SUCCESS,
+            );
+            exercise_database_lane(
+                &relation_database.database,
+                &relation_database.token,
+                &relation_database.create,
+                b"0x20",
+                type_bridge_database_relation_insert,
+                type_bridge_database_relation_get_by_iid,
+                type_bridge_database_relation_count,
+                use_null,
+            );
+            assert_eq!(relation_database.state.commits.load(Ordering::Acquire), 1);
+            assert_eq!(relation_database.state.query_count(), 3);
 
-        let entity_read = fixture(
-            vec![documents(vec![person_document("0x10")]), count_response(1)],
-            COMMIT_SUCCESS,
-        );
-        exercise_read_lane(
-            &entity_read.database,
-            &entity_read.token,
-            b"0x10",
-            type_bridge_read_transaction_entity_get_by_iid_v2_impl,
-            type_bridge_read_transaction_entity_count_v2_impl,
-        );
-        assert_eq!(entity_read.state.commits.load(Ordering::Acquire), 0);
+            observations.push((
+                entity_database.state.query_texts(),
+                relation_database.state.query_texts(),
+                entity_database.state.opened_transactions(),
+                relation_database.state.opened_transactions(),
+            ));
+        }
+        assert_eq!(observations[0], observations[1]);
+    }
 
-        let relation_read = relation_fixture(
-            vec![
-                documents(vec![membership_document("0x20")]),
-                count_response(1),
-            ],
-            COMMIT_SUCCESS,
-        );
-        exercise_read_lane(
-            &relation_read.database,
-            &relation_read.token,
-            b"0x20",
-            type_bridge_read_transaction_relation_get_by_iid_v2_impl,
-            type_bridge_read_transaction_relation_count_v2_impl,
-        );
-        assert_eq!(relation_read.state.commits.load(Ordering::Acquire), 0);
+    #[test]
+    fn read_null_policy_preserves_default_provider_bytes_and_results() {
+        let mut observations = Vec::new();
+        for use_null in [true, false] {
+            let entity_read = fixture(
+                vec![documents(vec![person_document("0x10")]), count_response(1)],
+                COMMIT_SUCCESS,
+            );
+            exercise_read_lane(
+                &entity_read.database,
+                &entity_read.token,
+                b"0x10",
+                type_bridge_read_transaction_entity_get_by_iid,
+                type_bridge_read_transaction_entity_count,
+                use_null,
+            );
+            assert_eq!(entity_read.state.commits.load(Ordering::Acquire), 0);
 
-        let entity_write = fixture(
-            vec![
-                documents(vec![person_document("0x10")]),
-                documents(vec![person_document("0x10")]),
-                count_response(1),
-            ],
-            COMMIT_SUCCESS,
-        );
-        exercise_write_lane(
-            &entity_write.database,
-            &entity_write.token,
-            &entity_write.create,
-            b"0x10",
-            type_bridge_write_transaction_entity_insert_v2_impl,
-            type_bridge_write_transaction_entity_get_by_iid_v2_impl,
-            type_bridge_write_transaction_entity_count_v2_impl,
-        );
-        assert_eq!(entity_write.state.commits.load(Ordering::Acquire), 0);
-        assert_eq!(entity_write.state.query_count(), 3);
-        assert_eq!(entity_write.state.rollbacks.load(Ordering::Acquire), 1);
+            let relation_read = relation_fixture(
+                vec![
+                    documents(vec![membership_document("0x20")]),
+                    count_response(1),
+                ],
+                COMMIT_SUCCESS,
+            );
+            exercise_read_lane(
+                &relation_read.database,
+                &relation_read.token,
+                b"0x20",
+                type_bridge_read_transaction_relation_get_by_iid,
+                type_bridge_read_transaction_relation_count,
+                use_null,
+            );
+            assert_eq!(relation_read.state.commits.load(Ordering::Acquire), 0);
 
-        let relation_write = relation_fixture(
-            vec![
-                documents(vec![membership_document("0x20")]),
-                documents(vec![membership_document("0x20")]),
-                count_response(1),
-            ],
-            COMMIT_SUCCESS,
-        );
-        exercise_write_lane(
-            &relation_write.database,
-            &relation_write.token,
-            &relation_write.create,
-            b"0x20",
-            type_bridge_write_transaction_relation_insert_v2_impl,
-            type_bridge_write_transaction_relation_get_by_iid_v2_impl,
-            type_bridge_write_transaction_relation_count_v2_impl,
-        );
-        assert_eq!(relation_write.state.commits.load(Ordering::Acquire), 0);
-        assert_eq!(relation_write.state.query_count(), 3);
-        assert_eq!(relation_write.state.rollbacks.load(Ordering::Acquire), 1);
+            observations.push((
+                entity_read.state.query_texts(),
+                relation_read.state.query_texts(),
+                entity_read.state.opened_transactions(),
+                relation_read.state.opened_transactions(),
+            ));
+        }
+        assert_eq!(observations[0], observations[1]);
+    }
+
+    #[test]
+    fn write_null_policy_preserves_default_provider_bytes_and_results() {
+        let mut observations = Vec::new();
+        for use_null in [true, false] {
+            let entity_write = fixture(
+                vec![
+                    documents(vec![person_document("0x10")]),
+                    documents(vec![person_document("0x10")]),
+                    count_response(1),
+                ],
+                COMMIT_SUCCESS,
+            );
+            exercise_write_lane(
+                &entity_write.database,
+                &entity_write.token,
+                &entity_write.create,
+                b"0x10",
+                type_bridge_write_transaction_entity_insert,
+                type_bridge_write_transaction_entity_get_by_iid,
+                type_bridge_write_transaction_entity_count,
+                use_null,
+            );
+            assert_eq!(entity_write.state.commits.load(Ordering::Acquire), 0);
+            assert_eq!(entity_write.state.query_count(), 3);
+            assert_eq!(entity_write.state.rollbacks.load(Ordering::Acquire), 1);
+
+            let relation_write = relation_fixture(
+                vec![
+                    documents(vec![membership_document("0x20")]),
+                    documents(vec![membership_document("0x20")]),
+                    count_response(1),
+                ],
+                COMMIT_SUCCESS,
+            );
+            exercise_write_lane(
+                &relation_write.database,
+                &relation_write.token,
+                &relation_write.create,
+                b"0x20",
+                type_bridge_write_transaction_relation_insert,
+                type_bridge_write_transaction_relation_get_by_iid,
+                type_bridge_write_transaction_relation_count,
+                use_null,
+            );
+            assert_eq!(relation_write.state.commits.load(Ordering::Acquire), 0);
+            assert_eq!(relation_write.state.query_count(), 3);
+            assert_eq!(relation_write.state.rollbacks.load(Ordering::Acquire), 1);
+            observations.push((
+                entity_write.state.query_texts(),
+                relation_write.state.query_texts(),
+                entity_write.state.opened_transactions(),
+                relation_write.state.opened_transactions(),
+            ));
+        }
+        assert_eq!(observations[0], observations[1]);
     }
 
     #[test]
@@ -1441,7 +1487,7 @@ mod tests {
         // SAFETY: all immutable inputs and output slots are valid and distinct.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_count_v2_impl(
+                type_bridge_database_entity_count(
                     &*invalid.database,
                     &invalid.token,
                     &limits,
@@ -1467,7 +1513,7 @@ mod tests {
         // SAFETY: the hostile output intentionally aliases complete limits input storage.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_count_v2_impl(
+                type_bridge_database_entity_count(
                     &*alias.database,
                     &alias.token,
                     &limits,
@@ -1491,7 +1537,7 @@ mod tests {
         // SAFETY: the zero item ceiling is a valid, explicit policy.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*zero.database,
                     &zero.token,
                     &*zero.create,
@@ -1513,7 +1559,7 @@ mod tests {
         // SAFETY: all inputs remain live; the deterministic reservation fails pre-provider.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*allocation.database,
                     &allocation.token,
                     &*allocation.create,
@@ -1538,7 +1584,7 @@ mod tests {
         // SAFETY: complete roots reserve their Arc storage while the write is uncommitted.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*storage_allocation.database,
                     &storage_allocation.token,
                     &*storage_allocation.create,
@@ -1576,7 +1622,7 @@ mod tests {
         // SAFETY: the V2 call retains the requested signal and all immutable inputs.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*cancelled.database,
                     &cancelled.token,
                     &*cancelled.create,
@@ -1604,7 +1650,7 @@ mod tests {
         // SAFETY: inputs remain live while the explicit deadline expires.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*deadline.database,
                     &deadline.token,
                     &*deadline.create,
@@ -1634,7 +1680,7 @@ mod tests {
         // SAFETY: the test retains every immutable input and both output slots.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*deadline.database,
                     &deadline.token,
                     &*deadline.create,
@@ -1654,7 +1700,7 @@ mod tests {
         // The deadline checkpoint did not consume the armed result reservation failure.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*deadline.database,
                     &deadline.token,
                     &*deadline.create,
@@ -1685,7 +1731,7 @@ mod tests {
         // SAFETY: the requested cancellation and fixture handles remain live.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*cancelled.database,
                     &cancelled.token,
                     &*cancelled.create,
@@ -1707,7 +1753,7 @@ mod tests {
         // Cancellation also leaves the result reservation failure untouched.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*cancelled.database,
                     &cancelled.token,
                     &*cancelled.create,
@@ -1742,7 +1788,7 @@ mod tests {
         // deep preflight must reject it before attempting a write.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*fixture.database,
                     &fixture.token,
                     &*fixture.create,
@@ -1763,7 +1809,7 @@ mod tests {
         // SAFETY: the hostile count output aliases retained package bytes.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_count_v2_impl(
+                type_bridge_database_entity_count(
                     &*fixture.database,
                     &fixture.token,
                     &limits,
@@ -1792,7 +1838,7 @@ mod tests {
         // SAFETY: the hostile count output aliases the database's exposed version view.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_count_v2_impl(
+                type_bridge_database_entity_count(
                     &*fixture.database,
                     &fixture.token,
                     &limits,
@@ -1832,7 +1878,7 @@ mod tests {
         // the read transaction; transaction deep preflight must reject it.
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_entity_count_v2_impl(
+                type_bridge_read_transaction_entity_count(
                     read_transaction,
                     &fixture.token,
                     &limits,
@@ -1877,7 +1923,7 @@ mod tests {
         // the write transaction; transaction deep preflight must reject it.
         assert_eq!(
             unsafe {
-                type_bridge_write_transaction_entity_insert_v2_impl(
+                type_bridge_write_transaction_entity_insert(
                     write_transaction,
                     &fixture.token,
                     &*fixture.create,
@@ -1938,6 +1984,7 @@ mod tests {
                     &database.token,
                     &*database.create,
                     ptr::null(),
+                    ptr::null(),
                     forged_thing.cast(),
                     &mut diagnostics,
                 )
@@ -1984,6 +2031,7 @@ mod tests {
                 type_bridge_read_transaction_relation_count(
                     read_transaction,
                     &read.token,
+                    ptr::null(),
                     ptr::null(),
                     forged_count,
                     &mut diagnostics,
@@ -2042,6 +2090,7 @@ mod tests {
                     &write.token,
                     &TypeBridgeIid::new("0x10").unwrap(),
                     ptr::null(),
+                    ptr::null(),
                     forged_diagnostics,
                 )
             },
@@ -2078,7 +2127,7 @@ mod tests {
     }
 
     #[test]
-    fn in_flight_v2_cancellation_rolls_back_but_legacy_policy_route_ignores_it() {
+    fn in_flight_cancellation_rolls_back_with_null_and_explicit_policies() {
         let controlled = fixture(vec![Response::Pending], COMMIT_SUCCESS);
         let limits = default_limits();
         let mut cancellation = ptr::null_mut();
@@ -2093,7 +2142,7 @@ mod tests {
         // SAFETY: the fixture and cancellation owner outlive the blocking call.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*controlled.database,
                     &controlled.token,
                     &*controlled.create,
@@ -2118,7 +2167,7 @@ mod tests {
             TypeBridgeStatus::Ok
         );
 
-        let legacy = fixture_with_answer_ceiling(
+        let defaulted = fixture_with_answer_ceiling(
             vec![Response::Delayed(QueryResult::Documents(vec![
                 person_document("0x10"),
             ]))],
@@ -2130,27 +2179,29 @@ mod tests {
             unsafe { type_bridge_cancellation_open(&mut cancellation) },
             TypeBridgeStatus::Ok
         );
-        let requester = request_after_dispatch(Arc::clone(&legacy.state), cancellation);
-        // SAFETY: Cancellation is checked before dispatch.
+        let requester = request_after_dispatch(Arc::clone(&defaulted.state), cancellation);
+        // SAFETY: the default policy also observes cancellation during dispatch.
         assert_eq!(
             unsafe {
                 type_bridge_database_entity_insert(
-                    &*legacy.database,
-                    &legacy.token,
-                    &*legacy.create,
+                    &*defaulted.database,
+                    &defaulted.token,
+                    &*defaulted.create,
+                    ptr::null(),
                     cancellation,
                     &mut thing,
                     &mut diagnostics,
                 )
             },
-            TypeBridgeStatus::Ok
+            TypeBridgeStatus::Cancelled
         );
         assert_eq!(requester.join().unwrap(), TypeBridgeStatus::Ok);
-        assert!(!thing.is_null());
-        assert!(diagnostics.is_null());
-        assert_eq!(legacy.state.query_count(), 1);
-        assert_eq!(legacy.state.commits.load(Ordering::Acquire), 1);
-        close_result(&mut thing);
+        assert!(thing.is_null());
+        assert_eq!(diagnostic(diagnostics).1, "provider_cancelled");
+        assert_eq!(defaulted.state.query_count(), 1);
+        assert_eq!(defaulted.state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(defaulted.state.rollbacks.load(Ordering::Acquire), 1);
+        close_diagnostics(&mut diagnostics);
         // SAFETY: close consumes the cancellation owner slot.
         assert_eq!(
             unsafe { type_bridge_cancellation_close(&mut cancellation) },
@@ -2179,6 +2230,7 @@ mod tests {
                     &inherited.token,
                     &*inherited.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -2199,7 +2251,7 @@ mod tests {
         // SAFETY: all inputs and outputs remain valid through the blocking call.
         assert_eq!(
             unsafe {
-                type_bridge_database_entity_insert_v2_impl(
+                type_bridge_database_entity_insert(
                     &*fixture.database,
                     &fixture.token,
                     &*fixture.create,

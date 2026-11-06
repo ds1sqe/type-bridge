@@ -4,7 +4,7 @@ static type_bridge_status_t (*const keyed_insert_v2)(
     const type_bridge_database_t *, const acme_v3_keyed_create *,
     const type_bridge_query_execution_limits_v1_t *,
     const type_bridge_cancellation_t *, acme_v3_keyed_insert_batch_result **,
-    type_bridge_execution_diagnostics_t **) = acme_v3_keyed_database_insert_v2;
+    type_bridge_execution_diagnostics_t **) = acme_v3_keyed_database_insert;
 static type_bridge_status_t (*const keyed_add)(
     acme_v3_keyed_insert_batch_builder *, const acme_v3_keyed_create *,
     type_bridge_execution_diagnostics_t **) = acme_v3_keyed_insert_batch_builder_add;
@@ -81,4 +81,13 @@ int main(void) {
   (void)keyed_manager_read_exists;
   (void)keyed_manager_result_at;
   return 0;
+}
+
+void unkeyed_put_remains_available(void) {
+  type_bridge_status_t (*value)(
+      const type_bridge_database_t *, const acme_v3_unkeyed_create *,
+      const type_bridge_query_execution_limits_v1_t *,
+      const type_bridge_cancellation_t *, acme_v3_unkeyed_put_batch_result **,
+      type_bridge_execution_diagnostics_t **) = acme_v3_unkeyed_database_put;
+  (void)value;
 }

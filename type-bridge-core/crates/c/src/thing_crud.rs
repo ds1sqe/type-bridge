@@ -1,7 +1,6 @@
 //! Shared generated-only exact thing CRUD over projected tokens and opaque values.
 
 use crate::iid::TypeBridgeIid;
-use std::ffi::c_void;
 use std::mem::size_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
@@ -15,14 +14,12 @@ use type_bridge_orm::projected_crud::ProjectedCrudInvocationControl;
 use type_bridge_orm::{
     AnswerCancellation, ProjectedBatchInvocationControl, ProjectedCrudExecutor,
     ProjectedManagerFilter, ProjectedManagerFilterExecutor,
-    ProjectedManagerFilterInvocationControl, ProjectedThing, QueryExecutionResourceLimits, TxType,
-    lower_execution_error,
+    ProjectedManagerFilterInvocationControl, ProjectedThing, QueryExecutionResourceLimits,
 };
 
 use crate::abi::{SchemaPackageState, TypeBridgeStatus, guarded};
 use crate::allocation::{AllocationSite, ReservedBox, allocation_exhausted};
 use crate::execution_diagnostic::{TypeBridgeExecutionDiagnostics, return_execution_error};
-use crate::generated_preflight::{DirectOutputPreflight, direct_output_preflight};
 use crate::policy::parse_common_limits;
 use crate::projected_batch::TypeBridgeProjectedBatchResult;
 use crate::projected_model::{TypeBridgeProjectedCreate, TypeBridgeProjectedThing};
@@ -31,9 +28,7 @@ use crate::projected_value::{invalid_brand_diagnostic, same_package_brand};
 use crate::query::TypeBridgeQueryExecutionLimitsV1;
 use crate::runtime::{
     TypeBridgeCancellation, TypeBridgeDatabase, TypeBridgeReadTransaction,
-    TypeBridgeWriteTransaction, check_database_borrowed_ranges,
-    check_read_transaction_borrowed_ranges, check_write_transaction_borrowed_ranges,
-    poisoned_transaction_diagnostic,
+    TypeBridgeWriteTransaction, poisoned_transaction_diagnostic,
 };
 
 #[cfg(test)]
@@ -209,10 +204,6 @@ impl CrudKind {
     }
 }
 
-fn cancelled() -> SdkExecutionDiagnostic {
-    SdkExecutionDiagnostic::cancelled_before_dispatch()
-}
-
 unsafe fn copied_iid(
     kind: CrudKind,
     iid: *const TypeBridgeIid,
@@ -255,19 +246,6 @@ fn validate_create(
         return Err(kind.create_model_mismatch());
     }
     Ok(())
-}
-
-fn check_cancellation(
-    cancellation: *const TypeBridgeCancellation,
-) -> Result<(), SdkExecutionDiagnostic> {
-    if !cancellation.is_null()
-        // SAFETY: the caller retains the immutable cancellation handle for this call.
-        && unsafe { &*cancellation }.is_requested_before_dispatch()
-    {
-        Err(cancelled())
-    } else {
-        Ok(())
-    }
 }
 
 fn initialize_count_outputs(
@@ -320,89 +298,8 @@ pub(crate) struct PreparedDiagnosticsOutput {
     diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 }
 
-/// Raw legacy CRUD target used only to inherit V2-origin output fences.
-#[derive(Clone, Copy)]
-pub(crate) enum LegacyPolicyTarget {
-    Database(*const TypeBridgeDatabase),
-    ReadTransaction(*const TypeBridgeReadTransaction),
-    WriteTransaction(*const TypeBridgeWriteTransaction),
-}
-
-impl LegacyPolicyTarget {
-    unsafe fn has_answer_policy(self) -> bool {
-        match self {
-            Self::Database(pointer) => {
-                !pointer.is_null()
-                    // SAFETY: the caller retains the complete database handle.
-                    && unsafe { &*pointer }.answer_limits().is_some()
-            }
-            Self::ReadTransaction(pointer) => {
-                !pointer.is_null()
-                    // SAFETY: the caller retains the complete read-transaction handle.
-                    && unsafe { &*pointer }.answer_limits().is_some()
-            }
-            Self::WriteTransaction(pointer) => {
-                !pointer.is_null()
-                    // SAFETY: the caller retains the complete write-transaction handle.
-                    && unsafe { &*pointer }.answer_limits().is_some()
-            }
-        }
-    }
-
-    unsafe fn check_borrowed_ranges(
-        self,
-        preflight: &DirectOutputPreflight,
-    ) -> Result<(), TypeBridgeStatus> {
-        match self {
-            Self::Database(pointer) => {
-                if pointer.is_null() {
-                    return Ok(());
-                }
-                // SAFETY: the caller retains a complete database handle, and
-                // its outer range was fenced before this conditional walk.
-                let handle = unsafe { &*pointer };
-                check_database_borrowed_ranges(preflight, handle)?;
-            }
-            Self::ReadTransaction(pointer) => {
-                if pointer.is_null() {
-                    return Ok(());
-                }
-                // SAFETY: the caller retains a complete read-transaction handle,
-                // and its outer range was fenced before this conditional walk.
-                let handle = unsafe { &*pointer };
-                check_read_transaction_borrowed_ranges(preflight, handle)?;
-            }
-            Self::WriteTransaction(pointer) => {
-                if pointer.is_null() {
-                    return Ok(());
-                }
-                // SAFETY: the caller retains a complete write-transaction handle,
-                // and its outer range was fenced before this conditional walk.
-                let handle = unsafe { &*pointer };
-                check_write_transaction_borrowed_ranges(preflight, handle)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-unsafe fn check_legacy_policy_target_outputs(
-    target: LegacyPolicyTarget,
-    outputs: &[(*mut c_void, usize)],
-) -> Result<(), TypeBridgeStatus> {
-    // SAFETY: the caller retains the complete target after fencing its outer range.
-    if !unsafe { target.has_answer_policy() } {
-        return Ok(());
-    }
-    let preflight = direct_output_preflight(outputs)?;
-    // SAFETY: each legacy entry point retains its complete raw target through
-    // preparation, after fencing the outer target against these outputs.
-    unsafe { target.check_borrowed_ranges(&preflight) }
-}
-
-unsafe fn prepare_thing_outputs_inner<T>(
+pub(crate) unsafe fn prepare_thing_outputs<T>(
     inputs: &[Option<MemoryRange>],
-    legacy_policy_target: Option<LegacyPolicyTarget>,
     out_thing: *mut *mut T,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> Result<PreparedThingOutputs<T>, TypeBridgeStatus> {
@@ -413,21 +310,7 @@ unsafe fn prepare_thing_outputs_inner<T>(
     if any_input_aliases_outputs(inputs, &outputs) {
         return Err(TypeBridgeStatus::InvalidArgument);
     }
-    if let Some(target) = legacy_policy_target {
-        // SAFETY: the complete raw target is among the input ranges fenced above.
-        unsafe {
-            check_legacy_policy_target_outputs(
-                target,
-                &[
-                    (out_thing.cast(), size_of::<*mut T>()),
-                    (
-                        out_diagnostics.cast(),
-                        size_of::<*mut TypeBridgeExecutionDiagnostics>(),
-                    ),
-                ],
-            )?
-        };
-    }
+
     if !out_thing.is_null() {
         // SAFETY: input aliasing was rejected and the C slot is caller-writable.
         // Unaligned stores keep hostile partially-overlapping slots contained.
@@ -446,28 +329,8 @@ unsafe fn prepare_thing_outputs_inner<T>(
     })
 }
 
-pub(crate) unsafe fn prepare_thing_outputs<T>(
+pub(crate) fn prepare_count_outputs(
     inputs: &[Option<MemoryRange>],
-    out_thing: *mut *mut T,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> Result<PreparedThingOutputs<T>, TypeBridgeStatus> {
-    // SAFETY: this compatibility wrapper adds no target dereference.
-    unsafe { prepare_thing_outputs_inner(inputs, None, out_thing, out_diagnostics) }
-}
-
-pub(crate) unsafe fn prepare_thing_outputs_for_legacy_policy_target<T>(
-    target: LegacyPolicyTarget,
-    inputs: &[Option<MemoryRange>],
-    out_thing: *mut *mut T,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> Result<PreparedThingOutputs<T>, TypeBridgeStatus> {
-    // SAFETY: the caller retains the complete raw target and writable outputs.
-    unsafe { prepare_thing_outputs_inner(inputs, Some(target), out_thing, out_diagnostics) }
-}
-
-unsafe fn prepare_count_outputs_inner(
-    inputs: &[Option<MemoryRange>],
-    legacy_policy_target: Option<LegacyPolicyTarget>,
     out_count: *mut u64,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> Result<PreparedCountOutputs, TypeBridgeStatus> {
@@ -478,70 +341,10 @@ unsafe fn prepare_count_outputs_inner(
     if any_input_aliases_outputs(inputs, &outputs) {
         return Err(TypeBridgeStatus::InvalidArgument);
     }
-    if let Some(target) = legacy_policy_target {
-        // SAFETY: the complete raw target is among the input ranges fenced above.
-        unsafe {
-            check_legacy_policy_target_outputs(
-                target,
-                &[
-                    (out_count.cast(), size_of::<u64>()),
-                    (
-                        out_diagnostics.cast(),
-                        size_of::<*mut TypeBridgeExecutionDiagnostics>(),
-                    ),
-                ],
-            )?
-        };
-    }
+
     initialize_count_outputs(out_count, out_diagnostics)?;
     Ok(PreparedCountOutputs {
         count: out_count,
-        diagnostics: out_diagnostics,
-    })
-}
-
-pub(crate) fn prepare_count_outputs(
-    inputs: &[Option<MemoryRange>],
-    out_count: *mut u64,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> Result<PreparedCountOutputs, TypeBridgeStatus> {
-    // SAFETY: this compatibility wrapper adds no target dereference.
-    unsafe { prepare_count_outputs_inner(inputs, None, out_count, out_diagnostics) }
-}
-
-pub(crate) unsafe fn prepare_count_outputs_for_legacy_policy_target(
-    target: LegacyPolicyTarget,
-    inputs: &[Option<MemoryRange>],
-    out_count: *mut u64,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> Result<PreparedCountOutputs, TypeBridgeStatus> {
-    // SAFETY: the caller retains the complete raw target and writable outputs.
-    unsafe { prepare_count_outputs_inner(inputs, Some(target), out_count, out_diagnostics) }
-}
-
-unsafe fn prepare_diagnostics_output_inner(
-    inputs: &[Option<MemoryRange>],
-    legacy_policy_target: Option<LegacyPolicyTarget>,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> Result<PreparedDiagnosticsOutput, TypeBridgeStatus> {
-    let outputs = [MemoryRange::of_output(out_diagnostics)];
-    if any_input_aliases_outputs(inputs, &outputs) {
-        return Err(TypeBridgeStatus::InvalidArgument);
-    }
-    if let Some(target) = legacy_policy_target {
-        // SAFETY: the complete raw target is among the input ranges fenced above.
-        unsafe {
-            check_legacy_policy_target_outputs(
-                target,
-                &[(
-                    out_diagnostics.cast(),
-                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
-                )],
-            )?
-        };
-    }
-    initialize_diagnostics_output(out_diagnostics)?;
-    Ok(PreparedDiagnosticsOutput {
         diagnostics: out_diagnostics,
     })
 }
@@ -550,17 +353,15 @@ pub(crate) fn prepare_diagnostics_output(
     inputs: &[Option<MemoryRange>],
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> Result<PreparedDiagnosticsOutput, TypeBridgeStatus> {
-    // SAFETY: this compatibility wrapper adds no target dereference.
-    unsafe { prepare_diagnostics_output_inner(inputs, None, out_diagnostics) }
-}
+    let outputs = [MemoryRange::of_output(out_diagnostics)];
+    if any_input_aliases_outputs(inputs, &outputs) {
+        return Err(TypeBridgeStatus::InvalidArgument);
+    }
 
-pub(crate) unsafe fn prepare_diagnostics_output_for_legacy_policy_target(
-    target: LegacyPolicyTarget,
-    inputs: &[Option<MemoryRange>],
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> Result<PreparedDiagnosticsOutput, TypeBridgeStatus> {
-    // SAFETY: the caller retains the complete raw target and writable output.
-    unsafe { prepare_diagnostics_output_inner(inputs, Some(target), out_diagnostics) }
+    initialize_diagnostics_output(out_diagnostics)?;
+    Ok(PreparedDiagnosticsOutput {
+        diagnostics: out_diagnostics,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -600,13 +401,6 @@ impl WriteTarget<'_> {
         }
     }
 
-    fn answer_limits(&self) -> Option<QueryExecutionResourceLimits> {
-        match self {
-            Self::Database(handle) => handle.answer_limits(),
-            Self::Transaction(handle) => handle.answer_limits(),
-        }
-    }
-
     fn manager_target(
         &self,
         kind: CrudKind,
@@ -623,24 +417,6 @@ impl WriteTarget<'_> {
                 Ok(crate::manager_target::Target::Write(value))
             }
         }
-    }
-
-    fn run_thing_mutation(
-        &self,
-        kind: CrudKind,
-        operation: ThingMutation<'_>,
-        _expected_model: &TypeId,
-        create: &TypeBridgeProjectedCreate,
-    ) -> Result<TypeBridgeProjectedBatchResult, CrudFailure> {
-        self.run_thing_mutation_controlled(
-            kind,
-            operation,
-            create,
-            ProjectedBatchInvocationControl::capture(
-                self.answer_ceiling(),
-                AnswerCancellation::default(),
-            ),
-        )
     }
 
     fn run_thing_mutation_controlled(
@@ -748,18 +524,6 @@ impl WriteTarget<'_> {
         }
     }
 
-    fn run_delete(&self, kind: CrudKind, type_id: &TypeId, iid: &str) -> Result<(), CrudFailure> {
-        self.run_delete_controlled(
-            kind,
-            type_id,
-            iid,
-            ProjectedBatchInvocationControl::capture(
-                self.answer_ceiling(),
-                AnswerCancellation::default(),
-            ),
-        )
-    }
-
     fn run_delete_controlled(
         &self,
         kind: CrudKind,
@@ -811,14 +575,6 @@ impl ReadTarget<'_> {
         }
     }
 
-    fn answer_limits(&self) -> Option<QueryExecutionResourceLimits> {
-        match self {
-            Self::Database(handle) => handle.answer_limits(),
-            Self::ReadTransaction(handle) => handle.answer_limits(),
-            Self::WriteTransaction(handle) => handle.answer_limits(),
-        }
-    }
-
     fn preflight_get(&self, kind: CrudKind) -> Result<(), CrudFailure> {
         match self {
             Self::Database(_) => Ok(()),
@@ -841,23 +597,6 @@ impl ReadTarget<'_> {
                     .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))
             }
         }
-    }
-
-    fn run_get(
-        &self,
-        kind: CrudKind,
-        type_id: &TypeId,
-        iid: &str,
-    ) -> Result<Option<Arc<ProjectedThing>>, CrudFailure> {
-        self.run_get_controlled(
-            kind,
-            type_id,
-            iid,
-            ProjectedManagerFilterInvocationControl::capture(
-                self.answer_ceiling(),
-                AnswerCancellation::default(),
-            ),
-        )
     }
 
     fn run_get_controlled(
@@ -885,92 +624,6 @@ impl ReadTarget<'_> {
         }))
         .map_err(|_| CrudFailure::Panic)?
         .map_err(|error| CrudFailure::Diagnostic(error.into_diagnostic(SdkProviderOperation::Read)))
-    }
-
-    fn run_count(&self, kind: CrudKind, type_id: &TypeId) -> Result<u64, CrudFailure> {
-        match self {
-            Self::Database(database) => {
-                let context = catch_unwind(AssertUnwindSafe(|| {
-                    database.open_transaction_context(TxType::Read)
-                }))
-                .map_err(|_| CrudFailure::Panic)?
-                .map_err(|error| {
-                    CrudFailure::Diagnostic(lower_execution_error(
-                        error,
-                        SdkProviderOperation::OpenReadTransaction,
-                    ))
-                })?;
-                let executor =
-                    ProjectedCrudExecutor::new(&database.package_state().installed_projection);
-                let executed = catch_unwind(AssertUnwindSafe(|| match kind {
-                    CrudKind::Entity => {
-                        database.block_on(executor.count_entities_in_transaction(&context, type_id))
-                    }
-                    CrudKind::Relation => database
-                        .block_on(executor.count_relations_in_transaction(&context, type_id)),
-                }));
-                let result = match executed {
-                    Ok(result) => result.map_err(CrudFailure::Diagnostic),
-                    Err(_) => Err(CrudFailure::Panic),
-                };
-                let closed = catch_unwind(AssertUnwindSafe(|| {
-                    database.close_transaction_context(&context)
-                }));
-                match (result, closed) {
-                    (Err(failure), _) => Err(failure),
-                    (Ok(_), Err(_)) => Err(CrudFailure::Panic),
-                    (Ok(_), Ok(Err(error))) => Err(CrudFailure::Diagnostic(lower_execution_error(
-                        error,
-                        SdkProviderOperation::Close,
-                    ))),
-                    (Ok(value), Ok(Ok(()))) => Ok(value),
-                }
-            }
-            Self::ReadTransaction(transaction) => {
-                if transaction.is_poisoned() {
-                    return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
-                }
-                let context = transaction
-                    .context()
-                    .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
-                let executor =
-                    ProjectedCrudExecutor::new(&transaction.package_state().installed_projection);
-                match catch_unwind(AssertUnwindSafe(|| match kind {
-                    CrudKind::Entity => transaction
-                        .block_on(executor.count_entities_in_transaction(context, type_id)),
-                    CrudKind::Relation => transaction
-                        .block_on(executor.count_relations_in_transaction(context, type_id)),
-                })) {
-                    Ok(result) => result.map_err(CrudFailure::Diagnostic),
-                    Err(_) => {
-                        transaction.mark_poisoned();
-                        Err(CrudFailure::Panic)
-                    }
-                }
-            }
-            Self::WriteTransaction(transaction) => {
-                if transaction.is_poisoned() {
-                    return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
-                }
-                let context = transaction
-                    .context()
-                    .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
-                let executor =
-                    ProjectedCrudExecutor::new(&transaction.package_state().installed_projection);
-                match catch_unwind(AssertUnwindSafe(|| match kind {
-                    CrudKind::Entity => transaction
-                        .block_on(executor.count_entities_in_transaction(context, type_id)),
-                    CrudKind::Relation => transaction
-                        .block_on(executor.count_relations_in_transaction(context, type_id)),
-                })) {
-                    Ok(result) => result.map_err(CrudFailure::Diagnostic),
-                    Err(_) => {
-                        transaction.mark_poisoned();
-                        Err(CrudFailure::Panic)
-                    }
-                }
-            }
-        }
     }
 
     fn run_count_controlled(
@@ -1373,294 +1026,6 @@ pub(crate) unsafe fn run_count_call_controlled(
             return return_execution_error(diagnostic, out_diagnostics);
         }
         match target.run_count_controlled(kind, &type_id, control) {
-            Ok(count) => {
-                // SAFETY: the output was initialized and remains caller-writable.
-                unsafe { out_count.write(count) };
-                TypeBridgeStatus::Ok
-            }
-            Err(failure) => return_failure(failure, out_diagnostics),
-        }
-    })
-}
-
-pub(crate) unsafe fn run_write_thing_call(
-    kind: CrudKind,
-    target: WriteTarget<'_>,
-    prepared: PreparedThingOutputs<TypeBridgeProjectedBatchResult>,
-    model: *const TypeBridgeProjectedTokenV1,
-    create: *const TypeBridgeProjectedCreate,
-    iid: Option<*const TypeBridgeIid>,
-    cancellation: *const TypeBridgeCancellation,
-) -> TypeBridgeStatus {
-    let PreparedThingOutputs {
-        thing: out_thing,
-        diagnostics: out_diagnostics,
-    } = prepared;
-    guarded(|| {
-        let policy_control = target.answer_limits().map(|limits| {
-            ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default())
-        });
-        // SAFETY: generated token storage is caller-readable for this call.
-        let expected_model = match unsafe { resolve_model(kind, target.package_state(), model) } {
-            Ok(value) => value,
-            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-        };
-        if create.is_null() {
-            return TypeBridgeStatus::InvalidArgument;
-        }
-        // SAFETY: caller retains the immutable create handle during this call.
-        let create = unsafe { &*create };
-        if let Err(diagnostic) =
-            validate_create(kind, target.package_state(), &expected_model, create)
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        let copied_iid = match iid {
-            Some(iid) => {
-                // SAFETY: the bounded byte view remains caller-readable until copied.
-                match unsafe { copied_iid(kind, iid) } {
-                    Ok(value) => Some(value),
-                    Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-                }
-            }
-            None => None,
-        };
-        if let Err(diagnostic) = check_cancellation(cancellation) {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        if let Err(failure) = target.preflight_thing_mutation(kind, create) {
-            return return_failure(failure, out_diagnostics);
-        }
-        delay_controlled_crud_checkpoint();
-        if let Some(control) = &policy_control
-            && let Err(diagnostic) = control.checkpoint()
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        let reservation = match ReservedBox::try_new(AllocationSite::CrudWriteResultHandle) {
-            Ok(value) => value,
-            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
-        };
-        let operation = copied_iid
-            .as_deref()
-            .map_or(ThingMutation::Insert, ThingMutation::Update);
-        let result = match policy_control {
-            Some(control) => target.run_thing_mutation_controlled(kind, operation, create, control),
-            None => target.run_thing_mutation(kind, operation, &expected_model, create),
-        };
-        match result {
-            Ok(thing) => {
-                // SAFETY: preflight fenced the initialized result output.
-                unsafe {
-                    out_thing.write_unaligned(Box::into_raw(reservation.initialize(thing)));
-                }
-                TypeBridgeStatus::Ok
-            }
-            Err(failure) => return_failure(failure, out_diagnostics),
-        }
-    })
-}
-
-pub(crate) unsafe fn run_put_call(
-    kind: CrudKind,
-    target: WriteTarget<'_>,
-    prepared: PreparedThingOutputs<TypeBridgeProjectedBatchResult>,
-    model: *const TypeBridgeProjectedTokenV1,
-    create: *const TypeBridgeProjectedCreate,
-    cancellation: *const TypeBridgeCancellation,
-) -> TypeBridgeStatus {
-    let PreparedThingOutputs {
-        thing: out_thing,
-        diagnostics: out_diagnostics,
-    } = prepared;
-    guarded(|| {
-        let policy_control = target.answer_limits().map(|limits| {
-            ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default())
-        });
-        // SAFETY: generated token storage is caller-readable for this call.
-        let expected_model = match unsafe { resolve_model(kind, target.package_state(), model) } {
-            Ok(value) => value,
-            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-        };
-        if create.is_null() {
-            return TypeBridgeStatus::InvalidArgument;
-        }
-        // SAFETY: caller retains the immutable create handle during this call.
-        let create = unsafe { &*create };
-        if let Err(diagnostic) =
-            validate_create(kind, target.package_state(), &expected_model, create)
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        if let Err(diagnostic) = check_cancellation(cancellation) {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        if let Err(failure) = target.preflight_thing_mutation(kind, create) {
-            return return_failure(failure, out_diagnostics);
-        }
-        delay_controlled_crud_checkpoint();
-        if let Some(control) = &policy_control
-            && let Err(diagnostic) = control.checkpoint()
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        let reservation = match ReservedBox::try_new(AllocationSite::CrudWriteResultHandle) {
-            Ok(value) => value,
-            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
-        };
-        let result = match policy_control {
-            Some(control) => {
-                target.run_thing_mutation_controlled(kind, ThingMutation::Put, create, control)
-            }
-            None => target.run_thing_mutation(kind, ThingMutation::Put, &expected_model, create),
-        };
-        match result {
-            Ok(thing) => {
-                // SAFETY: preflight fenced the initialized result output.
-                unsafe {
-                    out_thing.write_unaligned(Box::into_raw(reservation.initialize(thing)));
-                }
-                TypeBridgeStatus::Ok
-            }
-            Err(failure) => return_failure(failure, out_diagnostics),
-        }
-    })
-}
-
-pub(crate) unsafe fn run_get_call(
-    kind: CrudKind,
-    target: ReadTarget<'_>,
-    prepared: PreparedThingOutputs,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: *const TypeBridgeIid,
-    cancellation: *const TypeBridgeCancellation,
-) -> TypeBridgeStatus {
-    let PreparedThingOutputs {
-        thing: out_thing,
-        diagnostics: out_diagnostics,
-    } = prepared;
-    guarded(|| {
-        let policy_control = target.answer_limits().map(|limits| {
-            ProjectedManagerFilterInvocationControl::capture(limits, AnswerCancellation::default())
-        });
-        // SAFETY: generated token storage is caller-readable for this call.
-        let type_id = match unsafe { resolve_model(kind, target.package_state(), model) } {
-            Ok(value) => value,
-            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-        };
-        // SAFETY: the bounded byte view remains caller-readable until copied.
-        let iid = match unsafe { copied_iid(kind, iid) } {
-            Ok(value) => value,
-            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-        };
-        if let Err(diagnostic) = check_cancellation(cancellation) {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        if let Err(failure) = target.preflight_get(kind) {
-            return return_failure(failure, out_diagnostics);
-        }
-        delay_controlled_crud_checkpoint();
-        if let Some(control) = &policy_control
-            && let Err(diagnostic) = control.checkpoint(&type_id)
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        let reservation = match ReservedBox::try_new(AllocationSite::ProjectedThingHandle) {
-            Ok(value) => value,
-            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
-        };
-        let result = match policy_control {
-            Some(control) => target.run_get_controlled(kind, &type_id, &iid, control),
-            None => target.run_get(kind, &type_id, &iid),
-        };
-        match result {
-            Ok(Some(thing)) => {
-                store_thing(target.package_state(), thing, reservation, out_thing);
-                TypeBridgeStatus::Ok
-            }
-            Ok(None) => TypeBridgeStatus::Ok,
-            Err(failure) => return_failure(failure, out_diagnostics),
-        }
-    })
-}
-
-pub(crate) unsafe fn run_delete_call(
-    kind: CrudKind,
-    target: WriteTarget<'_>,
-    prepared: PreparedDiagnosticsOutput,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: *const TypeBridgeIid,
-    cancellation: *const TypeBridgeCancellation,
-) -> TypeBridgeStatus {
-    let out_diagnostics = prepared.diagnostics;
-    guarded(|| {
-        let policy_control = target.answer_limits().map(|limits| {
-            ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default())
-        });
-        // SAFETY: generated token storage is caller-readable for this call.
-        let type_id = match unsafe { resolve_model(kind, target.package_state(), model) } {
-            Ok(value) => value,
-            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-        };
-        // SAFETY: the bounded byte view remains caller-readable until copied.
-        let iid = match unsafe { copied_iid(kind, iid) } {
-            Ok(value) => value,
-            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-        };
-        if let Err(diagnostic) = check_cancellation(cancellation) {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        delay_controlled_crud_checkpoint();
-        if let Some(control) = &policy_control
-            && let Err(diagnostic) = control.checkpoint()
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        let result = match policy_control {
-            Some(control) => target.run_delete_controlled(kind, &type_id, &iid, control),
-            None => target.run_delete(kind, &type_id, &iid),
-        };
-        match result {
-            Ok(()) => TypeBridgeStatus::Ok,
-            Err(failure) => return_failure(failure, out_diagnostics),
-        }
-    })
-}
-
-pub(crate) unsafe fn run_count_call(
-    kind: CrudKind,
-    target: ReadTarget<'_>,
-    prepared: PreparedCountOutputs,
-    model: *const TypeBridgeProjectedTokenV1,
-    cancellation: *const TypeBridgeCancellation,
-) -> TypeBridgeStatus {
-    let PreparedCountOutputs {
-        count: out_count,
-        diagnostics: out_diagnostics,
-    } = prepared;
-    guarded(|| {
-        let policy_control = target.answer_limits().map(|limits| {
-            ProjectedCrudInvocationControl::capture(limits, AnswerCancellation::default())
-        });
-        // SAFETY: generated token storage is caller-readable for this call.
-        let type_id = match unsafe { resolve_model(kind, target.package_state(), model) } {
-            Ok(value) => value,
-            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-        };
-        if let Err(diagnostic) = check_cancellation(cancellation) {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        delay_controlled_crud_checkpoint();
-        if let Some(control) = &policy_control
-            && let Err(diagnostic) = control.checkpoint(&type_id)
-        {
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        let result = match policy_control {
-            Some(control) => target.run_count_controlled(kind, &type_id, control),
-            None => target.run_count(kind, &type_id),
-        };
-        match result {
             Ok(count) => {
                 // SAFETY: the output was initialized and remains caller-writable.
                 unsafe { out_count.write(count) };

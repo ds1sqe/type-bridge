@@ -492,12 +492,12 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
         );
     }
     for wrapper in [
-        "acme_v3_keyed_database_insert_v2",
-        "acme_v3_keyed_database_put_v2",
-        "acme_v3_keyed_read_transaction_get_by_iid_v2",
-        "acme_v3_keyed_write_transaction_update_v2",
-        "acme_v3_membership_write_transaction_delete_by_iid_v2",
-        "acme_v3_membership_database_count_v2",
+        "acme_v3_keyed_database_insert",
+        "acme_v3_keyed_database_put",
+        "acme_v3_keyed_read_transaction_get_by_iid",
+        "acme_v3_keyed_write_transaction_update",
+        "acme_v3_membership_write_transaction_delete_by_iid",
+        "acme_v3_membership_database_count",
         "acme_v3_keyed_insert_batch_builder_open",
         "acme_v3_keyed_insert_batch_builder_add",
         "acme_v3_keyed_insert_batch_builder_finish",
@@ -523,13 +523,13 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
             "successor wrapper {wrapper} does not have header-local static-inline linkage",
         );
     }
+    assert!(header.contains("static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_unkeyed_database_put("));
+    assert!(header.contains("static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_unkeyed_write_transaction_put("));
+    assert!(header.contains("static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_gathering_database_put("));
+    assert!(header.contains("static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_v3_gathering_write_transaction_put("));
     for forbidden in [
-        "acme_v3_unkeyed_database_put_v2",
-        "acme_v3_unkeyed_write_transaction_put_v2",
         "acme_v3_unkeyed_put_batch_builder",
         "acme_v3_unkeyed_database_put_batch_execute",
-        "acme_v3_gathering_database_put_v2",
-        "acme_v3_gathering_write_transaction_put_v2",
         "acme_v3_gathering_put_batch_builder",
         "acme_v3_gathering_database_put_batch_execute",
         "acme_v3_keyed_delete_batch_result_thing_at",
@@ -543,9 +543,9 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
         );
     }
     for generic in [
-        "type_bridge_database_entity_insert_v2(",
-        "type_bridge_read_transaction_entity_count_v2(",
-        "type_bridge_write_transaction_relation_update_v2(",
+        "type_bridge_database_entity_insert(",
+        "type_bridge_read_transaction_entity_count(",
+        "type_bridge_write_transaction_relation_update(",
         "type_bridge_projected_batch_builder_open_v1(",
         "type_bridge_projected_batch_builder_add_v1(",
         "type_bridge_projected_batch_builder_finish(",
@@ -561,12 +561,12 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
         );
     }
     assert!(
-        !source.contains("acme_v3_keyed_database_insert_v2(")
+        !source.contains("acme_v3_keyed_database_insert(")
             && !source.contains("acme_v3_keyed_insert_batch_builder_open("),
         "nominal CRUD and batch successors must not add generated source exports",
     );
 
-    let crud_insert = emitted_function_definition(header, "acme_v3_keyed_database_insert_v2");
+    let crud_insert = emitted_function_definition(header, "acme_v3_keyed_database_insert");
     for input in [
         "TYPE_BRIDGE_GENERATED_INPUT_DATABASE",
         "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN",
@@ -857,7 +857,7 @@ fn ordered_c_v3_nominal_alias_and_recovery_wrappers_execute_provider_free() {
     write_package(&package, stage.path());
     let runtime_include = runtime_include();
     let header = std::str::from_utf8(package.get("include/acme_v3/models.h").unwrap()).unwrap();
-    let model_token = emitted_function_model_token(header, "acme_v3_keyed_database_insert_v2");
+    let model_token = emitted_function_model_token(header, "acme_v3_keyed_database_insert");
     let probe = include_str!("c_crud/recovery.c").replace("@MODEL_TOKEN@", model_token);
     assert!(!probe.contains("@MODEL_TOKEN@"));
     fs::write(stage.path().join("recovery.c"), probe).expect("recovery probe is written");
@@ -1189,13 +1189,13 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
             "generated header omitted typed relation CRUD wrapper {suffix}",
         );
     }
-    assert!(source.contains("status = type_bridge_database_entity_insert("));
-    assert!(source.contains("owner, &acme_projected_model_token_"));
-    assert!(source.contains("(const type_bridge_projected_create_t *)create, cancellation,"));
-    assert!(source.contains("status = type_bridge_read_transaction_entity_get_by_iid("));
-    assert!(source.contains("status = type_bridge_database_relation_insert("));
-    assert!(source.contains("status = type_bridge_read_transaction_relation_get_by_iid("));
-    assert!(source.contains("status = type_bridge_write_transaction_relation_update("));
+    assert!(header.contains("status = type_bridge_database_entity_insert("));
+    assert!(header.contains("owner, &acme_projected_model_token_"));
+    assert!(header.contains("(const type_bridge_projected_create_t *)create, limits, cancellation,"));
+    assert!(header.contains("status = type_bridge_read_transaction_entity_get_by_iid("));
+    assert!(header.contains("status = type_bridge_database_relation_insert("));
+    assert!(header.contains("status = type_bridge_read_transaction_relation_get_by_iid("));
+    assert!(header.contains("status = type_bridge_write_transaction_relation_update("));
     assert!(source.contains("status = type_bridge_projected_reference_validate_role("));
     assert!(
         source
@@ -2767,63 +2767,63 @@ int main(void) {
   (void)acme_membership_member(membership, &member_player, &diagnostics);
 
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_database_insert(
-      database, create, cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
+      database, create, NULL,  cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, put, acme_personzhrecord_database_put(
-      database, create, cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
+      database, create, NULL,  cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_database_get_by_iid(
-      database, iid, cancellation, &person, &diagnostics);
+      database, iid, NULL,  cancellation, &person, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, update, acme_personzhrecord_database_update(
-      database, iid, create, cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
+      database, iid, create, NULL,  cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_database_delete_by_iid(
-      database, iid, cancellation, &diagnostics);
+      database, iid, NULL,  cancellation, &diagnostics);
   (void)acme_personzhrecord_database_count(
-      database, cancellation, &entity_count, &diagnostics);
+      database, NULL,  cancellation, &entity_count, &diagnostics);
   (void)acme_personzhrecord_read_transaction_get_by_iid(
-      read_tx, iid, cancellation, &person, &diagnostics);
+      read_tx, iid, NULL,  cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_read_transaction_count(
-      read_tx, cancellation, &entity_count, &diagnostics);
+      read_tx, NULL,  cancellation, &entity_count, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_write_transaction_insert(
-      write_tx, create, cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
+      write_tx, create, NULL,  cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, put, acme_personzhrecord_write_transaction_put(
-      write_tx, create, cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
+      write_tx, create, NULL,  cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_get_by_iid(
-      write_tx, iid, cancellation, &person, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &person, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, update, acme_personzhrecord_write_transaction_update(
-      write_tx, iid, create, cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
+      write_tx, iid, create, NULL,  cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_delete_by_iid(
-      write_tx, iid, cancellation, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &diagnostics);
   (void)acme_personzhrecord_write_transaction_count(
-      write_tx, cancellation, &entity_count, &diagnostics);
+      write_tx, NULL,  cancellation, &entity_count, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_database_insert(
-      database, membership_create, cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
+      database, membership_create, NULL,  cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, put, acme_membership_database_put(
-      database, membership_create, cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
+      database, membership_create, NULL,  cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
   (void)acme_membership_database_get_by_iid(
-      database, iid, cancellation, &membership, &diagnostics);
+      database, iid, NULL,  cancellation, &membership, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, update, acme_membership_database_update(
-      database, iid, membership_create, cancellation,&acme_membership_update_result,
+      database, iid, membership_create, NULL,  cancellation,&acme_membership_update_result,
       &diagnostics), &membership, &diagnostics);
   (void)acme_membership_database_delete_by_iid(
-      database, iid, cancellation, &diagnostics);
+      database, iid, NULL,  cancellation, &diagnostics);
   (void)acme_membership_database_count(
-      database, cancellation, &entity_count, &diagnostics);
+      database, NULL,  cancellation, &entity_count, &diagnostics);
   (void)acme_membership_read_transaction_get_by_iid(
-      read_tx, iid, cancellation, &membership, &diagnostics);
+      read_tx, iid, NULL,  cancellation, &membership, &diagnostics);
   (void)acme_membership_read_transaction_count(
-      read_tx, cancellation, &entity_count, &diagnostics);
+      read_tx, NULL,  cancellation, &entity_count, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_write_transaction_insert(
-      write_tx, membership_create, cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
+      write_tx, membership_create, NULL,  cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, put, acme_membership_write_transaction_put(
-      write_tx, membership_create, cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
+      write_tx, membership_create, NULL,  cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
   (void)acme_membership_write_transaction_get_by_iid(
-      write_tx, iid, cancellation, &membership, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &membership, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, update, acme_membership_write_transaction_update(
-      write_tx, iid, membership_create, cancellation,&acme_membership_update_result,
+      write_tx, iid, membership_create, NULL,  cancellation,&acme_membership_update_result,
       &diagnostics), &membership, &diagnostics);
   (void)acme_membership_write_transaction_delete_by_iid(
-      write_tx, iid, cancellation, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &diagnostics);
   (void)acme_membership_write_transaction_count(
-      write_tx, cancellation, &entity_count, &diagnostics);
+      write_tx, NULL,  cancellation, &entity_count, &diagnostics);
   (void)acme_container_item_player_close(&item_player);
   (void)acme_membership_member_player_close(&member_player);
   (void)acme_membership_ref_close(&membership_reference);
@@ -5034,7 +5034,7 @@ int main() {
   (void)acme_personzhrecord_iid(person, &text, &diagnostics);
   (void)acme_personzhrecord_reference(person, &reference, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_database_insert(
-      database, create, cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
+      database, create, NULL,  cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_countzhvalue(person, &count_value, &diagnostics);
   (void)acme_personzhrecord_ratiozhvalue(person, &ratio_value, &diagnostics);
   (void)acme_personzhrecord_aliases_count(person, &field_count, &diagnostics);
@@ -5058,71 +5058,71 @@ int main() {
   (void)acme_membership_create_open(
       package, &membership_args, &membership_create, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_database_insert(
-      database, membership_create, cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
+      database, membership_create, NULL,  cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
   (void)acme_membership_iid(membership, &text, &diagnostics);
   (void)acme_membership_reference(
       membership, &membership_reference, &diagnostics);
   (void)acme_membership_member(membership, &member_player, &diagnostics);
 
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_database_insert(
-      database, create, cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
+      database, create, NULL,  cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, put, acme_personzhrecord_database_put(
-      database, create, cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
+      database, create, NULL,  cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_database_get_by_iid(
-      database, iid, cancellation, &person, &diagnostics);
+      database, iid, NULL,  cancellation, &person, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, update, acme_personzhrecord_database_update(
-      database, iid, create, cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
+      database, iid, create, NULL,  cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_database_delete_by_iid(
-      database, iid, cancellation, &diagnostics);
+      database, iid, NULL,  cancellation, &diagnostics);
   (void)acme_personzhrecord_database_count(
-      database, cancellation, &thing_count, &diagnostics);
+      database, NULL,  cancellation, &thing_count, &diagnostics);
   (void)acme_personzhrecord_read_transaction_get_by_iid(
-      read_tx, iid, cancellation, &person, &diagnostics);
+      read_tx, iid, NULL,  cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_read_transaction_count(
-      read_tx, cancellation, &thing_count, &diagnostics);
+      read_tx, NULL,  cancellation, &thing_count, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_write_transaction_insert(
-      write_tx, create, cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
+      write_tx, create, NULL,  cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, put, acme_personzhrecord_write_transaction_put(
-      write_tx, create, cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
+      write_tx, create, NULL,  cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_get_by_iid(
-      write_tx, iid, cancellation, &person, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &person, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_personzhrecord, update, acme_personzhrecord_write_transaction_update(
-      write_tx, iid, create, cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
+      write_tx, iid, create, NULL,  cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_delete_by_iid(
-      write_tx, iid, cancellation, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &diagnostics);
   (void)acme_personzhrecord_write_transaction_count(
-      write_tx, cancellation, &thing_count, &diagnostics);
+      write_tx, NULL,  cancellation, &thing_count, &diagnostics);
 
   (void)TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_database_insert(
-      database, membership_create, cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
+      database, membership_create, NULL,  cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, put, acme_membership_database_put(
-      database, membership_create, cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
+      database, membership_create, NULL,  cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
   (void)acme_membership_database_get_by_iid(
-      database, iid, cancellation, &membership, &diagnostics);
+      database, iid, NULL,  cancellation, &membership, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, update, acme_membership_database_update(
-      database, iid, membership_create, cancellation,&acme_membership_update_result,
+      database, iid, membership_create, NULL,  cancellation,&acme_membership_update_result,
       &diagnostics), &membership, &diagnostics);
   (void)acme_membership_database_delete_by_iid(
-      database, iid, cancellation, &diagnostics);
+      database, iid, NULL,  cancellation, &diagnostics);
   (void)acme_membership_database_count(
-      database, cancellation, &thing_count, &diagnostics);
+      database, NULL,  cancellation, &thing_count, &diagnostics);
   (void)acme_membership_read_transaction_get_by_iid(
-      read_tx, iid, cancellation, &membership, &diagnostics);
+      read_tx, iid, NULL,  cancellation, &membership, &diagnostics);
   (void)acme_membership_read_transaction_count(
-      read_tx, cancellation, &thing_count, &diagnostics);
+      read_tx, NULL,  cancellation, &thing_count, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_write_transaction_insert(
-      write_tx, membership_create, cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
+      write_tx, membership_create, NULL,  cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, put, acme_membership_write_transaction_put(
-      write_tx, membership_create, cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
+      write_tx, membership_create, NULL,  cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
   (void)acme_membership_write_transaction_get_by_iid(
-      write_tx, iid, cancellation, &membership, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &membership, &diagnostics);
   (void)TEST_SINGLE_WRITE(acme_membership, update, acme_membership_write_transaction_update(
-      write_tx, iid, membership_create, cancellation,&acme_membership_update_result,
+      write_tx, iid, membership_create, NULL,  cancellation,&acme_membership_update_result,
       &diagnostics), &membership, &diagnostics);
   (void)acme_membership_write_transaction_delete_by_iid(
-      write_tx, iid, cancellation, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &diagnostics);
   (void)acme_membership_write_transaction_count(
-      write_tx, cancellation, &thing_count, &diagnostics);
+      write_tx, NULL,  cancellation, &thing_count, &diagnostics);
 
   (void)acme_container_item_player_close(&item_player);
   (void)acme_membership_member_player_close(&member_player);
@@ -5284,7 +5284,7 @@ int main(void) {
   acme_personzhrecord *person = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
   return TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_write_transaction_insert(
-      read_tx, create, 0,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
+      read_tx, create, NULL,  0,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
 }
 "#,
         ),
@@ -5311,7 +5311,7 @@ int main(void) {
   acme_personzhrecord *person = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
   return TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_database_insert(
-      database, wrong, 0,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
+      database, wrong, NULL,  0,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
 }
 "#,
         ),
@@ -5378,7 +5378,7 @@ int main(void) {
   acme_membership *membership = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
   return TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_write_transaction_insert(
-      read_tx, create, 0,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
+      read_tx, create, NULL,  0,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
 }
 "#,
         ),
@@ -5405,7 +5405,7 @@ int main(void) {
   acme_membership *membership = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
   return TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_database_insert(
-      database, wrong, 0,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
+      database, wrong, NULL,  0,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
 }
 "#,
         ),

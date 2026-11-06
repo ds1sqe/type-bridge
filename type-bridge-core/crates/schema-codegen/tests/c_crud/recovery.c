@@ -199,7 +199,7 @@ type_bridge_status_t type_bridge_generated_opaque_alias_preflight_v1(
   return status;
 }
 
-type_bridge_status_t type_bridge_database_entity_insert_v2(
+type_bridge_status_t type_bridge_database_entity_insert(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_projected_create_t *create,
@@ -494,7 +494,7 @@ int main(void) {
   preflight_statuses[0] = TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;
   result = ALTERNATE(acme_v3_keyed_insert_batch_result);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_database_insert_v2(
+  status = acme_v3_keyed_database_insert(
       DATABASE, CREATE, &limits, CANCELLATION, &result, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
   CHECK(result == ALTERNATE(acme_v3_keyed_insert_batch_result));
@@ -514,7 +514,7 @@ int main(void) {
   reset_probe();
   result = ALTERNATE(acme_v3_keyed_insert_batch_result);
   diagnostics = ALTERNATE(type_bridge_execution_diagnostics_t);
-  status = acme_v3_keyed_database_insert_v2(
+  status = acme_v3_keyed_database_insert(
       DATABASE, CREATE, &limits, CANCELLATION, &result, &diagnostics);
   CHECK(status == TYPE_BRIDGE_STATUS_OK && result == NOMINAL_RESULT);
   CHECK(diagnostics == NULL && crud_calls == 1u && stub_error == 0);

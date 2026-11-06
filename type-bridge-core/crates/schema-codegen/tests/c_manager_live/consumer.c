@@ -1125,7 +1125,7 @@ int main(void) {
     CHECK(manager_person_delete_returning_batch_result_count(deleted, &deleted_count, &diagnostics) == TYPE_BRIDGE_STATUS_OK && deleted_count == 0u);
     CHECK(manager_person_delete_returning_batch_result_close(&deleted) == TYPE_BRIDGE_STATUS_OK);
   }
-  CHECK(manager_person_database_count(database, NULL, &count, &diagnostics) ==
+  CHECK(manager_person_database_count(database, NULL,  NULL, &count, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         count == 0u);
 

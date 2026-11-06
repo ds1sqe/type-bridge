@@ -300,6 +300,7 @@ impl TypeBridgeDatabase {
         self.state.database.answer_limits()
     }
 
+    #[cfg(test)]
     pub(crate) fn open_transaction_context(
         &self,
         tx_type: TxType,
@@ -466,10 +467,6 @@ impl TypeBridgeWriteTransaction {
 }
 
 impl TypeBridgeCancellation {
-    pub(crate) fn is_requested_before_dispatch(&self) -> bool {
-        self.requested.load(Ordering::Acquire)
-    }
-
     pub(crate) fn answer_cancellation(&self) -> type_bridge_orm::AnswerCancellation {
         self.answer.clone()
     }

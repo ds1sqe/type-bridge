@@ -4090,7 +4090,7 @@ int main(void) {
       execution_diagnostics =
           (type_bridge_execution_diagnostics_t *)(uintptr_t)1u;
       CHECK(fixture_person_database_insert(
-                NULL, generated_create, NULL,
+                NULL, generated_create, NULL,  NULL,
                 (fixture_person_insert_batch_result **)((uint8_t *)generated_create + 1u),
                 &execution_diagnostics) ==
             TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
@@ -4101,7 +4101,7 @@ int main(void) {
       execution_diagnostics =
           (type_bridge_execution_diagnostics_t *)(uintptr_t)1u;
       CHECK(fixture_person_database_insert(
-                NULL, generated_create, NULL, NULL,
+                NULL, generated_create, NULL,  NULL, NULL,
                 &execution_diagnostics) ==
             TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
       CHECK(execution_diagnostics == NULL);
@@ -6801,7 +6801,7 @@ int main(void) {
               &write_transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(write_transaction == original && diagnostics == NULL);
     CHECK(type_bridge_write_transaction_entity_count(
-              write_transaction, &fixture_projected_model_token_0, NULL,
+              write_transaction, &fixture_projected_model_token_0, NULL,  NULL,
               &count, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(count == 0u && diagnostics == NULL);
     CHECK(type_bridge_write_transaction_commit(

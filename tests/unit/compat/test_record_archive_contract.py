@@ -88,7 +88,7 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         re.findall(r"TYPE_BRIDGE_CALL\s+(type_bridge_[a-z0-9_]+)\s*\(", header.read_text())
     )
     assert contract["exports"] == sorted(exports)
-    assert len(exports) == 649
+    assert len(exports) == 621
     previous = ROOT / "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
     assert hashlib.sha256(previous.read_bytes()).hexdigest() == (
         "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"
@@ -114,6 +114,13 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
     opener_names.update({
         f"type_bridge_{name}_v2": f"type_bridge_{name}"
         for name in ("read_transaction_open", "write_transaction_open", "write_transaction_commit")
+    })
+    opener_names.update({
+        f"type_bridge_{target}_{kind}_{operation}_v2": f"type_bridge_{target}_{kind}_{operation}"
+        for target in ("database", "read_transaction", "write_transaction")
+        for kind in ("entity", "relation")
+        for operation in ("insert", "put", "get_by_iid", "update", "delete_by_iid", "count")
+        if target != "read_transaction" or operation in ("get_by_iid", "count")
     })
     previous_exports = {opener_names.get(name, name) for name in previous_exports}
     builder = {

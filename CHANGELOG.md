@@ -333,6 +333,47 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+
+The C CRUD policy-aware names below are consolidated; old unsuffixed calls
+add the limits argument described in the upgrade guide.
+
+| Removed C symbol | Replacement |
+| --- | --- |
+| `type_bridge_database_entity_count_v2` | `type_bridge_database_entity_count` |
+| `type_bridge_database_entity_delete_by_iid_v2` | `type_bridge_database_entity_delete_by_iid` |
+| `type_bridge_database_entity_get_by_iid_v2` | `type_bridge_database_entity_get_by_iid` |
+| `type_bridge_database_entity_insert_v2` | `type_bridge_database_entity_insert` |
+| `type_bridge_database_entity_put_v2` | `type_bridge_database_entity_put` |
+| `type_bridge_database_entity_update_v2` | `type_bridge_database_entity_update` |
+| `type_bridge_database_relation_count_v2` | `type_bridge_database_relation_count` |
+| `type_bridge_database_relation_delete_by_iid_v2` | `type_bridge_database_relation_delete_by_iid` |
+| `type_bridge_database_relation_get_by_iid_v2` | `type_bridge_database_relation_get_by_iid` |
+| `type_bridge_database_relation_insert_v2` | `type_bridge_database_relation_insert` |
+| `type_bridge_database_relation_put_v2` | `type_bridge_database_relation_put` |
+| `type_bridge_database_relation_update_v2` | `type_bridge_database_relation_update` |
+| `type_bridge_read_transaction_entity_count_v2` | `type_bridge_read_transaction_entity_count` |
+| `type_bridge_read_transaction_entity_get_by_iid_v2` | `type_bridge_read_transaction_entity_get_by_iid` |
+| `type_bridge_read_transaction_relation_count_v2` | `type_bridge_read_transaction_relation_count` |
+| `type_bridge_read_transaction_relation_get_by_iid_v2` | `type_bridge_read_transaction_relation_get_by_iid` |
+| `type_bridge_write_transaction_entity_count_v2` | `type_bridge_write_transaction_entity_count` |
+| `type_bridge_write_transaction_entity_delete_by_iid_v2` | `type_bridge_write_transaction_entity_delete_by_iid` |
+| `type_bridge_write_transaction_entity_get_by_iid_v2` | `type_bridge_write_transaction_entity_get_by_iid` |
+| `type_bridge_write_transaction_entity_insert_v2` | `type_bridge_write_transaction_entity_insert` |
+| `type_bridge_write_transaction_entity_put_v2` | `type_bridge_write_transaction_entity_put` |
+| `type_bridge_write_transaction_entity_update_v2` | `type_bridge_write_transaction_entity_update` |
+| `type_bridge_write_transaction_relation_count_v2` | `type_bridge_write_transaction_relation_count` |
+| `type_bridge_write_transaction_relation_delete_by_iid_v2` | `type_bridge_write_transaction_relation_delete_by_iid` |
+| `type_bridge_write_transaction_relation_get_by_iid_v2` | `type_bridge_write_transaction_relation_get_by_iid` |
+| `type_bridge_write_transaction_relation_insert_v2` | `type_bridge_write_transaction_relation_insert` |
+| `type_bridge_write_transaction_relation_put_v2` | `type_bridge_write_transaction_relation_put` |
+| `type_bridge_write_transaction_relation_update_v2` | `type_bridge_write_transaction_relation_update` |
+
+- C entity/relation CRUD now exposes one policy-aware signature: `_v2` names
+  become unsuffixed. Old unsuffixed calls add `limits` before `cancellation`
+  (use `NULL` for defaults). This covers database/write insert, put, update,
+  delete-by-IID, and database/read/write get-by-IID and count. Generated
+  wrappers follow the same rule. Default-policy calls now honor in-flight
+  cancellation; overlapping outputs remain untouched on preflight refusal.
 - C `type_bridge_read_transaction_open`, `type_bridge_write_transaction_open`,
   and `type_bridge_write_transaction_commit` now take `limits` immediately
   after their database/transaction argument. Pass `NULL` for defaults.

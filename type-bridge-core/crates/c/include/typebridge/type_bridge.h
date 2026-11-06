@@ -2644,117 +2644,8 @@ type_bridge_projected_thing_clone(const type_bridge_projected_thing_t *thing,
  * A contained provider panic poisons a borrowed transaction as described by
  * the transaction lifecycle contract above.
  */
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_insert(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_put(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_get_by_iid(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_thing_t **out_thing,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_update(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_delete_by_iid(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_count(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_cancellation_t *cancellation,
-    uint64_t *out_count,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
 
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_read_transaction_entity_get_by_iid(
-    const type_bridge_read_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_thing_t **out_thing,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_read_transaction_entity_count(
-    const type_bridge_read_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_cancellation_t *cancellation,
-    uint64_t *out_count,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
 
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_insert(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_put(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_get_by_iid(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_thing_t **out_thing,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_update(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_delete_by_iid(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_count(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_cancellation_t *cancellation,
-    uint64_t *out_count,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
 
 /*
  * Generated-only exact relation CRUD SPI. Ownership, cancellation, nullable
@@ -2766,115 +2657,6 @@ type_bridge_write_transaction_entity_count(
  * transaction; borrowed operations check against the already-open transaction
  * and never terminally consume it. Relation references may be role players.
  */
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_insert(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_put(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_get_by_iid(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_thing_t **out_thing,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_update(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_delete_by_iid(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_count(
-    const type_bridge_database_t *database,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_cancellation_t *cancellation,
-    uint64_t *out_count,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_read_transaction_relation_get_by_iid(
-    const type_bridge_read_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_thing_t **out_thing,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_read_transaction_relation_count(
-    const type_bridge_read_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_cancellation_t *cancellation,
-    uint64_t *out_count,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_insert(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_put(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_get_by_iid(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_thing_t **out_thing,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_update(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_projected_create_t *create,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_projected_batch_result_t **out_result,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_delete_by_iid(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_iid_t *iid,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_count(
-    const type_bridge_write_transaction_t *transaction,
-    const type_bridge_projected_token_v1_t *model,
-    const type_bridge_cancellation_t *cancellation,
-    uint64_t *out_count,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
 
 
 /*
@@ -3316,7 +3098,7 @@ type_bridge_write_transaction_commit(
 
 /* Policy-aware exact entity CRUD. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_insert_v2(
+type_bridge_database_entity_insert(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_projected_create_t *create,
@@ -3325,7 +3107,7 @@ type_bridge_database_entity_insert_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_put_v2(
+type_bridge_database_entity_put(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_projected_create_t *create,
@@ -3334,7 +3116,7 @@ type_bridge_database_entity_put_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_get_by_iid_v2(
+type_bridge_database_entity_get_by_iid(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3343,7 +3125,7 @@ type_bridge_database_entity_get_by_iid_v2(
     type_bridge_projected_thing_t **out_thing,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_update_v2(
+type_bridge_database_entity_update(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3353,7 +3135,7 @@ type_bridge_database_entity_update_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_delete_by_iid_v2(
+type_bridge_database_entity_delete_by_iid(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3361,7 +3143,7 @@ type_bridge_database_entity_delete_by_iid_v2(
     const type_bridge_cancellation_t *cancellation,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_entity_count_v2(
+type_bridge_database_entity_count(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_query_execution_limits_v1_t *limits,
@@ -3369,7 +3151,7 @@ type_bridge_database_entity_count_v2(
     uint64_t *out_count,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_read_transaction_entity_get_by_iid_v2(
+type_bridge_read_transaction_entity_get_by_iid(
     const type_bridge_read_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3378,7 +3160,7 @@ type_bridge_read_transaction_entity_get_by_iid_v2(
     type_bridge_projected_thing_t **out_thing,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_read_transaction_entity_count_v2(
+type_bridge_read_transaction_entity_count(
     const type_bridge_read_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_query_execution_limits_v1_t *limits,
@@ -3386,7 +3168,7 @@ type_bridge_read_transaction_entity_count_v2(
     uint64_t *out_count,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_insert_v2(
+type_bridge_write_transaction_entity_insert(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_projected_create_t *create,
@@ -3395,7 +3177,7 @@ type_bridge_write_transaction_entity_insert_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_put_v2(
+type_bridge_write_transaction_entity_put(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_projected_create_t *create,
@@ -3404,7 +3186,7 @@ type_bridge_write_transaction_entity_put_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_get_by_iid_v2(
+type_bridge_write_transaction_entity_get_by_iid(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3413,7 +3195,7 @@ type_bridge_write_transaction_entity_get_by_iid_v2(
     type_bridge_projected_thing_t **out_thing,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_update_v2(
+type_bridge_write_transaction_entity_update(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3423,7 +3205,7 @@ type_bridge_write_transaction_entity_update_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_delete_by_iid_v2(
+type_bridge_write_transaction_entity_delete_by_iid(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3431,7 +3213,7 @@ type_bridge_write_transaction_entity_delete_by_iid_v2(
     const type_bridge_cancellation_t *cancellation,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_entity_count_v2(
+type_bridge_write_transaction_entity_count(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_query_execution_limits_v1_t *limits,
@@ -3441,7 +3223,7 @@ type_bridge_write_transaction_entity_count_v2(
 
 /* Policy-aware exact relation CRUD. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_insert_v2(
+type_bridge_database_relation_insert(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_projected_create_t *create,
@@ -3450,7 +3232,7 @@ type_bridge_database_relation_insert_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_put_v2(
+type_bridge_database_relation_put(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_projected_create_t *create,
@@ -3459,7 +3241,7 @@ type_bridge_database_relation_put_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_get_by_iid_v2(
+type_bridge_database_relation_get_by_iid(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3468,7 +3250,7 @@ type_bridge_database_relation_get_by_iid_v2(
     type_bridge_projected_thing_t **out_thing,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_update_v2(
+type_bridge_database_relation_update(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3478,7 +3260,7 @@ type_bridge_database_relation_update_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_delete_by_iid_v2(
+type_bridge_database_relation_delete_by_iid(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3486,7 +3268,7 @@ type_bridge_database_relation_delete_by_iid_v2(
     const type_bridge_cancellation_t *cancellation,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_relation_count_v2(
+type_bridge_database_relation_count(
     const type_bridge_database_t *database,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_query_execution_limits_v1_t *limits,
@@ -3494,7 +3276,7 @@ type_bridge_database_relation_count_v2(
     uint64_t *out_count,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_read_transaction_relation_get_by_iid_v2(
+type_bridge_read_transaction_relation_get_by_iid(
     const type_bridge_read_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3503,7 +3285,7 @@ type_bridge_read_transaction_relation_get_by_iid_v2(
     type_bridge_projected_thing_t **out_thing,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_read_transaction_relation_count_v2(
+type_bridge_read_transaction_relation_count(
     const type_bridge_read_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_query_execution_limits_v1_t *limits,
@@ -3511,7 +3293,7 @@ type_bridge_read_transaction_relation_count_v2(
     uint64_t *out_count,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_insert_v2(
+type_bridge_write_transaction_relation_insert(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_projected_create_t *create,
@@ -3520,7 +3302,7 @@ type_bridge_write_transaction_relation_insert_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_put_v2(
+type_bridge_write_transaction_relation_put(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_projected_create_t *create,
@@ -3529,7 +3311,7 @@ type_bridge_write_transaction_relation_put_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_get_by_iid_v2(
+type_bridge_write_transaction_relation_get_by_iid(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3538,7 +3320,7 @@ type_bridge_write_transaction_relation_get_by_iid_v2(
     type_bridge_projected_thing_t **out_thing,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_update_v2(
+type_bridge_write_transaction_relation_update(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3548,7 +3330,7 @@ type_bridge_write_transaction_relation_update_v2(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_delete_by_iid_v2(
+type_bridge_write_transaction_relation_delete_by_iid(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_iid_t *iid,
@@ -3556,7 +3338,7 @@ type_bridge_write_transaction_relation_delete_by_iid_v2(
     const type_bridge_cancellation_t *cancellation,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_write_transaction_relation_count_v2(
+type_bridge_write_transaction_relation_count(
     const type_bridge_write_transaction_t *transaction,
     const type_bridge_projected_token_v1_t *model,
     const type_bridge_query_execution_limits_v1_t *limits,

@@ -26,7 +26,7 @@ const C_SIMULTANEOUS_MACRO_MAX: usize = 4_095;
 const C_HOSTED_OBJECT_BYTES_MIN: usize = 65_535;
 const C_EMBEDDED_BYTE_CHUNK_MAX: usize = 32_768;
 const C_CREATE_ARGS_VERSION: u32 = 1;
-const C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 649;
+const C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 621;
 const C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 360;
 // Windows Clang exposes 1580 predefined and stddef/stdint platform macros.
 // Reserve space above that measured count while keeping the complete macro
@@ -170,9 +170,7 @@ fn render_header(
             render_model_write_result_accessors(&mut output, projection, model, prefix, operation)?;
         }
     }
-    if ordered {
-        render_successor_model_api(&mut output, projection, prefix)?;
-    }
+    render_successor_model_api(&mut output, projection, prefix, ordered)?;
     query::render_inline(&mut output, projection, prefix, ordered)?;
     plan::render(&mut output, projection, prefix)?;
     let opener = generated_symbol(prefix, "plan_open")?;
@@ -1282,9 +1280,6 @@ fn validate_generated_symbols(
     }
     if ordered {
         for model in projection.models().values() {
-            for symbol in successor_crud_symbols(model)? {
-                insert(symbol)?;
-            }
             for operation in successor_batch_operations(model) {
                 for symbol in successor_batch_function_names(model, operation)? {
                     insert(symbol)?;
@@ -1976,34 +1971,6 @@ fn successor_batch_type_names(
     ])
 }
 
-fn successor_crud_symbols(model: &ModelProjection) -> Result<Vec<String>, Diagnostic> {
-    if model.create().target_name().is_none() {
-        return Ok(Vec::new());
-    }
-    let mut symbols = Vec::new();
-    for scope in ["database", "read_transaction", "write_transaction"] {
-        if scope != "read_transaction" {
-            symbols.push(entity_crud_symbol(model, &format!("{scope}_insert_v2"))?);
-            if model_has_reference_key(model) {
-                symbols.push(entity_crud_symbol(model, &format!("{scope}_put_v2"))?);
-            }
-        }
-        symbols.push(entity_crud_symbol(
-            model,
-            &format!("{scope}_get_by_iid_v2"),
-        )?);
-        if scope != "read_transaction" {
-            symbols.push(entity_crud_symbol(model, &format!("{scope}_update_v2"))?);
-            symbols.push(entity_crud_symbol(
-                model,
-                &format!("{scope}_delete_by_iid_v2"),
-            )?);
-        }
-        symbols.push(entity_crud_symbol(model, &format!("{scope}_count_v2"))?);
-    }
-    Ok(symbols)
-}
-
 fn successor_batch_function_names(
     model: &ModelProjection,
     operation: SuccessorBatchOperation,
@@ -2048,6 +2015,7 @@ fn render_successor_model_api(
     output: &mut String,
     projection: &RuntimeProjection,
     prefix: &str,
+    ordered: bool,
 ) -> Result<(), Diagnostic> {
     output.push_str("\n/* Policy-aware nominal data operations. */\n");
     for model in projection.models().values().filter(|model| {
@@ -2060,8 +2028,10 @@ fn render_successor_model_api(
             _ => unreachable!(),
         };
         render_successor_model_crud(output, projection, model, prefix, kind)?;
-        for operation in successor_batch_operations(model) {
-            render_successor_model_batch(output, projection, model, prefix, operation)?;
+        if ordered {
+            for operation in successor_batch_operations(model) {
+                render_successor_model_batch(output, projection, model, prefix, operation)?;
+            }
         }
     }
     Ok(())
@@ -2095,12 +2065,9 @@ fn render_successor_model_crud(
         };
         if scope != "read_transaction" {
             for operation in ["insert", "put"] {
-                if operation == "put" && !model_has_reference_key(model) {
-                    continue;
-                }
                 let write_result = generated_symbol(target, &format!("{operation}_batch_result"))?;
-                let symbol = entity_crud_symbol(model, &format!("{scope}_{operation}_v2"))?;
-                let runtime = format!("type_bridge_{scope}_{kind}_{operation}_v2");
+                let symbol = entity_crud_symbol(model, &format!("{scope}_{operation}"))?;
+                let runtime = format!("type_bridge_{scope}_{kind}_{operation}");
                 let _ = write!(
                     output,
                     "static inline type_bridge_status_t TYPE_BRIDGE_CALL {symbol}(\n\
@@ -2144,8 +2111,8 @@ fn render_successor_model_crud(
             }
         }
 
-        let get = entity_crud_symbol(model, &format!("{scope}_get_by_iid_v2"))?;
-        let runtime_get = format!("type_bridge_{scope}_{kind}_get_by_iid_v2");
+        let get = entity_crud_symbol(model, &format!("{scope}_get_by_iid"))?;
+        let runtime_get = format!("type_bridge_{scope}_{kind}_get_by_iid");
         let _ = write!(
             output,
             "static inline type_bridge_status_t TYPE_BRIDGE_CALL {get}(\n\
@@ -2188,8 +2155,8 @@ fn render_successor_model_crud(
 
         if scope != "read_transaction" {
             let write_result = generated_symbol(target, "update_batch_result")?;
-            let update = entity_crud_symbol(model, &format!("{scope}_update_v2"))?;
-            let runtime_update = format!("type_bridge_{scope}_{kind}_update_v2");
+            let update = entity_crud_symbol(model, &format!("{scope}_update"))?;
+            let runtime_update = format!("type_bridge_{scope}_{kind}_update");
             let _ = write!(
                 output,
                 "static inline type_bridge_status_t TYPE_BRIDGE_CALL {update}(\n\
@@ -2234,8 +2201,8 @@ fn render_successor_model_crud(
                  }}\n"
             );
 
-            let delete = entity_crud_symbol(model, &format!("{scope}_delete_by_iid_v2"))?;
-            let runtime_delete = format!("type_bridge_{scope}_{kind}_delete_by_iid_v2");
+            let delete = entity_crud_symbol(model, &format!("{scope}_delete_by_iid"))?;
+            let runtime_delete = format!("type_bridge_{scope}_{kind}_delete_by_iid");
             let _ = write!(
                 output,
                 "static inline type_bridge_status_t TYPE_BRIDGE_CALL {delete}(\n\
@@ -2269,8 +2236,8 @@ fn render_successor_model_crud(
             );
         }
 
-        let count = entity_crud_symbol(model, &format!("{scope}_count_v2"))?;
-        let runtime_count = format!("type_bridge_{scope}_{kind}_count_v2");
+        let count = entity_crud_symbol(model, &format!("{scope}_count"))?;
+        let runtime_count = format!("type_bridge_{scope}_{kind}_count");
         let _ = write!(
             output,
             "static inline type_bridge_status_t TYPE_BRIDGE_CALL {count}(\n\
@@ -2950,7 +2917,6 @@ fn render_entity_model_declarations(
         render_entity_create_declaration(output, projection, model, prefix)?;
         render_entity_reference_declarations(output, projection, model, prefix)?;
         render_entity_complete_declarations(output, projection, model, prefix)?;
-        render_model_crud_declarations(output, model, "entity")?;
     }
     Ok(())
 }
@@ -2968,7 +2934,6 @@ fn render_relation_model_declarations(
         render_relation_create_declaration(output, projection, model, prefix)?;
         render_entity_reference_declarations(output, projection, model, prefix)?;
         render_relation_complete_declarations(output, projection, model, prefix)?;
-        render_model_crud_declarations(output, model, "relation")?;
     }
     Ok(())
 }
@@ -3521,84 +3486,6 @@ fn render_relation_complete_declarations(
     Ok(())
 }
 
-fn render_model_crud_declarations(
-    output: &mut String,
-    model: &ModelProjection,
-    kind: &str,
-) -> Result<(), Diagnostic> {
-    let Some(create) = model.create().target_name() else {
-        return Ok(());
-    };
-    let target = model.target_name().as_str();
-    let _ = writeln!(
-        output,
-        "\n/* Exact generated-only CRUD for {kind} `{target}`. */"
-    );
-    for (scope, owner) in [
-        ("database", "type_bridge_database_t"),
-        ("read_transaction", "type_bridge_read_transaction_t"),
-        ("write_transaction", "type_bridge_write_transaction_t"),
-    ] {
-        if scope != "read_transaction" {
-            for operation in ["insert", "put"] {
-                let write_result = generated_symbol(target, &format!("{operation}_batch_result"))?;
-                let symbol = entity_crud_symbol(model, &format!("{scope}_{operation}"))?;
-                let _ = write!(
-                    output,
-                    "type_bridge_status_t TYPE_BRIDGE_CALL {symbol}(\n\
-                           const {owner} *owner,\n\
-                           const {create} *create,\n\
-                           const type_bridge_cancellation_t *cancellation,\n\
-                           {write_result} **out_entity,\n\
-                           type_bridge_execution_diagnostics_t **out_diagnostics);\n",
-                    create = create.as_str(),
-                );
-            }
-        }
-        let get = entity_crud_symbol(model, &format!("{scope}_get_by_iid"))?;
-        let _ = write!(
-            output,
-            "type_bridge_status_t TYPE_BRIDGE_CALL {get}(\n\
-               const {owner} *owner, const type_bridge_iid_t *iid,\n\
-               const type_bridge_cancellation_t *cancellation,\n\
-               {target} **out_entity,\n\
-               type_bridge_execution_diagnostics_t **out_diagnostics);\n"
-        );
-        if scope != "read_transaction" {
-            let write_result = generated_symbol(target, "update_batch_result")?;
-            let update = entity_crud_symbol(model, &format!("{scope}_update"))?;
-            let _ = write!(
-                output,
-                "type_bridge_status_t TYPE_BRIDGE_CALL {update}(\n\
-                       const {owner} *owner, const type_bridge_iid_t *iid,\n\
-                       const {create} *create,\n\
-                       const type_bridge_cancellation_t *cancellation,\n\
-                       {write_result} **out_entity,\n\
-                       type_bridge_execution_diagnostics_t **out_diagnostics);\n",
-                create = create.as_str(),
-            );
-            let delete = entity_crud_symbol(model, &format!("{scope}_delete_by_iid"))?;
-            let _ = write!(
-                output,
-                "type_bridge_status_t TYPE_BRIDGE_CALL {delete}(\n\
-                   const {owner} *owner, const type_bridge_iid_t *iid,\n\
-                   const type_bridge_cancellation_t *cancellation,\n\
-                   type_bridge_execution_diagnostics_t **out_diagnostics);\n"
-            );
-        }
-        let count = entity_crud_symbol(model, &format!("{scope}_count"))?;
-        let _ = write!(
-            output,
-            "type_bridge_status_t TYPE_BRIDGE_CALL {count}(\n\
-               const {owner} *owner,\n\
-               const type_bridge_cancellation_t *cancellation,\n\
-               uint64_t *out_count,\n\
-               type_bridge_execution_diagnostics_t **out_diagnostics);\n"
-        );
-    }
-    Ok(())
-}
-
 fn render_entity_model_definitions(
     output: &mut String,
     projection: &RuntimeProjection,
@@ -3612,7 +3499,6 @@ fn render_entity_model_definitions(
         render_entity_create_definition(output, projection, model, prefix)?;
         render_entity_reference_definitions(output, projection, model, prefix)?;
         render_entity_complete_definitions(output, projection, model, prefix)?;
-        render_model_crud_definitions(output, projection, model, prefix, "entity")?;
     }
     Ok(())
 }
@@ -3630,7 +3516,6 @@ fn render_relation_model_definitions(
         render_relation_create_definition(output, projection, model, prefix)?;
         render_entity_reference_definitions(output, projection, model, prefix)?;
         render_relation_complete_definitions(output, projection, model, prefix)?;
-        render_model_crud_definitions(output, projection, model, prefix, "relation")?;
     }
     Ok(())
 }
@@ -4616,226 +4501,6 @@ fn render_relation_complete_definitions(
     prefix: &str,
 ) -> Result<(), Diagnostic> {
     render_entity_complete_definitions(output, projection, model, prefix)
-}
-
-fn render_model_crud_definitions(
-    output: &mut String,
-    projection: &RuntimeProjection,
-    model: &ModelProjection,
-    prefix: &str,
-    kind: &str,
-) -> Result<(), Diagnostic> {
-    let Some(create) = model.create().target_name() else {
-        return Ok(());
-    };
-    let target = model.target_name().as_str();
-    let model_token = model_token_symbol(projection, prefix, model.id())?;
-    let [add_input, preflight] = generated_alias_helper_symbols(prefix)?;
-    for (scope, owner) in [
-        ("database", "type_bridge_database_t"),
-        ("read_transaction", "type_bridge_read_transaction_t"),
-        ("write_transaction", "type_bridge_write_transaction_t"),
-    ] {
-        let owner_kind = match scope {
-            "database" => "TYPE_BRIDGE_GENERATED_INPUT_DATABASE",
-            "read_transaction" => "TYPE_BRIDGE_GENERATED_INPUT_READ_TRANSACTION",
-            "write_transaction" => "TYPE_BRIDGE_GENERATED_INPUT_WRITE_TRANSACTION",
-            _ => unreachable!(),
-        };
-        if scope != "read_transaction" {
-            for operation in ["insert", "put"] {
-                let write_result = generated_symbol(target, &format!("{operation}_batch_result"))?;
-                let symbol = entity_crud_symbol(model, &format!("{scope}_{operation}"))?;
-                let runtime = format!("type_bridge_{scope}_{kind}_{operation}");
-                let _ = write!(
-                    output,
-                    "type_bridge_status_t TYPE_BRIDGE_CALL {symbol}(\n\
-                       const {owner} *owner,\n\
-                       const {create} *create,\n\
-                       const type_bridge_cancellation_t *cancellation,\n\
-                       {write_result} **out_entity,\n\
-                       type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-                       type_bridge_projected_batch_result_t *generic_entity = NULL;\n\
-                       type_bridge_generated_opaque_input_v1_t alias_inputs[4];\n\
-                       size_t alias_input_count = 0u;\n\
-                       type_bridge_status_t status;\n\
-                       {add_input}(alias_inputs, &alias_input_count,\n\
-                           {owner_kind}, owner, 1u);\n\
-                       {add_input}(alias_inputs, &alias_input_count,\n\
-                           TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &{model_token}, 1u);\n\
-                       {add_input}(alias_inputs, &alias_input_count,\n\
-                           TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CREATE, create, 1u);\n\
-                       {add_input}(alias_inputs, &alias_input_count,\n\
-                           TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION, cancellation, 1u);\n\
-                       status = {preflight}(alias_inputs, alias_input_count,\n\
-                           out_entity, sizeof(*out_entity),\n\
-                           out_diagnostics, sizeof(*out_diagnostics));\n\
-                       if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}\n\
-                       if (out_entity != NULL) {{ *out_entity = NULL; }}\n\
-                       if (out_diagnostics != NULL) {{ *out_diagnostics = NULL; }}\n\
-                       if (out_entity == NULL || out_diagnostics == NULL) {{\n\
-                         return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;\n\
-                       }}\n\
-                       status = {runtime}(owner, &{model_token},\n\
-                           (const type_bridge_projected_create_t *)create, cancellation,\n\
-                           &generic_entity, out_diagnostics);\n\
-                       if (status == TYPE_BRIDGE_STATUS_OK) {{\n\
-                         *out_entity = ({write_result} *)generic_entity;\n\
-                       }}\n\
-                       return status;\n\
-                     }}\n\n",
-                    create = create.as_str(),
-                );
-            }
-        }
-
-        let get = entity_crud_symbol(model, &format!("{scope}_get_by_iid"))?;
-        let runtime_get = format!("type_bridge_{scope}_{kind}_get_by_iid");
-        let _ = write!(
-            output,
-            "type_bridge_status_t TYPE_BRIDGE_CALL {get}(\n\
-               const {owner} *owner, const type_bridge_iid_t *iid,\n\
-               const type_bridge_cancellation_t *cancellation,\n\
-               {target} **out_entity,\n\
-               type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-               type_bridge_projected_thing_t *generic_entity = NULL;\n\
-               type_bridge_generated_opaque_input_v1_t alias_inputs[4];\n\
-               size_t alias_input_count = 0u;\n\
-               type_bridge_status_t status;\n\
-               {add_input}(alias_inputs, &alias_input_count,\n\
-                   {owner_kind}, owner, 1u);\n\
-               {add_input}(alias_inputs, &alias_input_count,\n\
-                   TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &{model_token}, 1u);\n\
-               {add_input}(alias_inputs, &alias_input_count,\n\
-                   TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n\
-               {add_input}(alias_inputs, &alias_input_count,\n\
-                   TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION, cancellation, 1u);\n\
-               status = {preflight}(alias_inputs, alias_input_count,\n\
-                   out_entity, sizeof(*out_entity),\n\
-                   out_diagnostics, sizeof(*out_diagnostics));\n\
-               if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}\n\
-               if (out_entity != NULL) {{ *out_entity = NULL; }}\n\
-               if (out_diagnostics != NULL) {{ *out_diagnostics = NULL; }}\n\
-               if (out_entity == NULL || out_diagnostics == NULL) {{\n\
-                 return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;\n\
-               }}\n\
-               status = {runtime_get}(owner, &{model_token}, iid, cancellation,\n\
-                   &generic_entity, out_diagnostics);\n\
-               if (status == TYPE_BRIDGE_STATUS_OK) {{\n\
-                 *out_entity = ({target} *)generic_entity;\n\
-               }}\n\
-               return status;\n\
-             }}\n\n"
-        );
-
-        if scope != "read_transaction" {
-            let write_result = generated_symbol(target, "update_batch_result")?;
-            let update = entity_crud_symbol(model, &format!("{scope}_update"))?;
-            let runtime_update = format!("type_bridge_{scope}_{kind}_update");
-            let _ = write!(
-                output,
-                "type_bridge_status_t TYPE_BRIDGE_CALL {update}(\n\
-                   const {owner} *owner, const type_bridge_iid_t *iid,\n\
-                   const {create} *create,\n\
-                   const type_bridge_cancellation_t *cancellation,\n\
-                   {write_result} **out_entity,\n\
-                   type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-                   type_bridge_projected_batch_result_t *generic_entity = NULL;\n\
-                   type_bridge_generated_opaque_input_v1_t alias_inputs[5];\n\
-                   size_t alias_input_count = 0u;\n\
-                   type_bridge_status_t status;\n\
-                   {add_input}(alias_inputs, &alias_input_count,\n\
-                       {owner_kind}, owner, 1u);\n\
-                   {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &{model_token}, 1u);\n\
-                   {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n\
-                   {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CREATE, create, 1u);\n\
-                   {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION, cancellation, 1u);\n\
-                   status = {preflight}(alias_inputs, alias_input_count,\n\
-                       out_entity, sizeof(*out_entity),\n\
-                       out_diagnostics, sizeof(*out_diagnostics));\n\
-                   if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}\n\
-                   if (out_entity != NULL) {{ *out_entity = NULL; }}\n\
-                   if (out_diagnostics != NULL) {{ *out_diagnostics = NULL; }}\n\
-                   if (out_entity == NULL || out_diagnostics == NULL) {{\n\
-                     return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;\n\
-                   }}\n\
-                   status = {runtime_update}(owner, &{model_token}, iid,\n\
-                       (const type_bridge_projected_create_t *)create, cancellation,\n\
-                       &generic_entity, out_diagnostics);\n\
-                   if (status == TYPE_BRIDGE_STATUS_OK) {{\n\
-                     *out_entity = ({write_result} *)generic_entity;\n\
-                   }}\n\
-                   return status;\n\
-                 }}\n\n",
-                create = create.as_str(),
-            );
-
-            let delete = entity_crud_symbol(model, &format!("{scope}_delete_by_iid"))?;
-            let runtime_delete = format!("type_bridge_{scope}_{kind}_delete_by_iid");
-            let _ = write!(
-                output,
-                "type_bridge_status_t TYPE_BRIDGE_CALL {delete}(\n\
-                   const {owner} *owner, const type_bridge_iid_t *iid,\n\
-                   const type_bridge_cancellation_t *cancellation,\n\
-                   type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-                   type_bridge_generated_opaque_input_v1_t alias_inputs[4];\n\
-                   size_t alias_input_count = 0u;\n\
-                   type_bridge_status_t status;\n\
-                   {add_input}(alias_inputs, &alias_input_count,\n\
-                       {owner_kind}, owner, 1u);\n\
-                   {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &{model_token}, 1u);\n\
-                   {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n\
-                   {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION, cancellation, 1u);\n\
-                   status = {preflight}(alias_inputs, alias_input_count,\n\
-                       out_diagnostics, sizeof(*out_diagnostics), NULL, 0u);\n\
-                   if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}\n\
-                   *out_diagnostics = NULL;\n\
-                   return {runtime_delete}(\n\
-                       owner, &{model_token}, iid, cancellation, out_diagnostics);\n\
-                 }}\n\n"
-            );
-        }
-
-        let count = entity_crud_symbol(model, &format!("{scope}_count"))?;
-        let runtime_count = format!("type_bridge_{scope}_{kind}_count");
-        let _ = write!(
-            output,
-            "type_bridge_status_t TYPE_BRIDGE_CALL {count}(\n\
-               const {owner} *owner,\n\
-               const type_bridge_cancellation_t *cancellation,\n\
-               uint64_t *out_count,\n\
-               type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-               type_bridge_generated_opaque_input_v1_t alias_inputs[3];\n\
-               size_t alias_input_count = 0u;\n\
-               type_bridge_status_t status;\n\
-               {add_input}(alias_inputs, &alias_input_count,\n\
-                   {owner_kind}, owner, 1u);\n\
-               {add_input}(alias_inputs, &alias_input_count,\n\
-                   TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &{model_token}, 1u);\n\
-               {add_input}(alias_inputs, &alias_input_count,\n\
-                   TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION, cancellation, 1u);\n\
-               status = {preflight}(alias_inputs, alias_input_count,\n\
-                   out_count, sizeof(*out_count),\n\
-                   out_diagnostics, sizeof(*out_diagnostics));\n\
-               if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}\n\
-               if (out_count != NULL) {{ *out_count = 0u; }}\n\
-               if (out_diagnostics != NULL) {{ *out_diagnostics = NULL; }}\n\
-               if (out_count == NULL || out_diagnostics == NULL) {{\n\
-                 return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;\n\
-               }}\n\
-               return {runtime_count}(\n\
-                   owner, &{model_token}, cancellation, out_count, out_diagnostics);\n\
-             }}\n\n"
-        );
-    }
-    Ok(())
 }
 
 fn render_chunked_byte_view(output: &mut String, name: &str, bytes: &[u8]) {
