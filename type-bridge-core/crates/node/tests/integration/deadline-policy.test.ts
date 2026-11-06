@@ -43,12 +43,12 @@ for (const transport of ["direct", "proxy"] as const) {
             assert.equal(stamps.some((stamp: any) => stamp.phase === "db_write"), false);
             return true;
           });
-          assert.throws(() => pending.get());
+          assert.throws(() => pending.result());
           await new Promise((resolve) => setTimeout(resolve, 2100));
         } else {
           await tx.commit();
           assert.ok(performance.now() - started > 60_000);
-          assert.deepEqual(pending.get(), { kind: "matched", value: 1 });
+          assert.deepEqual(pending.result(), { kind: "matched", value: 1 });
         }
         assert.equal(fs.existsSync(entry.arm), false, "relay must actually delay the call");
       } finally {

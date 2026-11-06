@@ -198,16 +198,16 @@ fn authoring_helpers_compile_and_record_typed_purchase() {
 use models::*;
 fn main() {
     let plan: Plan<Vec<Purchase>> = Plan::build(|p| {
-        let item = Item::matching(p, "I1").filter(ItemType::stock.gt(0_i64));
-        let buyer = Account::matching(p, "A1").filter(AccountType::balance.ge(item.price()));
+        let item = Item::matching(p, "I1").where_(ItemType::stock.gt(0_i64));
+        let buyer = Account::matching(p, "A1").where_(AccountType::balance.ge(item.price()));
         item.set(p).stock(item.stock() - 1_i64);
         buyer.set(p).balance(buyer.balance() - item.price());
         Purchase::insert(p, PurchaseInsert { order_id: "O1".into(), buyer: &buyer, item: &item })
     }).unwrap();
     let strings: Plan<i64> = Plan::build(|p| {
-        let item = Item::matching(p, "I1").filter(ItemType::item_id.contains("I")).filter(ItemType::item_id.starts_with("I"));
+        let item = Item::matching(p, "I1").where_(ItemType::item_id.contains("I")).where_(ItemType::item_id.starts_with("I"));
         let text = item.item_id();
-        item.filter(text.ends_with("1")).filter(text.like("I.*"));
+        item.where_(text.ends_with("1")).where_(text.like("I.*"));
         p.count()
     }).unwrap();
     assert!(!strings.canonical_bytes().unwrap().is_empty());

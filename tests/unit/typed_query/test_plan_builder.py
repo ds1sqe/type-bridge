@@ -88,13 +88,13 @@ def purchase(order: str, item_id: str, account_id: str) -> Plan:
     price = plan.field(item, PRICE)
     balance = plan.field(buyer, BALANCE)
     (
-        plan.where_(item_key.eq(item_input))
-        .where_(buyer_key.eq(account_input))
-        .where_(stock.gt(0))
-        .where_(balance.ge(price))
+        plan.where(item_key.eq(item_input))
+        .where(buyer_key.eq(account_input))
+        .where(stock.gt(0))
+        .where(balance.ge(price))
     )
-    next_stock = plan.let_("next_stock", stock - 1)
-    next_balance = plan.let_("next_balance", balance - price)
+    next_stock = plan.let("next_stock", stock - 1)
+    next_balance = plan.let("next_balance", balance - price)
     plan.update(item, STOCK, next_stock).update(buyer, BALANCE, next_balance)
     (plan.insert(Purchase).field(ORDER_ID, order_input).player(BUYER, buyer).player(ITEM, item))
     plan.row([order_input.value(order), item_input.value(item_id), account_input.value(account_id)])
@@ -130,7 +130,7 @@ def test_reads_answer_rows_count_or_exists_and_never_write(terminal: str) -> Non
     plan = PlanBuilder()
     item = plan.exact(Item)
     stock = plan.field(item, STOCK)
-    plan.where_(stock.ge(0))
+    plan.where(stock.ge(0))
     if terminal == "rows":
         plan.returning([item, stock])
     elif terminal == "count":
@@ -146,7 +146,7 @@ def test_expressions_and_typed_literals_build() -> None:
     item = plan.exact(Item)
     stock = plan.field(item, STOCK)
     price = plan.field(item, PRICE)
-    total = plan.let_("total", PlanExpr.max(stock * price, literal("long", 0)) % 7)
+    total = plan.let("total", PlanExpr.max(stock * price, literal("long", 0)) % 7)
     plan.returning([total])
     assert "total" in _variables(plan.build(_authority()))
 
@@ -174,7 +174,7 @@ def test_count_on_a_write_is_refused_at_build() -> None:
 def test_a_literal_of_the_wrong_host_type_is_refused_at_build() -> None:
     plan = PlanBuilder()
     item = plan.exact(Item)
-    plan.where_(plan.field(item, STOCK).gt(literal("long", "zero")))
+    plan.where(plan.field(item, STOCK).gt(literal("long", "zero")))
     with pytest.raises(PlanError):
         plan.build(_authority())
 
@@ -211,7 +211,7 @@ def test_fetch_bytes_equal_the_core_builder(required: bool) -> None:
     purchase = plan.exact(Purchase)
     key = plan.field(purchase, ORDER_ID)
     order = plan.input("order_id", "string")
-    plan.where_(key.eq(order)).fetch(purchase, [BUYER, (ITEM, required)])
+    plan.where(key.eq(order)).fetch(purchase, [BUYER, (ITEM, required)])
     plan.row([order.value("O1")])
     expected = FIXTURE["read_back_hex" if required else "read_back_optional_hex"]
     assert plan.build(_authority()).canonical_bytes().hex() == expected
@@ -367,12 +367,12 @@ def test_iid_literals_keep_the_shared_string_value_encoding(wrapped: bool) -> No
     item = builder.exact(Item)
     value = Iid("0xAb12")
     operand = literal("iid", value) if wrapped else value
-    builder.where_(builder.field(item, ITEM_ID).eq(operand)).count()
+    builder.where(builder.field(item, ITEM_ID).eq(operand)).count()
     typed = builder.build(_authority())
 
     old = PlanBuilder()
     old_item = old.exact(Item)
-    old.where_(old.field(old_item, ITEM_ID).eq("0xAb12")).count()
+    old.where(old.field(old_item, ITEM_ID).eq("0xAb12")).count()
     assert typed.canonical_bytes() == old.build(_authority()).canonical_bytes()
 
 
@@ -380,4 +380,4 @@ def test_iid_literal_refuses_a_string_payload() -> None:
     builder = PlanBuilder()
     item = builder.exact(Item)
     with pytest.raises(TypeError, match="IID input values require Iid"):
-        builder.where_(builder.field(item, ITEM_ID).eq(literal("iid", "0xAb12")))
+        builder.where(builder.field(item, ITEM_ID).eq(literal("iid", "0xAb12")))

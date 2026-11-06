@@ -29,7 +29,7 @@ export type PlanAnswer =
 const MAX_STAGED_INPUT_BYTES = 16 * 1024 * 1024;
 
 /** One staged plan or typed query answer, visible only after commit succeeds. */
-export class PendingPlanAnswer<R = PlanAnswer> {
+export class Pending<R = PlanAnswer> {
   readonly #native: NativePendingPlanAnswer;
   readonly #typedQuery: boolean;
   readonly #decode: (answerJson: string, projection?: NativeAuthoredPlanResult, query?: RuntimeProjectionMatchResult) => R;
@@ -46,7 +46,7 @@ export class PendingPlanAnswer<R = PlanAnswer> {
    * The resolved answer. Throws the lifecycle failure before commit, or the
    * typed failure every answer of a failed commit shares.
    */
-  get(): R {
+  result(): R {
     if (this.#typedQuery) {
       return this.#decode("", undefined, planNativeCall(() => this.#native.getQueryResult()));
     }
@@ -54,10 +54,6 @@ export class PendingPlanAnswer<R = PlanAnswer> {
     return this.#decode(projection === null ? planNativeCall(() => this.#native.getJson()) : "", projection ?? undefined);
   }
 
-  /** The typed result after a successful commit. */
-  result(): R {
-    return this.get();
-  }
 }
 
 // `Symbol.asyncDispose` exists in the type only where the consumer's lib
@@ -97,21 +93,21 @@ export class StagedTransaction {
    * A `read` transaction refuses write plans and a `schema` transaction
    * refuses every plan.
    */
-  stage<R>(plan: Plan<R>): PendingPlanAnswer<R> {
+  stage<R>(plan: Plan<R>): Pending<R> {
     const native = nativePlan(plan);
-    return new PendingPlanAnswer(planNativeCall(() => this.#native.stage(native)), (answer, projection) => decodePlan(plan, answer, projection));
+    return new Pending(planNativeCall(() => this.#native.stage(native)), (answer, projection) => decodePlan(plan, answer, projection));
   }
 
   /** Queue a complete invocation stack with block-local IID references. */
-  stageStack(plans: readonly StagedPlan[]): PendingPlanAnswer[] {
-    return planNativeCall(() => this.#native.stageStack(plans.map(plan => plan.nativeHandle()))).map(pending => new PendingPlanAnswer(pending));
+  stageStack(plans: readonly StagedPlan[]): Pending[] {
+    return planNativeCall(() => this.#native.stageStack(plans.map(plan => plan.nativeHandle()))).map(pending => new Pending(pending));
   }
 
   /** Stage one canonical `query-plan/v3` program validated under `declaredSchema`. */
-  stagePlan(plan: Uint8Array, declaredSchema: Uint8Array): PendingPlanAnswer {
+  stagePlan(plan: Uint8Array, declaredSchema: Uint8Array): Pending {
     const planBytes = ownedByteSnapshot(plan, MAX_STAGED_INPUT_BYTES);
     const schemaBytes = ownedByteSnapshot(declaredSchema, MAX_STAGED_INPUT_BYTES);
-    return new PendingPlanAnswer(
+    return new Pending(
       planNativeCall(() => this.#native.stagePlan(planBytes, schemaBytes)),
     );
   }

@@ -48,7 +48,7 @@ import {
   connectProxy,
   schemaAuthority,
 } from "./generated_v2/src/index.js";
-import { Plan, type Pending, type PendingPlanAnswer, type Database, type StagedTransaction } from "@type-bridge/node";
+import { Plan, type Pending, type Database, type StagedTransaction } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
 const identifierBytes: Uint8Array = Identifier.encodeAttribute(identifier);
@@ -321,7 +321,7 @@ void Event.subject;
 void Person.identifier;
 
 // Staged plans take generated model, field and role tokens.
-async function stagedScore(db: Database): Promise<PendingPlanAnswer> {
+async function stagedScore(db: Database): Promise<Pending> {
   const plan = Plan.builder();
   const planPerson = plan.exact(Person);
   const planEmployment = plan.subtypes(Employment);

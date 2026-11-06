@@ -436,10 +436,10 @@ continues to measure affected rows.
     ```rust
     let order: Plan<Vec<Purchase>> = Plan::build(|p| {
         let item = Item::matching_by(p).item_id("I1").handle()
-            .filter(ItemType::stock.gt(0_i64)); // ItemHandle
+            .where_(ItemType::stock.gt(0_i64)); // ItemHandle
         let buyer = Account::matching_by(p).account_id("A1").handle(); // AccountHandle
         let balance = buyer.balance(); // Value<i64>
-        let buyer = buyer.filter(balance.ge(item.price())); // AccountHandle
+        let buyer = buyer.where_(balance.ge(item.price())); // AccountHandle
         item.set(p).stock(item.stock() - 1_i64);
         buyer.set(p).balance(buyer.balance() - item.price());
         Purchase::insert(p, PurchaseInsert {
@@ -729,11 +729,10 @@ schedule has identical canonical bytes to the generated authoring form.
 #### Explicit Python builder
 
 A plan is one typed `query-plan/v3` pipeline: a match with comparisons and
-`let_` values, then updates, inserts, puts and deletes. `Plan.builder()`
+`let` values, then updates, inserts, puts and deletes. `Plan.builder()`
 (`type_bridge.plan`) takes the generated model, field and role tokens and
 forwards every call to the shared Rust builder, so the bytes equal the same
-plan built in Rust, TypeScript or C. `where_` and `let_` carry a trailing
-underscore because `where` and `let` read as keywords; comparisons are
+plan built in Rust, TypeScript or C. Comparisons are
 `eq`, `ne`, `lt`, `le`, `gt` and `ge`, and `+ - * / %` and
 `PlanExpr.{pow,abs,ceil,floor,round,min,max,length}` build expressions.
 `bool`, `int`, `float`, `str`, `Decimal`, `date` and `datetime` literals are
@@ -755,11 +754,11 @@ def purchase(order: str, item_id: str, account_id: str) -> Plan:
     stock = plan.field(item, Item.stock)
     price = plan.field(item, Item.price)
     balance = plan.field(buyer, Account.balance)
-    plan.where_(plan.field(item, Item.item_id).eq(item_input))
-    plan.where_(plan.field(buyer, Account.account_id).eq(account_input))
-    plan.where_(stock.gt(0)).where_(balance.ge(price))
-    plan.update(item, Item.stock, plan.let_("next_stock", stock - 1))
-    plan.update(buyer, Account.balance, plan.let_("next_balance", balance - price))
+    plan.where(plan.field(item, Item.item_id).eq(item_input))
+    plan.where(plan.field(buyer, Account.account_id).eq(account_input))
+    plan.where(stock.gt(0)).where(balance.ge(price))
+    plan.update(item, Item.stock, plan.let("next_stock", stock - 1))
+    plan.update(buyer, Account.balance, plan.let("next_balance", balance - price))
     (
         plan.insert(Purchase)
         .field(Purchase.order_id, order_input)
@@ -885,7 +884,7 @@ documents; generated model hydration belongs to the typed facade.
 
 `update_with(func)` reads every match, runs `func` in Python and writes each
 instance back. It was removed in 3.0. Compute the new value in the
-plan with `let_` instead, so the read and the write are one query:
+plan with `let` instead, so the read and the write are one query:
 
 ```python
 from type_bridge.plan import Plan
@@ -897,8 +896,8 @@ plan = Plan.builder()
 account = plan.exact(Account)
 tier = plan.input("tier", "string")
 balance = plan.field(account, Account.balance)
-plan.where_(plan.field(account, Account.tier).eq(tier))
-plan.update(account, Account.balance, plan.let_("next_balance", balance + 10))
+plan.where(plan.field(account, Account.tier).eq(tier))
+plan.update(account, Account.balance, plan.let("next_balance", balance + 10))
 plan.row([tier.value("gold")])
 
 with db.staged_transaction() as tx:

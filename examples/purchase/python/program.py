@@ -99,8 +99,8 @@ def batch(authority: Any) -> Plan:
     item = plan.exact(Item)
     buyer = plan.exact(Account)
     order_input = plan.input("order_id", "string")
-    plan.where_(plan.field(item, Item.item_id).eq("I1"))
-    plan.where_(plan.field(buyer, Account.account_id).eq("A1"))
+    plan.where(plan.field(item, Item.item_id).eq("I1"))
+    plan.where(plan.field(buyer, Account.account_id).eq("A1"))
     (
         plan.insert(Purchase)
         .field(Purchase.order_id, order_input)
@@ -115,16 +115,16 @@ def batch(authority: Any) -> Plan:
 def sold_out(authority: Any) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
-    plan.where_(plan.field(item, Item.item_id).eq("I1"))
-    plan.where_(plan.field(item, Item.stock).eq(0))
+    plan.where(plan.field(item, Item.item_id).eq("I1"))
+    plan.where(plan.field(item, Item.stock).eq(0))
     return plan.count().build(authority)
 
 
 def charged(authority: Any) -> Plan:
     plan = Plan.builder()
     account = plan.exact(Account)
-    plan.where_(plan.field(account, Account.account_id).eq("A1"))
-    plan.where_(plan.field(account, Account.balance).eq(60))
+    plan.where(plan.field(account, Account.account_id).eq("A1"))
+    plan.where(plan.field(account, Account.balance).eq(60))
     return plan.count().build(authority)
 
 
@@ -137,7 +137,7 @@ def orders(authority: Any) -> Plan:
 def on_call(authority: Any) -> Plan:
     plan = Plan.builder()
     doctor = plan.exact(Doctor)
-    plan.where_(plan.field(doctor, Doctor.on_call).eq(True))
+    plan.where(plan.field(doctor, Doctor.on_call).eq(True))
     return plan.exists().build(authority)
 
 
@@ -153,7 +153,7 @@ def returns(authority: Any) -> Plan:
     plan = Plan.builder()
     doctor = plan.exact(Doctor)
     name = plan.field(doctor, Doctor.name)
-    plan.where_(name.eq("D2"))
+    plan.where(name.eq("D2"))
     plan.update(doctor, Doctor.on_call, True)
     return plan.returning([name]).build(authority)
 
@@ -176,7 +176,7 @@ def remove(authority: Any) -> Plan:
     """Delete the first purchase."""
     plan = Plan.builder()
     order = plan.exact(Purchase)
-    plan.where_(plan.field(order, Purchase.order_id).eq("O1"))
+    plan.where(plan.field(order, Purchase.order_id).eq("O1"))
     return plan.delete(order).build(authority)
 
 
@@ -186,7 +186,7 @@ def read_back(authority: Any) -> Plan:
     plan = Plan.builder()  # PlanBuilder
     purchase = plan.exact(Purchase)  # PlanThing
     order_id = plan.input("order_id", "string")
-    plan.where_(plan.field(purchase, Purchase.order_id).eq(order_id))
+    plan.where(plan.field(purchase, Purchase.order_id).eq(order_id))
     plan.fetch(purchase, [Purchase.buyer, Purchase.item])
     plan.row([order_id.value("R1")])
     return plan.build(authority)
@@ -198,7 +198,7 @@ def read_back(authority: Any) -> Plan:
 def doctors_on_call(authority: Any) -> Plan:
     plan = Plan.builder()
     doctor = plan.exact(Doctor)
-    plan.where_(plan.field(doctor, Doctor.on_call).eq(True))
+    plan.where(plan.field(doctor, Doctor.on_call).eq(True))
     return plan.count().build(authority)
 
 
@@ -206,8 +206,8 @@ def referred(authority: Any) -> Plan:
     plan = Plan.builder()
     order = plan.exact(Purchase)
     buyer = plan.exact(Account)
-    plan.where_(plan.field(order, Purchase.order_id).eq("R1"))
-    plan.where_(plan.field(buyer, Account.account_id).eq("A2"))
+    plan.where(plan.field(order, Purchase.order_id).eq("R1"))
+    plan.where(plan.field(buyer, Account.account_id).eq("A2"))
     plan.links(order, Purchase.buyer, buyer)
     return plan.count().build(authority)
 
@@ -215,7 +215,7 @@ def referred(authority: Any) -> Plan:
 def removed(authority: Any) -> Plan:
     plan = Plan.builder()
     order = plan.exact(Purchase)
-    plan.where_(plan.field(order, Purchase.order_id).eq("O1"))
+    plan.where(plan.field(order, Purchase.order_id).eq("O1"))
     return plan.exists().build(authority)
 
 

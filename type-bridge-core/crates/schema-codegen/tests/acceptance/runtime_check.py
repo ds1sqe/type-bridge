@@ -39,7 +39,6 @@ from generated_v2 import (
     ExchangeConnection,
     FieldToken,
     FooBar,
-    GroupedQuery,
     Identifier,
     Interaction,
     Nickname,
@@ -49,7 +48,6 @@ from generated_v2 import (
     ProjectedManagerComparison,
     ProjectedModelFilter,
     ProjectedModelManager,
-    Query,
     QueryCancellation,
     QueryExecutionResourceLimits,
     QueryLimits,
@@ -2087,7 +2085,7 @@ assert ordered_schema_authority() is ordered_schema_authority()
 _plan = Plan.builder()
 _planned = _plan.exact(PlanPerson)
 _score = _plan.field(_planned, PlanPerson.score)
-_plan.where_(_score.ge(20)).update(_planned, PlanPerson.score, _plan.let_("next_score", _score + 1))
+_plan.where(_score.ge(20)).update(_planned, PlanPerson.score, _plan.let("next_score", _score + 1))
 _built = _plan.build(schema_authority())
 assert _built.writes()
 assert json.loads(_built.canonical_bytes())["bindings"][0]["variable"] == "person"

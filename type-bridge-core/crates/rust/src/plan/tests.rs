@@ -54,7 +54,7 @@ fn typed_recording_operators_and_class_tokens_equal_the_raw_builder() {
     let mut recording = Recording::<Shop>::new(QueryLimits::CANONICAL);
     let item = recording
         .matching::<Item>(false, None)
-        .filter(ItemType::stock.gt(0_i64));
+        .where_(ItemType::stock.gt(0_i64));
     let stock = item.value::<i64>(ItemType::stock.owns_id_json());
     item.set(
         &mut recording,
@@ -817,15 +817,15 @@ fn authored_string_conditions_equal_the_raw_core_comparisons() {
     let mut recording = Recording::<Shop>::new(Default::default());
     let item = recording
         .matching::<Item>(false, None)
-        .filter(ItemType::item_id.contains("I"))
-        .filter(ItemType::item_id.starts_with("I"))
-        .filter(ItemType::item_id.ends_with("I"))
-        .filter(ItemType::item_id.like("I"));
+        .where_(ItemType::item_id.contains("I"))
+        .where_(ItemType::item_id.starts_with("I"))
+        .where_(ItemType::item_id.ends_with("I"))
+        .where_(ItemType::item_id.like("I"));
     let value = item.value::<String>(ItemType::item_id.owns_id_json());
-    item.filter(value.contains("I"))
-        .filter(value.starts_with("I"))
-        .filter(value.ends_with("I"))
-        .filter(value.like("I"));
+    item.where_(value.contains("I"))
+        .where_(value.starts_with("I"))
+        .where_(value.ends_with("I"))
+        .where_(value.like("I"));
     let authored = recording.build(&package()).unwrap();
     let mut raw = Plan::<PlanAnswer, Shop>::builder();
     let item = raw.exact::<Item>();

@@ -18,7 +18,7 @@
  * tests/contracts/sdk_conformance/writes/shop.
  */
 import { Plan, PlanError, Database } from "@type-bridge/node";
-import type { PendingPlanAnswer, PlanAuthority, StagedTransaction } from "@type-bridge/node";
+import type { Pending, PlanAuthority, StagedTransaction } from "@type-bridge/node";
 import { ProxyConnection } from "@type-bridge/node/runtime-projection";
 import { Account, Item, OrderLine, schemaAuthority } from "./index.js";
 
@@ -190,8 +190,8 @@ const ATTEMPTS = 20;
 type Answer = readonly [string, number];
 
 /** One answer as [kind, value]; rows report their count, exists 0 or 1. */
-function answer(pending: PendingPlanAnswer): Answer {
-  const value = pending.get();
+function answer(pending: Pending): Answer {
+  const value = pending.result();
   switch (value.kind) {
     case "rows":
       return ["rows", value.rows.length];

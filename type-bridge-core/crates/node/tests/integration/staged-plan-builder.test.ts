@@ -120,12 +120,12 @@ test("the TypeScript purchase commits directly and over the proxy with the same 
   const connection = await ProxyConnection.connect(authority, live.proxies.purchase.endpoint);
   const remote = await connection.transaction();
   const remoteAnswers = plans.map((plan) => remote.stage(plan));
-  assert.throws(() => remoteAnswers[0]?.get(), /not committed/i);
+  assert.throws(() => remoteAnswers[0]?.result(), /not committed/i);
   await remote.commit();
 
   const expected = [{ kind: "matched", value: 1 }, { kind: "matched", value: 0 }];
-  assert.deepEqual(directAnswers.map((answer) => answer.get()), expected);
-  assert.deepEqual(remoteAnswers.map((answer) => answer.get()), expected);
+  assert.deepEqual(directAnswers.map((answer) => answer.result()), expected);
+  assert.deepEqual(remoteAnswers.map((answer) => answer.result()), expected);
 
   // Dispose closes without committing; a closed transaction refuses work.
   await direct[Symbol.asyncDispose]();
@@ -142,13 +142,13 @@ test("await using closes without committing", { skip }, async () => {
   {
     await using tx = db.stagedTransaction();
     const answer = tx.stage(plan);
-    assert.throws(() => answer.get(), /not committed/i);
+    assert.throws(() => answer.result(), /not committed/i);
   }
   // Nothing was bought: the next purchase still finds the stock.
   const tx = db.stagedTransaction("write");
   const answer = tx.stage(purchase(authorityFor(live), "O-after"));
   await tx.commit();
-  assert.deepEqual(answer.get(), { kind: "matched", value: 1 });
+  assert.deepEqual(answer.result(), { kind: "matched", value: 1 });
   tx.close();
   db.close();
 });
@@ -173,7 +173,7 @@ test("two TypeScript transactions race for the last item and never oversell", { 
     const answer = tx.stage(purchase(authority, order));
     try {
       await tx.commit();
-      return answer.get();
+      return answer.result();
     } catch (error) {
       return error;
     } finally {

@@ -718,3 +718,13 @@ in Python, TypeScript and Rust. Keep the `aggregate` namespace used to build
 those terms, such as `aggregate.count()`. In generated C, explicit-root page,
 count and exists factories are `*_query_page_by`, `*_query_count_by` and
 `*_query_exists_by`; their result types and manager terminals keep their names.
+
+### Plan authoring and pending answers
+
+In Python, replace `PlanBuilder.where_` with `where` and `PlanBuilder.let_` with
+`let`. In Rust typed recordings, replace `Bound.filter` and generated `<Model>Handle.filter` with `where_`. Rust keeps
+`let_` because `let` is a keyword; manager `filter` methods remain unchanged.
+
+In TypeScript, import `Pending` instead of `PendingPlanAnswer` and resolve it with
+`result()` instead of `get()`. This is the same staged answer and lifecycle.
+Rust's borrowed `Pending.get()` and owned `Pending.result()` remain distinct.

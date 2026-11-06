@@ -7,16 +7,16 @@ same canonical bytes as the same plan built in Rust, TypeScript or C::
     plan = Plan.builder()
     item = plan.exact(Item)
     stock = plan.field(item, Item.stock)
-    plan.where_(stock.gt(0))
-    plan.update(item, Item.stock, plan.let_("next_stock", stock - 1))
+    plan.where(stock.gt(0))
+    plan.update(item, Item.stock, plan.let("next_stock", stock - 1))
     built = plan.build(my_package.schema_authority())
 
     with db.staged_transaction() as tx:
         answer = tx.stage(built)
     assert answer.result() == Matched(1)
 
-Names follow the Rust builder; ``where_`` and ``let_`` avoid the Python
-keywords. Calls never fail on content: the first invalid call is raised by
+Plan authoring uses ``where`` for conditions and ``let`` for value bindings.
+Calls never fail on content: the first invalid call is raised by
 ``build`` as a ``PlanError`` with ``.code``. A handle from another
 builder raises ``TypeError`` at once.
 """
@@ -281,7 +281,7 @@ class PlanThing(_Handle):
 
 
 class PlanValue(_Handle, _Comparable):
-    """A value binding: a field of a thing or a ``let_`` result."""
+    """A value binding: a field of a thing or a ``let`` result."""
 
     __slots__ = ()
 
@@ -329,7 +329,7 @@ class PlanInputCell[T]:
 
 
 class PlanCondition:
-    """``left comparator right``; pass it to ``PlanBuilder.where_``."""
+    """``left comparator right``; pass it to ``PlanBuilder.where``."""
 
     __slots__ = ("comparator", "left", "right")
 
@@ -345,7 +345,7 @@ class PlanCondition:
 
 
 class PlanExpr[T]:
-    """An arithmetic or builtin expression; bind it with ``let_``."""
+    """An arithmetic or builtin expression; bind it with ``let``."""
 
     __slots__ = ("_node",)
 
@@ -469,7 +469,7 @@ class PlanBuilder:
     """One plan under construction; see the module documentation.
 
     Handles are dense in creation order. Matches, fields, conditions and
-    ``let_`` bindings join the one leading match in call order; writes
+    ``let`` bindings join the one leading match in call order; writes
     follow in call order, and consecutive writes of one kind share a stage.
     """
 
@@ -548,7 +548,7 @@ class PlanBuilder:
             value_type,
         )
 
-    def where_(self, condition: PlanCondition) -> PlanBuilder:
+    def where(self, condition: PlanCondition) -> PlanBuilder:
         """Require ``condition`` of every matched row."""
         typed = (
             condition.left.value_type
@@ -567,7 +567,7 @@ class PlanBuilder:
         self._native.links(self._own(relation)._index, _role_json(role), self._own(player)._index)
         return self
 
-    def let_(self, name: str, expr: _ExprLike) -> PlanValue:
+    def let(self, name: str, expr: _ExprLike) -> PlanValue:
         """Bind ``name`` to ``expr``, evaluated for each matched row."""
         return PlanValue(self, self._native.let_(name, self._expr(PlanExpr._of(expr))))
 
@@ -1019,7 +1019,7 @@ class Plan[R](_Plan):
                     left = self._bound_value(left, site_value._site)
                 if not isinstance(right, PlanThing | PlanValue | PlanInput):
                     right = self._bound_value(right, site_value._site)
-            self._builder.where_(Condition(left, condition.comparator, right))
+            self._builder.where(Condition(left, condition.comparator, right))
 
     def _assignment(self, value: Any, site: tuple[int, str]) -> _Operand:
         if isinstance(value, PlanExpr):
@@ -1174,7 +1174,7 @@ def _match[H: Handle[Any]](
         field = bound._value(token)
         site = (bound._index, "key") if key is not _MISSING and name == key_field else field._site
         operand = context._assignment(value, site)
-        builder.where_(field.eq(operand))
+        builder.where(field.eq(operand))
     return bound
 
 

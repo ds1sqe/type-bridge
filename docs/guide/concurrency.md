@@ -353,10 +353,9 @@ names the order key `order-id`:
 --8<-- "examples/purchase/python/program.py:purchase"
 ```
 
-The `where_` conditions and the two `let_` values are the `match` stage, the
+The `where` conditions and the two `let` values are the `match` stage, the
 two updates one `update` stage, and the insert the purchase. Each `input`
-column takes one value per given `row`. Python spells `where_` and `let_` to
-avoid its keywords.
+column takes one value per given `row`.
 
 The other SDKs build the same plan bytes; the conformance suite compares
 them byte for byte, directly and over the proxy:
@@ -436,7 +435,7 @@ many transactions run at once, is the application's policy.
 | Direct transaction | `db.staged_transaction("write")` | `db.stagedTransaction("write")` | `db.transaction(TransactionOptions::default().with_kind(TransactionKind::Write))` | `type_bridge_database_transaction(db, TYPE_BRIDGE_TRANSACTION_WRITE, ...)` |
 | Proxy transaction | `proxy.transaction("write")`, `proxy` from the generated package's `connect_proxy(url)` | `await proxy.transaction("write")`, `proxy` from the generated package's `await connectProxy(url)` | `proxy.transaction(options).await`, `proxy` from `ProxyDatabase::connect` | `type_bridge_proxy_connection_transaction` |
 | Stage, commit | `tx.stage(plan)`, `tx.commit()` | `tx.stage(plan)`, `await tx.commit()` | `tx.stage(&plan)`, `tx.commit().await` | `type_bridge_staged_transaction_stage`, `type_bridge_staged_transaction_commit` |
-| Answer | `pending.result()` | `pending.get()` | `pending.get()` | `type_bridge_pending_answer` |
+| Answer | `pending.result()` | `pending.result()` | `pending.get()` | `type_bridge_pending_answer` |
 | Typed failure | `error.failure` | `PlanError.failure` (`ProviderFailure`) | `CommitError.failure` (`type_bridge::failure::Failure`) | `type_bridge_execution_diagnostics_failure_get_v1` |
 | Conflict | `CommitConflict` | `failure.reason === "conflict"` | `Failure::Rejected { reason: Reason::Conflict { .. }, .. }` | `reason == TYPE_BRIDGE_FAILURE_REASON_CONFLICT` |
 | Retry safe | `failure.retry_safe` | `failure.retry_safe` | `failure.retry_safe()` | `failure.retry_safe` |

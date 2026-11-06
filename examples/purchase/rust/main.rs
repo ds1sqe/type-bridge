@@ -64,12 +64,12 @@ fn purchase() -> Result<Built> {
     let item = Item::matching_by(&mut p)
         .item_id("I1".to_owned())
         .handle()
-        .filter(ItemType::stock.gt(0_i64));
+        .where_(ItemType::stock.gt(0_i64));
     let buyer = Account::matching_by(&mut p)
         .account_id("A1".to_owned())
         .handle();
     let balance = buyer.balance();
-    let buyer = buyer.filter(balance.ge(item.price()));
+    let buyer = buyer.where_(balance.ge(item.price()));
     item.set(&mut p).stock(item.stock() - 1_i64);
     buyer.set(&mut p).balance(buyer.balance() - item.price());
     Purchase::insert(

@@ -27,7 +27,7 @@ export type PlanAnswer = {
     readonly value: number;
 };
 /** One staged plan or typed query answer, visible only after commit succeeds. */
-export declare class PendingPlanAnswer<R = PlanAnswer> {
+export declare class Pending<R = PlanAnswer> {
     #private;
     /** @internal */
     constructor(native: NativePendingPlanAnswer, decode?: (answerJson: string, projection?: NativeAuthoredPlanResult, query?: RuntimeProjectionMatchResult) => R, typedQuery?: boolean);
@@ -35,8 +35,6 @@ export declare class PendingPlanAnswer<R = PlanAnswer> {
      * The resolved answer. Throws the lifecycle failure before commit, or the
      * typed failure every answer of a failed commit shares.
      */
-    get(): R;
-    /** The typed result after a successful commit. */
     result(): R;
 }
 type AsyncDisposeSymbol = SymbolConstructor extends {
@@ -68,11 +66,11 @@ export declare class StagedTransaction {
      * A `read` transaction refuses write plans and a `schema` transaction
      * refuses every plan.
      */
-    stage<R>(plan: Plan<R>): PendingPlanAnswer<R>;
+    stage<R>(plan: Plan<R>): Pending<R>;
     /** Queue a complete invocation stack with block-local IID references. */
-    stageStack(plans: readonly StagedPlan[]): PendingPlanAnswer[];
+    stageStack(plans: readonly StagedPlan[]): Pending[];
     /** Stage one canonical `query-plan/v3` program validated under `declaredSchema`. */
-    stagePlan(plan: Uint8Array, declaredSchema: Uint8Array): PendingPlanAnswer;
+    stagePlan(plan: Uint8Array, declaredSchema: Uint8Array): Pending;
     /** Fire the staged stack; answers become visible only on success. */
     commit(): Promise<void>;
     /** Discard staged work and keep the transaction for reuse. */

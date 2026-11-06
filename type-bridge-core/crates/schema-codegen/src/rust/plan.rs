@@ -73,7 +73,7 @@ pub(super) fn render(projection: &RuntimeProjection) -> Result<String, Diagnosti
         }
         let _ = writeln!(
             output,
-            "pub fn filter<C: recording::FilterFor<{name}, Mode>>(self, condition: C) -> Self {{ Self {{ __tb_handle: self.__tb_handle.filter(condition) }} }}\npub fn models(&self, p: &mut recording::Recording<AppSchema>) -> Plan<Vec<<Mode as recording::ModelSelection<{name}>>::Output>> where Mode: recording::ModelSelection<{name}> {{ self.__tb_handle.models(p, {roles}) }}\npub fn delete(&self, p: &mut recording::Recording<AppSchema>) -> Plan<type_bridge::plan::Matched> {{ self.__tb_handle.delete(p); p.matched() }}\npub fn set<'a>(&'a self, p: &'a mut recording::Recording<AppSchema>) -> {name}Set<'a, Mode> {{ {name}Set {{ __tb_handle: self, __tb_recording: p }} }}\n}}"
+            "pub fn where_<C: recording::FilterFor<{name}, Mode>>(self, condition: C) -> Self {{ Self {{ __tb_handle: self.__tb_handle.where_(condition) }} }}\npub fn models(&self, p: &mut recording::Recording<AppSchema>) -> Plan<Vec<<Mode as recording::ModelSelection<{name}>>::Output>> where Mode: recording::ModelSelection<{name}> {{ self.__tb_handle.models(p, {roles}) }}\npub fn delete(&self, p: &mut recording::Recording<AppSchema>) -> Plan<type_bridge::plan::Matched> {{ self.__tb_handle.delete(p); p.matched() }}\npub fn set<'a>(&'a self, p: &'a mut recording::Recording<AppSchema>) -> {name}Set<'a, Mode> {{ {name}Set {{ __tb_handle: self, __tb_recording: p }} }}\n}}"
         );
         let _ = writeln!(
             output,
@@ -164,7 +164,7 @@ pub(super) fn render(projection: &RuntimeProjection) -> Result<String, Diagnosti
             let field = field.target_name().as_str();
             let _ = writeln!(
                 output,
-                "pub fn {field}(mut self, value: impl Into<recording::Comparable<{ty}>>) -> Self {{ if self.__tb_seen[{index}] {{ self.__tb_handle.__tb_handle.duplicate_match_field(); return self; }} self.__tb_seen[{index}] = true; self.__tb_handle = self.__tb_handle.filter({token_type}::{field}.eq(value)); self }}"
+                "pub fn {field}(mut self, value: impl Into<recording::Comparable<{ty}>>) -> Self {{ if self.__tb_seen[{index}] {{ self.__tb_handle.__tb_handle.duplicate_match_field(); return self; }} self.__tb_seen[{index}] = true; self.__tb_handle = self.__tb_handle.where_({token_type}::{field}.eq(value)); self }}"
             );
         }
         output.push_str("}\n");

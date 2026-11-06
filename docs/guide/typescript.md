@@ -377,7 +377,7 @@ plain `number` is not a literal.
 - **Expressions.** `let` takes `add`, `sub`, `mul`, `div` and `mod` over
   values, inputs and literals, and `PlanExpr.pow`, `abs`, `ceil`, `floor`,
   `round`, `min`, `max` and `length`.
-- **Answers.** Each `stage` returns a `PendingPlanAnswer`; `get()` resolves
+- **Answers.** Each `stage` returns a `Pending`; `result()` resolves
   after a successful commit. A failed commit stores nothing and rejects with
   a `PlanError` whose `code` and `failure` name the typed outcome; every
   answer of that commit throws the same failure.

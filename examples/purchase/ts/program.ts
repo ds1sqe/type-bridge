@@ -12,7 +12,7 @@
  */
 import { Matched, Plan, PlanError, Database } from "@type-bridge/node";
 import type {
-  PendingPlanAnswer,
+  Pending,
   PlanAnswer,
   ProviderFailure,   PlanAuthority,
   StagedTransaction,
@@ -301,8 +301,8 @@ type Answer =
   | readonly ["failure", Pick<ProviderFailure, "phase" | "reason" | "code" | "retry_safe">];
 
 /** One answer as [kind, value]; rows report their count, exists 0 or 1. */
-function answer(pending: PendingPlanAnswer<PlanAnswer | Matched>): Answer {
-  const value = pending.get();
+function answer(pending: Pending<PlanAnswer | Matched>): Answer {
+  const value = pending.result();
   if (value instanceof Matched) return ["matched", Number(value.count)];
   switch (value.kind) {
     case "rows":

@@ -338,6 +338,14 @@ All notable changes to TypeBridge will be documented in this file.
 
 <!-- --8<-- [start:breaking-3-0] -->
 
+Plan authoring uses Python `PlanBuilder.where` and `PlanBuilder.let` in place of
+`where_` and `let_`. Rust typed `Bound.filter` and generated
+`<Model>Handle.filter` become `where_`; manager
+filters retain their existing meaning. TypeScript `PendingPlanAnswer` becomes
+`Pending`, and its duplicate `get()` method is removed in favor of `result()`.
+Rust `Pending.get()` retains its distinct borrowed-result behavior.
+
+
 Python, TypeScript and Rust query/grouped-query `aggregate(...)` terminals
 are renamed to `reduce(...)`. Aggregate constructors and type namespaces
 (such as `aggregate.count()`) keep their names. Generated C explicit-root

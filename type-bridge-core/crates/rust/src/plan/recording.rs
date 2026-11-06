@@ -754,7 +754,7 @@ impl<M: ThingModel, Mode: SelectionMode> Handle<M, Mode> {
     }
 
     /// Require a generated class-field or bound-value condition.
-    pub fn filter<C: FilterFor<M, Mode>>(self, condition: C) -> Self {
+    pub fn where_<C: FilterFor<M, Mode>>(self, condition: C) -> Self {
         condition.apply(&self);
         self
     }

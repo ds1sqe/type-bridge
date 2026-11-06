@@ -59,7 +59,7 @@ function stagePurchaseProgram(live: Fixture, tx: StagedTransaction): (() => Plan
   const declared = bytes(live.declared_hex);
   return (["purchase", "count", "exists"] as const).map((name) => {
     const pending = tx.stagePlan(bytes(live.plans_hex[name]), declared);
-    return () => pending.get();
+    return () => pending.result();
   });
 }
 

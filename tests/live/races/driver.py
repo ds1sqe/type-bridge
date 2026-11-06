@@ -185,11 +185,11 @@ def purchase(authority: PlanAuthority, order: str, account: str) -> Plan:
     stock = plan.field(item, _field(Item, "stock"))
     price = plan.field(item, _field(Item, "price"))
     balance = plan.field(buyer, _field(Account, "balance"))
-    plan.where_(plan.field(item, _field(Item, "item-id")).eq("I1"))
-    plan.where_(plan.field(buyer, _field(Account, "account-id")).eq(account))
-    plan.where_(stock.gt(0)).where_(balance.ge(price))
-    plan.update(item, _field(Item, "stock"), plan.let_("next_stock", stock - 1))
-    plan.update(buyer, _field(Account, "balance"), plan.let_("next_balance", balance - price))
+    plan.where(plan.field(item, _field(Item, "item-id")).eq("I1"))
+    plan.where(plan.field(buyer, _field(Account, "account-id")).eq(account))
+    plan.where(stock.gt(0)).where(balance.ge(price))
+    plan.update(item, _field(Item, "stock"), plan.let("next_stock", stock - 1))
+    plan.update(buyer, _field(Account, "balance"), plan.let("next_balance", balance - price))
     (
         plan.insert(Purchase)
         .field(_field(Purchase, "order-id"), order)
@@ -210,11 +210,11 @@ def off_call(authority: PlanAuthority, doctor: str, colleague: str, *, touch: bo
     me = plan.exact(Doctor)
     other = plan.exact(Doctor)
     on_call = _field(Doctor, "on-call")
-    plan.where_(plan.field(me, _field(Doctor, "name")).eq(doctor))
-    plan.where_(plan.field(other, _field(Doctor, "name")).eq(colleague))
-    plan.where_(plan.field(me, on_call).eq(True))
+    plan.where(plan.field(me, _field(Doctor, "name")).eq(doctor))
+    plan.where(plan.field(other, _field(Doctor, "name")).eq(colleague))
+    plan.where(plan.field(me, on_call).eq(True))
     other_on_call = plan.field(other, on_call)
-    plan.where_(other_on_call.eq(True))
+    plan.where(other_on_call.eq(True))
     plan.update(me, on_call, False)
     if touch:
         plan.update(other, on_call, other_on_call)
@@ -226,8 +226,8 @@ def assign(authority: PlanAuthority, doctor: str, shift: str) -> Plan:
     plan = Plan.builder()
     assignee = plan.exact(Doctor)
     target = plan.exact(Shift)
-    plan.where_(plan.field(assignee, _field(Doctor, "name")).eq(doctor))
-    plan.where_(plan.field(target, _field(Shift, "shift-id")).eq(shift))
+    plan.where(plan.field(assignee, _field(Doctor, "name")).eq(doctor))
+    plan.where(plan.field(target, _field(Shift, "shift-id")).eq(shift))
     (
         plan.insert(Assignment)
         .player(_role(Assignment, "assignment", "assignee"), assignee)
@@ -258,7 +258,7 @@ def count_of(authority: PlanAuthority, model: type[Any], **equal: str | int | bo
     plan = Plan.builder()
     thing = plan.exact(model)
     for attribute, value in equal.items():
-        plan.where_(plan.field(thing, _field(model, attribute.replace("_", "-"))).eq(value))
+        plan.where(plan.field(thing, _field(model, attribute.replace("_", "-"))).eq(value))
     return plan.count().build(authority)
 
 

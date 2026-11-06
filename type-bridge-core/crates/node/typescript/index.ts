@@ -991,8 +991,7 @@ function validateConnectionTransport(
 }
 
 export {
-  PendingPlanAnswer,
-  PendingPlanAnswer as Pending,
+  Pending,
   StagedTransaction,
   type PlanAnswer,
   type StagedTransactionKind,

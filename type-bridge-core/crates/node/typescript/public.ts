@@ -30,7 +30,6 @@ export {
   longFromNumberUnsafe,
   openMigrationCatalog,
   string,
-  PendingPlanAnswer,
   Pending,
   StagedTransaction,
   type PlanAnswer,
