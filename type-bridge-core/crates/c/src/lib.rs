@@ -12,6 +12,7 @@ mod diagnostic;
 mod entity_crud;
 mod execution_diagnostic;
 mod generated_preflight;
+mod iid;
 mod migration_abi;
 mod migration_runtime;
 mod perf_stages;
@@ -127,4 +128,5 @@ pub use plan_builder::bulk::{
 pub use plan_builder::context::{TYPE_BRIDGE_PLAN_OPTIONS_VERSION, TypeBridgePlanOptionsV1};
 pub use query::TypeBridgeQueryLimitOverrideV1;
 
+pub use iid::TypeBridgeIid;
 pub use raw::{TypeBridgeRawResult, TypeBridgeRawTransaction};

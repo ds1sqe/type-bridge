@@ -19,3 +19,10 @@ void raw_function_types(void) {
     (void)database_open; (void)proxy_open; (void)database_execute; (void)proxy_execute;
     (void)execute; (void)commit; (void)rollback; (void)close_transaction; (void)json; (void)close_result;
 }
+
+void iid_function_types(void) {
+    type_bridge_status_t (*open)(type_bridge_byte_view_t, type_bridge_iid_t **) = type_bridge_iid_open;
+    type_bridge_status_t (*text)(const type_bridge_iid_t *, type_bridge_byte_view_t *) = type_bridge_iid_text;
+    type_bridge_status_t (*close)(type_bridge_iid_t **) = type_bridge_iid_close;
+    (void)open; (void)text; (void)close;
+}

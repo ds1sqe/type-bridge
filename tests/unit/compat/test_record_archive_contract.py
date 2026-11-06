@@ -88,7 +88,7 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         re.findall(r"TYPE_BRIDGE_CALL\s+(type_bridge_[a-z0-9_]+)\s*\(", header.read_text())
     )
     assert contract["exports"] == sorted(exports)
-    assert len(exports) == 604
+    assert len(exports) == 607
     previous = ROOT / "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
     assert hashlib.sha256(previous.read_bytes()).hexdigest() == (
         "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"

@@ -2,7 +2,7 @@
   "format": "typebridge.c-abi/v1",
   "version": "2.0.0",
   "header": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-  "header_sha256": "72c4100eb5209c9be1b5d6443ba268cf10db970d07453c480dfd71a94751efd9",
+  "header_sha256": "a8303b346ba103eb37dfc98d820bce1f1211254f38f1447374e987b9cb729d06",
   "handles": [
     "type_bridge_canonical_bytes_t",
     "type_bridge_canonical_archive_builder_t",
@@ -139,6 +139,9 @@
     "type_bridge_execution_diagnostics_timeline_get_v1",
     "type_bridge_exists_pending_result",
     "type_bridge_generated_opaque_alias_preflight_v1",
+    "type_bridge_iid_close",
+    "type_bridge_iid_open",
+    "type_bridge_iid_text",
     "type_bridge_matched_pending_result",
     "type_bridge_migration_approval_builder_approve",
     "type_bridge_migration_approval_builder_close",

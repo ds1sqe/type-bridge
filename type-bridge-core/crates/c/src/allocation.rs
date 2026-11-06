@@ -12,6 +12,7 @@ use type_bridge_contract::sdk_diagnostic::{
 pub(crate) enum AllocationSite {
     RawTransactionHandle,
     RawResultHandle,
+    IidHandle,
     ProjectedValueHandle,
     PlanViewStorage,
     PlanRowsResultHandle,

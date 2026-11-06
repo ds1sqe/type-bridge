@@ -4203,6 +4203,18 @@ type_bridge_raw_result_json(const type_bridge_raw_result_t *result,
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_raw_result_close(type_bridge_raw_result_t **result);
 
+/* Owned, immutable IID validated as 0x plus one to 256 hexadecimal digits.
+ * Spelling is preserved. Invalid text returns INVALID_ARGUMENT and clears a
+ * disjoint output. Aliased outputs are rejected untouched. */
+typedef struct type_bridge_iid type_bridge_iid_t;
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_iid_open(
+    type_bridge_byte_view_t text, type_bridge_iid_t **out_iid);
+/* Borrowed text remains valid until iid_close. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_iid_text(
+    const type_bridge_iid_t *iid, type_bridge_byte_view_t *out_text);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_iid_close(
+    type_bridge_iid_t **iid);
+
 #ifdef __cplusplus
 }
 #endif

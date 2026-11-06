@@ -11,6 +11,8 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C `type_bridge_iid_open`, `type_bridge_iid_text`, and `type_bridge_iid_close`
+  own validated TypeDB identities and preserve their original spelling.
 - C unchecked TypeQL supports database/proxy `execute_query` and owned raw
   transactions for read, write, and schema work. Results retain exact provider
   JSON bytes; diagnostics retain provider details and commit certainty. Direct
