@@ -42,6 +42,7 @@ use type_bridge_schema_migration::{
 
 #[cfg(test)]
 use crate::AppliedMigrationRecord;
+#[cfg(test)]
 use crate::legacy_ledger::{
     LegacyCutoverSentinelError, LegacyCutoverSentinelExpectation, VerifiedLegacyAppliedPartition,
 };
@@ -55,7 +56,6 @@ use crate::control_schema::{
     LEGACY_CUTOVER_ENTITY, LEGACY_CUTOVER_FINGERPRINT, LEGACY_CUTOVER_KEY, LEGACY_CUTOVER_SCOPE,
     LEGACY_CUTOVER_SINGLETON_KEY, MANAGED_FENCE_SCHEMA_TYPEQL,
 };
-use crate::legacy_import::digest_legacy_applied_records;
 use crate::observation::{
     ManagedObservationAuthority, observe_managed_state_from_export_with_authority,
     rebuild_live_managed_state_with_authority,
@@ -141,9 +141,9 @@ pub(crate) enum LegacyExecutionBinding {
 
 #[derive(Clone)]
 pub(crate) struct LegacyBridgeBinding {
-    expected_applied_set: type_bridge_schema_migration::LegacyAppliedSetDigest,
+    pub(crate) expected_applied_set: type_bridge_schema_migration::LegacyAppliedSetDigest,
     managed_scope: String,
-    anchor_fingerprint: String,
+    pub(crate) anchor_fingerprint: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -199,12 +199,6 @@ impl LegacyExecutionBinding {
     ) -> Result<(), Diagnostic> {
         match self {
             Self::Absent => {
-                load_verified_legacy_partition(
-                    transaction,
-                    LegacyCutoverSentinelExpectation::Absent,
-                    "bridge-free execution cannot inspect the released applied ledger",
-                )
-                .await?;
                 if load_legacy_cutover_anchor(transaction, managed_scope)
                     .await?
                     .is_some()
@@ -226,50 +220,31 @@ impl LegacyExecutionBinding {
         managed_scope: &str,
     ) -> Result<LegacyBindingReadInspection, Diagnostic> {
         match self {
-            Self::Absent => {
-                if let Err(error) = load_verified_legacy_partition(
-                    transaction,
-                    LegacyCutoverSentinelExpectation::Absent,
-                    "bridge-free read-only verification cannot inspect the released ledger",
-                )
-                .await
-                {
-                    if error.code().as_str() == "migration_legacy_cutover_sentinel_invalid" {
-                        return Ok(LegacyBindingReadInspection {
-                            drift: Some(error),
-                            snapshot: None,
-                        });
-                    }
-                    return Err(error);
+            Self::Absent => match observe_legacy_cutover_anchor(transaction, managed_scope).await {
+                Ok(anchor_fingerprint) => {
+                    let drift = anchor_fingerprint.as_ref().map(|_| {
+                        legacy_import_failure(
+                            "migration_legacy_import_anchor_without_bridge",
+                            "managed database carries a cutover anchor without an active bridge",
+                        )
+                    });
+                    Ok(LegacyBindingReadInspection {
+                        drift,
+                        snapshot: Some(LegacyBindingSnapshot {
+                            applied_set: None,
+                            anchor_fingerprint,
+                            sentinel_fingerprint: None,
+                        }),
+                    })
                 }
-                match observe_legacy_cutover_anchor(transaction, managed_scope).await {
-                    Ok(anchor_fingerprint) => {
-                        let drift = anchor_fingerprint.as_ref().map(|_| {
-                            legacy_import_failure(
-                                "migration_legacy_import_anchor_without_bridge",
-                                "managed database carries a cutover anchor without an active bridge",
-                            )
-                        });
-                        Ok(LegacyBindingReadInspection {
-                            drift,
-                            snapshot: Some(LegacyBindingSnapshot {
-                                applied_set: None,
-                                anchor_fingerprint,
-                                sentinel_fingerprint: None,
-                            }),
-                        })
-                    }
-                    Err(LegacyAnchorObservationError::Drift(diagnostic)) => {
-                        Ok(LegacyBindingReadInspection {
-                            drift: Some(diagnostic),
-                            snapshot: None,
-                        })
-                    }
-                    Err(LegacyAnchorObservationError::Infrastructure(diagnostic)) => {
-                        Err(diagnostic)
-                    }
+                Err(LegacyAnchorObservationError::Drift(diagnostic)) => {
+                    Ok(LegacyBindingReadInspection {
+                        drift: Some(diagnostic),
+                        snapshot: None,
+                    })
                 }
-            }
+                Err(LegacyAnchorObservationError::Infrastructure(diagnostic)) => Err(diagnostic),
+            },
             Self::Active(binding) => binding.inspect_read_only(transaction).await,
         }
     }
@@ -280,7 +255,7 @@ impl LegacyBridgeBinding {
         bridge: &VerifiedSchemaMigrationManifest,
         authority: &AdoptedGenesisAuthority,
         managed_database: &Database,
-        journal_database: &Database,
+        _journal_database: &Database,
         managed_scope: &str,
     ) -> Result<Self, Diagnostic> {
         if !bridge.is_legacy_bridge() {
@@ -299,7 +274,9 @@ impl LegacyBridgeBinding {
             &expected_applied_set,
             &verified_manifest_digest(bridge)?.to_hex(),
             managed_database.database_name(),
-            journal_database.database_name(),
+            managed_database
+                .derived_legacy_journal_database()
+                .database_name(),
             managed_scope,
             authority.legacy_identity(),
         )?;
@@ -308,26 +285,6 @@ impl LegacyBridgeBinding {
             managed_scope: managed_scope.to_owned(),
             anchor_fingerprint,
         })
-    }
-
-    async fn validate_legacy_ledger(
-        &self,
-        transaction: &mut type_bridge_orm::OwnedTransaction,
-    ) -> Result<(), Diagnostic> {
-        let current = load_verified_legacy_partition(
-            transaction,
-            LegacyCutoverSentinelExpectation::RequiredExact(&self.anchor_fingerprint),
-            "bridge-rooted execution cannot read the released applied ledger",
-        )
-        .await?;
-        let observed = digest_legacy_applied_records(current.applied())?;
-        if observed != self.expected_applied_set {
-            return Err(legacy_import_failure(
-                "migration_legacy_applied_set_drift",
-                "released applied ledger differs from the permanent bridge binding",
-            ));
-        }
-        Ok(())
     }
 
     async fn validate_exact_anchor(
@@ -351,7 +308,6 @@ impl LegacyBridgeBinding {
         &self,
         transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<(), Diagnostic> {
-        self.validate_legacy_ledger(transaction).await?;
         self.validate_exact_anchor(transaction).await
     }
 
@@ -359,31 +315,6 @@ impl LegacyBridgeBinding {
         &self,
         transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<LegacyBindingReadInspection, Diagnostic> {
-        let current = match load_verified_legacy_partition(
-            transaction,
-            LegacyCutoverSentinelExpectation::RequiredExact(&self.anchor_fingerprint),
-            "read-only verification cannot read the released applied ledger",
-        )
-        .await
-        {
-            Ok(current) => current,
-            Err(error) if error.code().as_str() == "migration_legacy_cutover_sentinel_invalid" => {
-                return Ok(LegacyBindingReadInspection {
-                    drift: Some(error),
-                    snapshot: None,
-                });
-            }
-            Err(error) => return Err(error),
-        };
-        let observed = match digest_legacy_applied_records(current.applied()) {
-            Ok(observed) => observed,
-            Err(drift) => {
-                return Ok(LegacyBindingReadInspection {
-                    drift: Some(drift),
-                    snapshot: None,
-                });
-            }
-        };
         let anchor_fingerprint =
             match observe_legacy_cutover_anchor(transaction, &self.managed_scope).await {
                 Ok(anchor_fingerprint) => anchor_fingerprint,
@@ -397,30 +328,23 @@ impl LegacyBridgeBinding {
                     return Err(diagnostic);
                 }
             };
-        let drift = if observed != self.expected_applied_set {
-            Some(legacy_import_failure(
-                "migration_legacy_applied_set_drift",
-                "released applied ledger differs from the permanent bridge binding",
-            ))
-        } else {
-            match anchor_fingerprint.as_deref() {
-                Some(anchor) if anchor == self.anchor_fingerprint => None,
-                Some(_) => Some(legacy_import_failure(
-                    "migration_legacy_import_anchor_mismatch",
-                    "managed database carries a different legacy cutover anchor",
-                )),
-                None => Some(legacy_import_failure(
-                    "migration_legacy_import_anchor_missing",
-                    "active legacy bridge has no managed-side cutover anchor",
-                )),
-            }
+        let drift = match anchor_fingerprint.as_deref() {
+            Some(anchor) if anchor == self.anchor_fingerprint => None,
+            Some(_) => Some(legacy_import_failure(
+                "migration_legacy_import_anchor_mismatch",
+                "managed database carries a different legacy cutover anchor",
+            )),
+            None => Some(legacy_import_failure(
+                "migration_legacy_import_anchor_missing",
+                "active legacy bridge has no managed-side cutover anchor",
+            )),
         };
         Ok(LegacyBindingReadInspection {
             drift,
             snapshot: Some(LegacyBindingSnapshot {
-                applied_set: Some(observed),
+                applied_set: Some(self.expected_applied_set.clone()),
                 anchor_fingerprint,
-                sentinel_fingerprint: current.sentinel_fingerprint().map(str::to_owned),
+                sentinel_fingerprint: Some(self.anchor_fingerprint.clone()),
             }),
         })
     }
@@ -849,7 +773,27 @@ impl TypeDbMigrationRunner {
         let observation_authority =
             ManagedObservationAuthority::from_adopted(adopted_authority.as_ref());
         let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
-        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?;
+        let import_binding = graph
+            .manifests()
+            .find(|(_, manifest)| manifest.is_legacy_bridge())
+            .map(|(_, bridge)| {
+                let authority = adopted_authority.as_deref().ok_or_else(|| {
+                    legacy_import_failure(
+                        "migration_legacy_adopted_genesis_missing",
+                        "legacy import requires adopted genesis authority",
+                    )
+                })?;
+                LegacyBridgeBinding::from_bridge(
+                    bridge,
+                    authority,
+                    &self.managed_database,
+                    &self.journal_database,
+                    self.context.scope_id().as_str(),
+                )
+            })
+            .transpose()?;
+        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?
+            .with_import_binding(import_binding);
         store.ensure_control_schema().await?;
 
         let basis = self.load_applied_basis(&store, holder).await?;
@@ -961,7 +905,27 @@ impl TypeDbMigrationRunner {
         let observation_authority =
             ManagedObservationAuthority::from_adopted(adopted_authority.as_ref());
         let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
-        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?;
+        let import_binding = graph
+            .manifests()
+            .find(|(_, manifest)| manifest.is_legacy_bridge())
+            .map(|(_, bridge)| {
+                let authority = adopted_authority.as_deref().ok_or_else(|| {
+                    legacy_import_failure(
+                        "migration_legacy_adopted_genesis_missing",
+                        "legacy import requires adopted genesis authority",
+                    )
+                })?;
+                LegacyBridgeBinding::from_bridge(
+                    bridge,
+                    authority,
+                    &self.managed_database,
+                    &self.journal_database,
+                    self.context.scope_id().as_str(),
+                )
+            })
+            .transpose()?;
+        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?
+            .with_import_binding(import_binding);
         store.ensure_control_schema().await?;
         let basis = self.load_applied_basis(&store, holder).await?;
         if profile_upgrade_bridge_recorded(&graph, bridge, &basis)? {
@@ -1022,7 +986,27 @@ impl TypeDbMigrationRunner {
         let observation_authority =
             ManagedObservationAuthority::from_adopted(adopted_authority.as_ref());
         let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
-        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?;
+        let import_binding = graph
+            .manifests()
+            .find(|(_, manifest)| manifest.is_legacy_bridge())
+            .map(|(_, bridge)| {
+                let authority = adopted_authority.as_deref().ok_or_else(|| {
+                    legacy_import_failure(
+                        "migration_legacy_adopted_genesis_missing",
+                        "legacy import requires adopted genesis authority",
+                    )
+                })?;
+                LegacyBridgeBinding::from_bridge(
+                    bridge,
+                    authority,
+                    &self.managed_database,
+                    &self.journal_database,
+                    self.context.scope_id().as_str(),
+                )
+            })
+            .transpose()?;
+        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?
+            .with_import_binding(import_binding);
         let scope = ExecutionScope::new(self.context.scope_id().clone());
         let basis: BTreeSet<MigrationId> = store
             .load_applied_read_only(&scope)
@@ -1112,7 +1096,27 @@ impl TypeDbMigrationRunner {
         let observation_authority =
             ManagedObservationAuthority::from_adopted(adopted_authority.as_ref());
         let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
-        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?;
+        let import_binding = graph
+            .manifests()
+            .find(|(_, manifest)| manifest.is_legacy_bridge())
+            .map(|(_, bridge)| {
+                let authority = adopted_authority.as_deref().ok_or_else(|| {
+                    legacy_import_failure(
+                        "migration_legacy_adopted_genesis_missing",
+                        "legacy import requires adopted genesis authority",
+                    )
+                })?;
+                LegacyBridgeBinding::from_bridge(
+                    bridge,
+                    authority,
+                    &self.managed_database,
+                    &self.journal_database,
+                    self.context.scope_id().as_str(),
+                )
+            })
+            .transpose()?;
+        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?
+            .with_import_binding(import_binding);
         store.ensure_control_schema().await?;
 
         let basis = self.load_applied_basis(&store, holder).await?;
@@ -1607,6 +1611,7 @@ fn read_guard_cleanup_failure(cleanup: OrmError, primary: Option<&Diagnostic>) -
     diagnostic
 }
 
+#[cfg(test)]
 async fn load_verified_legacy_partition(
     transaction: &mut type_bridge_orm::OwnedTransaction,
     expectation: LegacyCutoverSentinelExpectation<'_>,
@@ -1865,7 +1870,7 @@ fn parse_legacy_cutover_anchor(
     Ok(Some(value.to_owned()))
 }
 
-async fn legacy_anchor_plan_values(
+pub(crate) async fn legacy_anchor_plan_values(
     transaction: &mut type_bridge_orm::OwnedTransaction,
     query: crate::data_plan::DataQuery,
 ) -> Result<Vec<serde_json::Value>, Diagnostic> {
@@ -2148,7 +2153,7 @@ mod tests {
     }
 
     fn no_io_runner(profile: &str) -> (TypeDbMigrationRunner, Arc<AtomicUsize>) {
-        no_io_runner_with_pair(profile, "managed__tbv2_journal", true)
+        no_io_runner_with_pair(profile, "managed__tb_journal", true)
     }
 
     fn assert_apply_diagnostic_code(error: MigrationDirectoryApplyError, expected: &str) {
@@ -2232,7 +2237,7 @@ mod tests {
         .await;
 
         let (pair_runner, pair_calls) =
-            no_io_runner_with_pair("typedb-3.12.1/v1", "managed__tbv2_journal", false);
+            no_io_runner_with_pair("typedb-3.12.1/v1", "managed__tb_journal", false);
         assert_every_connected_runner_path_rejects_without_database_io(
             &pair_runner,
             &pair_calls,
@@ -2252,7 +2257,7 @@ mod tests {
         // never on the 3.12.x server the history was applied on.
         let (old_server_runner, old_server_calls) = no_io_runner_with_server(
             "typedb-3.13.6/v1",
-            "managed__tbv2_journal",
+            "managed__tb_journal",
             true,
             Some(Version::new(3, 12, 3)),
         );
@@ -2406,13 +2411,13 @@ mod tests {
     fn runner_binding_rejects_every_pair_identity_mismatch_without_database_io() {
         for (journal_name, shared_authority, expected) in [
             (
-                "managed__tbv2_journal",
+                "managed__tb_journal",
                 false,
                 "migration_typedb_database_authority_mismatch",
             ),
             ("managed", true, "migration_typedb_database_pair_alias"),
             (
-                "other__tbv2_journal",
+                "other__tb_journal",
                 true,
                 "migration_typedb_journal_database_name_mismatch",
             ),

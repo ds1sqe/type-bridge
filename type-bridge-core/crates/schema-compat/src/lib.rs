@@ -22,8 +22,9 @@ pub use adopted_genesis::{
 pub use function_references::{FunctionBodyReferences, SchemaReference, TypeqlDeclaredSchema};
 pub use live_authority::{
     LiveLegacyLedgerPresence, LiveQueryAuthorityState, LiveQueryControlPresence,
-    MANAGED_FENCE_SCHEMA_TYPEQL, legacy_ledger_schema_presence, managed_fence_schema_presence,
-    rebuild_live_query_authority, rebuild_live_query_authority_state,
+    MANAGED_FENCE_SCHEMA_TYPEQL, import_legacy_fence_schema_presence,
+    legacy_ledger_schema_presence, managed_fence_schema_presence, rebuild_live_query_authority,
+    rebuild_live_query_authority_state, without_import_control,
 };
 
 pub use descriptor::{

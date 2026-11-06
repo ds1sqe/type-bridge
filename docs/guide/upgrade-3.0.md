@@ -46,6 +46,32 @@ backfill intent. Rollback removes only destination values equal to the source;
 unlike the deleted executor it preserves other pre-existing destination values.
 See [migration backfills](migrations.md#declarative-data-backfills).
 
+### Import the existing journal once
+
+Stop all 2.x migration runners before the first 3.0 apply. Keep a backup of the
+managed database and its `<database>__tbv2_journal` companion. The first 3.0
+`apply`, `rollback`, or `upgrade-profile` verifies and copies that journal into
+`<database>__tb_journal` under a fenced lease. It preserves old record payloads,
+digests, sequences and recorded fences, and records the verified legacy applied
+set and cutover sentinel in the new journal. It publishes the new managed fence
+only after writing `import-complete`.
+
+If interrupted, rerun the same command. Recovery keeps the new journal's owner
+and monotonic fence, discards incomplete copied records under a new lease and
+repeats the import. Read-only `verify` reports `migration_journal_import_pending`
+until import completes. A later advance of the old journal reports
+`migration_old_writer_after_import`; stop the old runner and reconcile the
+histories before continuing.
+
+The importer leaves the old database and managed legacy rows untouched. After
+successful 3.0 verification and a checked backup, you may delete the exact old
+companion database `<database>__tbv2_journal` with TypeDB administration. Retain
+the old managed control declarations until schema maintenance can remove their
+rows and declarations together; do not delete the new `typebridge-internal-*`
+control state. Ordinary operations use the imported evidence, so the old
+applied-ledger rows are no longer required after successful import. From then
+on, back up and restore the managed database with `<database>__tb_journal`.
+
 ## Rust model identifiers
 
 Generated Rust models and families return `&Iid` from `iid()`; references return

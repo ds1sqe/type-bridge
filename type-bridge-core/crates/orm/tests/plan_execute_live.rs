@@ -3261,7 +3261,7 @@ async fn native_control_authority_reads_the_frozen_schema_in_one_transaction() {
     .await
     .unwrap();
     db.execute_raw(
-        "insert $control isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-control-scope \"native-control\", has typebridge-internal-v2-lease-fence \"1\", has typebridge-internal-v2-lease-state \"free\";",
+        "insert $control isa typebridge-internal-migration-control, has typebridge-internal-control-scope \"native-control\", has typebridge-internal-lease-fence \"1\", has typebridge-internal-lease-state \"free\";",
         TxType::Write,
     ).await.unwrap();
     let mut tx = db.read_transaction().await.unwrap();

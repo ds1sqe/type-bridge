@@ -355,6 +355,11 @@ pub fn parse_adopted_genesis_authority_with_internal(
     })?;
     reject_reserved_function_references(&full)?;
     let full = full.into_declared();
+    let full = if allowed_internal.is_some() {
+        crate::live_authority::without_import_control(full)?.0
+    } else {
+        full
+    };
 
     let mut user = Vec::new();
     let mut ledger = Vec::new();
@@ -1100,7 +1105,7 @@ mod tests {
     fn reserved_control_facts_fail_closed() {
         let error = parse_adopted_genesis(
             document(),
-            "define\nentity typebridge-internal-v2-migration-control;\n",
+            "define\nentity typebridge-internal-migration-control;\n",
         )
         .expect_err("reserved namespace cannot be adopted");
         assert_eq!(error.code().as_str(), "adopted_genesis_reserved_namespace");
@@ -1111,7 +1116,7 @@ mod tests {
         for (reference, expected_code) in [
             ("migration_id", "reserved_schema_cross_reference"),
             (
-                "typebridge-internal-v2-shadow",
+                "typebridge-internal-shadow",
                 "reserved_schema_cross_reference",
             ),
             ("$kind", "migration_typedb_dynamic_function_reference"),
@@ -1139,9 +1144,9 @@ mod tests {
             "define\nentity person;\n\
              fun inspect($candidate: person) -> { person }:\n\
                match\n\
-                 # migration_id and typebridge-internal-v2-shadow are inert\n\
+                 # migration_id and typebridge-internal-shadow are inert\n\
                  /* migration_checksum is inert too */\n\
-                 $marker = \"migration_id typebridge-internal-v2-shadow\";\n\
+                 $marker = \"migration_id typebridge-internal-shadow\";\n\
                  $candidate isa person;\n\
                return { $candidate };\n",
         )
@@ -1342,7 +1347,7 @@ mod tests {
             document(),
             "define\nentity person;\n\
              fun inspect() -> integer:\n\
-               opaque-token \"return 9; migration_id typebridge-internal-v2-shadow\"\n\
+               opaque-token \"return 9; migration_id typebridge-internal-shadow\"\n\
                /* return 8; migration_checksum */\n\
                return { 1 };\n",
         )

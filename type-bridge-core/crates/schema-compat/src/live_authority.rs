@@ -37,6 +37,7 @@ struct QueryAuthorityPartitions {
     user: DeclaredSchema,
     internal: DeclaredSchema,
     legacy_control: DeclaredSchema,
+    import_control_present: bool,
 }
 
 struct ParsedLiveAuthorityExport {
@@ -87,7 +88,7 @@ pub fn managed_fence_schema_presence(export: &str) -> Result<LiveQueryControlPre
         "migration_typedb_control_schema_mismatch",
         "reserved fence-mirror schema differs from the frozen contract",
     )?;
-    managed_fence_presence_from_declared(&full.declared, &full.stripped_offsets)
+    managed_fence_presence_from_declared(&full.declared, &full.stripped_offsets, false)
 }
 
 /// Inspect one TypeDB schema export for the exact frozen V1 ledger schema.
@@ -106,14 +107,109 @@ pub fn legacy_ledger_schema_presence(export: &str) -> Result<LiveLegacyLedgerPre
     legacy_ledger_presence_from_declared(&full.declared, &full.stripped_offsets)
 }
 
+/// Inspect the pre-3.0 fence only while detecting a pending migration import.
+#[doc(hidden)]
+pub fn import_legacy_fence_schema_presence(
+    export: &str,
+) -> Result<LiveQueryControlPresence, Diagnostic> {
+    let full = parse_live_authority_export(
+        export,
+        |label| label.starts_with(type_bridge_contract::reserved::IMPORT_LEGACY_INTERNAL_PREFIX),
+        "migration_typedb_control_schema_mismatch",
+        "legacy fence schema differs from its frozen import contract",
+    )?;
+    managed_fence_presence_from_declared(&full.declared, &full.stripped_offsets, true)
+}
+fn import_fence_schema() -> Result<DeclaredSchema, Diagnostic> {
+    typeql_to_declared(
+        DocumentId::new("import-managed-fence.typeql")?,
+        type_bridge_contract::reserved::IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL,
+    )
+    .map_err(|_| {
+        failure(
+            DiagnosticCategory::Integrity,
+            "migration_import_control_schema_invalid",
+            "frozen import schema cannot be decoded",
+        )
+    })
+}
+fn value_mentions_import_control(value: &Value) -> bool {
+    match value {
+        Value::String(value) => {
+            value.starts_with(type_bridge_contract::reserved::IMPORT_LEGACY_INTERNAL_PREFIX)
+        }
+        Value::Array(values) => values.iter().any(value_mentions_import_control),
+        Value::Object(values) => values.values().any(value_mentions_import_control),
+        _ => false,
+    }
+}
+/// Remove a complete frozen old control partition when observing an imported database.
+/// Cross references and altered old control facts fail closed.
+#[doc(hidden)]
+pub fn without_import_control(full: DeclaredSchema) -> Result<(DeclaredSchema, bool), Diagnostic> {
+    let mut old = Vec::new();
+    let mut retained = Vec::new();
+    for fact in full.facts() {
+        let id = fact.id();
+        let source = full.source(&id).cloned().ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_import_control_provenance",
+                "control fact has no source provenance",
+            )
+        })?;
+        let value = serde_json::to_value(&id).map_err(|_| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_import_control_identity",
+                "control fact identity cannot be inspected",
+            )
+        })?;
+        let sourced = SourcedSchemaFact::new(fact.clone(), source);
+        if value_mentions_import_control(&value) {
+            old.push(sourced);
+        } else {
+            retained.push(sourced);
+        }
+    }
+    if old.is_empty() {
+        return Ok((full, false));
+    }
+    let old = DeclaredSchema::from_facts(full.format(), CapabilitySet::new(), old)
+        .map_err(|error| map_schema_error(DeltaError::Schema(error)))?;
+    if old.declared_identity_fingerprint() != import_fence_schema()?.declared_identity_fingerprint()
+    {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_import_control_schema_mismatch",
+            "retained legacy control schema differs from the frozen managed partition",
+        ));
+    }
+    Ok((
+        DeclaredSchema::from_facts(full.format(), CapabilitySet::new(), retained)
+            .map_err(|error| map_schema_error(DeltaError::Schema(error)))?,
+        true,
+    ))
+}
+
 fn managed_fence_presence_from_declared(
     full: &DeclaredSchema,
     stripped_offsets: &[usize],
+    legacy: bool,
 ) -> Result<LiveQueryControlPresence, Diagnostic> {
-    if !schema_mentions_labels(full, value_mentions_reserved_label)? {
+    let mentions = if legacy {
+        value_mentions_import_control
+    } else {
+        value_mentions_reserved_label
+    };
+    if !schema_mentions_labels(full, mentions)? {
         return Ok(LiveQueryControlPresence::Absent);
     }
-    let expected = frozen_fence_mirror_schema()?;
+    let expected = if legacy {
+        import_fence_schema()?
+    } else {
+        frozen_fence_mirror_schema()?
+    };
     if !contains_exact_schema_subset(full, &expected) {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -738,6 +834,13 @@ pub fn rebuild_live_query_authority(
         })?;
     reject_reserved_function_references(&parsed)?;
     let partitioned = partition_declared_schema(parsed.into_declared())?;
+    if partitioned.import_control_present && partitioned.internal.facts().next().is_none() {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_journal_import_pending",
+            "run migration apply to import the legacy journal before using this database",
+        ));
+    }
     let control_presence = if partitioned.internal.facts().next().is_some() {
         verify_fence_mirror_partition(&partitioned.internal)?;
         LiveQueryControlPresence::ManagedFence
@@ -756,6 +859,7 @@ pub fn rebuild_live_query_authority(
 }
 
 fn partition_declared_schema(full: DeclaredSchema) -> Result<QueryAuthorityPartitions, Diagnostic> {
+    let (full, import_control_present) = without_import_control(full)?;
     let mut user = Vec::new();
     let mut internal = Vec::new();
     let mut legacy_control = Vec::new();
@@ -816,6 +920,7 @@ fn partition_declared_schema(full: DeclaredSchema) -> Result<QueryAuthorityParti
         user,
         internal,
         legacy_control,
+        import_control_present,
     })
 }
 
@@ -1080,7 +1185,7 @@ mod tests {
         let declared = declared("define entity person;");
         let error = rebuild_live_query_authority_state(
             DocumentId::new("query-live-authority-reserved.typeql").expect("document"),
-            "define entity person; attribute typebridge-internal-v2-control-scope, value string;",
+            "define entity person; attribute typebridge-internal-control-scope, value string;",
             &declared,
             &context(),
         )
@@ -1107,15 +1212,15 @@ mod tests {
     #[test]
     fn writer_fence_presence_rejects_all_label_lookalikes_without_capabilities() {
         let lookalikes = r#"define
-attribute typebridge-internal-v2-control-scope, value string;
-attribute typebridge-internal-v2-lease-holder, value string;
-attribute typebridge-internal-v2-lease-fence, value string;
-attribute typebridge-internal-v2-lease-state, value string;
-attribute typebridge-internal-v2-legacy-cutover-key, value string;
-attribute typebridge-internal-v2-legacy-cutover-scope, value string;
-attribute typebridge-internal-v2-legacy-cutover-fingerprint, value string;
-entity typebridge-internal-v2-migration-control;
-entity typebridge-internal-v2-legacy-cutover;
+attribute typebridge-internal-control-scope, value string;
+attribute typebridge-internal-lease-holder, value string;
+attribute typebridge-internal-lease-fence, value string;
+attribute typebridge-internal-lease-state, value string;
+attribute typebridge-internal-legacy-cutover-key, value string;
+attribute typebridge-internal-legacy-cutover-scope, value string;
+attribute typebridge-internal-legacy-cutover-fingerprint, value string;
+entity typebridge-internal-migration-control;
+entity typebridge-internal-legacy-cutover;
 "#;
         let error = managed_fence_schema_presence(lookalikes)
             .expect_err("labels alone must not establish managed authority");
@@ -1128,7 +1233,7 @@ entity typebridge-internal-v2-legacy-cutover;
     #[test]
     fn writer_fence_presence_cannot_be_reopened_by_extra_reserved_facts() {
         let export =
-            format!("{MANAGED_FENCE_SCHEMA_TYPEQL}\ndefine entity typebridge-internal-v2-extra;");
+            format!("{MANAGED_FENCE_SCHEMA_TYPEQL}\ndefine entity typebridge-internal-extra;");
         assert_eq!(
             managed_fence_schema_presence(&export).expect("canonical core remains authoritative"),
             LiveQueryControlPresence::ManagedFence
@@ -1171,7 +1276,7 @@ entity typebridge-internal-v2-legacy-cutover;
              define\nentity person;\n\
              fun inspect($candidate: person) -> {{ person }}:\n\
                match $candidate isa person;\n\
-               $control isa typebridge-internal-v2-migration-control;\n\
+               $control isa typebridge-internal-migration-control;\n\
                return {{ $candidate }};\n"
         );
 
@@ -1218,9 +1323,9 @@ entity typebridge-internal-v2-legacy-cutover;
     #[test]
     fn writer_presence_classifies_a_structured_frozen_attribute_as_a_mismatch() {
         let export = MANAGED_FENCE_SCHEMA_TYPEQL.replace(
-            "attribute typebridge-internal-v2-control-scope, value string;",
+            "attribute typebridge-internal-control-scope, value string;",
             "struct payload: field value string;\n\
-             attribute typebridge-internal-v2-control-scope, value payload;",
+             attribute typebridge-internal-control-scope, value payload;",
         );
         let error = managed_fence_schema_presence(&export)
             .expect_err("a structured frozen attribute is not the canonical fence");
@@ -1320,8 +1425,8 @@ entity typebridge-internal-v2-legacy-cutover;
     #[test]
     fn writer_presence_reports_extensions_only_on_frozen_partition_facts() {
         let managed_extended = MANAGED_FENCE_SCHEMA_TYPEQL.replace(
-            "owns typebridge-internal-v2-lease-holder @card(0..1)",
-            "owns typebridge-internal-v2-lease-holder @cascade @card(0..1)",
+            "owns typebridge-internal-lease-holder @card(0..1)",
+            "owns typebridge-internal-lease-holder @cascade @card(0..1)",
         );
         assert_eq!(
             managed_fence_schema_presence(&managed_extended)
@@ -1354,8 +1459,8 @@ entity typebridge-internal-v2-legacy-cutover;
         );
 
         let canonical_drift = MANAGED_FENCE_SCHEMA_TYPEQL.replace(
-            "owns typebridge-internal-v2-lease-holder @card(0..1)",
-            "owns typebridge-internal-v2-lease-holder[] @distinct @card(0..1)",
+            "owns typebridge-internal-lease-holder @card(0..1)",
+            "owns typebridge-internal-lease-holder[] @distinct @card(0..1)",
         );
         let error = managed_fence_schema_presence(&canonical_drift)
             .expect_err("ordered mode changes the canonical frozen fact");
@@ -1367,14 +1472,44 @@ entity typebridge-internal-v2-legacy-cutover;
         let extra_reserved_extended = format!(
             "{MANAGED_FENCE_SCHEMA_TYPEQL}\n\
              define\n\
-             attribute typebridge-internal-v2-extra-value, value string;\n\
-             entity typebridge-internal-v2-extra,\n\
-               owns typebridge-internal-v2-extra-value[] @distinct;"
+             attribute typebridge-internal-extra-value, value string;\n\
+             entity typebridge-internal-extra,\n\
+               owns typebridge-internal-extra-value[] @distinct;"
         );
         assert_eq!(
             managed_fence_schema_presence(&extra_reserved_extended)
                 .expect("an unrelated reserved fact cannot alter the canonical core"),
             LiveQueryControlPresence::ManagedFence
         );
+    }
+    #[test]
+    fn imported_authority_strips_only_the_exact_frozen_control_partition() {
+        use type_bridge_contract::reserved::IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL;
+        let parse = |text: &str| {
+            typeql_to_declared(DocumentId::new("import-test.typeql").unwrap(), text).unwrap()
+        };
+        let current = parse(MANAGED_FENCE_SCHEMA_TYPEQL);
+        let both = parse(&format!(
+            "{IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL}\n{MANAGED_FENCE_SCHEMA_TYPEQL}"
+        ));
+        let (retained, present) = without_import_control(both).unwrap();
+        assert!(present);
+        assert_eq!(
+            retained.declared_identity_fingerprint(),
+            current.declared_identity_fingerprint()
+        );
+        let altered =
+            IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL.replace("value string", "value integer");
+        assert_eq!(
+            without_import_control(parse(&altered))
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "migration_import_control_schema_mismatch"
+        );
+        let partial = parse("define attribute typebridge-internal-v2-lease-state, value string;");
+        assert!(without_import_control(partial).is_err());
+        let (_, present) = without_import_control(current).unwrap();
+        assert!(!present);
     }
 }

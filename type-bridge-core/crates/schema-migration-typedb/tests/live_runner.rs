@@ -118,12 +118,12 @@ async fn legacy_writer_fence_survives_a_live_struct_valued_schema_export_on_3_12
         .await
         .expect("open isolated writer-authority transaction");
     rows.query(
-        "insert $control isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-control-scope \"live-structured-scope\", has typebridge-internal-v2-lease-fence \"1\", has typebridge-internal-v2-lease-state \"free\";",
+        "insert $control isa typebridge-internal-migration-control, has typebridge-internal-control-scope \"live-structured-scope\", has typebridge-internal-lease-fence \"1\", has typebridge-internal-lease-state \"free\";",
     )
     .await
     .expect("insert exact managed control");
     rows.query(&format!(
-        "insert $anchor isa typebridge-internal-v2-legacy-cutover, has typebridge-internal-v2-legacy-cutover-key \"typebridge-legacy-cutover-anchor/v1\", has typebridge-internal-v2-legacy-cutover-scope \"live-structured-scope\", has typebridge-internal-v2-legacy-cutover-fingerprint \"{fingerprint}\";"
+        "insert $anchor isa typebridge-internal-legacy-cutover, has typebridge-internal-legacy-cutover-key \"typebridge-legacy-cutover-anchor/v1\", has typebridge-internal-legacy-cutover-scope \"live-structured-scope\", has typebridge-internal-legacy-cutover-fingerprint \"{fingerprint}\";"
     ))
     .await
     .expect("insert exact cutover anchor");
@@ -719,15 +719,15 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3() {
 async fn legacy_writer_allows_reserved_label_collisions_without_frozen_capabilities_on_3_12_3() {
     let (managed, journal) = databases().await;
     let collision_schema = r#"define
-attribute typebridge-internal-v2-control-scope, value string;
-attribute typebridge-internal-v2-lease-holder, value string;
-attribute typebridge-internal-v2-lease-fence, value string;
-attribute typebridge-internal-v2-lease-state, value string;
-attribute typebridge-internal-v2-legacy-cutover-key, value string;
-attribute typebridge-internal-v2-legacy-cutover-scope, value string;
-attribute typebridge-internal-v2-legacy-cutover-fingerprint, value string;
-entity typebridge-internal-v2-migration-control;
-entity typebridge-internal-v2-legacy-cutover;
+attribute typebridge-internal-control-scope, value string;
+attribute typebridge-internal-lease-holder, value string;
+attribute typebridge-internal-lease-fence, value string;
+attribute typebridge-internal-lease-state, value string;
+attribute typebridge-internal-legacy-cutover-key, value string;
+attribute typebridge-internal-legacy-cutover-scope, value string;
+attribute typebridge-internal-legacy-cutover-fingerprint, value string;
+entity typebridge-internal-migration-control;
+entity typebridge-internal-legacy-cutover;
 "#;
     let mut setup = managed
         .schema_transaction()
@@ -819,7 +819,7 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_3() {
     };
     assert_eq!(
         diagnostic.code().as_str(),
-        "migration_typedb_journal_control_schema_absent",
+        "migration_journal_import_pending",
     );
 
     let outcome = runner
@@ -917,6 +917,18 @@ async fn runner_applies_a_completed_legacy_frontier() {
     .unwrap();
     let bridge = adopted_history::bridge(&context, source);
     adopted_history::seed(&managed, &journal, &context, &bridge, source).await;
+    // An interrupted importer may have installed the new schema without
+    // publishing its mirror; that must not reopen schema sync.
+    managed
+        .execute_raw(MANAGED_FENCE_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    adopted_history::assert_writer_closed(&managed).await;
+    let old = managed.derived_legacy_journal_database();
+    let copied_query = "match $r isa typebridge-internal-migration-journal, has typebridge-internal-record-sequence \"1\", has typebridge-internal-record-payload $p, has typebridge-internal-record-payload-digest $d; fetch { \"payload\": $p, \"digest\": $d };";
+    let old_query = copied_query.replace("typebridge-internal-", "typebridge-internal-v2-");
+    let before = old.execute_raw(&old_query, TxType::Read).await.unwrap();
+
     adopted_history::assert_writer_closed(&managed).await;
     let directory = TempDirectory::new();
     fs::write(directory.path().join("adopted-genesis.typeql"), source).unwrap();
@@ -971,6 +983,36 @@ async fn runner_applies_a_completed_legacy_frontier() {
     assert!(export.contains("owns tag[]"), "{export}");
     assert!(export.contains("@distinct"), "{export}");
     adopted_history::assert_writer_closed(&managed).await;
+    let copied = journal
+        .execute_raw(copied_query, TxType::Read)
+        .await
+        .unwrap();
+    assert_eq!(
+        format!("{before:?}"),
+        format!("{copied:?}"),
+        "copied payload and digest bytes must be unchanged"
+    );
+    let untouched = old.execute_raw(&old_query, TxType::Read).await.unwrap();
+    assert_eq!(format!("{before:?}"), format!("{untouched:?}"));
+    // Once imported, the old applied ledger is no longer an execution dependency.
+    managed
+        .execute_raw(
+            "match $r isa type_bridge_migration; delete $r;",
+            TxType::Write,
+        )
+        .await
+        .unwrap();
+    runner.verify(directory.path(), None).await.unwrap();
+    // A restarted old runner is detected without reading its applied ledger.
+    old.execute_raw("match $c isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-next-sequence $n; delete has $n of $c; insert $c has typebridge-internal-v2-next-sequence \"2\";", TxType::Write).await.unwrap();
+    let error = runner.verify(directory.path(), None).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("migration_old_writer_after_import"),
+        "{error}"
+    );
+    old.delete_database().await.unwrap();
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
 }

@@ -32,11 +32,14 @@ use crate::error::{OrmError, Result};
 
 // Every guard call has a fixed schema and predicates; validate each plan once.
 macro_rules! guard_read {
-    ($kind:expr, $fixed:expr, $bound:expr $(,)?) => {{
+    ($legacy:expr, $kind:expr, $fixed:expr, $bound:expr $(,)?) => {{
         static QUERY: std::sync::LazyLock<
             std::result::Result<data_plan::DataQuery, type_bridge_contract::diagnostic::Diagnostic>,
         > = std::sync::LazyLock::new(|| data_plan::read($kind, $fixed, $bound));
-        QUERY
+        static LEGACY_QUERY: std::sync::LazyLock<
+            std::result::Result<data_plan::DataQuery, type_bridge_contract::diagnostic::Diagnostic>,
+        > = std::sync::LazyLock::new(|| data_plan::read_legacy($kind, $fixed, $bound));
+        (if $legacy { &LEGACY_QUERY } else { &QUERY })
             .as_ref()
             .map_err(|error| crate::query_plan_exec::plan_diagnostic_error(error.clone()))?
     }};
@@ -62,7 +65,37 @@ pub async fn require_legacy_writer_open_in_transaction(
         Ok(None) => return Ok(()),
         Err(error) => return Err(error),
     };
-    let managed_schema_has_extensions = match managed_fence_schema_presence(&schema_export) {
+    let current = managed_fence_schema_presence(&schema_export);
+    let mut legacy = matches!(current, Ok(LiveQueryControlPresence::Absent));
+    // Installing the new schema is not the cutover: only the atomically
+    // published mirror and anchor establish it. Keep the old guard while
+    // an interrupted import has installed schema but no new authority rows.
+    if matches!(current, Ok(LiveQueryControlPresence::ManagedFence))
+        && matches!(
+            type_bridge_schema_compat::import_legacy_fence_schema_presence(&schema_export),
+            Ok(LiveQueryControlPresence::ManagedFence)
+        )
+    {
+        let controls = query_values(
+            transaction,
+            guard_read!(false, MANAGED_CONTROL_ENTITY, &[], &[]),
+            "import-pending control probe",
+        )
+        .await?;
+        let anchors = query_values(
+            transaction,
+            guard_read!(false, LEGACY_CUTOVER_ANCHOR_ENTITY, &[], &[]),
+            "import-pending anchor probe",
+        )
+        .await?;
+        legacy = controls.is_empty() && anchors.is_empty();
+    }
+    let presence = if legacy {
+        type_bridge_schema_compat::import_legacy_fence_schema_presence(&schema_export)
+    } else {
+        current
+    };
+    let managed_schema_has_extensions = match presence {
         Ok(LiveQueryControlPresence::ManagedFence) => false,
         Ok(LiveQueryControlPresence::ManagedFenceWithExtensions) => true,
         Ok(LiveQueryControlPresence::Absent) => return Ok(()),
@@ -81,13 +114,14 @@ pub async fn require_legacy_writer_open_in_transaction(
 
     let control_existence = query_values(
         transaction,
-        guard_read!(MANAGED_CONTROL_ENTITY, &[], &[]),
+        guard_read!(legacy, MANAGED_CONTROL_ENTITY, &[], &[]),
         "legacy writer managed-control existence probe",
     )
     .await?;
     let control_details = query_values(
         transaction,
         guard_read!(
+            legacy,
             MANAGED_CONTROL_ENTITY,
             &[],
             &[
@@ -102,6 +136,7 @@ pub async fn require_legacy_writer_open_in_transaction(
     let control_holders = query_values(
         transaction,
         guard_read!(
+            legacy,
             MANAGED_CONTROL_ENTITY,
             &[],
             &[(MANAGED_CONTROL_LEASE_HOLDER, "holder")],
@@ -113,13 +148,14 @@ pub async fn require_legacy_writer_open_in_transaction(
 
     let anchor_existence = query_values(
         transaction,
-        guard_read!(LEGACY_CUTOVER_ANCHOR_ENTITY, &[], &[]),
+        guard_read!(legacy, LEGACY_CUTOVER_ANCHOR_ENTITY, &[], &[]),
         "legacy writer cutover-anchor existence probe",
     )
     .await?;
     let anchor_key_candidates = query_values(
         transaction,
         guard_read!(
+            legacy,
             LEGACY_CUTOVER_ANCHOR_ENTITY,
             &[(
                 LEGACY_CUTOVER_ANCHOR_KEY,
@@ -133,6 +169,7 @@ pub async fn require_legacy_writer_open_in_transaction(
     let anchor_details = query_values(
         transaction,
         guard_read!(
+            legacy,
             LEGACY_CUTOVER_ANCHOR_ENTITY,
             &[(
                 LEGACY_CUTOVER_ANCHOR_KEY,
@@ -157,6 +194,18 @@ pub async fn require_legacy_writer_open_in_transaction(
         ));
     }
 
+    if !legacy {
+        return match (control, anchor) {
+            (_, None) => Ok(()),
+            (Some(control), Some(anchor)) if control.scope == anchor.scope => Err(
+                OrmError::Transaction(LEGACY_WRITER_CUTOVER_MESSAGE.to_owned()),
+            ),
+            _ => Err(integrity_error(
+                "the cutover anchor has no matching managed-control scope",
+            )),
+        };
+    }
+
     let legacy_schema_exact = matches!(
         legacy_ledger_schema_presence(&schema_export),
         Ok(LiveLegacyLedgerPresence::FrozenLedger)
@@ -173,6 +222,7 @@ pub async fn require_legacy_writer_open_in_transaction(
     let sentinel_id_candidates = query_values(
         transaction,
         guard_read!(
+            legacy,
             LEGACY_LEDGER_APPLIED_ENTITY,
             &[(
                 LEGACY_LEDGER_MIGRATION_ID,
@@ -186,6 +236,7 @@ pub async fn require_legacy_writer_open_in_transaction(
     let sentinel_name_candidates = query_values(
         transaction,
         guard_read!(
+            legacy,
             LEGACY_LEDGER_APPLIED_ENTITY,
             &[(LEGACY_LEDGER_NAME, LEGACY_CUTOVER_SENTINEL_NAME)],
             &[],
@@ -196,6 +247,7 @@ pub async fn require_legacy_writer_open_in_transaction(
     let sentinel_details = query_values(
         transaction,
         guard_read!(
+            legacy,
             LEGACY_LEDGER_APPLIED_ENTITY,
             &[
                 (

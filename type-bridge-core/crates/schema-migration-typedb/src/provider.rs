@@ -1298,7 +1298,7 @@ mod tests {
             Box::new(NoIoBackend {
                 calls: Arc::clone(&calls),
             }),
-            "missing__tbv2_journal",
+            "missing__tb_journal",
             authority,
         );
         let unsupported =

@@ -158,12 +158,10 @@ async fn native_control_checks_keep_two_statements_and_refusal_codes() {
             assert_eq!(state.canonical_calls, if reaches_holder { 2 } else { 1 });
             assert_eq!(state.queries.len(), state.canonical_calls);
             assert!(state.queries[0].contains("limit 2;"));
-            assert!(state.queries[0].contains("has typebridge-internal-v2-control-scope $scope"));
+            assert!(state.queries[0].contains("has typebridge-internal-control-scope $scope"));
             if reaches_holder {
                 assert!(state.queries[1].contains("limit 1;"));
-                assert!(
-                    state.queries[1].contains("has typebridge-internal-v2-lease-holder $holder")
-                );
+                assert!(state.queries[1].contains("has typebridge-internal-lease-holder $holder"));
             }
         }
         tx.close().await.unwrap();

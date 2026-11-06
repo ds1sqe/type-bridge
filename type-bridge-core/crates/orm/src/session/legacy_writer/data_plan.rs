@@ -82,7 +82,10 @@ fn literal(value: &str) -> Result<QueryOperand, Diagnostic> {
 static AUTHORITY: std::sync::LazyLock<
     Result<(DeclaredSchema, ManagedSemanticSchemaFingerprint), Diagnostic>,
 > = std::sync::LazyLock::new(|| {
-    let source = format!("{MANAGED_FENCE_SCHEMA_TYPEQL}\n{LEGACY_LEDGER_SCHEMA_TYPEQL}");
+    let source = format!(
+        "{MANAGED_FENCE_SCHEMA_TYPEQL}\n{LEGACY_LEDGER_SCHEMA_TYPEQL}\n{}",
+        type_bridge_contract::reserved::IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL
+    );
     let schema = type_bridge_schema_compat::typeql_to_declared(
         DocumentId::new("legacy-writer-data-plan.typeql")?,
         &source,
@@ -196,4 +199,25 @@ pub(crate) fn read(
         plan: builder.finish(Operation::Rows, columns)?,
         aliases: bound.iter().map(|(_, name)| (*name).to_owned()).collect(),
     })
+}
+
+pub(crate) fn read_legacy(
+    kind: &str,
+    fixed: &[(&str, &str)],
+    bound: &[(&str, &str)],
+) -> Result<DataQuery, Diagnostic> {
+    use type_bridge_contract::reserved::import_legacy_control_label as label;
+    let fixed_labels: Vec<_> = fixed.iter().map(|(field, _)| label(field)).collect();
+    let bound_labels: Vec<_> = bound.iter().map(|(field, _)| label(field)).collect();
+    let fixed: Vec<_> = fixed_labels
+        .iter()
+        .zip(fixed)
+        .map(|(field, (_, value))| (field.as_ref(), *value))
+        .collect();
+    let bound: Vec<_> = bound_labels
+        .iter()
+        .zip(bound)
+        .map(|(field, (_, alias))| (field.as_ref(), *alias))
+        .collect();
+    read(&label(kind), &fixed, &bound)
 }

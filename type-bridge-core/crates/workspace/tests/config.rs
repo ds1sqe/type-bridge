@@ -912,7 +912,7 @@ fn normalized_endpoint_sets_reject_managed_and_reserved_journal_aliases() {
         )
         .environment(
             "journal-alias",
-            environment("[2001:db8::1]:1730", "production__tbv2_journal"),
+            environment("[2001:db8::1]:1730", "production__tb_journal"),
         )
         .build(&services(&source, &secrets, &extensions))
         .unwrap_err();
@@ -926,7 +926,7 @@ fn normalized_endpoint_sets_reject_managed_and_reserved_journal_aliases() {
         .environment("primary", environment("db-1.example:1729", "production"))
         .environment(
             "separate-cluster",
-            environment("db-2.example:1729", "production__tbv2_journal"),
+            environment("db-2.example:1729", "production__tb_journal"),
         )
         .build(&services(&source, &secrets, &extensions))
         .expect("database namespaces on distinct endpoint sets do not alias");

@@ -750,14 +750,23 @@ impl Database {
     #[doc(hidden)]
     #[must_use]
     pub fn derived_journal_database(&self) -> Self {
+        self.derived_control_database(
+            type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX,
+        )
+    }
+
+    /// Bind the frozen pre-3.0 journal through this backend for read-only import.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn derived_legacy_journal_database(&self) -> Self {
+        self.derived_control_database(type_bridge_contract::reserved::IMPORT_LEGACY_JOURNAL_SUFFIX)
+    }
+
+    fn derived_control_database(&self, suffix: &str) -> Self {
         Self {
             backend: Arc::clone(&self.backend),
             connection_authority: self.connection_authority.clone(),
-            database_name: format!(
-                "{}{}",
-                self.database_name,
-                type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX
-            ),
+            database_name: format!("{}{suffix}", self.database_name),
             answer_limits: self.answer_limits,
             query_limits: self.query_limits.clone(),
         }
@@ -1058,8 +1067,17 @@ mod tests {
         let database = lifecycle_database(false, false, false);
         let journal = database.derived_journal_database();
 
-        assert_eq!(journal.database_name(), "bound-database__tbv2_journal");
+        assert_eq!(journal.database_name(), "bound-database__tb_journal");
         assert!(database.shares_connection_authority_with(&journal));
+        let legacy = database.derived_legacy_journal_database();
+        assert_eq!(
+            legacy.database_name(),
+            format!(
+                "bound-database{}",
+                type_bridge_contract::reserved::IMPORT_LEGACY_JOURNAL_SUFFIX
+            )
+        );
+        assert!(database.shares_connection_authority_with(&legacy));
     }
 
     #[tokio::test]

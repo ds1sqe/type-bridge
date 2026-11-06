@@ -79,7 +79,7 @@ authority.
 ## State authority
 
 For managed database `NAME`, TypeBridge owns a companion journal database named
-`NAME__tbv2_journal`. Reserve that suffix. Back up, restore, clone, and delete
+`NAME__tb_journal`. Reserve that suffix. Back up, restore, clone, and delete
 the managed database and journal together.
 
 The journal is bootstrapped only when its exact owner, control schema, and
@@ -127,7 +127,7 @@ history on TypeDB 3.13.6 or 3.14.0, record one profile
 bridge per history:
 
 1. Quiesce writers and move the managed database and its migration journal
-   (`<database>__tbv2_journal`) to the 3.13.6 server with TypeDB's own
+   (`<database>__tb_journal`) to the 3.13.6 server with TypeDB's own
    `database export` and `database import`.
 2. Set the workspace profile in `typebridge.yaml`:
 

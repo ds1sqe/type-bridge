@@ -335,6 +335,122 @@ pub(crate) fn replace_and_insert(
     )
 }
 
+/// Read the frozen pre-3.0 journal or managed anchor without rewriting TypeQL.
+pub(crate) fn read_import_legacy(
+    kind: &str,
+    fixed: &[(&str, &str)],
+    bound: &[(&str, &str)],
+) -> Result<DataQuery, Diagnostic> {
+    use type_bridge_contract::reserved::{
+        IMPORT_LEGACY_JOURNAL_CONTROL_SCHEMA_TYPEQL, IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL,
+        import_legacy_control_label as label,
+    };
+    fn authority(
+        source: &str,
+    ) -> Result<(DeclaredSchema, ManagedSemanticSchemaFingerprint), Diagnostic> {
+        let schema = type_bridge_schema_compat::typeql_to_declared(
+            DocumentId::new("import-control.typeql")?,
+            source,
+        )
+        .map_err(|_| shape())?;
+        let semantics = ManagedSemanticSchemaFingerprint::compute(
+            SemanticProfileId::new("typedb-3.12.1/v1")?,
+            source.as_bytes(),
+        )?;
+        Ok((schema, semantics))
+    }
+    static JOURNAL: std::sync::LazyLock<
+        Result<(DeclaredSchema, ManagedSemanticSchemaFingerprint), Diagnostic>,
+    > = std::sync::LazyLock::new(|| authority(IMPORT_LEGACY_JOURNAL_CONTROL_SCHEMA_TYPEQL));
+    static MANAGED: std::sync::LazyLock<
+        Result<(DeclaredSchema, ManagedSemanticSchemaFingerprint), Diagnostic>,
+    > = std::sync::LazyLock::new(|| authority(IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL));
+    let authority = if kind == crate::control_schema::LEGACY_CUTOVER_ENTITY {
+        &MANAGED
+    } else {
+        &JOURNAL
+    };
+    let (schema, semantics) = authority.as_ref().map_err(Clone::clone)?;
+    let fixed_labels: Vec<_> = fixed.iter().map(|(field, _)| label(field)).collect();
+    let bound_labels: Vec<_> = bound.iter().map(|(field, _)| label(field)).collect();
+    let fixed: Vec<_> = fixed_labels
+        .iter()
+        .zip(fixed)
+        .map(|(field, (_, value))| (field.as_ref(), *value))
+        .collect();
+    let bound: Vec<_> = bound_labels
+        .iter()
+        .zip(bound)
+        .map(|(field, (_, alias))| (field.as_ref(), *alias))
+        .collect();
+    let mut builder = Builder {
+        bindings: vec![],
+        stages: vec![],
+    };
+    let (root, mut columns) = builder.matched(&label(kind), &fixed, &bound, true)?;
+    if columns.is_empty() {
+        columns.push(root);
+    }
+    Ok(DataQuery {
+        plan: builder.finish_with(Operation::Rows, columns, schema, semantics)?,
+        aliases: bound.iter().map(|(_, name)| (*name).to_owned()).collect(),
+    })
+}
+
+pub(crate) fn replace(
+    kind: &str,
+    expected: &[(&str, &str)],
+    replacement: &[(&str, &str)],
+) -> Result<QueryPlan, Diagnostic> {
+    let mut builder = Builder {
+        bindings: vec![],
+        stages: vec![],
+    };
+    let (root, _) = builder.matched(kind, expected, &[], false)?;
+    builder.stages.push(Stage::Delete {
+        items: vec![DeleteItem::Thing { binding: root }],
+    });
+    builder.insert(kind, replacement)?;
+    builder.finish(
+        Operation::Write {
+            returns: WriteReturns::Matched,
+        },
+        vec![],
+    )
+}
+
+pub(crate) fn insert_managed_anchor(fields: &[(&str, &str)]) -> Result<QueryPlan, Diagnostic> {
+    use crate::control_schema::{LEGACY_CUTOVER_ENTITY, MANAGED_FENCE_SCHEMA_TYPEQL};
+    static AUTHORITY: std::sync::LazyLock<
+        Result<(DeclaredSchema, ManagedSemanticSchemaFingerprint), Diagnostic>,
+    > = std::sync::LazyLock::new(|| {
+        let schema = type_bridge_schema_compat::typeql_to_declared(
+            DocumentId::new("managed-anchor-insert.typeql")?,
+            MANAGED_FENCE_SCHEMA_TYPEQL,
+        )
+        .map_err(|_| shape())?;
+        let semantics = ManagedSemanticSchemaFingerprint::compute(
+            SemanticProfileId::new("typedb-3.12.1/v1")?,
+            MANAGED_FENCE_SCHEMA_TYPEQL.as_bytes(),
+        )?;
+        Ok((schema, semantics))
+    });
+    let (schema, semantics) = AUTHORITY.as_ref().map_err(Clone::clone)?;
+    let mut builder = Builder {
+        bindings: vec![],
+        stages: vec![],
+    };
+    builder.insert(LEGACY_CUTOVER_ENTITY, fields)?;
+    builder.finish_with(
+        Operation::Write {
+            returns: WriteReturns::Matched,
+        },
+        vec![],
+        schema,
+        semantics,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

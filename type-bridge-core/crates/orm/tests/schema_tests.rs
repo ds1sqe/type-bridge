@@ -424,8 +424,8 @@ const MOCK_CUTOVER_FINGERPRINT: &str =
 
 fn managed_fence_schema_with_extensions() -> String {
     MANAGED_FENCE_SCHEMA_TYPEQL.replace(
-        "owns typebridge-internal-v2-lease-holder @card(0..1)",
-        "owns typebridge-internal-v2-lease-holder @cascade @card(0..1)",
+        "owns typebridge-internal-lease-holder @card(0..1)",
+        "owns typebridge-internal-lease-holder @cascade @card(0..1)",
     )
 }
 
@@ -443,7 +443,7 @@ fn canonical_writer_fence_schema_with_function_reference() -> String {
          define\nentity person;\n\
          fun inspect($candidate: person) -> {{ person }}:\n\
            match $candidate isa person;\n\
-           $control isa typebridge-internal-v2-migration-control;\n\
+           $control isa typebridge-internal-migration-control;\n\
            return {{ $candidate }};\n"
     )
 }
@@ -619,15 +619,15 @@ impl TransactionOps for MockTransaction {
             return Box::pin(async {
                 Ok(Some(
                     r#"define
-attribute typebridge-internal-v2-control-scope, value string;
-attribute typebridge-internal-v2-lease-holder, value string;
-attribute typebridge-internal-v2-lease-fence, value string;
-attribute typebridge-internal-v2-lease-state, value string;
-attribute typebridge-internal-v2-legacy-cutover-key, value string;
-attribute typebridge-internal-v2-legacy-cutover-scope, value string;
-attribute typebridge-internal-v2-legacy-cutover-fingerprint, value string;
-entity typebridge-internal-v2-migration-control;
-entity typebridge-internal-v2-legacy-cutover;
+attribute typebridge-internal-control-scope, value string;
+attribute typebridge-internal-lease-holder, value string;
+attribute typebridge-internal-lease-fence, value string;
+attribute typebridge-internal-lease-state, value string;
+attribute typebridge-internal-legacy-cutover-key, value string;
+attribute typebridge-internal-legacy-cutover-scope, value string;
+attribute typebridge-internal-legacy-cutover-fingerprint, value string;
+entity typebridge-internal-migration-control;
+entity typebridge-internal-legacy-cutover;
 "#
                     .to_owned(),
                 ))

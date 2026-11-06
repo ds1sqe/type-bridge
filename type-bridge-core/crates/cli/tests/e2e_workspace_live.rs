@@ -408,7 +408,10 @@ async fn empty_workspace_to_replayed_history_live() {
     for managed_database in [&primary, &replay] {
         let journal = Database::connect_with_options(
             &address,
-            &format!("{managed_database}__tbv2_journal"),
+            &format!(
+                "{managed_database}{}",
+                type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX
+            ),
             &username,
             &password,
             connect_options(&http_port),
@@ -995,6 +998,11 @@ async fn completed_legacy_history_then_evolve_live() {
         .await
         .unwrap();
     adopted_history::assert_writer_closed(&managed).await;
+    managed
+        .derived_legacy_journal_database()
+        .delete_database()
+        .await
+        .unwrap();
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
 }

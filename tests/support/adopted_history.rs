@@ -3,6 +3,10 @@
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use type_bridge_contract::reserved::{
+    IMPORT_LEGACY_JOURNAL_CONTROL_SCHEMA_TYPEQL as JOURNAL_CONTROL_SCHEMA_TYPEQL,
+    IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL as MANAGED_FENCE_SCHEMA_TYPEQL,
+};
 use type_bridge_contract::{
     codec::to_canonical_json,
     fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain},
@@ -16,9 +20,6 @@ use type_bridge_schema_migration::{
     AppliedRecord, ExecutionFence, ExecutionScope, LeaseHolderId, LegacyAppliedSetDigest,
     LegacyMigrationChecksum, LegacyMigrationReference, MigrationLease,
     VerifiedSchemaMigrationManifest, build_legacy_frontier_bridge, verified_manifest_digest,
-};
-use type_bridge_schema_migration_typedb::{
-    JOURNAL_CONTROL_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL,
 };
 
 pub fn bridge(context: &ManagedDeltaContext, source: &str) -> VerifiedSchemaMigrationManifest {
@@ -49,16 +50,22 @@ pub fn bridge(context: &ManagedDeltaContext, source: &str) -> VerifiedSchemaMigr
 }
 
 async fn execute(database: &Database, query: &str, kind: TxType) {
-    database.execute_raw(query, kind).await.unwrap();
+    database
+        .execute_raw(query, kind)
+        .await
+        .unwrap_or_else(|error| panic!("fixture query {query}: {error}"));
 }
 
 pub async fn seed(
     managed: &Arc<Database>,
-    journal: &Arc<Database>,
+    _journal: &Arc<Database>,
     context: &ManagedDeltaContext,
     bridge: &VerifiedSchemaMigrationManifest,
     source: &str,
 ) {
+    let journal = managed.derived_legacy_journal_database();
+    journal.create_database().await.unwrap();
+    let journal = &journal;
     let scope = context.scope_id().as_str();
     let authority =
         parse_adopted_genesis_authority(DocumentId::new("adopted.typeql").unwrap(), source)

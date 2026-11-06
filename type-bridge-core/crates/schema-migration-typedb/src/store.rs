@@ -1,5 +1,7 @@
 //! TypeDB implementation of the provider-neutral fenced execution stores.
 
+mod import;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -853,6 +855,7 @@ pub struct TypeDbMigrationStore<'a> {
     journal_schema_verified: AtomicBool,
     journal_lease: LeasePlans,
     managed_lease: LeasePlans,
+    import_binding: Option<crate::runner::LegacyBridgeBinding>,
 }
 
 impl<'a> TypeDbMigrationStore<'a> {
@@ -881,6 +884,7 @@ impl<'a> TypeDbMigrationStore<'a> {
             journal_schema_verified: AtomicBool::new(false),
             journal_lease: LeasePlans::journal(context.semantic_profile())?,
             managed_lease: LeasePlans::managed(context.semantic_profile())?,
+            import_binding: None,
         })
     }
 
@@ -997,6 +1001,14 @@ impl<'a> TypeDbMigrationStore<'a> {
         }
         self.rollback_plan = Some(plan);
         Ok(self)
+    }
+
+    pub(crate) fn with_import_binding(
+        mut self,
+        binding: Option<crate::runner::LegacyBridgeBinding>,
+    ) -> Self {
+        self.import_binding = binding;
+        self
     }
 
     /// Install or verify the frozen control schema.
@@ -1242,8 +1254,9 @@ impl<'a> TypeDbMigrationStore<'a> {
         holder: &LeaseHolderId,
     ) -> Result<MigrationLease, Diagnostic> {
         self.ensure_schema_for_scope(scope).await?;
-        let lease = self.acquire_authoritative(scope, holder).await?;
-        self.publish_managed_fence(&lease).await?;
+        let (lease, evidence) = self.acquire_imported(scope, holder).await?;
+        self.publish_managed_fence(&lease, evidence.as_ref())
+            .await?;
         Ok(lease)
     }
 
@@ -1258,6 +1271,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         &self,
         scope: &ExecutionScope,
         holder: &LeaseHolderId,
+        floor: u64,
     ) -> Result<MigrationLease, Diagnostic> {
         let observed = {
             let mut transaction = open_read(&self.journal_database).await?;
@@ -1267,7 +1281,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         let given = self.journal_database.supports_given_stage();
         let (fence, plan) = match observed {
             Some(current) => {
-                let fence = ExecutionFence::new(current.fence)?.checked_successor()?;
+                let fence = ExecutionFence::new(current.fence.max(floor))?.checked_successor()?;
                 let row = LeaseRow {
                     scope,
                     holder,
@@ -1282,7 +1296,7 @@ impl<'a> TypeDbMigrationStore<'a> {
                 (fence, plan)
             }
             None => {
-                let fence = ExecutionFence::new(1)?;
+                let fence = ExecutionFence::new(floor.checked_add(1).ok_or_else(stale_fence)?)?;
                 let row = LeaseRow {
                     scope,
                     holder,
@@ -1304,7 +1318,11 @@ impl<'a> TypeDbMigrationStore<'a> {
         }
     }
 
-    async fn publish_managed_fence(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
+    async fn publish_managed_fence(
+        &self,
+        lease: &MigrationLease,
+        evidence: Option<&import::LegacyEvidence>,
+    ) -> Result<(), Diagnostic> {
         let current = {
             let mut transaction = open_read(&self.managed_database).await?;
             let current = load_managed_fence(&mut transaction, lease.scope()).await;
@@ -1325,6 +1343,9 @@ impl<'a> TypeDbMigrationStore<'a> {
                 ));
             }
         };
+        if let Some(evidence) = evidence {
+            return self.publish_imported_mirror(lease, &plan, evidence).await;
+        }
         let settled = lease_state_query(lease, LEASE_HELD)?;
         match commit_lease_plan(&self.managed_database, &plan, &settled).await? {
             LeaseWrite::Applied => Ok(()),
@@ -1584,18 +1605,18 @@ impl<'a> TypeDbMigrationStore<'a> {
     /// Read the applied ledger without a lease, a write, or a schema install.
     ///
     /// This is the inspection path for read-only commands such as verify:
-    /// the frozen control schema is checked against the journal export and
-    /// never installed, no control row is consulted, and the whole read is
-    /// one snapshot transaction. A journal database without the control
-    /// schema has never recorded history through the migration path, so the
-    /// load fails closed instead of bootstrapping control state into an
-    /// environment the caller promised not to mutate. The result is
+    /// the exact control schema and import evidence are checked without
+    /// installation. If the old journal still exists, its sequence must not
+    /// have advanced beyond the imported boundary. Applied records are read
+    /// from one snapshot after those checks. Missing completion evidence
+    /// reports import-pending rather than bootstrapping state. The result is
     /// reporting-grade data, never execution authority.
     pub async fn load_applied_read_only(
         &self,
         scope: &ExecutionScope,
     ) -> Result<Vec<JournalEntry<AppliedRecord>>, Diagnostic> {
         self.require_owned_scope(scope)?;
+        self.require_import_complete_read_only(scope).await?;
         let export = self
             .journal_database
             .schema_text()
@@ -2506,6 +2527,8 @@ fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
             | ROLLBACK_PLAN_RECORD_KIND
             | ROLLBACK_EVENT_RECORD_KIND
             | ROLLED_BACK_RECORD_KIND
+            | type_bridge_contract::reserved::LEGACY_IMPORT_RECORD_KIND
+            | type_bridge_contract::reserved::IMPORT_COMPLETE_RECORD_KIND
     ) {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -2990,8 +3013,19 @@ fn journal_schema_state(export: &str) -> Result<JournalSchemaState, Diagnostic> 
         return Ok(JournalSchemaState::Empty);
     }
     let document = DocumentId::new("typebridge-journal-control-provider-export.typeql")?;
+    let original = type_bridge_schema_compat::released_typeql_to_declared_lossless_projection(
+        document.clone(),
+        export,
+    )
+    .map_err(|_| {
+        failure(
+            DiagnosticCategory::Integrity,
+            "migration_typedb_export_invalid",
+            "journal schema cannot be decoded losslessly",
+        )
+    })?;
     let partitioned = partition_typeql_export_lossless(document, export)?;
-    if partitioned.full().facts().next().is_none() {
+    if original.facts().next().is_none() {
         return Ok(JournalSchemaState::Empty);
     }
     if partitioned.user().facts().next().is_some()
@@ -3012,9 +3046,7 @@ fn journal_schema_state(export: &str) -> Result<JournalSchemaState, Diagnostic> 
                 "frozen TypeDB control schema cannot be normalized",
             )
         })?;
-    if partitioned.internal().declared_identity_fingerprint()
-        != expected.declared_identity_fingerprint()
-    {
+    if original.declared_identity_fingerprint() != expected.declared_identity_fingerprint() {
         return Err(failure(
             DiagnosticCategory::Integrity,
             "migration_typedb_control_schema_mismatch",
@@ -3081,6 +3113,9 @@ fn control_schema_matches(
     }
     let document = DocumentId::new(format!("typebridge-{contract}-provider-export.typeql"))?;
     let partitioned = partition_typeql_export(document, export)?;
+    if partitioned.internal().facts().next().is_none() {
+        return Ok(false);
+    }
     let expected_document = DocumentId::new(format!("typebridge-{contract}-schema.typeql"))?;
     let expected = typeql_to_declared(expected_document, expected_schema).map_err(|_| {
         failure(
@@ -3574,7 +3609,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             administrator.inner.journal_database.database_name(),
-            "managed__tbv2_journal"
+            "managed__tb_journal"
         );
         assert!(
             administrator
@@ -4085,7 +4120,7 @@ pub(crate) mod tests {
         );
 
         let partial = journal_schema_state(
-            "define attribute typebridge-internal-v2-control-scope, value string;",
+            "define attribute typebridge-internal-control-scope, value string;",
         )
         .expect_err("partial reserved schema must fail closed");
         assert_eq!(
@@ -4096,21 +4131,21 @@ pub(crate) mod tests {
 
     #[test]
     fn journal_schema_contract_rejects_every_lossy_compatibility_construct() {
-        let payload_ownership = "owns typebridge-internal-v2-record-payload @card(1..1),";
+        let payload_ownership = "owns typebridge-internal-record-payload @card(1..1),";
         for (case, replacement, expected_code) in [
             (
                 "ordered distinct ownership",
-                "owns typebridge-internal-v2-record-payload[] @card(1..1) @distinct,",
+                "owns typebridge-internal-record-payload[] @card(1..1) @distinct,",
                 "migration_typedb_control_schema_mismatch",
             ),
             (
                 "cascade ownership",
-                "owns typebridge-internal-v2-record-payload @card(1..1) @cascade,",
+                "owns typebridge-internal-record-payload @card(1..1) @cascade,",
                 "migration_typedb_export_invalid",
             ),
             (
                 "subkey ownership",
-                "owns typebridge-internal-v2-record-payload @card(1..1) @subkey(journal),",
+                "owns typebridge-internal-record-payload @card(1..1) @subkey(journal),",
                 "migration_typedb_export_invalid",
             ),
         ] {

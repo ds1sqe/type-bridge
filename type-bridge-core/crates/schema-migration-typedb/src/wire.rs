@@ -595,7 +595,7 @@ pub(crate) fn decode_rolled_back(
 
 pub(crate) fn persisted_fence(
     bytes: &[u8],
-    expected_kind: &'static str,
+    expected_kind: &str,
 ) -> Result<ExecutionFence, Diagnostic> {
     let value: Value = from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
     let object = value.as_object().ok_or_else(|| {
