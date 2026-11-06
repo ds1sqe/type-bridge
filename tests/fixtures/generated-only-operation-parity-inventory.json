@@ -772,8 +772,8 @@
               "anchors": [
                 "identifier_field.starts_with",
                 "identifier_field.contains",
-                "identifier_field.regex",
-                "~identifier_field.neq",
+                "identifier_field.like",
+                "~identifier_field.ne",
                 "same_person_var.field"
               ]
             }
@@ -788,7 +788,7 @@
               "anchors": [
                 "identifierField.startsWith",
                 "identifierField.contains",
-                "identifierField.regex",
+                "identifierField.like",
                 "identifierField.ne(identifierValue).not()",
                 ".eqField(personVariable.field(Person.identifier))"
               ]
@@ -804,7 +804,7 @@
               "anchors": [
                 "identifier.starts_with",
                 "identifier.contains",
-                "identifier.regex",
+                "identifier.like",
                 "score.ge(70_i64)",
                 "identifier.eq_field(member_identifier)"
               ]
@@ -824,7 +824,7 @@
               "mode": "live",
               "path": "tests/integration/schema/test_generated_projection_live.py",
               "anchors": [
-                "generated.Employment.employee).connects(person_var)",
+                "generated.Employment.employee).links(person_var)",
                 "generated.EventRef(event.iid)",
                 "stored_employment.employee.iid"
               ]
@@ -838,7 +838,7 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "eventVariable.role(Event.subject).connects(personVariable)",
+                "eventVariable.role(Event.subject).links(personVariable)",
                 "Event.reference(insertedEvent.iid, {})",
                 "storedEmployment.employee.iid"
               ]
@@ -852,7 +852,7 @@
               "mode": "live",
               "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
               "anchors": [
-                "employee_role.connects(person_binding)",
+                "employee_role.links(person_binding)",
                 "PersonRef::from_key",
                 "container insert with a relation player"
               ]
@@ -924,7 +924,7 @@
                 "network_session.query_as",
                 ".collect()",
                 ".distinct()",
-                ".order_by(participant_var.field"
+                ".sort(participant_var.field"
               ]
             },
             {
@@ -1209,7 +1209,7 @@
               "path": "type-bridge-core/crates/rust/src/remote.rs",
               "anchors": [
                 "generated_remote_query_preserves_complete_authenticated_structured_diagnostic",
-                "StagedOutcomeV3::Failed {",
+                "StagedOutcome::Failed {",
                 "error.diagnostic_path()",
                 "crate::ErrorDetail::QueryIdentityList",
                 "assert_eq!(exchanges.lock().unwrap().len(), 1)"
@@ -1245,7 +1245,7 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "const reducers = await terminal(() => allPeopleQuery.aggregate(personVariable, [",
+                "const reducers = await terminal(() => allPeopleQuery.reduce(personVariable, [",
                 "reducers: reducers.slice(0, 6),",
                 "assertIidsEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)",
                 "assert.equal(requests.length, requestsBefore + 1)"
@@ -1330,7 +1330,7 @@
               "path": "tests/integration/schema/test_generated_projection_live.py",
               "anchors": [
                 "generated.PlainActivity(participant=person)",
-                "plain_activity_var.role(generated.PlainActivity.participant).connects(",
+                "plain_activity_var.role(generated.PlainActivity.participant).links(",
                 "plain_activity_manager.delete(plain_activity)"
               ]
             }
@@ -1344,7 +1344,7 @@
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
                 "PlainActivity.create({ participant: insertedPerson })",
-                "plainActivityVariable.role(PlainActivity.participant).connects(plainParticipantVariable)",
+                "plainActivityVariable.role(PlainActivity.participant).links(plainParticipantVariable)",
                 "plainActivityManager.delete(insertedPlainActivity)"
               ]
             }

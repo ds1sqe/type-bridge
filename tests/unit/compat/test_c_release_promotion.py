@@ -120,6 +120,15 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
             for key, outcome in frozen_steps.items()
             if key[0] in retired_jobs or key == skipped_retired_probe or key in legacy_steps
         }
+        renamed_steps = {
+            "Run V3 staged server live acceptance": "Run staged server live acceptance",
+            "Run Rust SDK plan builder over the V3 staged proxy": "Run Rust SDK plan builder over the staged proxy",
+        }
+        renamed = {key: outcome for key, outcome in frozen_steps.items() if key[1] in renamed_steps}
+        assert len(renamed) == 4
+        for (job, step), outcome in renamed.items():
+            assert current_steps[(job, renamed_steps[step])] == outcome
+        retired.update(renamed)
         assert frozen_steps.items() - current_steps.items() == retired.items()
         assert (frozen_steps.items() - retired.items()) < current_steps.items()
     # V1/V2 server probes are replaced by the staged binary and raw gates.

@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -65,6 +66,11 @@ def main() -> None:
     ledger = ledger_path.read_text()
     probe_path = ROOT / "tests/unit/compat/test_sdk_models_contract.py"
     probe = probe_path.read_text()
+    node_probe_path = (
+        ROOT
+        / "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/projected_live_check.mjs"
+    )
+    node_probe = node_probe_path.read_text()
     for suite in ("queries", "models"):
         matrix_path = CONTRACTS / suite / "profiles.json"
         catalog_path = CONTRACTS / suite / "catalog.json"
@@ -90,6 +96,15 @@ def main() -> None:
                     catalog_body = replace_once(catalog_body, old, new)
                     if suite == "models":
                         probe = replace_once(probe, old, new)
+                        if binding == "node":
+                            match = re.search(
+                                r'export const PROJECTION_FINGERPRINT = Object.freeze\(\{.*?digest: "([0-9a-f]{64})"',
+                                node_probe,
+                                re.DOTALL,
+                            )
+                            if match is None:
+                                raise ValueError("Node live producer has no projection fingerprint")
+                            node_probe = replace_once(node_probe, match.group(1), new)
                 print(f"{suite} {profile} {binding}: {old} -> {new}")
         old_sha = hashlib.sha256(original_catalog.encode()).hexdigest()
         new_sha = hashlib.sha256(catalog_body.encode()).hexdigest()
@@ -97,6 +112,8 @@ def main() -> None:
         print(f"{suite} catalog SHA: {old_sha} -> {new_sha}")
         changes[matrix_path], changes[catalog_path] = matrix_body, catalog_body
     changes[ledger_path], changes[probe_path] = ledger, probe
+    if "node" in bindings:
+        changes[node_probe_path] = node_probe
     # All semantic and shape checks complete before changing any committed file.
     for path, body in changes.items():
         path.write_text(body)

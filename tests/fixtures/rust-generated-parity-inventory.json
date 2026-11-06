@@ -286,7 +286,7 @@
       "python": [
         {
           "path": "tests/integration/schema/test_generated_projection_live.py",
-          "anchors": ["identifier_field.starts_with", "~identifier_field.neq", "offset=1", "all_people_query.first"]
+          "anchors": ["identifier_field.starts_with", "~identifier_field.ne", "offset=1", "all_people_query.first"]
         }
       ],
       "node": [

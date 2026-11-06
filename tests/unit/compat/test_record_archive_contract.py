@@ -101,6 +101,11 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         else name
         for name in previous_exports
     }
+    query_names = {
+        "type_bridge_query_add_hidden": "type_bridge_query_match",
+        "type_bridge_query_role_connects": "type_bridge_query_role_links",
+    }
+    previous_exports = {query_names.get(name, name) for name in previous_exports}
     # ABI 2.0 consolidates old package/database openers into current signatures.
     opener_names = {
         "type_bridge_schema_package_open_v1": "type_bridge_schema_package_open",
@@ -111,17 +116,25 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         "type_bridge_database_open_v2": "type_bridge_database_open",
         "type_bridge_database_config_validate_v2": "type_bridge_database_config_validate",
     }
-    opener_names.update({
-        f"type_bridge_{name}_v2": f"type_bridge_{name}"
-        for name in ("read_transaction_open", "write_transaction_open", "write_transaction_commit")
-    })
-    opener_names.update({
-        f"type_bridge_{target}_{kind}_{operation}_v2": f"type_bridge_{target}_{kind}_{operation}"
-        for target in ("database", "read_transaction", "write_transaction")
-        for kind in ("entity", "relation")
-        for operation in ("insert", "put", "get_by_iid", "update", "delete_by_iid", "count")
-        if target != "read_transaction" or operation in ("get_by_iid", "count")
-    })
+    opener_names.update(
+        {
+            f"type_bridge_{name}_v2": f"type_bridge_{name}"
+            for name in (
+                "read_transaction_open",
+                "write_transaction_open",
+                "write_transaction_commit",
+            )
+        }
+    )
+    opener_names.update(
+        {
+            f"type_bridge_{target}_{kind}_{operation}_v2": f"type_bridge_{target}_{kind}_{operation}"
+            for target in ("database", "read_transaction", "write_transaction")
+            for kind in ("entity", "relation")
+            for operation in ("insert", "put", "get_by_iid", "update", "delete_by_iid", "count")
+            if target != "read_transaction" or operation in ("get_by_iid", "count")
+        }
+    )
     previous_exports = {opener_names.get(name, name) for name in previous_exports}
     builder = {
         f"type_bridge_plan_builder_{name}"
