@@ -1,4 +1,4 @@
-"""V2 workspace CLI entry point for the Python wheel."""
+"""Workspace CLI entry point for the Python wheel."""
 
 from __future__ import annotations
 

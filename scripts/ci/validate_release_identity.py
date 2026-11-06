@@ -1759,7 +1759,7 @@ def validate_release_identity(
 
 
 def require_unblocked_rust_publication(report: dict[str, Any]) -> None:
-    """Reject a release whose public crates depend on unpublished V2 crates."""
+    """Reject a release whose public crates depend on unpublished core crates."""
     blockers = report.get("rust_publication_blockers")
     if not isinstance(blockers, list):
         raise ValidationError("Release identity report has no Rust publication-blocker inventory")

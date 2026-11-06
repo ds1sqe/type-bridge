@@ -1,7 +1,7 @@
 # type-bridge-orm
 
 The shared asynchronous execution engine behind generated TypeBridge clients.
-It provides database sessions, transactions, lifecycle hooks, prepared V2
+It provides database sessions, transactions, lifecycle hooks, staged
 query execution, and verified runtime projections. Public models are generated
 from split YAML; handwritten model registration is not the application path.
 Most applications should depend on [`type-bridge`](https://crates.io/crates/type-bridge).

@@ -97,7 +97,7 @@ fn python_administration_control(
 /// current GIL. A host already inside Tokio uses a scoped worker to avoid a
 /// nested runtime panic; its inert result crosses the join before the caller
 /// reacquires the GIL. Python-visible drop effects stay under the owning GIL.
-/// This helper is reserved for native-only Python-V2 write adapters whose
+/// This helper is reserved for native-only Python write adapters whose
 /// facade publication must be linearized with terminal owned commit.
 pub(crate) fn provider_block_on_with_gil<T, F>(
     py: Python<'_>,

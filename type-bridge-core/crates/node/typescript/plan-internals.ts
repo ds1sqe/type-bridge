@@ -25,7 +25,7 @@ export function planAuthorityHandle(
   return planAuthorityHandles.get(authority);
 }
 
-/** Stable V2 contract diagnostic categories. */
+/** Stable contract diagnostic categories. */
 export type PlanErrorCategory =
   | "invalid_contract"
   | "invalid_input"
@@ -41,7 +41,7 @@ export type PlanErrorCategory =
   | "transaction"
   | "internal";
 
-/** One typed location inside a rejected V2 contract. */
+/** One typed location inside a rejected contract. */
 export type PlanErrorPathSegment =
   | Readonly<{
       kind:
@@ -87,7 +87,7 @@ export interface ExecutionTimeline {
   }>[];
 }
 
-/** One deterministic structured V2 diagnostic detail. */
+/** One deterministic structured diagnostic detail. */
 export type PlanErrorDetail =
   | Readonly<{ kind: "execution_timeline"; value: ExecutionTimeline }>
   | Readonly<{

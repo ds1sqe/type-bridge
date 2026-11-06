@@ -372,7 +372,7 @@ export declare class MigrationCatalog {
 }
 export declare function openMigrationCatalog(schemaAuthority: Uint8Array, historyBundle: Uint8Array): MigrationCatalog;
 export declare function ensureDatabase(address: string, database: string, options?: EnsureDatabaseOptions): void;
-/** Opaque declared-schema authority for prepared V2 plan execution. */
+/** Opaque declared-schema authority for staged plan execution. */
 export declare class PlanAuthority {
     #private;
     constructor(declaredSchema: Uint8Array, scope: string, profile: string);

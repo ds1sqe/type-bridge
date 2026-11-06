@@ -33,7 +33,7 @@ impl PreparedSecureTypeDBConnection {
         .map_err(sanitize_prepared_connect_error)
     }
 
-    /// Connect the V2 ORM authority through this exact prepared identity.
+    /// Connect the ORM authority through this exact prepared identity.
     #[doc(hidden)]
     pub async fn connect_database(&self) -> Result<type_bridge_orm::Database, PipelineError> {
         type_bridge_orm::Database::connect_prepared_secure_with_options(

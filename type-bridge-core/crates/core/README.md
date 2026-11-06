@@ -51,7 +51,7 @@ cargo test -p type-bridge-core-lib
 
 This crate is released in lockstep with TypeBridge 2.3.2 and requires Rust
 1.88+. Database-facing TypeBridge components support TypeDB
-3.12.x–3.14.x, with 3.13.6 as the V2 semantic baseline.
+3.12.x–3.14.x, with 3.13.6 as the semantic baseline.
 
 [API documentation](https://docs.rs/type-bridge-core-lib/2.3.2) ·
 [Repository](https://github.com/ds1sqe/type-bridge)

@@ -250,7 +250,7 @@ impl Proxy {
 }
 
 pub async fn proxy(name: &str, policy: LivePolicy, allow_unauthenticated: bool) -> Proxy {
-    let scope = format!("server-v3-live-{name}");
+    let scope = format!("server-live-{name}");
     proxy_with(name, policy, allow_unauthenticated, race::schema(), &scope).await
 }
 
@@ -339,7 +339,7 @@ pub async fn proxy_with_database(
     ));
     let router = create_router(pipeline, state);
     let bytes = call(&router, "GET", "/v3/capabilities", Vec::new()).await;
-    let advertisement = RemoteCapabilities::decode(&bytes).expect("v3 advertisement");
+    let advertisement = RemoteCapabilities::decode(&bytes).expect("staged advertisement");
     Proxy {
         router,
         advertisement,

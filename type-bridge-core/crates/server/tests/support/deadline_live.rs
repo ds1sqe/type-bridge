@@ -111,7 +111,7 @@ async fn sdk_deadline_fixture_serves_until_stopped() {
         let scope = if sdk == "rust" {
             "rust-plan-purchase".to_owned()
         } else {
-            format!("server-v3-live-{name}")
+            format!("server-live-{name}")
         };
         let mut entry =
             serde_json::json!({ "database": name, "address": address, "arm": arm, "scope": scope });

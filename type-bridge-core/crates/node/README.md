@@ -15,7 +15,7 @@ npm run build
 
 The package entry is `dist/public.js`, with declarations emitted to
 `dist/public.d.ts`. Generated packages consume the exported
-`./runtime-projection` subpath. The separately retained low-level Query V2 plan
+`./runtime-projection` subpath. The staged plan
 builder is exported from the package root.
 
 For local smoke runs after `cargo build -p type-bridge-node`, copy the built

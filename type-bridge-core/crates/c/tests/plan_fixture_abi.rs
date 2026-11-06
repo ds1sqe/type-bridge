@@ -41,7 +41,7 @@ fn fixture_directory() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../tests/contracts/plan")
         .canonicalize()
-        .expect("the contract plan-v3 fixtures exist")
+        .expect("the contract plan fixtures exist")
 }
 
 /// The fixtures the manifest lists (it maps each name to the plan's

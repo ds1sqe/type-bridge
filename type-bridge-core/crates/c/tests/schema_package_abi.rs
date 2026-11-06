@@ -6990,7 +6990,7 @@ fn live_c17_consumer_stages_and_commits_contract_plans() {
     let plan_directory = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../tests/contracts/plan")
         .canonicalize()
-        .expect("the contract plan-v3 fixtures exist");
+        .expect("the contract plan fixtures exist");
 
     let fixture = emitted_fixture();
     let stage = TempDirectory::new("schema_package_abi");
@@ -7344,7 +7344,7 @@ int main(void) {
         isolated_database.create(),
         "the isolated live database is created"
     );
-    // The provider schema of the contract plan-v3 declared schema fixture,
+    // The provider schema of the contract plan declared schema fixture,
     // restricted to the types the staged plans touch.
     administration_runtime
         .block_on(isolated_database.database.execute_raw(

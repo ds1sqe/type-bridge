@@ -459,7 +459,7 @@ impl TransactionContext {
         }
     }
 
-    /// Lower one trusted v3 plan for this transaction without dispatching
+    /// Lower one trusted plan for this transaction without dispatching
     /// it. A failure here means nothing reached the provider.
     ///
     /// Helpers that still run inside an eager transaction use this and

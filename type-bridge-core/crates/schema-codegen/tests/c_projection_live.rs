@@ -1862,7 +1862,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
     }
 }
 
-/// Query activation gate for the ordered C-v3/ABI-1.6 surface. The same
+/// Query activation gate for the ordered C/ABI-2.0 surface. The same
 /// source is compiled and executed as strict C17 and C++17. It deliberately
 /// leaves ordered attributes and ordered role-player lists empty because exact
 /// TypeDB servers of the supported profiles cannot supply list-instance evidence.

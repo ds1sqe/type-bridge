@@ -556,7 +556,7 @@ fn _typeql_queries_equivalent(left: &str, right: &str) -> PyResult<bool> {
         .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
 }
 
-/// Run the V2 workspace CLI in-process over process-style arguments.
+/// Run the workspace CLI in-process over process-style arguments.
 ///
 /// `arguments` must include `argv[0]`. Output goes to the process stdout
 /// and stderr exactly as the standalone `type-bridge` binary prints it;

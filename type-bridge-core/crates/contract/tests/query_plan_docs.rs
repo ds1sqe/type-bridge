@@ -11,7 +11,7 @@ fn documented_plan_bytes_and_fingerprints() {
         decode_declared_schema(&std::fs::read(fixtures.join("schema.json")).unwrap()).unwrap();
     let document = std::fs::read_to_string(root.join("docs/reference/query-plan.md")).unwrap();
     let mut names = Vec::new();
-    for example in document.split("<!-- plan-v3-example: ").skip(1) {
+    for example in document.split("<!-- plan-example: ").skip(1) {
         let (filename, rest) = example.split_once(" -->").unwrap();
         let (_, rest) = rest.split_once("```json\n").unwrap();
         let (bytes, rest) = rest.split_once("\n```").unwrap();

@@ -235,19 +235,19 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         ],
         cwd=work_dir,
         environment=environment,
-        description="target-native V2 authoring probe",
+        description="target-native authoring probe",
     )
     lines = [line for line in completed.stdout.splitlines() if line.strip()]
     if not lines:
-        raise ArtifactSmokeError("Target-native V2 authoring probe produced no report")
+        raise ArtifactSmokeError("Target-native authoring probe produced no report")
     try:
         probe = json.loads(lines[-1])
     except json.JSONDecodeError as error:
         raise ArtifactSmokeError(
-            f"Target-native V2 authoring probe returned invalid JSON: {lines[-1]!r}"
+            f"Target-native authoring probe returned invalid JSON: {lines[-1]!r}"
         ) from error
     if not isinstance(probe, dict) or probe.get("status") != "ok":
-        raise ArtifactSmokeError(f"Target-native V2 authoring probe failed: {probe!r}")
+        raise ArtifactSmokeError(f"Target-native authoring probe failed: {probe!r}")
     return {
         "status": "ok",
         "root_wheel": root_wheel.name,
@@ -271,7 +271,7 @@ def main() -> int:
     try:
         report = run(args)
     except ArtifactSmokeError as error:
-        print(f"Python V2 platform artifact smoke failed: {error}", file=sys.stderr)
+        print(f"Python platform artifact smoke failed: {error}", file=sys.stderr)
         return 1
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0

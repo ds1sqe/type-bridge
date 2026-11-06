@@ -1,4 +1,4 @@
-//! ABI 1.7 deferred transactions: decoded v3 plans are staged on one
+//! ABI 2.0 deferred transactions: decoded plans are staged on one
 //! transaction and nothing reaches the provider until commit.
 //!
 //! C never serializes plans. A plan handle is decoded from canonical

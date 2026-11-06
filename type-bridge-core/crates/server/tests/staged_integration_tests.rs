@@ -1087,7 +1087,7 @@ async fn sdk_staged_fixture_serves_until_stopped() {
             serde_json::json!({
                 "database": name,
                 "endpoint": format!("http://127.0.0.1:{port}"),
-                "scope": format!("server-v3-live-{name}"),
+                "scope": format!("server-live-{name}"),
             }),
         );
         held.push((proxy, db, commits));

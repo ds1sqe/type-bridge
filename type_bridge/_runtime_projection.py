@@ -1,4 +1,4 @@
-"""Thin forwarding facade for generated V2 runtime projections."""
+"""Thin forwarding facade for generated runtime projections."""
 
 from __future__ import annotations
 

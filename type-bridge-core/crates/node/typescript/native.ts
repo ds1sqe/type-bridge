@@ -883,12 +883,12 @@ function protectedMethodDescriptor(
 }
 
 /**
- * Hide every raw N-API V2 byte boundary behind an owned JavaScript snapshot.
+ * Hide every raw N-API byte boundary behind an owned JavaScript snapshot.
  *
  * A Node Buffer may alias SharedArrayBuffer storage that another Worker can
  * mutate. N-API exposes that storage to Rust as an ordinary borrowed slice,
  * for which concurrent mutation would be undefined behaviour. The public
- * loader therefore returns a facade whose byte-bearing V2 calls take bounded
+ * loader therefore returns a facade whose byte-bearing calls take bounded
  * copies before entering the addon. The addon independently rejects shared
  * backing storage so direct artifact loads remain safe; the facade preserves
  * Uint8Array convenience and reflective property access without weakening

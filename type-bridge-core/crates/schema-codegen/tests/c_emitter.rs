@@ -415,7 +415,7 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     let (projection, authority) = ordered_successor_projected();
     let package = emitter
         .emit(&projection, &authority)
-        .expect("ordered C-v3 package emits");
+        .expect("ordered C package emits");
     assert_eq!(
         package
             .files()
@@ -729,7 +729,7 @@ fn ordered_c_nominal_successors_compile_strictly_and_reject_cross_model_or_omitt
     let (projection, authority) = ordered_successor_projected();
     let package = emitter
         .emit(&projection, &authority)
-        .expect("ordered C-v3 package emits");
+        .expect("ordered C package emits");
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
     let runtime_include = runtime_include();
@@ -867,7 +867,7 @@ fn ordered_c_nominal_alias_and_recovery_wrappers_execute_provider_free() {
     let (projection, authority) = ordered_successor_projected();
     let package = emitter
         .emit(&projection, &authority)
-        .expect("ordered C-v3 package emits");
+        .expect("ordered C package emits");
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
     let runtime_include = runtime_include();
@@ -3124,7 +3124,7 @@ fn ordered_generated_cmake_requires_the_current_abi() {
     let (projection, authority) = ordered_successor_projected();
     let package = emitter
         .emit(&projection, &authority)
-        .expect("ordered C-v3 package emits");
+        .expect("ordered C package emits");
     assert_generated_runtime_floor(
         &package,
         &[

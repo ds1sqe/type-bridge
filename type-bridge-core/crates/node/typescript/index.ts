@@ -691,7 +691,7 @@ export function ensureDatabase(
   );
 }
 
-/** Opaque declared-schema authority for prepared V2 plan execution. */
+/** Opaque declared-schema authority for staged plan execution. */
 export class PlanAuthority {
   readonly #brand = undefined;
 

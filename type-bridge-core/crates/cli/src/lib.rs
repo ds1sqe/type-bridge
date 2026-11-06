@@ -1,4 +1,4 @@
-//! `type-bridge` — the V2 workspace command-line interface.
+//! `type-bridge` — the workspace command-line interface.
 //!
 //! `schema check`, `schema generate`, `migration make`, and `migration
 //! plan`, and rollback preview run without any network I/O. `migration apply`,
@@ -40,7 +40,7 @@ mod build_identity {
 #[command(
     name = "type-bridge",
     version = build_identity::CLI_VERSION,
-    about = "TypeBridge V2 workspace commands"
+    about = "TypeBridge workspace commands"
 )]
 struct Cli {
     /// Path to the workspace manifest.
@@ -70,7 +70,7 @@ enum SchemaCommand {
     Check,
     /// Generate the configured binding projections from the canonical schema.
     Generate,
-    /// Export canonical declared-schema bytes for low-level V2 tooling.
+    /// Export canonical declared-schema bytes for low-level tooling.
     ExportDeclared {
         /// Workspace-relative destination for the canonical JSON artifact.
         #[arg(long, default_value = "declared-schema.json")]
@@ -1092,7 +1092,7 @@ mod schema_generation_atomicity_tests {
     }
 }
 
-/// Export canonical declared bytes for explicitly low-level V2 tooling.
+/// Export canonical declared bytes for explicitly low-level tooling.
 fn run_schema_export_declared(
     workspace: &TypeBridgeWorkspace,
     output: &Path,

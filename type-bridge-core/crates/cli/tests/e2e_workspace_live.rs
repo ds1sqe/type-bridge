@@ -300,7 +300,7 @@ async fn empty_workspace_to_replayed_history_live() {
         "migration verify init",
     );
 
-    // Run a typed V2 query against the migrated database.
+    // Run a typed query against the migrated database.
     let database = Database::connect_with_options(
         &address,
         &primary,
