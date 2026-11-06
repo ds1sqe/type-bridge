@@ -372,7 +372,7 @@ impl ManagedDatabasePairDeletionPlan {
         self.inspected
     }
 
-    /// Revalidate the pair and delete journal-first so no trusted orphan remains.
+    /// Revalidate and delete the current pair before its retained old journal.
     pub async fn execute(self) -> Result<ManagedDatabasePairDeleteOutcome, Diagnostic> {
         let current = self.administrator.inspect().await?;
         if current != self.inspected {
@@ -382,53 +382,7 @@ impl ManagedDatabasePairDeletionPlan {
                 "database pair changed after destructive admission; inspect and approve again",
             ));
         }
-        self.administrator.delete_legacy_journal().await?;
-        match current {
-            ManagedDatabasePairState::ImportPending => {
-                self.administrator
-                    .inner
-                    .managed_database
-                    .delete_database_outcome()
-                    .await
-                    .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedPair)
-            }
-            ManagedDatabasePairState::Absent => Ok(ManagedDatabasePairDeleteOutcome::AlreadyAbsent),
-            ManagedDatabasePairState::StandaloneManaged => {
-                self.administrator
-                    .inner
-                    .managed_database
-                    .delete_database_outcome()
-                    .await
-                    .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged)
-            }
-            ManagedDatabasePairState::OwnedJournalOrphan => {
-                self.administrator
-                    .inner
-                    .journal_database
-                    .delete_database_outcome()
-                    .await
-                    .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedJournalOrphan)
-            }
-            ManagedDatabasePairState::OwnedPair => {
-                self.administrator.require_exact_journal_owner().await?;
-                self.administrator
-                    .inner
-                    .journal_database
-                    .delete_database_outcome()
-                    .await
-                    .map_err(map_orm_error)?;
-                self.administrator
-                    .inner
-                    .managed_database
-                    .delete_database_outcome()
-                    .await
-                    .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedPair)
-            }
-        }
+        self.delete_inspected(current).await
     }
 
     /// Revalidate interruptibly, then execute deletion without masking its outcome.
@@ -445,8 +399,14 @@ impl ManagedDatabasePairDeletionPlan {
             ));
         }
         control.check()?;
-        self.administrator.delete_legacy_journal().await?;
-        match current {
+        self.delete_inspected(current).await
+    }
+
+    async fn delete_inspected(
+        &self,
+        current: ManagedDatabasePairState,
+    ) -> Result<ManagedDatabasePairDeleteOutcome, Diagnostic> {
+        let outcome = match current {
             ManagedDatabasePairState::ImportPending => {
                 self.administrator
                     .inner
@@ -454,9 +414,9 @@ impl ManagedDatabasePairDeletionPlan {
                     .delete_database_outcome()
                     .await
                     .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedPair)
+                ManagedDatabasePairDeleteOutcome::DeletedOwnedPair
             }
-            ManagedDatabasePairState::Absent => Ok(ManagedDatabasePairDeleteOutcome::AlreadyAbsent),
+            ManagedDatabasePairState::Absent => ManagedDatabasePairDeleteOutcome::AlreadyAbsent,
             ManagedDatabasePairState::StandaloneManaged => {
                 self.administrator
                     .inner
@@ -464,7 +424,7 @@ impl ManagedDatabasePairDeletionPlan {
                     .delete_database_outcome()
                     .await
                     .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged)
+                ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged
             }
             ManagedDatabasePairState::OwnedJournalOrphan => {
                 self.administrator
@@ -473,7 +433,7 @@ impl ManagedDatabasePairDeletionPlan {
                     .delete_database_outcome()
                     .await
                     .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedJournalOrphan)
+                ManagedDatabasePairDeleteOutcome::DeletedOwnedJournalOrphan
             }
             ManagedDatabasePairState::OwnedPair => {
                 self.administrator.require_exact_journal_owner().await?;
@@ -489,9 +449,11 @@ impl ManagedDatabasePairDeletionPlan {
                     .delete_database_outcome()
                     .await
                     .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedPair)
+                ManagedDatabasePairDeleteOutcome::DeletedOwnedPair
             }
-        }
+        };
+        self.administrator.delete_legacy_journal().await?;
+        Ok(outcome)
     }
 }
 
@@ -3899,6 +3861,144 @@ pub(crate) mod tests {
         );
         assert!(!journal_exists.load(Ordering::SeqCst));
         assert_eq!(deletes.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn pair_delete_preserves_old_journal_until_other_deletes_succeed() {
+        #[derive(Clone)]
+        struct DeleteBackend(Arc<std::sync::Mutex<DeleteState>>);
+        struct DeleteState {
+            names: BTreeSet<String>,
+            fail: Option<String>,
+            deleted: Vec<String>,
+        }
+        impl DriverBackend for DeleteBackend {
+            fn is_open(&self) -> bool {
+                true
+            }
+            fn server_version(&self) -> Option<Version> {
+                Some(Version::new(3, 12, 3))
+            }
+            fn database_exists(&self, name: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
+                let exists = self.0.lock().unwrap().names.contains(name);
+                Box::pin(async move { Ok(exists) })
+            }
+            fn schema_text(&self, name: &str) -> BoxFuture<'_, Result<String, OrmError>> {
+                let schema = if name.ends_with("__tbv2_journal") {
+                    type_bridge_contract::reserved::IMPORT_LEGACY_JOURNAL_CONTROL_SCHEMA_TYPEQL
+                } else if name.ends_with("__tb_journal") {
+                    JOURNAL_CONTROL_SCHEMA_TYPEQL
+                } else {
+                    type_bridge_contract::reserved::IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL
+                }
+                .to_owned();
+                Box::pin(async move { Ok(schema) })
+            }
+            fn delete_database(&self, name: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+                let mut state = self.0.lock().unwrap();
+                let result = if state.fail.as_deref() == Some(name) {
+                    Err(OrmError::Connection("injected delete failure".into()))
+                } else {
+                    state.deleted.push(name.to_owned());
+                    state.names.remove(name);
+                    Ok(())
+                };
+                Box::pin(async move { result })
+            }
+            fn open_transaction(
+                &self,
+                _: &str,
+                _: TxType,
+            ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+                let tx: Box<dyn TransactionOps> = Box::new(self.clone());
+                Box::pin(async move { Ok(tx) })
+            }
+        }
+        impl TransactionOps for DeleteBackend {
+            fn query(
+                &mut self,
+                query: &str,
+            ) -> BoxFuture<'_, Result<type_bridge_orm::session::backend::QueryResult, OrmError>>
+            {
+                let fields = if query.contains("journal-owner") {
+                    vec![
+                        ("key", "typebridge-journal-owner/v1"),
+                        ("database", "managed"),
+                        ("scope", "delete-scope"),
+                    ]
+                } else {
+                    vec![("scope", "delete-scope"), ("fence", "1"), ("next", "0")]
+                };
+                let row = fields.into_iter().enumerate().map(|(index,(key,value))| (format!("{key}{}",index+1), serde_json::json!({"kind":"value", "value":{"kind":"string", "value":value}}))).collect::<serde_json::Map<_,_>>();
+                Box::pin(async move {
+                    Ok(type_bridge_orm::session::backend::QueryResult::Rows(vec![
+                        serde_json::Value::Object(row),
+                    ]))
+                })
+            }
+            fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+                panic!("read only")
+            }
+            fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+                panic!("read only")
+            }
+            fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        for controlled in [false, true] {
+            for failure in ["managed__tb_journal", "managed"] {
+                let state = Arc::new(std::sync::Mutex::new(DeleteState {
+                    names: ["managed", "managed__tb_journal", "managed__tbv2_journal"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                    fail: Some(failure.to_owned()),
+                    deleted: vec![],
+                }));
+                let managed = Arc::new(Database::with_backend(
+                    Box::new(DeleteBackend(Arc::clone(&state))),
+                    "managed",
+                ));
+                let journal = Arc::new(managed.derived_journal_database());
+                let admin = ManagedDatabasePairAdministrator::new(
+                    managed,
+                    journal,
+                    ManagedScopeId::new("delete-scope").unwrap(),
+                )
+                .unwrap();
+                let plan = admin.plan_delete().await.unwrap();
+                let result = if controlled {
+                    plan.execute_controlled(&MigrationExecutionControl::default())
+                        .await
+                } else {
+                    plan.execute().await
+                };
+                assert!(result.is_err());
+                assert!(
+                    state
+                        .lock()
+                        .unwrap()
+                        .names
+                        .contains("managed__tbv2_journal")
+                );
+                state.lock().unwrap().fail = None;
+                let plan = admin
+                    .plan_delete()
+                    .await
+                    .expect("failed deletion must remain retryable");
+                if controlled {
+                    plan.execute_controlled(&MigrationExecutionControl::default())
+                        .await
+                        .unwrap();
+                } else {
+                    plan.execute().await.unwrap();
+                }
+                let state = state.lock().unwrap();
+                assert!(state.names.is_empty());
+                assert_eq!(state.deleted.last().unwrap(), "managed__tbv2_journal");
+            }
+        }
     }
 
     #[tokio::test]
