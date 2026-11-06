@@ -415,7 +415,7 @@ fn c_manager_live_runs_when_explicitly_configured() {
     let mut server = None;
     let mut remote_port = None;
     let server_log_path = stage.path().join("manager-http-server.log");
-    if let Some(binary) = env::var_os("TYPE_BRIDGE_V2_SMOKE_SERVER") {
+    if let Some(binary) = env::var_os("TYPE_BRIDGE_SMOKE_SERVER") {
         let port = env::var("SMOKE_PORT")
             .ok()
             .map(|value| value.parse::<u16>().expect("SMOKE_PORT is a valid port"))

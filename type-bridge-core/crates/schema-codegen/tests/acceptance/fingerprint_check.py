@@ -1,13 +1,13 @@
 from collections.abc import Mapping
 from typing import TypedDict
 
-from generated_v2 import (
+from generated_package import (
     PLAYING_FACTS as BASE_PLAYING_FACTS,
 )
-from generated_v2 import (
+from generated_package import (
     PROJECTION_FINGERPRINT_JSON as BASE_PROJECTION_FINGERPRINT,
 )
-from generated_v2 import (
+from generated_package import (
     SEMANTIC_SCHEMA_FINGERPRINT_JSON as BASE_SEMANTIC_FINGERPRINT,
 )
 from generated_variant import (

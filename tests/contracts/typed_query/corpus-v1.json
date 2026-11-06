@@ -34,7 +34,7 @@
       "features": ["one_public_facade", "typed_subpath_exports"],
       "operation": "construction",
       "transaction_mode": "none",
-      "input": {"python_import": "generated_v2", "typescript_import": "./generated_v2/src/index.js"},
+      "input": {"python_import": "generated_package", "typescript_import": "./generated_package/src/index.js"},
       "expected": {"outcome": "success", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
       "examples": {"python": ["python-models-and-session"], "typescript": ["typescript-models-and-session"]}
     },

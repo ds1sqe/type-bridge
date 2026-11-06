@@ -2211,7 +2211,7 @@ impl Scope<'_> {
 }
 
 #[cfg(test)]
-#[path = "../tests/support/plan_v3_race.rs"]
+#[path = "../tests/support/plan_race.rs"]
 pub(crate) mod race;
 
 #[cfg(test)]

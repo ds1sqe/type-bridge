@@ -1,6 +1,6 @@
 # Python static contracts
 
-`documented_examples.py` imports the emitted `generated_v2` acceptance package
+`documented_examples.py` imports the emitted `generated_package` acceptance package
 and is compiled by the schema-codegen acceptance runner.
 
 `documented_examples.py` is the ordered concatenation of all five Python code

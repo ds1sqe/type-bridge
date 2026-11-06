@@ -47,7 +47,7 @@ import {
   QueryExecutionResourceLimits,
   connectProxy,
   schemaAuthority,
-} from "./generated_v2/src/index.js";
+} from "./generated_package/src/index.js";
 import { Plan, type Pending, type Database, type StagedTransaction } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");

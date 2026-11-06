@@ -334,7 +334,7 @@ fn result_refs_survive_canonical_request_bytes_without_runtime_iids() {
         ("request-result-ref.json", bytes.clone()),
     ] {
         let path = root.join(name);
-        if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_V3_FIXTURES").is_some() {
+        if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_FIXTURES").is_some() {
             std::fs::write(&path, &fixture).unwrap();
         }
         assert_eq!(std::fs::read(path).unwrap(), fixture);

@@ -2,7 +2,7 @@
 #![cfg(feature = "typedb")]
 #[path = "support/live_database.rs"]
 mod live_database;
-#[path = "support/plan_v3_race.rs"]
+#[path = "support/plan_race.rs"]
 mod race;
 
 use type_bridge_contract::fingerprint::SemanticProfileId;

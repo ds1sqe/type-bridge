@@ -432,18 +432,18 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: python-dist
-          path: tmp/python-v2-platform-root
+          path: tmp/python-platform-root
 
-      - name: Execute target-native V2 authoring artifact
+      - name: Execute target-native authoring artifact
         run: >-
-          python scripts/ci/run_python_v2_platform_artifact.py
-          --root-dist-dir tmp/python-v2-platform-root
+          python scripts/ci/run_python_platform_artifact.py
+          --root-dist-dir tmp/python-platform-root
           --core-dist-dir type-bridge-core/dist
-          --work-dir "${{ runner.temp }}/type-bridge-v2-platform-artifact"
+          --work-dir "${{ runner.temp }}/type-bridge-platform-artifact"
           --expected-version "${{ env.PYTHON_RELEASE_VERSION }}"
           --source-root "${{ github.workspace }}"
           --declared-schema
-          tests/fixtures/query-v2-model-remote-parity-declared.json
+          tests/fixtures/query-model-remote-parity-declared.json
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1495,9 +1495,9 @@ jobs:
           python_stage="$GITHUB_WORKSPACE/tmp/release-live-artifacts/generated-python"
           node_stage="$GITHUB_WORKSPACE/tmp/release-live-artifacts/generated-node"
           for required in \
-            "$python_stage/generated_v2/__init__.py" \
+            "$python_stage/generated_package/__init__.py" \
             "$python_stage/schema-authority.json" \
-            "$node_stage/generated_v2/dist/index.js" \
+            "$node_stage/generated_package/dist/index.js" \
             "$node_stage/generated_foreign/dist/index.js" \
             "$node_stage/schema-authority.json" \
             "$node_stage/harness/tests/projection-integration/generated-package-live.test.js" \
@@ -1514,7 +1514,7 @@ jobs:
             "$(realpath "${root_wheels[0]}")" >> "$GITHUB_ENV"
           printf 'TYPE_BRIDGE_NODE_PACKAGE=%s\n' \
             "$(realpath "${node_packages[0]}")" >> "$GITHUB_ENV"
-          printf 'TYPE_BRIDGE_V2_SMOKE_SERVER=%s\n' \
+          printf 'TYPE_BRIDGE_SMOKE_SERVER=%s\n' \
             "$(realpath "${smoke_servers[0]}")" >> "$GITHUB_ENV"
           printf 'TYPE_BRIDGE_GENERATED_PYTHON_STAGE=%s\n' \
             "$(realpath "$python_stage")" >> "$GITHUB_ENV"

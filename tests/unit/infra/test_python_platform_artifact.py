@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.ci import run_python_v2_platform_artifact as artifact_smoke
+from scripts.ci import run_python_platform_artifact as artifact_smoke
 
 
 def touch_wheel(directory: Path, name: str) -> Path:

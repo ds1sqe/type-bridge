@@ -2035,7 +2035,7 @@ def _run_sdk_queries_journey(
 
 
 def _capture_v2_exchange(request: bytes, reply: bytes, advertisement: bytes) -> None:
-    destination = os.environ.get("TYPE_BRIDGE_V2_CAPTURE_DIRECTORY")
+    destination = os.environ.get("TYPE_BRIDGE_CAPTURE_DIRECTORY")
     if destination is None:
         return
     wire = json.loads(request)
@@ -2242,21 +2242,21 @@ def generated_package(
     else:
         stage = Path(supplied_stage).resolve()
         for required in (
-            stage / "generated_v2" / "__init__.py",
+            stage / "generated_package" / "__init__.py",
             stage / "schema-authority.json",
         ):
             if not required.is_file() or required.is_symlink():
                 raise AssertionError(f"supplied generated Python fixture is incomplete: {required}")
     monkeypatch.syspath_prepend(str(stage))
     importlib.invalidate_caches()
-    generated = importlib.import_module("generated_v2")
+    generated = importlib.import_module("generated_package")
     generated_semantics = json.loads(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON)
     assert generated_semantics["semantic_profile"] == semantic_profile
     try:
         yield generated
     finally:
         for module_name in tuple(sys.modules):
-            if module_name == "generated_v2" or module_name.startswith("generated_v2."):
+            if module_name == "generated_package" or module_name.startswith("generated_package."):
                 del sys.modules[module_name]
 
 
@@ -3449,7 +3449,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
             raise RuntimeError("post hook sentinel")
 
     post_failure_person = _make_generated_person(generated, "parity-post-failure", 11)
-    with caplog.at_level(logging.ERROR, logger="generated_v2._runtime"):
+    with caplog.at_level(logging.ERROR, logger="generated_package._runtime"):
         assert (
             generated.Person.manager(clean_db)
             .add_hook(FailingPostHook())
@@ -4056,7 +4056,7 @@ def test_generated_managers_share_direct_and_http_proxy_terminals(
         .read_bytes()
     )
     port = _free_port()
-    supplied_server = os.environ.get("TYPE_BRIDGE_V2_SMOKE_SERVER")
+    supplied_server = os.environ.get("TYPE_BRIDGE_SMOKE_SERVER")
     command = (
         [supplied_server]
         if supplied_server
@@ -5002,7 +5002,7 @@ def test_generated_projection_round_trips_live_models(
     generated_path = Path(generated_file).resolve()
     authority = generated_path.parent.parent.joinpath("schema-authority.json").read_bytes()
     remote_port = _free_port()
-    supplied_server = os.environ.get("TYPE_BRIDGE_V2_SMOKE_SERVER")
+    supplied_server = os.environ.get("TYPE_BRIDGE_SMOKE_SERVER")
     if supplied_server is None:
         server_command = [
             "cargo",
@@ -5075,7 +5075,7 @@ def test_generated_projection_round_trips_live_models(
         remote_people = remote_session.query(remote_person).where(
             remote_person.field(generated.Person.identifier).eq(generated.Identifier("person-1"))
         )
-        if os.environ.get("TYPE_BRIDGE_V2_CAPTURE_DIRECTORY") is not None:
+        if os.environ.get("TYPE_BRIDGE_CAPTURE_DIRECTORY") is not None:
             capture_party = remote_session.subtypes(generated.Party)
             capture_parties = asyncio.run(
                 remote_session.query(capture_party).rows(
@@ -5451,7 +5451,7 @@ def test_generated_projection_round_trips_live_models(
                 sdk_queries_journey,
                 sdk_queries_proof_observations,
             )
-        if (capture_directory := os.environ.get("TYPE_BRIDGE_V2_CAPTURE_DIRECTORY")) is not None:
+        if (capture_directory := os.environ.get("TYPE_BRIDGE_CAPTURE_DIRECTORY")) is not None:
             for name in ["page-with-total", "page-without-total", "abstract-party"]:
                 assert (Path(capture_directory) / name / "reply.json").is_file()
     finally:
@@ -5634,7 +5634,7 @@ def test_generated_raw_pair_live(
         .parent.parent.joinpath("schema-authority.json")
         .read_bytes()
     )
-    supplied_server = os.environ.get("TYPE_BRIDGE_V2_SMOKE_SERVER")
+    supplied_server = os.environ.get("TYPE_BRIDGE_SMOKE_SERVER")
     command = (
         [supplied_server]
         if supplied_server

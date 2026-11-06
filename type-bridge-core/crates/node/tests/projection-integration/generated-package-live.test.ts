@@ -2090,7 +2090,7 @@ test("generated profile server gate follows the package profile", () => {
 
 test("generated managers share direct and HTTP proxy terminals", { timeout: 360_000 }, async () => {
   const stage = await mkdtemp(join(tmpdir(), "type-bridge-node-manager-"));
-  const generatedDirectory = resolve(stage, "generated_v2");
+  const generatedDirectory = resolve(stage, "generated_package");
   let database;
   let server: ChildProcess | undefined;
   let serverStderr = "";
@@ -2112,7 +2112,7 @@ test("generated managers share direct and HTTP proxy terminals", { timeout: 360_
     const authority = await readFile(resolve(stage, "schema-authority.json"));
     const trace = resolve(stage, "manager-events.jsonl");
     const port = await freePort();
-    const suppliedServer = process.env.TYPE_BRIDGE_V2_SMOKE_SERVER;
+    const suppliedServer = process.env.TYPE_BRIDGE_SMOKE_SERVER;
     server = spawn(suppliedServer ?? "cargo", suppliedServer === undefined
       ? ["run", "--quiet", "-p", "type-bridge-server", "--example", "staged_smoke_server"] : [], {
       cwd: CORE,
@@ -2159,7 +2159,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     ? await mkdtemp(join(tmpdir(), "type-bridge-node-projection-"))
     : resolve(suppliedStage);
   const ownsStage = suppliedStage === undefined;
-  const generatedDirectory = resolve(stage, "generated_v2");
+  const generatedDirectory = resolve(stage, "generated_package");
   const foreignDirectory = resolve(stage, "generated_foreign");
   let database;
   let failure: unknown;
@@ -3152,7 +3152,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
     const authority = await readFile(resolve(stage, "schema-authority.json"));
     const port = await freePort();
-    const suppliedServer = process.env.TYPE_BRIDGE_V2_SMOKE_SERVER;
+    const suppliedServer = process.env.TYPE_BRIDGE_SMOKE_SERVER;
     const server = spawn(
       suppliedServer ?? "cargo",
       suppliedServer === undefined
@@ -4064,7 +4064,7 @@ test(
 
       const port = await freePort();
       const authority = await readFile(resolve(stage, "schema-authority-ordered.json"));
-      const suppliedServer = process.env.TYPE_BRIDGE_V2_SMOKE_SERVER;
+      const suppliedServer = process.env.TYPE_BRIDGE_SMOKE_SERVER;
       server = spawn(
         suppliedServer ?? "cargo",
         suppliedServer === undefined
@@ -4232,7 +4232,7 @@ print(json.dumps(normalize(docs)))`;
     const packageScope = resolve(stage, "node_modules/@type-bridge");
     await mkdir(packageScope, { recursive: true });
     await symlink(NODE_RUNTIME_PACKAGE, resolve(packageScope, "node"), process.platform === "win32" ? "junction" : "dir");
-    const generatedDirectory = resolve(stage, "generated_v2");
+    const generatedDirectory = resolve(stage, "generated_package");
     run(resolve(NODE_SOURCE_PACKAGE, "node_modules/.bin/tsc"), ["--project", resolve(generatedDirectory, "tsconfig.json")], generatedDirectory);
     const generated = await import(pathToFileURL(resolve(generatedDirectory, "dist/index.js")).href);
     database = connectIntegration();
@@ -4262,7 +4262,7 @@ print(json.dumps(normalize(docs)))`;
     for (const enabled of [true, false]) {
       const trace = resolve(stage, `raw-${enabled}.jsonl`);
       const port = await freePort();
-      const suppliedServer = process.env.TYPE_BRIDGE_V2_SMOKE_SERVER;
+      const suppliedServer = process.env.TYPE_BRIDGE_SMOKE_SERVER;
       server = spawn(suppliedServer ?? "cargo", suppliedServer === undefined ? ["run", "--quiet", "-p", "type-bridge-server", "--example", "staged_smoke_server"] : [], {
         cwd: CORE, env: { ...process.env,
           SMOKE_TYPEDB_ADDRESS: TYPEDB_ADDRESS, SMOKE_TYPEDB_HTTP_PORT: String(TYPEDB_HTTP_PORT),

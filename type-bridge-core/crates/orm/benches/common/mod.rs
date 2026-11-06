@@ -291,7 +291,7 @@ pub fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
 // Staged commit
 // ---------------------------------------------------------------------------
 
-#[path = "../../tests/support/plan_v3_race.rs"]
+#[path = "../../tests/support/plan_race.rs"]
 mod race;
 
 use type_bridge_contract::query_plan::{Operation, QueryPlan};

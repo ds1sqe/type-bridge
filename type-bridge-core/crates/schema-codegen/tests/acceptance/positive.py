@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import assert_type
 
-from generated_v2 import (
+from generated_package import (
     Actor,
     Aliases,
     BatchWriteResult,

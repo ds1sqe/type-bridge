@@ -1683,13 +1683,13 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
         .parent()
         .and_then(Path::parent)
         .expect("schema-codegen has a core workspace parent");
-    let mut server_command = if let Some(server) = env::var_os("TYPE_BRIDGE_V2_SMOKE_SERVER") {
+    let mut server_command = if let Some(server) = env::var_os("TYPE_BRIDGE_SMOKE_SERVER") {
         let server = PathBuf::from(server)
             .canonicalize()
-            .expect("TYPE_BRIDGE_V2_SMOKE_SERVER is resolvable");
+            .expect("TYPE_BRIDGE_SMOKE_SERVER is resolvable");
         assert!(
             server.is_file() && !server.is_symlink(),
-            "TYPE_BRIDGE_V2_SMOKE_SERVER must be a regular non-symlink file"
+            "TYPE_BRIDGE_SMOKE_SERVER must be a regular non-symlink file"
         );
         Command::new(server)
     } else {

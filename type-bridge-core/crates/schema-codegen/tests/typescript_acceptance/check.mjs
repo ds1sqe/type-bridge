@@ -7,7 +7,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const CORE = resolve(HERE, "../../../..");
 const ROOT = resolve(CORE, "..");
 const STAGE = resolve(CORE, "target/schema-codegen-typescript-acceptance");
-const GENERATED = resolve(STAGE, "generated_v2");
+const GENERATED = resolve(STAGE, "generated_package");
 const BLOCKERS = resolve(STAGE, "generated_blockers");
 const ORDERED = resolve(STAGE, "generated_ordered");
 const PLAN_IDIOMS = resolve(STAGE, "generated_plan_idioms");
@@ -273,7 +273,7 @@ writeFileSync(
       "plan_idioms_negative.ts",
       "generated_plan_idioms/src/**/*.ts",
       "generated_plan_names/src/**/*.ts",
-      "generated_v2/src/**/*.ts",
+      "generated_package/src/**/*.ts",
       "generated_ordered/src/**/*.ts",
       "generated_foreign/src/**/*.ts",
     ],

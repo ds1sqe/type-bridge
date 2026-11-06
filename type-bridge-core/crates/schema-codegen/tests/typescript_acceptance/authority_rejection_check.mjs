@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 
 const STAGE = dirname(fileURLToPath(import.meta.url));
-const SOURCE = resolve(STAGE, "generated_v2");
+const SOURCE = resolve(STAGE, "generated_package");
 const ORDERED = resolve(STAGE, "generated_ordered");
 const FOREIGN = resolve(STAGE, "generated_foreign");
 const MAX_SCHEMA_AUTHORITY_BYTES = 16 * 1024 * 1024;

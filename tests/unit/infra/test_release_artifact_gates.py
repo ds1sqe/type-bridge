@@ -572,16 +572,16 @@ def test_each_core_wheel_executes_v2_authoring_on_its_native_target() -> None:
     assert "docker/setup-qemu-action" not in build
     assert "if: runner.os != 'Linux'" not in build
     assert "name: python-dist" in build
-    assert "path: tmp/python-v2-platform-root" in build
-    runner = "scripts/ci/run_python_v2_platform_artifact.py"
+    assert "path: tmp/python-platform-root" in build
+    runner = "scripts/ci/run_python_platform_artifact.py"
     assert runner in build
     for argument in (
-        "--root-dist-dir tmp/python-v2-platform-root",
+        "--root-dist-dir tmp/python-platform-root",
         "--core-dist-dir type-bridge-core/dist",
-        '--work-dir "${{ runner.temp }}/type-bridge-v2-platform-artifact"',
+        '--work-dir "${{ runner.temp }}/type-bridge-platform-artifact"',
         '--expected-version "${{ env.PYTHON_RELEASE_VERSION }}"',
         '--source-root "${{ github.workspace }}"',
-        "tests/fixtures/query-v2-model-remote-parity-declared.json",
+        "tests/fixtures/query-model-remote-parity-declared.json",
     ):
         assert argument in build
     assert build.index("name: Build wheel") < build.index(runner)
@@ -1091,7 +1091,7 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
         "TYPE_BRIDGE_NODE_PACKAGE_ROOT",
         "TYPE_BRIDGE_GENERATED_PYTHON_STAGE",
         "TYPE_BRIDGE_GENERATED_NODE_STAGE",
-        "TYPE_BRIDGE_V2_SMOKE_SERVER",
+        "TYPE_BRIDGE_SMOKE_SERVER",
     ):
         assert variable in acceptance
 

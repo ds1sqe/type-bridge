@@ -13,7 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import generated_identical as identical
-import generated_v2._query as generated_query_module
+import generated_package._query as generated_query_module
 import generated_variant as variant
 import type_bridge_core
 from generated_ordered import CrudHook as OrderedCrudHook
@@ -25,7 +25,7 @@ from generated_ordered import PersonRef as OrderedPersonRef
 from generated_ordered import ProjectedModelManager as OrderedProjectedModelManager
 from generated_ordered import Tag as OrderedTag
 from generated_ordered import connect as ordered_connect
-from generated_v2 import (
+from generated_package import (
     PLAYING_FACTS,
     PROJECTION_FINGERPRINT_JSON,
     RUNTIME_PROJECTION_JSON,
@@ -726,7 +726,7 @@ named = query_session.query_as(
     person=person_var,
     employment=employment_var,
 ).where(employee)
-assert type(named).__module__ == "generated_v2._query"
+assert type(named).__module__ == "generated_package._query"
 reachable = query_session.reachable(
     person_var,
     other_person_var,
@@ -2075,8 +2075,8 @@ finally:
 # A generated package exposes its embedded authority for the plan builder,
 # in both runtime resource variants; the package's own tokens build a plan.
 from generated_ordered import schema_authority as ordered_schema_authority  # noqa: E402
-from generated_v2 import Person as PlanPerson  # noqa: E402
-from generated_v2 import schema_authority  # noqa: E402
+from generated_package import Person as PlanPerson  # noqa: E402
+from generated_package import schema_authority  # noqa: E402
 
 from type_bridge.plan import Plan  # noqa: E402
 

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import assert_type
 
-from generated_v2 import (
+from generated_package import (
     Container,
     Employment,
     Event,

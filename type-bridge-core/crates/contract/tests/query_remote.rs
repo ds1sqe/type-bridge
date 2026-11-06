@@ -475,11 +475,11 @@ fn staged_envelope_goldens_are_exact_and_sdk_readable() {
             .encode_signed(&document_request, &ad, &keys)
             .unwrap(),
     );
-    if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_V3_FIXTURES").is_some() {
+    if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_FIXTURES").is_some() {
         std::fs::create_dir_all(&root).unwrap();
     }
     for (name, bytes) in fixtures {
-        if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_V3_FIXTURES").is_some() {
+        if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_FIXTURES").is_some() {
             std::fs::write(root.join(name), &bytes).unwrap();
         }
         assert_eq!(std::fs::read(root.join(name)).unwrap(), bytes);
@@ -927,7 +927,7 @@ fn deletion_snapshots_require_capability_and_verify_signed_pre_images() {
         }
     }
     for (name, bytes) in fixtures {
-        if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_V3_FIXTURES").is_some() {
+        if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_FIXTURES").is_some() {
             std::fs::write(root.join(name), &bytes).unwrap();
         }
         assert_eq!(std::fs::read(root.join(name)).unwrap(), bytes);
@@ -1006,7 +1006,7 @@ fn optional_answer_dimensions_round_trip_and_require_receiver_capability() {
         ("request-answer-dimensions.json", bytes.clone()),
     ] {
         let path = root.join(name);
-        if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_V3_FIXTURES").is_some() {
+        if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_FIXTURES").is_some() {
             std::fs::write(&path, &fixture).unwrap();
         }
         assert_eq!(std::fs::read(path).unwrap(), fixture);

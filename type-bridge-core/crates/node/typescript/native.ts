@@ -894,7 +894,7 @@ function protectedMethodDescriptor(
  * Uint8Array convenience and reflective property access without weakening
  * that native boundary.
  */
-function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModule {
+function protectNativeByteInputs(native: LoadedNativeModule): LoadedNativeModule {
   const maxCanonicalBytes = native.MAX_CANONICAL_BYTES;
   const maxEnvelopeBytes = native.MAX_REMOTE_ENVELOPE_BYTES;
   const planAuthority = native.planAuthority.bind(native);
@@ -1097,7 +1097,7 @@ export function loadNative(): LoadedNativeModule {
     if (fs.existsSync(candidate)) {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const native = require(candidate) as LoadedNativeModule;
-      _cached = protectNativeV2ByteInputs(native);
+      _cached = protectNativeByteInputs(native);
       return _cached;
     }
   }

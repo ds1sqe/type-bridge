@@ -1,5 +1,5 @@
 //! One-shot plans share staged answer evidence and preserve read ownership.
-#[path = "support/plan_v3_race.rs"]
+#[path = "support/plan_race.rs"]
 mod race;
 
 use serde_json::json;

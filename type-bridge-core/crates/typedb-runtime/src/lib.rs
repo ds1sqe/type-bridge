@@ -2705,7 +2705,7 @@ impl RuntimeTransaction {
         self.query_bounded_with_scalar_encoding(
             typeql,
             limits,
-            ScalarJsonEncoding::CanonicalV2,
+            ScalarJsonEncoding::Canonical,
             consumer,
         )
     }
@@ -2887,7 +2887,7 @@ impl RuntimeTransaction {
             typeql,
             rows,
             limits,
-            ScalarJsonEncoding::CanonicalV2,
+            ScalarJsonEncoding::Canonical,
             consumer,
         )
     }
@@ -3079,7 +3079,7 @@ fn runtime_document_member_error(message: &'static str) -> RuntimeError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScalarJsonEncoding {
     DriverDisplay,
-    CanonicalV2,
+    Canonical,
 }
 
 fn canonical_decimal_text(display: String) -> Result<String> {
@@ -3334,7 +3334,7 @@ macro_rules! define_driver_json_conversion {
                 Value::Decimal(decimal) => {
                     let rendered = match scalar_encoding {
                         ScalarJsonEncoding::DriverDisplay => decimal.to_string(),
-                        ScalarJsonEncoding::CanonicalV2 => {
+                        ScalarJsonEncoding::Canonical => {
                             canonical_decimal_text(decimal.to_string())?
                         }
                     };
@@ -3344,14 +3344,14 @@ macro_rules! define_driver_json_conversion {
                 Value::Datetime(datetime) => {
                     let rendered = match scalar_encoding {
                         ScalarJsonEncoding::DriverDisplay => value.to_string(),
-                        ScalarJsonEncoding::CanonicalV2 => exact_naive_datetime(datetime),
+                        ScalarJsonEncoding::Canonical => exact_naive_datetime(datetime),
                     };
                     serde_json::Value::String(rendered)
                 }
                 Value::Duration(duration) => {
                     let rendered = match scalar_encoding {
                         ScalarJsonEncoding::DriverDisplay => value.to_string(),
-                        ScalarJsonEncoding::CanonicalV2 => {
+                        ScalarJsonEncoding::Canonical => {
                             exact_duration(duration.months, duration.days, duration.nanos)
                         }
                     };
@@ -3361,7 +3361,7 @@ macro_rules! define_driver_json_conversion {
                     let (local, offset_seconds) = checked_datetime_tz_local(datetime_tz)?;
                     let rendered = match scalar_encoding {
                         ScalarJsonEncoding::DriverDisplay => value.to_string(),
-                        ScalarJsonEncoding::CanonicalV2 => {
+                        ScalarJsonEncoding::Canonical => {
                             let mut rendered = exact_naive_datetime(&local);
                             append_exact_offset(&mut rendered, i64::from(offset_seconds));
                             if let $driver::concept::value::TimeZone::IANA(timezone) =
@@ -4052,7 +4052,7 @@ mod tests {
                         &integer,
                         &mut collection_members,
                         u64::MAX,
-                        ScalarJsonEncoding::CanonicalV2,
+                        ScalarJsonEncoding::Canonical,
                     )
                     .unwrap(),
                     serde_json::Value::from(LARGE_INTEGER),
@@ -4079,7 +4079,7 @@ mod tests {
                             &decimal,
                             &mut collection_members,
                             u64::MAX,
-                            ScalarJsonEncoding::CanonicalV2,
+                            ScalarJsonEncoding::Canonical,
                         )
                         .unwrap()
                     ),
@@ -4087,9 +4087,7 @@ mod tests {
                     "concept-document decimals must use canonical strings"
                 );
                 assert_eq!(
-                    scalar_text(
-                        $concept_fn(&row_decimal, ScalarJsonEncoding::CanonicalV2).unwrap()
-                    ),
+                    scalar_text($concept_fn(&row_decimal, ScalarJsonEncoding::Canonical).unwrap()),
                     expected
                 );
                 assert_eq!(
@@ -4149,7 +4147,7 @@ mod tests {
                 assert_eq!(
                     $concept_fn(
                         &Concept::Value(named.clone()),
-                        ScalarJsonEncoding::CanonicalV2,
+                        ScalarJsonEncoding::Canonical,
                     )
                     .expect("row concept")["value"],
                     serde_json::json!("2024-10-27T01:30:00+01:00[Europe/London]"),
@@ -4158,7 +4156,7 @@ mod tests {
                 assert_eq!(
                     $leaf_fn(
                         &Leaf::Concept(Concept::Value(named.clone())),
-                        ScalarJsonEncoding::CanonicalV2,
+                        ScalarJsonEncoding::Canonical,
                     )
                     .expect("document leaf"),
                     serde_json::json!("2024-10-27T01:30:00+01:00[Europe/London]"),
@@ -4181,7 +4179,7 @@ mod tests {
                 assert_eq!(
                     $concept_fn(
                         &Concept::Value(fixed.clone()),
-                        ScalarJsonEncoding::CanonicalV2,
+                        ScalarJsonEncoding::Canonical,
                     )
                     .expect("row concept")["value"],
                     serde_json::json!("1900-01-01T12:00:00+00:19:32"),
@@ -4190,7 +4188,7 @@ mod tests {
                 assert_eq!(
                     $leaf_fn(
                         &Leaf::Concept(Concept::Value(fixed)),
-                        ScalarJsonEncoding::CanonicalV2,
+                        ScalarJsonEncoding::Canonical,
                     )
                     .expect("document leaf"),
                     serde_json::json!("1900-01-01T12:00:00+00:19:32"),
@@ -4240,7 +4238,7 @@ mod tests {
                     let timezone = TimeZone::Fixed(offset);
                     let value = Value::DatetimeTZ(timezone.from_utc_datetime(&utc));
                     for encoding in [
-                        ScalarJsonEncoding::CanonicalV2,
+                        ScalarJsonEncoding::Canonical,
                         ScalarJsonEncoding::DriverDisplay,
                     ] {
                         let row_error =
@@ -4272,7 +4270,7 @@ mod tests {
                     let timezone = TimeZone::Fixed(offset);
                     let value = Value::DatetimeTZ(timezone.from_utc_datetime(&utc));
                     for encoding in [
-                        ScalarJsonEncoding::CanonicalV2,
+                        ScalarJsonEncoding::Canonical,
                         ScalarJsonEncoding::DriverDisplay,
                     ] {
                         let row = $concept_fn(&Concept::Value(value.clone()), encoding)
@@ -4321,7 +4319,7 @@ mod tests {
                     assert_eq!(
                         $concept_fn(
                             &Concept::Value(value.clone()),
-                            ScalarJsonEncoding::CanonicalV2,
+                            ScalarJsonEncoding::Canonical,
                         )
                         .expect("row concept")["value"],
                         serde_json::Value::String(expected.to_owned()),
@@ -4330,7 +4328,7 @@ mod tests {
                     assert_eq!(
                         $leaf_fn(
                             &Leaf::Concept(Concept::Value(value)),
-                            ScalarJsonEncoding::CanonicalV2,
+                            ScalarJsonEncoding::Canonical,
                         )
                         .expect("document leaf"),
                         serde_json::Value::String(expected.to_owned()),
@@ -4354,7 +4352,7 @@ mod tests {
                 assert_eq!(
                     $concept_fn(
                         &Concept::Value(datetime.clone()),
-                        ScalarJsonEncoding::CanonicalV2,
+                        ScalarJsonEncoding::Canonical,
                     )
                     .expect("row concept")["value"],
                     serde_json::json!("2024-01-02T03:04:05.5"),
@@ -4363,7 +4361,7 @@ mod tests {
                 assert_eq!(
                     $leaf_fn(
                         &Leaf::Concept(Concept::Value(datetime.clone())),
-                        ScalarJsonEncoding::CanonicalV2,
+                        ScalarJsonEncoding::Canonical,
                     )
                     .expect("document leaf"),
                     serde_json::json!("2024-01-02T03:04:05.5"),
@@ -4394,7 +4392,7 @@ mod tests {
         let document = Node::List(vec![Node::Leaf(Some(Leaf::Empty)), Node::Leaf(None)]);
         let mut members = 0;
         let error =
-            document_node_to_json_b9(&document, &mut members, 1, ScalarJsonEncoding::CanonicalV2)
+            document_node_to_json_b9(&document, &mut members, 1, ScalarJsonEncoding::Canonical)
                 .expect_err("the list exceeds its conversion budget");
         assert!(matches!(
             error,
@@ -4421,7 +4419,7 @@ mod tests {
             &document,
             &mut members,
             u64::MAX,
-            ScalarJsonEncoding::CanonicalV2,
+            ScalarJsonEncoding::Canonical,
         )
         .expect_err("thing instances are not valid fetch-document leaves");
         assert!(matches!(

@@ -66,7 +66,7 @@ handles; they do not hold a mirrored semantic plan or raw TypeQL.
 from dataclasses import dataclass
 from typing import assert_type
 
-from generated_v2 import (
+from generated_package import (
     Container,
     Employment,
     Event,
@@ -92,7 +92,7 @@ subject = event.role(Event.subject).links(person)
 contained = container.role(Container.item).links(event)
 ```
 
-`generated_v2` is the checked fixture package in this repository. Applications
+`generated_package` is the checked fixture package in this repository. Applications
 use the package name emitted for their own Split-YAML workspace; they never
 write the classes shown above themselves.
 
@@ -252,7 +252,7 @@ import {
   Score,
   type Page,
   type Query,
-} from "./generated_v2/src/index.js";
+} from "./generated_package/src/index.js";
 import {
   Database,
   type TransactionContext,

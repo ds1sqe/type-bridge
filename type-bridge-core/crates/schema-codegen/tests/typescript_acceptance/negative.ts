@@ -22,7 +22,7 @@ import {
   QuerySession,
   aggregate,
   qualifyingScore,
-} from "./generated_v2/src/index.js";
+} from "./generated_package/src/index.js";
 import { Person as ForeignPerson } from "./generated_foreign/src/index.js";
 import { type StagedTransaction, Plan, type Database } from "@type-bridge/node";
 

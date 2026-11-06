@@ -51,7 +51,7 @@ def pyright(path: Path, *, expected_exit: int) -> dict[str, object]:
             "--project",
             str(STAGE / "pyrightconfig.json"),
             str(path),
-            str(STAGE / "generated_v2"),
+            str(STAGE / "generated_package"),
         ],
         expected=expected_exit,
     )
@@ -140,10 +140,10 @@ def main() -> None:
             "emit_python_acceptance",
             "--",
             str(HERE / "schema.yaml"),
-            str(STAGE / "generated_v2"),
+            str(STAGE / "generated_package"),
         ]
     )
-    shutil.copytree(STAGE / "generated_v2", STAGE / "generated_identical")
+    shutil.copytree(STAGE / "generated_package", STAGE / "generated_identical")
     command(
         [
             "cargo",

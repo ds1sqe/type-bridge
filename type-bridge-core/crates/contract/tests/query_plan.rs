@@ -484,7 +484,7 @@ fn v3_stages_have_stable_golden_bytes_and_round_trip() {
     let bytes = to_canonical_json(&fixtures).unwrap();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/query-plan-stages.json");
-    if std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_V3_FIXTURES").is_some() {
+    if std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_FIXTURES").is_some() {
         std::fs::write(&path, &bytes).unwrap();
     }
     assert_eq!(std::fs::read(path).unwrap(), bytes);
@@ -774,7 +774,7 @@ fn race_operations_and_every_expression_have_stable_goldens() {
     let bytes = to_canonical_json(&fixtures).unwrap();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/query-plan-expressions.json");
-    if std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_V3_FIXTURES").is_some() {
+    if std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_FIXTURES").is_some() {
         std::fs::write(&path, &bytes).unwrap();
     }
     assert_eq!(std::fs::read(path).unwrap(), bytes);
@@ -1158,7 +1158,7 @@ fn native_input_template_binds_without_mutating_the_template() {
 fn shared_plan_fixtures() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/contracts/plan");
-    let write = std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_V3_FIXTURES").is_some();
+    let write = std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_FIXTURES").is_some();
     if write {
         std::fs::create_dir_all(&root).unwrap();
     }

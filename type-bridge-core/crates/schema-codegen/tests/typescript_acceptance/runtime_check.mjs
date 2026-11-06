@@ -51,7 +51,7 @@ import {
   integerInput,
   qualifyingScore,
   schemaAuthority,
-} from "./generated_v2/dist/index.js";
+} from "./generated_package/dist/index.js";
 import * as Foreign from "./generated_foreign/dist/index.js";
 import {
   DirectConnectionPolicy as OrderedDirectConnectionPolicy,

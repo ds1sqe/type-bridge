@@ -28,7 +28,7 @@
                 "Import a generated package emitted now or supplied as immutable test evidence",
                 "prepare_generated_live_fixture.sh",
                 "schema-authority.json",
-                "importlib.import_module(\"generated_v2\")"
+                "importlib.import_module(\"generated_package\")"
               ]
             }
           ]

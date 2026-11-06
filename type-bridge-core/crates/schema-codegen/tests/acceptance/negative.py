@@ -2,7 +2,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from generated_v2 import (
+from generated_package import (
     Actor,
     BoundVar,
     Container,

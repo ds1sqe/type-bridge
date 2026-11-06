@@ -8,7 +8,7 @@ import {
   Score,
   type Page,
   type Query,
-} from "./generated_v2/src/index.js";
+} from "./generated_package/src/index.js";
 import {
   Database,
   type TransactionContext,

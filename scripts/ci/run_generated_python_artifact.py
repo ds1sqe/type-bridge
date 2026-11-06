@@ -303,7 +303,7 @@ def execute_pyright(
                 "--pythonpath",
                 python,
                 fixture,
-                generated_root / "generated_v2",
+                generated_root / "generated_package",
             ],
             cwd=consumer_root,
             environment=environment,
@@ -413,7 +413,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         generated_root = consumer_root / "generated"
         copy_tree_without_links(generated_stage, generated_root)
         for required in (
-            generated_root / "generated_v2/__init__.py",
+            generated_root / "generated_package/__init__.py",
             generated_root / "generated_identical/__init__.py",
             generated_root / "generated_ordered/__init__.py",
             generated_root / "generated_variant/__init__.py",

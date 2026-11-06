@@ -264,7 +264,7 @@ async fn wide_manager_proxy_preserves_plural_roots_and_rolls_back_last_piece() {
     let port: u16 = std::env::var("SMOKE_PORT").unwrap().parse().unwrap();
     let path = std::path::PathBuf::from(std::env::var_os("SMOKE_TRACE_FILE").unwrap());
     let mut server = Server(
-        Command::new(std::env::var_os("TYPE_BRIDGE_V2_SMOKE_SERVER").unwrap())
+        Command::new(std::env::var_os("TYPE_BRIDGE_SMOKE_SERVER").unwrap())
             .env("SMOKE_TYPEDB_ADDRESS", &address)
             .env(
                 "SMOKE_TYPEDB_HTTP_PORT",

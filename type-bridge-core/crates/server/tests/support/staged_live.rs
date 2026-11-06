@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
-#[path = "../../../orm/tests/support/plan_v3_race.rs"]
+#[path = "../../../orm/tests/support/plan_race.rs"]
 pub mod race;
 
 use std::future::Future;
