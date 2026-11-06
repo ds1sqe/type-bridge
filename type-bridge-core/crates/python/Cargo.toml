@@ -17,7 +17,6 @@ crate-type = ["cdylib", "rlib"]
 type-bridge-core-lib = { path = "../core", version = "2.3.2" }
 type-bridge-cli = { path = "../cli", version = "2.3.2" }
 type-bridge-contract = { path = "../contract", version = "2.3.2" }
-type-bridge-migration = { path = "../migration", version = "2.3.2" }
 type-bridge-orm = { path = "../orm", version = "2.3.2" }
 type-bridge-schema = { path = "../schema", version = "2.3.2" }
 type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.3.2" }

@@ -18,7 +18,6 @@ serde_json = "1.0"
 sha2 = "0.10"
 type-bridge-contract = { path = "../contract", version = "2.3.2" }
 type-bridge-core-lib = { path = "../core", version = "2.3.2" }
-type-bridge-migration = { path = "../migration", version = "2.3.2" }
 type-bridge-orm = { path = "../orm", version = "2.3.2", features = ["internal-eager"] }
 type-bridge-query = { path = "../query", version = "2.3.2" }
 type-bridge-schema = { path = "../schema", version = "2.3.2" }

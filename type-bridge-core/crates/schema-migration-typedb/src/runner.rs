@@ -41,10 +41,9 @@ use type_bridge_schema_migration::{
 };
 
 #[cfg(test)]
-use type_bridge_migration::AppliedMigrationRecord;
-use type_bridge_migration::{
-    LegacyCutoverSentinelError, LegacyCutoverSentinelExpectation, TypeDbStateStore,
-    VerifiedLegacyAppliedPartition,
+use crate::AppliedMigrationRecord;
+use crate::legacy_ledger::{
+    LegacyCutoverSentinelError, LegacyCutoverSentinelExpectation, VerifiedLegacyAppliedPartition,
 };
 use type_bridge_schema_compat::{
     ADOPTED_GENESIS_FILE_NAME, AdoptedGenesisAuthority, MAX_TYPEQL_SCHEMA_BYTES,
@@ -1613,7 +1612,7 @@ async fn load_verified_legacy_partition(
     expectation: LegacyCutoverSentinelExpectation<'_>,
     unreadable_message: &'static str,
 ) -> Result<VerifiedLegacyAppliedPartition, Diagnostic> {
-    TypeDbStateStore::load_verified_legacy_partition_in_transaction(transaction, expectation)
+    crate::legacy_ledger::load_verified_legacy_partition_in_transaction(transaction, expectation)
         .await
         .map_err(|error: LegacyCutoverSentinelError| {
             if error.is_contract_violation() {

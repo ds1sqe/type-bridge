@@ -1,8 +1,8 @@
 //! TypeDB-backed fenced execution storage for V2 schema migrations.
 //!
 //! This public leaf crate is the only layer that knows both the provider-neutral
-//! migration execution contracts and the TypeDB ORM. It does not extend or
-//! import the archival V1 migration state store.
+//! migration execution contracts and the TypeDB ORM. It owns the read-only
+//! legacy ledger importer and never runs the legacy migration executor.
 //!
 //! Most embedders should use [`TypeDbMigrationRunner`]. Lower-level composition
 //! must construct one [`TypeDbExecutionBinding`] and reuse it for both
@@ -20,6 +20,14 @@ mod control_schema;
 mod data_plan;
 mod lease_plan;
 mod legacy_import;
+mod legacy_ledger;
+mod legacy_ledger_plan;
+mod legacy_schema;
+pub use legacy_ledger::AppliedMigrationRecord;
+pub use legacy_schema::{
+    MigrationStateSchemaKind, applied_migration_entity_label, is_migration_state_type,
+    migration_state_schema,
+};
 mod observation;
 mod provider;
 mod runner;

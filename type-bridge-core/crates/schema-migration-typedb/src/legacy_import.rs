@@ -1,7 +1,7 @@
 //! Verify the permanent applied-ledger binding of already adopted histories.
 
+use crate::AppliedMigrationRecord;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_migration::AppliedMigrationRecord;
 use type_bridge_schema_migration::{
     LegacyAppliedSetDigest, LegacyMigrationChecksum, LegacyMigrationId, LegacyMigrationReference,
 };

@@ -747,7 +747,7 @@ and fails the byte-for-byte CI freshness check.
 - C root: `crates/c/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:1da37028623166bce529ed4c9a480653ff274aa6142e07c8ef3f5657d9e3d379`
+- Closure fingerprint: `sha256:87b1c6f49d1f4fc02e5c511c88cd30baca45652812835b4c525c84f136df4b23`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -886,7 +886,6 @@ bytes actually reproduced in this notice.
 | `napi-derive` | `3.6.3` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `napi-derive-backend` | `6.1.2` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `napi-sys` | `3.3.0` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `network-interface` | `2.0.5` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:08e9575b11163b3b6760789ce0e3ebe79e3aef174bb862f6b780054709e047c2` |
 | `nohash-hasher` | `0.2.0` | Node | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:ec353d4fecf7963b4c054384557e5dbc3c7a717997eb4a3815b315721a6aa75a` |
 | `nu-ansi-term` | `0.50.3` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:284465860407420254e39be4e1bdcaaf2e7f2d18e06f9bab75bc75341a5d8501` |
 | `num-traits` | `0.2.19` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
@@ -987,7 +986,6 @@ bytes actually reproduced in this notice.
 | `type-bridge-cli` | `2.3.2` | Python, CLI | `workspace:crates/cli/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-contract` | `2.3.2` | Python, Node, CLI, C | `workspace:crates/contract/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-core-lib` | `2.3.2` | Python, Node, CLI, C | `workspace:crates/core/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-migration` | `2.3.2` | Python, Node, CLI, C | `workspace:crates/migration/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-orm` | `2.3.2` | Python, Node, CLI, C | `workspace:crates/orm/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-query` | `2.3.2` | Python, Node, CLI, C | `workspace:crates/query/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-schema` | `2.3.2` | Python, Node, CLI, C | `workspace:crates/schema/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
@@ -1888,36 +1886,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-~~~~
-
-#### `MIT` — `sha256:08e9575b11163b3b6760789ce0e3ebe79e3aef174bb862f6b780054709e047c2`
-
-~~~~text
-Copyright (c) 2021 Esteban Borai and Contributors
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 ~~~~
 
 #### `MIT` — `sha256:0aab2eeeaa27c8e946c235e5e605c6d52cb0a56d254c660bdcf618d6f7faf4af`

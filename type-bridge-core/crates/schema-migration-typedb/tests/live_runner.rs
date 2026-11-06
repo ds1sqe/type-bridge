@@ -16,11 +16,11 @@ use type_bridge_contract::migration::{
     MigrationAppLabel, MigrationId, MigrationName, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::AssertionExpectation;
+use type_bridge_contract::reserved::LEGACY_WRITER_CUTOVER_MESSAGE;
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId,
     TypeFact,
 };
-use type_bridge_migration::LEGACY_WRITER_CUTOVER_MESSAGE;
 use type_bridge_orm::{
     ConnectOptions, Database, TxType, require_legacy_writer_open_in_transaction,
 };

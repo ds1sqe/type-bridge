@@ -2,7 +2,7 @@
 
 use pyo3::prelude::*;
 use pythonize::pythonize;
-use type_bridge_migration::{
+use type_bridge_schema_migration_typedb::{
     MigrationStateSchemaKind,
     applied_migration_entity_label as rust_applied_migration_entity_label,
     is_migration_state_type as rust_is_migration_state_type,
