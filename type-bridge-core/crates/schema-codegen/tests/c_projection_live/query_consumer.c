@@ -489,6 +489,51 @@ static int run_counter_plan_lifecycle(
   CHECK(fixture_counter_delete_batch_result_count(delete_result, &result_count, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && result_count == 2u);
   CHECK(fixture_counter_delete_batch_result_close(&delete_result) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_delete_batch_close(&delete_batch) == TYPE_BRIDGE_STATUS_OK);
+  {
+    fixture_counter_manager manager = {NULL, {0u, 0u, 0u, 0u}};
+    fixture_counter_delete_returning_batch_result *returned = NULL;
+    fixture_counter *snapshot = NULL;
+    type_bridge_iid_t *owned_iids[2] = {NULL, NULL};
+    const type_bridge_iid_t *typed_iids[2];
+    size_t returned_count = 0u;
+    CHECK(fixture_counter_manager_open(package, &manager, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_counter_insert_batch_builder_open(package, limits, NULL, &insert_builder, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    for (index = 0u; index < 2u; ++index) {
+    CHECK(fixture_counter_insert_batch_builder_add(insert_builder, inputs[index], out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    }
+    CHECK(fixture_counter_insert_batch_builder_finish(&insert_builder, &insert_batch, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_counter_database_insert_batch_execute(database, insert_batch, limits, NULL, &insert_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    for (index = 0u; index < 2u; ++index) {
+    CHECK(fixture_counter_insert_batch_result_thing_at(insert_result, index, &snapshot, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_counter_iid(snapshot, &borrowed, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(type_bridge_iid_open(borrowed, &owned_iids[index]) == TYPE_BRIDGE_STATUS_OK);
+      typed_iids[index] = owned_iids[index];
+      model_plan_identity(index == 0u ? "counter-left" : "counter-right", borrowed);
+    CHECK(fixture_counter_close(&snapshot) == TYPE_BRIDGE_STATUS_OK);
+    }
+    CHECK(fixture_counter_insert_batch_result_close(&insert_result) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_counter_insert_batch_close(&insert_batch) == TYPE_BRIDGE_STATUS_OK);
+    for (index = 0u; index < 2u; ++index) {
+      model_plan_mark(index == 0u ? "manager_returning_delete.entity" : "manager_returning_delete.entity_many");
+      if (index == 0u) {
+    CHECK(fixture_counter_manager_database_delete_returning(database, &manager, typed_iids[0], limits, NULL, &returned, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      } else {
+    CHECK(fixture_counter_manager_database_delete_many_returning(database, &manager, typed_iids, 2u, limits, NULL, &returned, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      }
+      model_plan_mark("");
+    CHECK(fixture_counter_delete_returning_batch_result_count(returned, &returned_count, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && returned_count == 1u);
+    CHECK(fixture_counter_delete_returning_batch_result_item(returned, &snapshot, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && snapshot != NULL);
+    CHECK(fixture_counter_delete_returning_batch_result_close(&returned) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_counter_counterzuvalue(snapshot, &counter_value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_counterzuvalue_value(counter_value, &scalar, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && scalar == (int64_t)index + 1);
+    CHECK(fixture_counterzuvalue_close(&counter_value) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_counter_close(&snapshot) == TYPE_BRIDGE_STATUS_OK);
+    }
+    for (index = 0u; index < 2u; ++index) {
+    CHECK(type_bridge_iid_close(&owned_iids[index]) == TYPE_BRIDGE_STATUS_OK);
+    }
+    CHECK(fixture_counter_manager_close(&manager) == TYPE_BRIDGE_STATUS_OK);
+  }
   CHECK(fixture_counter_database_count_v2(database, limits, NULL, &count, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && count == before);
   CHECK(fixture_counter_create_close(&replacement) == TYPE_BRIDGE_STATUS_OK);
   for (index = 0u; index < 2u; ++index)
@@ -663,6 +708,57 @@ static int run_manager_batch_lifecycle(
   CHECK(fixture_networkzhlink_delete_batch_result_count(delete_result, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 2u);
   CHECK(fixture_networkzhlink_delete_batch_result_close(&delete_result) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_delete_batch_close(&delete_batch) == TYPE_BRIDGE_STATUS_OK);
+  {
+    fixture_networkzhlink_manager manager = {NULL, {0u, 0u, 0u, 0u}};
+    fixture_networkzhlink_delete_returning_batch_result *returned = NULL;
+    fixture_networkzhlink *snapshot = NULL;
+    type_bridge_iid_t *owned_iids[2] = {NULL, NULL};
+    const type_bridge_iid_t *typed_iids[2];
+    size_t returned_count = 0u;
+    CHECK(fixture_networkzhlink_manager_open(package, &manager, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_networkzhlink_insert_batch_builder_open(package, limits, NULL, &insert_builder, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    for (index = 0u; index < 2u; ++index) {
+    CHECK(fixture_networkzhlink_insert_batch_builder_add(insert_builder, links[index], diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    }
+    CHECK(fixture_networkzhlink_insert_batch_builder_finish(&insert_builder, &insert_batch, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_networkzhlink_database_insert_batch_execute(database, insert_batch, limits, NULL, &insert_result, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    for (index = 0u; index < 2u; ++index) {
+    CHECK(fixture_networkzhlink_insert_batch_result_thing_at(insert_result, index, &snapshot, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_networkzhlink_iid(snapshot, &borrowed, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(type_bridge_iid_open(borrowed, &owned_iids[index]) == TYPE_BRIDGE_STATUS_OK);
+      typed_iids[index] = owned_iids[index];
+      model_plan_identity(index == 0u ? "link-forward" : "link-return", borrowed);
+    CHECK(fixture_networkzhlink_close(&snapshot) == TYPE_BRIDGE_STATUS_OK);
+    }
+    CHECK(fixture_networkzhlink_insert_batch_result_close(&insert_result) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_networkzhlink_insert_batch_close(&insert_batch) == TYPE_BRIDGE_STATUS_OK);
+    for (index = 0u; index < 2u; ++index) {
+      model_plan_mark(index == 0u ? "manager_returning_delete.relation" : "manager_returning_delete.relation_many");
+      if (index == 0u) {
+    CHECK(fixture_networkzhlink_manager_database_delete_returning(database, &manager, typed_iids[0], limits, NULL, &returned, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      } else {
+    CHECK(fixture_networkzhlink_manager_database_delete_many_returning(database, &manager, typed_iids, 2u, limits, NULL, &returned, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      }
+      model_plan_mark("");
+    CHECK(fixture_networkzhlink_delete_returning_batch_result_count(returned, &returned_count, diagnostics) == TYPE_BRIDGE_STATUS_OK && returned_count == 1u);
+    CHECK(fixture_networkzhlink_delete_returning_batch_result_item(returned, &snapshot, diagnostics) == TYPE_BRIDGE_STATUS_OK && snapshot != NULL);
+    CHECK(fixture_networkzhlink_delete_returning_batch_result_close(&returned) == TYPE_BRIDGE_STATUS_OK);
+      {
+        fixture_identifier *key = NULL;
+        type_bridge_byte_view_t text = {NULL, 0u};
+        const char *expected = index == 0u ? "data-link-forward" : "data-link-return";
+    CHECK(fixture_networkzhlink_identifier(snapshot, &key, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_identifier_value(key, &text, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(text.length == strlen(expected) && memcmp(text.data, expected, text.length) == 0);
+    CHECK(fixture_identifier_close(&key) == TYPE_BRIDGE_STATUS_OK);
+      }
+    CHECK(fixture_networkzhlink_close(&snapshot) == TYPE_BRIDGE_STATUS_OK);
+    }
+    for (index = 0u; index < 2u; ++index) {
+    CHECK(type_bridge_iid_close(&owned_iids[index]) == TYPE_BRIDGE_STATUS_OK);
+    }
+    CHECK(fixture_networkzhlink_manager_close(&manager) == TYPE_BRIDGE_STATUS_OK);
+  }
   for (index=0u; index<2u; ++index) CHECK(fixture_networkzhlink_create_close(&links[index]) == TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
@@ -1279,7 +1375,7 @@ static int check_answer_ceiling_binds_calls(
     const type_bridge_database_config_v2_t *base_config,
     const type_bridge_query_execution_limits_v1_t *limits) {
   type_bridge_database_config_v2_t config = *base_config;
-  type_bridge_query_execution_limits_v1_t zero_timeout = *limits;
+  type_bridge_query_execution_limits_v1_t bounded_limits = *limits;
   type_bridge_database_t *bounded = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_execution_diagnostic_view_v1_t ceiling_refusal;
@@ -1289,8 +1385,9 @@ static int check_answer_ceiling_binds_calls(
 
   memset(&ceiling_refusal, 0, sizeof(ceiling_refusal));
   memset(&call_refusal, 0, sizeof(call_refusal));
-  zero_timeout.timeout_milliseconds = 0u;
-  config.answer_limits = zero_timeout;
+  bounded_limits.timeout_milliseconds = 0;
+  bounded_limits.bytes = 1u;
+  config.answer_limits = bounded_limits;
   CHECK(type_bridge_database_open_v2(runtime, package, &config, NULL, &bounded,
                                      &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_database_count_v2(bounded, limits, NULL, &count,
@@ -1298,7 +1395,7 @@ static int check_answer_ceiling_binds_calls(
         TYPE_BRIDGE_STATUS_RESOURCE_LIMIT);
   CHECK(type_bridge_execution_diagnostics_get_v1(
             diagnostics, 0u, &ceiling_refusal) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_person_database_count_v2(database, &zero_timeout, NULL, &count,
+  CHECK(fixture_person_database_count_v2(database, &bounded_limits, NULL, &count,
                                          &call_diagnostics) ==
         TYPE_BRIDGE_STATUS_RESOURCE_LIMIT);
   CHECK(type_bridge_execution_diagnostics_get_v1(
