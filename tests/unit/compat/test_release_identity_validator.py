@@ -201,12 +201,14 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
     dependency_order = report["cargo_manifest_dependency_order"]
     assert isinstance(dependency_order, dict)
     assert dependency_order["type-bridge-core-lib"] == ["type-bridge-contract"]
-    assert dependency_order["type-bridge-migration"] == [
-        "type-bridge-schema",
-        "type-bridge-schema-compat",
+    assert dependency_order["type-bridge-schema-migration-typedb"] == [
         "type-bridge-contract",
         "type-bridge-core-lib",
         "type-bridge-orm",
+        "type-bridge-query",
+        "type-bridge-schema",
+        "type-bridge-schema-compat",
+        "type-bridge-schema-migration",
     ]
     assert {
         (entry["package"], entry["unpublished_dependency"])
@@ -225,7 +227,6 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
         "type-bridge-contract",
         "type-bridge-core",
         "type-bridge-core-lib",
-        "type-bridge-migration",
         "type-bridge-node",
         "type-bridge-orm",
         "type-bridge-orm-derive",
@@ -1351,7 +1352,7 @@ def test_public_crate_cannot_depend_on_an_unpublished_workspace_crate(
     tmp_path: Path,
 ) -> None:
     workspace = copy_workspace_manifests(tmp_path)
-    manifest = workspace.parent / "crates/migration/Cargo.toml"
+    manifest = workspace.parent / "crates/schema-migration-typedb/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
             'type-bridge-contract = { path = "../contract", version = "2.3.2" }',
@@ -1368,7 +1369,7 @@ def test_public_crate_cannot_depend_on_an_unpublished_workspace_crate(
     "manifest_path",
     [
         "crates/orm/Cargo.toml",
-        "crates/migration/Cargo.toml",
+        "crates/schema-migration-typedb/Cargo.toml",
     ],
 )
 def test_planned_public_crate_cannot_be_marked_unpublished(

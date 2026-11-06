@@ -1,4 +1,4 @@
-"""Public boundary for TypeBridge-owned migration-state schema objects."""
+"""Frozen legacy ledger labels retained for migration import."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from type_bridge import _native
 
 @dataclass(frozen=True)
 class MigrationStateSchema:
-    """Immutable label projection of the canonical migration-state schema.
+    """Immutable label projection of the frozen legacy migration ledger.
 
     Role labels are qualified as ``relation:role`` so an application relation
     can use the same unqualified role name without being classified as
@@ -24,7 +24,7 @@ class MigrationStateSchema:
 
 
 def migration_state_schema() -> dict[str, Any]:
-    """Return the full canonical migration-state schema descriptor from Rust."""
+    """Return the frozen legacy ledger descriptor from the canonical Rust importer."""
     return _native.migration_state_schema()
 
 
@@ -47,7 +47,7 @@ def _label_projection(schema: dict[str, Any]) -> MigrationStateSchema:
 
 
 MIGRATION_STATE_SCHEMA: Final = _label_projection(migration_state_schema())
-"""Immutable labels for all schema objects owned by TypeBridge migration state."""
+"""Immutable labels for the legacy ledger read by migration import."""
 
 
 def is_migration_state_type(
@@ -55,7 +55,7 @@ def is_migration_state_type(
     kind: Literal["entity", "relation", "attribute", "role"],
     label: str,
 ) -> bool:
-    """Return whether ``label`` is a TypeBridge migration-state schema object.
+    """Return whether ``label`` belongs to the frozen legacy migration ledger.
 
     Role labels must use the qualified ``relation:role`` form.
     """

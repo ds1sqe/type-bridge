@@ -82,6 +82,9 @@ duplicated directory snapshot here.
   for explicit transactions and `raw_transaction` / `execute_query` for raw TypeQL text.
   All managers, filter terminals and staged typed queries execute native plans;
   legacy query AST/compiler and HTTP query routes are removed.
+- Canonical `schema-migration` and `schema-migration-typedb` own migrations;
+  the former independent `type-bridge-migration` executor is removed. SDKs
+  execute migrations through generated catalogs.
 - Split-YAML is the only active schema/model authoring authority. Python,
   TypeScript/Node, Rust, and C applications consume generated projections.
 - Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io

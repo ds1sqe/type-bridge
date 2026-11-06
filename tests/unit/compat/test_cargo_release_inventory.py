@@ -45,12 +45,12 @@ def test_repository_inventory_closes_every_cargo_product_class() -> None:
 
     assert inventory.release_version == "2.3.2"
     assert inventory.first_party_msrv == "1.88"
-    assert len(inventory.packages) == 21
-    assert len(inventory.public_packages) == 16
-    assert len(inventory.first_party_packages) == 16
+    assert len(inventory.packages) == 20
+    assert len(inventory.public_packages) == 15
+    assert len(inventory.first_party_packages) == 15
     assert len(inventory.immutable_packages) == 0
     assert len(inventory.private_packages) == 5
-    assert [package.publish_order for package in inventory.public_packages] == list(range(1, 17))
+    assert [package.publish_order for package in inventory.public_packages] == list(range(1, 16))
     assert {package.name for package in inventory.binding_packages} == {
         "type-bridge-c",
         "type-bridge-core",
@@ -98,7 +98,7 @@ def test_public_cargo_package_index_is_inventory_closed_and_linked() -> None:
         for match in row_pattern.finditer(source)
     }
 
-    assert len(rows) == len(inventory.public_packages) == 16
+    assert len(rows) == len(inventory.public_packages) == 15
     assert set(rows) == {package.name for package in inventory.public_packages}
     for package in inventory.public_packages:
         assert rows[package.name] == (
@@ -176,8 +176,8 @@ def test_inventory_classifies_the_real_workspace_without_omissions() -> None:
             "private tooling package set must be exact",
         ),
         (
+            "publish-order = 15",
             "publish-order = 16",
-            "publish-order = 17",
             "publish-order must be contiguous",
         ),
         (
@@ -209,7 +209,7 @@ def test_inventory_rejects_an_immutable_package(tmp_path: Path) -> None:
         'role = "compatibility"\n'
         'version-policy = "fixed"\n'
         'version = "1.0.0"\n'
-        "publish-order = 17\n"
+        "publish-order = 16\n"
         'docs-target = "lib"\n'
         'registry-checksum = "' + "0" * 64 + '"\n',
         encoding="utf-8",

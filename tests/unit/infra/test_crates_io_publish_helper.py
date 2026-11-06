@@ -644,7 +644,6 @@ printf '%s\\n' "$1" >> "$INVOCATION_LOG"
         "type-bridge-orm-derive",
         "type-bridge-typedb-runtime",
         "type-bridge-orm",
-        "type-bridge-migration",
         "type-bridge-schema-migration-typedb",
         "type-bridge-server",
         "type-bridge-workspace",

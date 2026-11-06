@@ -1,6 +1,6 @@
 # Cargo package index
 
-TypeBridge publishes 16 first-party Rust packages as one lockstep product.
+TypeBridge publishes 15 first-party Rust packages as one lockstep product.
 Two source-unmodified TypeDB compatibility packages remain public under their
 fixed versions. This page is the maintained index for those 18 public Cargo
 packages; the private Python, Node, and C native-binding crates
@@ -58,7 +58,6 @@ bindings. They are not separate products with independent version lines.
 | [`type-bridge-orm-derive`](https://crates.io/crates/type-bridge-orm-derive/2.3.2) · [rustdoc](https://docs.rs/type-bridge-orm-derive/2.3.2) | Procedural derives for Rust ORM model metadata | Generated Rust model crates through re-exported derives |
 | [`type-bridge-typedb-runtime`](https://crates.io/crates/type-bridge-typedb-runtime/2.3.2) · [rustdoc](https://docs.rs/type-bridge-typedb-runtime/2.3.2) | TypeDB driver-band selection and provider execution primitives | TypeDB-backed executors and server integrations |
 | [`type-bridge-orm`](https://crates.io/crates/type-bridge-orm/2.3.2) · [rustdoc](https://docs.rs/type-bridge-orm/2.3.2) | Async model CRUD, transactions, hooks, and query execution | Generated Rust models and generated runtime integrations |
-| [`type-bridge-migration`](https://crates.io/crates/type-bridge-migration/2.3.2) · [rustdoc](https://docs.rs/type-bridge-migration/2.3.2) | Migration planning and execution orchestration | CLI and migration automation |
 | [`type-bridge-schema-migration-typedb`](https://crates.io/crates/type-bridge-schema-migration-typedb/2.3.2) · [rustdoc](https://docs.rs/type-bridge-schema-migration-typedb/2.3.2) | TypeDB lowering and execution adapter for provider-neutral schema migrations | TypeDB migration runners |
 | [`type-bridge-workspace`](https://crates.io/crates/type-bridge-workspace/2.3.2) · [rustdoc](https://docs.rs/type-bridge-workspace/2.3.2) | Split-YAML workspace discovery, configuration, and generated artifact paths | CLI and workspace-aware build tooling |
 
@@ -95,7 +94,7 @@ and platform requirements; the 3.0 release is in preparation.
 
 ## Release contract
 
-- All 16 first-party packages use Rust 1.88 or newer and release in dependency
+- All 15 first-party packages use Rust 1.88 or newer and release in dependency
   order under one TypeBridge version.
 - Every first-party library builds independently with all features and strict
   rustdoc coverage; changing a package's publish metadata cannot remove it from

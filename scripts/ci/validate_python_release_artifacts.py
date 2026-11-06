@@ -79,7 +79,6 @@ CORE_SDIST_WORKSPACE_MEMBERS = (
     "crates/workspace",
     "crates/cli",
     "crates/core",
-    "crates/migration",
     "crates/python",
     "crates/typedb-runtime",
     "crates/orm",

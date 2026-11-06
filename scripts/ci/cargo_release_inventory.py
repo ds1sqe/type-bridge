@@ -223,8 +223,8 @@ def load_inventory(path: Path = INVENTORY_PATH) -> CargoReleaseInventory:
             f"public publish-order must be contiguous: expected {sorted(expected_orders)}, "
             f"found {sorted(orders)}"
         )
-    if len(inventory.first_party_packages) != 16:
-        raise InventoryError("Cargo inventory must contain exactly 16 first-party public packages")
+    if len(inventory.first_party_packages) != 15:
+        raise InventoryError("Cargo inventory must contain exactly 15 first-party public packages")
     if inventory.immutable_packages:
         raise InventoryError("Cargo inventory must not contain immutable packages")
     private_bindings = frozenset(package.name for package in inventory.binding_packages)

@@ -196,52 +196,10 @@ For every migration change, test:
 See [schema workflows](schema-workflows.md), [schema commands](schema.md), and
 the [Split-YAML reference](split-yaml-v1.md).
 
-## Native data steps in Rust migration plans
+## Declarative data backfills
 
-The Rust migration planner accepts explicit declared schema authority for
-`RunPlan` and structured `CopyAttribute` operations. Native data programs and
-copy counts carry that authority into execution and recovery. Copy counts run
-as two read statements before the write: eligible rows, then all source rows.
-
-In 3.0, a text-carrying copy such as:
-
-```json
-{"kind":"copy_attribute","forward":"match $x isa person, has old-name $v; not { $x has new-name $d; }; insert $x has new-name == $v;"}
-```
-
-becomes an explicit raw step with the same text:
-
-```json
-{"kind":"run_typeql","forward":"match $x isa person, has old-name $v; not { $x has new-name $d; }; insert $x has new-name == $v;","reverse":null}
-```
-
-Or use a structured native copy and pass the declared schema to `plan`:
-
-```json
-{"kind":"copy_attribute","owner":"person","source":"old-name","dest":"new-name","mode":"isa"}
-```
-
-The required `mode` follows TypeQL. `"isa"` includes attribute subtypes and
-supports abstract attribute labels. `"isa!"` selects the exact concrete
-attribute type; use the same example with `"mode":"isa!"` for that behavior.
-
-Custom forward/reverse strings and textual filters are refused on
-`CopyAttribute`. For custom native behavior, `RunPlan` accepts canonical staged
-`forward` and optional `reverse` plan objects, validated at planning and again
-when persisted execution plans are decoded.
-
-`RunTypeql` sends its statement once, unchanged, without validation,
-rewriting, an annotation gate, or derived count queries. Inside a migration,
-the step still runs within the migration's cutover guard and recovery
-bookkeeping; these lifecycle checks apply equally to native and raw steps.
-Raw steps report no backfill counts (`None` in Rust), rather than zero counts.
-The caller owns the raw statement's correctness and effects, including changes
-to schema.
-
-Recovery uses the same persisted native program or raw bytes as initial
-execution. A step proven committed is skipped; an indeterminate commit is not
-assumed safe to replay. The raw escape hatch does not change that recovery
-contract.
+Use the canonical workspace migration engine for data backfills. The legacy
+Rust migration planner and executor are removed in 3.0.
 
 Canonical copy-attribute authoring uses format 2 and an explicit TypeQL mode:
 

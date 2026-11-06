@@ -1717,18 +1717,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "network-interface"
-version = "2.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ddcb8865ad3d9950f22f42ffa0ef0aecbfbf191867b3122413602b0a360b2a6"
-dependencies = [
- "cc",
- "libc",
- "thiserror",
- "winapi",
-]
-
-[[package]]
 name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3310,26 +3298,6 @@ dependencies = [
  "ureq",
  "winnow",
  "winx",
-]
-
-[[package]]
-name = "type-bridge-migration"
-version = "2.3.2"
-dependencies = [
- "chrono",
- "network-interface",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "tokio",
- "type-bridge-contract",
- "type-bridge-core-lib",
- "type-bridge-orm",
- "type-bridge-schema",
- "type-bridge-schema-compat",
- "uuid",
 ]
 
 [[package]]

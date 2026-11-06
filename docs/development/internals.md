@@ -191,3 +191,8 @@ restored output must reparse to the same AST. This preserves provider-export
 fingerprints for commented function bodies. Change detection compares typed
 schema structures or managed semantic fingerprints, independently of text
 formatting. Snapshot integrity still hashes the actual stored bytes.
+
+Migration execution belongs to `schema-migration` and its TypeDB provider.
+The provider retains a read-only importer for the frozen legacy ledger; the
+independent legacy executor and state writers are removed. The ORM legacy
+writer guard still protects retained schema synchronization.

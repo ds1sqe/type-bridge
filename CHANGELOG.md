@@ -8,10 +8,6 @@ All notable changes to TypeBridge will be documented in this file.
 - Provider panics during shared controlled write commits now report an unknown
   commit outcome across C, Rust, Python, and Node, preserving durability
   uncertainty instead of surfacing a generic panic.
-- Historical `CopyAttribute` migrations carrying custom TypeQL or filters can
-  apply and roll back through the raw migration path again. Carried forward and
-  reverse text stays unchanged and reports no derived counts; structured copies
-  continue to use schema-bound native plans and explicit counts.
 
 ### Added
 - Generated C projected batches execute insert, put, update, and delete
@@ -337,6 +333,60 @@ All notable changes to TypeBridge will be documented in this file.
 ### Breaking
 
 <!-- --8<-- [start:breaking-3-0] -->
+
+- Removed the `type-bridge-migration` crate; it is not published for 3.0.
+  Use canonical `schema-migration` manifests and SDK migration catalogs or
+  `type-bridge migration` commands. The removed public API families map as follows:
+  - Authoring/planning: `MigrationDependencySpec`, `MigrationSpec`,
+    `MigrationGraph`, `OperationSpec` (including `CopyAttribute`, `RunPlan`,
+    `RunTypeql`), `NativeDataStep`, `StepKind`, `OperationKind`, `ExecutionStep`,
+    `MigrationAction`, `MigrationExecution`, `ExecutionPlan`, `plan`,
+    `render_operation_typeql_steps`, `copy_attribute_typeql` and
+    `OperationSpec::normalized` are replaced by canonical manifests, catalog
+    previews and declarative backfill intents.
+  - Validation/checksums: `ValidationCode`, `MigrationValidationError`,
+    `validate_graph`, `ChecksumDrift`, `migration_file_checksum`,
+    `checksum_drift_errors`, `check_checksum_drift`, `MigrationError` and
+    the crate's `Result` alias are replaced by canonical history verification,
+    manifest fingerprints and typed migration diagnostics.
+  - Execution: `BackfillResult`, `execute_backfill`, `MigrationResult`,
+    `execute_plan`, `execute_plan_with_run_log` and `execute_migration` are
+    replaced by catalog apply/rollback and their execution reports.
+  - Recovery: `RecoveryFuture`, `ExecutionStepId`, `CheckedMigrationIdentity`,
+    `CheckedExecutionStep`, `CheckedMigrationExecution`, `CheckedExecutionPlan`,
+    `plan_recovery`, `prepare_recovery_plan`, `PendingProof`,
+    `StepRecoveryDecision`, `StepRecoveryEventKind`, `StepRecoveryEvent`,
+    `StepRecoveryController`, `StepExecutionResult`, `StepExecutionOutcome`,
+    `RecoveryMigrationStatus`, `RecoveryMigrationResult`, `RecoveryPlanStatus`,
+    `RecoveryExecutionResult` and `execute_recovery_plan` are replaced by the
+    canonical fenced runner and journal recovery. Their constructors and
+    accessors (`as_str`, `ordered_steps`, `program`, `has_reverse`) leave with
+    their owning types.
+  - State stores: `MigrationStateStore`, `TypeDbStateStore`, `InMemoryStateStore`,
+    `MigrationExecutorInfo`, `MigrationRunRecord`, `migration_timestamp_now`,
+    `collect_executor_info`, `started_run_record`, `finished_run_record`,
+    `parse_applied_documents`, `parse_run_documents`, `load_applied_archival`,
+    `load_runs_archival`, `load_applied_in_transaction`,
+    `load_verified_legacy_partition_in_transaction`,
+    `insert_legacy_cutover_sentinel_in_transaction`, `LegacyCutoverSentinelError`,
+    `LegacyCutoverSentinelExpectation` and `VerifiedLegacyAppliedPartition`
+    (including `applied`, `into_applied`, `sentinel_fingerprint`,
+    `is_contract_violation`) are replaced by canonical journal state and its
+    read-only legacy importer. Store `new`, `ensure_schema`, `load_applied`,
+    `load_runs`, `record_applied`, `record_unapplied` and `record_run` are no
+    longer application-owned migration lifecycle APIs.
+  - `AppliedMigrationRecord`, `MigrationStateSchemaKind`,
+    `migration_state_schema`, `applied_migration_entity_label` and
+    `is_migration_state_type` move to `type-bridge-schema-migration-typedb`.
+    Python's existing state-label helpers retain their frozen legacy meanings.
+    `require_legacy_writer_open` and `require_legacy_writer_open_in_transaction`
+    remain in `type-bridge-orm` for retained schema synchronization.
+    `LEGACY_CUTOVER_SENTINEL_APP_LABEL`, `LEGACY_CUTOVER_SENTINEL_APPLIED_AT`,
+    `LEGACY_CUTOVER_SENTINEL_MIGRATION_ID`, `LEGACY_CUTOVER_SENTINEL_NAME` and
+    `LEGACY_WRITER_CUTOVER_MESSAGE` remain in `contract::reserved` for import.
+- Legacy `CopyAttribute` rollback, which removed every destination ownership,
+  is removed. Canonical backfill reverse removes only destination values equal
+  to the source and preserves other pre-existing destination values.
 
 The Python native CLI bridge `type_bridge_core.run_v2_cli` is renamed to
 `type_bridge_core.run_cli`. The `type-bridge` console command is unchanged.
@@ -776,33 +826,10 @@ add the limits argument described in the upgrade guide.
   validation, interrupted recovery and rollback; new application requires
   regeneration. `AttributeBackfillPlan::new` takes the mode explicitly.
 
-- Structured migration `CopyAttribute` now requires `mode: "isa"` or
-  `mode: "isa!"`. The explicit choice controls source and destination attribute
-  subtype matching; abstract attribute labels require `isa`.
-
 - `TypeDbMigrationProvider::new` now takes the verified migration plan's
   `schema_authorities()`. `MigrationAssertionExecutionContext::new` and
   `lower_migration_assertion` require explicit declared schema authority;
   assertions compile through native V3 with their existing bounded evidence stream.
-
-- Migration `RunTypeql` is an explicit raw statement: no annotation text gate,
-  rewriting, or derived backfill counts. Migration cutover guards and recovery
-  bookkeeping still apply. `execute_backfill` now returns
-  `Option<BackfillResult>`; raw steps report absent counts, never fabricated zeros.
-
-
-- Migration `CopyAttribute` requires structured owner/source/destination and
-  explicit declared schema authority. Carried forward/reverse TypeQL and textual
-  filters are refused; use `RunPlan` or explicit raw `RunTypeql`. Copies and
-  their guarded/total counts now execute native V3 plans.
-
-
-- Migration `plan` and `plan_recovery` now take explicit optional declared
-  schema authority. Supply it for native `OperationSpec::RunPlan` steps;
-  schema and explicit raw-only plans may pass `None`. `ExecutionStep` struct
-  literals must set `data` (`None` for schema/raw text, or a validated
-  `NativeDataStep`). Persisted native payloads revalidate their carried authority.
-
 
 - Removed core `_manager::query_builder` and its compiler wrappers; use
   registry-backed `DynamicEntityManager` / `DynamicRelationManager` methods

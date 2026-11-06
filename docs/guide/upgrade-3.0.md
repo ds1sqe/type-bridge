@@ -32,6 +32,20 @@ For raw TypeQL behavior, see [the escape hatch](queries.md#raw-typeql-execution)
 The following sections give common source migrations. The complete checklist
 at the end includes every 3.0 Breaking entry and its replacement.
 
+## Migrations in 3.0
+
+Use the canonical workspace migration commands and generated SDK catalogs.
+The `type-bridge-migration` crate and its independent planner, executor, state
+stores and recovery API are removed; 3.0 does not publish that crate. The
+canonical provider retains only the read-only legacy ledger importer and
+frozen state-label helpers. Python state-label helpers keep their old labels;
+they do not describe the new journal schema.
+
+Replace legacy `CopyAttribute` authoring with a declarative copy-attribute
+backfill intent. Rollback removes only destination values equal to the source;
+unlike the deleted executor it preserves other pre-existing destination values.
+See [migration backfills](migrations.md#declarative-data-backfills).
+
 ## Rust model identifiers
 
 Generated Rust models and families return `&Iid` from `iid()`; references return
