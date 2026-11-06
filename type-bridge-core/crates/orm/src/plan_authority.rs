@@ -269,7 +269,6 @@ pub async fn verify_managed_query_control_scope(
         deadline,
         cancellation,
         managed_control_plans(false)?,
-        None,
     )
     .await
 }
@@ -283,21 +282,113 @@ pub async fn verify_import_pending_query_control_scope(
     deadline: Option<std::time::Instant>,
     cancellation: &crate::session::backend::AnswerCancellation,
 ) -> Result<(), Diagnostic> {
-    let old = managed_control_plans(true)?;
-    let (first, fallback) = if current_schema_present {
-        (managed_control_plans(false)?, Some(old))
-    } else {
-        (old, None)
-    };
+    let pending =
+        query_import_pending(transaction, current_schema_present, deadline, cancellation).await?;
     verify_query_control_scope(
         transaction,
         expected_scope,
         deadline,
         cancellation,
-        first,
-        fallback,
+        managed_control_plans(pending)?,
     )
     .await
+}
+
+/// Whether the old authority is still needed before a current mirror exists.
+/// New authority remnants without a valid current row cannot revive the old fence.
+#[doc(hidden)]
+pub async fn query_import_pending(
+    transaction: &mut Transaction,
+    current_schema_present: bool,
+    deadline: Option<std::time::Instant>,
+    cancellation: &crate::session::backend::AnswerCancellation,
+) -> Result<bool, Diagnostic> {
+    if !current_schema_present {
+        return Ok(true);
+    }
+    let plans = managed_control_plans(false)?;
+    let answer = managed_control_answer(transaction, &plans[0], deadline, cancellation).await?;
+    if !managed_control_documents(&answer, &plans[0])?.is_empty() {
+        return Ok(false);
+    }
+    for plan in current_authority_presence_plans()? {
+        match managed_control_answer(transaction, plan, deadline, cancellation).await? {
+            crate::session::staged::PlanAnswer::Exists(false) => {}
+            _ => {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "query_prepared_control_invalid",
+                    "new managed authority exists without exactly one valid control row",
+                ));
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn current_authority_presence_plans()
+-> Result<&'static Vec<type_bridge_contract::query_plan::QueryPlan>, Diagnostic> {
+    use type_bridge_contract::{
+        id::{TypeId, TypeKind},
+        migration_assertion::{AssertionBinding, BindingId, QueryVariable},
+        query_plan::{Operation, PlanSpec, QueryOutput, QueryPattern, QueryPlan, Stage},
+        reserved::*,
+        schema::DocumentId,
+        schema_fingerprint::ManagedSemanticSchemaFingerprint,
+    };
+    static PLANS: LazyLock<Result<Vec<QueryPlan>, Diagnostic>> = LazyLock::new(|| {
+        let schema = type_bridge_schema_compat::typeql_to_declared(
+            DocumentId::new("current-authority-presence.typeql")?,
+            MANAGED_FENCE_SCHEMA_TYPEQL,
+        )
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "query_prepared_control_invalid",
+                "the frozen managed control schema is invalid",
+            )
+        })?;
+        let semantics = ManagedSemanticSchemaFingerprint::compute(
+            SemanticProfileId::new("typedb-3.12.1/v1")?,
+            MANAGED_FENCE_SCHEMA_TYPEQL.as_bytes(),
+        )?;
+        [
+            MANAGED_CONTROL_ENTITY,
+            LEGACY_CUTOVER_ANCHOR_ENTITY,
+            DATA_STEP_ENTITY,
+        ]
+        .into_iter()
+        .map(|label| {
+            let root = BindingId::new(0)?;
+            QueryPlan::new(
+                PlanSpec {
+                    bindings: vec![AssertionBinding::new(
+                        root,
+                        QueryVariable::new("authority")?,
+                    )],
+                    inputs: vec![],
+                    given_rows: None,
+                    operation: Operation::Exists,
+                    pipeline: vec![Stage::Match {
+                        patterns: vec![
+                            QueryPattern::Isa {
+                                binding: root,
+                                type_id: TypeId::new(TypeKind::Entity, label)?,
+                                include_subtypes: true,
+                            }
+                            .into(),
+                        ],
+                    }],
+                    output: QueryOutput::Rows { columns: vec![] },
+                    managed_semantics: semantics.clone(),
+                    functions: vec![],
+                },
+                &schema,
+            )
+        })
+        .collect()
+    });
+    PLANS.as_ref().map_err(Clone::clone)
 }
 
 async fn verify_query_control_scope(
@@ -305,18 +396,10 @@ async fn verify_query_control_scope(
     expected_scope: &ManagedScopeId,
     deadline: Option<std::time::Instant>,
     cancellation: &crate::session::backend::AnswerCancellation,
-    mut plans: &[type_bridge_contract::query_plan::QueryPlan; 2],
-    fallback: Option<&[type_bridge_contract::query_plan::QueryPlan; 2]>,
+    plans: &[type_bridge_contract::query_plan::QueryPlan; 2],
 ) -> Result<(), Diagnostic> {
     let answer = managed_control_answer(transaction, &plans[0], deadline, cancellation).await?;
-    let mut documents = managed_control_documents(&answer, &plans[0])?;
-    if documents.is_empty()
-        && let Some(old) = fallback
-    {
-        plans = old;
-        let answer = managed_control_answer(transaction, &plans[0], deadline, cancellation).await?;
-        documents = managed_control_documents(&answer, &plans[0])?;
-    }
+    let documents = managed_control_documents(&answer, &plans[0])?;
     if documents.len() != 1 {
         return Err(failure(
             DiagnosticCategory::Integrity,

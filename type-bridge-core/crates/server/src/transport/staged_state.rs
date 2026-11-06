@@ -181,6 +181,7 @@ pub struct StagedQueryState {
     pub(super) replay_store: Arc<dyn RemoteReplayStore>,
     pub(super) signer: RemoteReplySigningKey,
     control_policy: StagedQueryControlPolicy,
+    current_import_mirror_observed: std::sync::atomic::AtomicBool,
     pub(super) allow_unauthenticated_staged_writes: bool,
 }
 
@@ -268,6 +269,7 @@ impl StagedQueryState {
             replay_store: Arc::new(InMemoryReplayStore::new(DEFAULT_REPLAY_CAPACITY)),
             signer,
             control_policy,
+            current_import_mirror_observed: std::sync::atomic::AtomicBool::new(false),
             allow_unauthenticated_staged_writes: false,
         })
     }
@@ -458,7 +460,11 @@ impl StagedQueryState {
         let live = self
             .verify_live_authority_export_with_permit(export, rebuild_permit)
             .await?;
-        if live.import_control_present() {
+        if live.import_control_present()
+            && !self
+                .current_import_mirror_observed
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
             let mut transaction = self.database.read_transaction().await.map_err(|_| {
                 diagnostic(
                     DiagnosticCategory::Integrity,
@@ -466,15 +472,30 @@ impl StagedQueryState {
                     "could not inspect pending migration import authority",
                 )
             })?;
-            let verified =
-                type_bridge_orm::plan_authority::verify_import_pending_query_control_scope(
+            let verified = async {
+                let pending = type_bridge_orm::plan_authority::query_import_pending(
                     &mut transaction,
-                    self.delta_context.scope_id(),
                     live.current_control_present(),
                     None,
                     &self.ceilings.answer.cancellation,
                 )
-                .await;
+                .await?;
+                if pending {
+                    type_bridge_orm::plan_authority::verify_import_pending_query_control_scope(
+                        &mut transaction,
+                        self.delta_context.scope_id(),
+                        false,
+                        None,
+                        &self.ceilings.answer.cancellation,
+                    )
+                    .await?;
+                } else {
+                    self.current_import_mirror_observed
+                        .store(true, std::sync::atomic::Ordering::Release);
+                }
+                Ok::<(), Diagnostic>(())
+            }
+            .await;
             let closed = transaction.close().await;
             verified?;
             closed.map_err(|_| {
@@ -965,6 +986,43 @@ mod tests {
                 .unwrap_or_else(|| self.fallback_schema.clone());
             Box::pin(async move { Ok(schema) })
         }
+    }
+
+    #[tokio::test]
+    async fn imported_authority_stops_opening_per_request_control_reads() {
+        use type_bridge_contract::reserved::{
+            IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL,
+        };
+        let authority = authority_fixture(false);
+        let metrics = Arc::new(BackendMetrics::default());
+        let scalar = |value: &str| serde_json::json!({"kind":"value", "value":{"kind":"string", "value":value}});
+        *metrics.rows.lock().unwrap() = vec![serde_json::json!({
+            "scope": scalar(authority.delta_context.scope_id().as_str()),
+            "fence": scalar("2"), "state": scalar("held"),
+        })];
+        let mut backend = CountingBackend::new([], Arc::clone(&metrics));
+        backend.fallback_schema = format!(
+            "{CURRENT_SCHEMA}\n{MANAGED_FENCE_SCHEMA_TYPEQL}\n{IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL}"
+        );
+        let state = StagedQueryState::new(
+            CapabilitySet::new(),
+            AnswerLimits::default(),
+            Database::with_backend(Box::new(backend), "imported"),
+            authority.declared,
+            authority.delta_context,
+            authority.managed,
+        )
+        .unwrap();
+        state.verify_live_authority().await.unwrap();
+        assert_eq!(metrics.transaction_opens.load(Ordering::SeqCst), 1);
+        assert_eq!(metrics.query_executions.load(Ordering::SeqCst), 1);
+        metrics.transaction_opens.store(0, Ordering::SeqCst);
+        metrics.query_executions.store(0, Ordering::SeqCst);
+        for _ in 0..3 {
+            state.verify_live_authority().await.unwrap();
+        }
+        assert_eq!(metrics.transaction_opens.load(Ordering::SeqCst), 0);
+        assert_eq!(metrics.query_executions.load(Ordering::SeqCst), 0);
     }
 
     struct CountingTransaction {

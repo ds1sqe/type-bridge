@@ -294,3 +294,38 @@ async fn callback_borrow_requires_the_exact_active_write_fence() {
         tx.close().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn import_fallback_requires_all_current_authority_rows_absent() {
+    for present in [None, Some(0), Some(1), Some(2)] {
+        let mut answers = VecDeque::from([typed_rows(vec![])]);
+        for index in 0..3 {
+            answers.push_back(typed_rows(if present == Some(index) {
+                vec![serde_json::json!({})]
+            } else {
+                vec![]
+            }));
+            if present == Some(index) {
+                break;
+            }
+        }
+        let evidence = Arc::new(Mutex::new(Evidence {
+            answers,
+            ..Default::default()
+        }));
+        let db =
+            crate::Database::with_backend(Box::new(Backend(Arc::clone(&evidence))), "authority");
+        let mut tx = db.read_transaction().await.unwrap();
+        let result =
+            query_import_pending(&mut tx, true, None, &AnswerCancellation::default()).await;
+        if present.is_some() {
+            assert_eq!(
+                result.unwrap_err().code().as_str(),
+                "query_prepared_control_invalid"
+            );
+        } else {
+            assert!(result.unwrap());
+        }
+        tx.close().await.unwrap();
+    }
+}

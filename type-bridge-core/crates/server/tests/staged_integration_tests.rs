@@ -2241,6 +2241,41 @@ async fn staged_reads_use_the_old_fence_until_the_import_publishes_the_new_mirro
         serde_json::to_string(&scope).unwrap()
     );
     db.execute_raw(&old_control, TxType::Write).await.unwrap();
+    use type_bridge_schema_migration::{ExecutionScope, LeaseHolderId, MigrationLeaseStore};
+    use type_bridge_schema_migration_typedb::{
+        TypeDbExecutionBinding, TypeDbMigrationStore, VerifiedMigrationCatalog,
+    };
+    let old = db.derived_legacy_journal_database();
+    old.create_database().await.unwrap();
+    old.execute_raw(
+        type_bridge_contract::reserved::IMPORT_LEGACY_JOURNAL_CONTROL_SCHEMA_TYPEQL,
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    old.execute_raw(&format!(
+        "insert $o isa typebridge-internal-v2-journal-owner, has typebridge-internal-v2-journal-owner-key \"typebridge-journal-owner/v1\", has typebridge-internal-v2-journal-owner-managed-database {}, has typebridge-internal-v2-journal-owner-managed-scope {}; $c isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-control-scope {}, has typebridge-internal-v2-lease-fence \"1\", has typebridge-internal-v2-lease-state \"free\", has typebridge-internal-v2-next-sequence \"1\";",
+        serde_json::to_string(&name).unwrap(), serde_json::to_string(&scope).unwrap(), serde_json::to_string(&scope).unwrap(),
+    ), TxType::Write).await.unwrap();
+    let managed = Arc::new(db.clone());
+    let journal = Arc::new(db.derived_journal_database());
+    let profile = type_bridge_contract::fingerprint::SemanticProfileId::new(
+        semantic_profile_id(&db.server_version().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let scope_id = type_bridge_contract::managed_scope::ManagedScopeId::new(&scope).unwrap();
+    let context = type_bridge_schema::ManagedDeltaContext::new(
+        scope_id.clone(),
+        profile,
+        type_bridge_schema_migration_typedb::execution_capability_vocabulary().unwrap(),
+    );
+    let binding = TypeDbExecutionBinding::new(managed, Arc::clone(&journal), context).unwrap();
+    let catalog = VerifiedMigrationCatalog::new(std::iter::empty::<
+        &type_bridge_schema_migration::VerifiedSchemaMigrationManifest,
+    >())
+    .unwrap();
+    let store = TypeDbMigrationStore::new(&binding, catalog).unwrap();
+    let execution_scope = ExecutionScope::new(scope_id);
     let proxy = proxy(
         &name,
         LivePolicy {
@@ -2256,13 +2291,13 @@ async fn staged_reads_use_the_old_fence_until_the_import_publishes_the_new_mirro
                 .await
                 .unwrap();
         } else if phase == 2 {
-            db.execute_raw(
-                &old_control.replace("typebridge-internal-v2-", "typebridge-internal-"),
-                TxType::Write,
-            )
-            .await
-            .unwrap();
+            let lease = store
+                .acquire(&execution_scope, &LeaseHolderId::new("importer").unwrap())
+                .await
+                .unwrap();
+            store.release(&lease).await.unwrap();
         }
+
         let request = request(
             &proxy,
             vec![plain_entry(&proxy, &race::stock_read(Operation::Count))],
@@ -2270,15 +2305,25 @@ async fn staged_reads_use_the_old_fence_until_the_import_publishes_the_new_mirro
         let reply = verify(&proxy, &request, &post(&proxy, &request).await);
         assert!(reply.committed(), "phase {phase}: {:?}", reply.diagnostic());
     }
-    db.execute_raw("match $c isa typebridge-internal-migration-control, has typebridge-internal-lease-state $s; delete has $s of $c; insert $c has typebridge-internal-lease-state \"held\", has typebridge-internal-lease-holder \"migrator\";", TxType::Write).await.unwrap();
+    let lease = store
+        .acquire(
+            &execution_scope,
+            &LeaseHolderId::new("active-migrator").unwrap(),
+        )
+        .await
+        .unwrap();
     let request = request(
         &proxy,
         vec![plain_entry(&proxy, &race::stock_read(Operation::Count))],
     );
     let reply = verify(&proxy, &request, &post(&proxy, &request).await);
     assert!(
-        !reply.committed(),
-        "a free old mirror must not override a held new mirror"
+        reply.committed(),
+        "an imported database must follow the fresh-3.0 path during migrations: {:?}",
+        reply.diagnostic()
     );
+    store.release(&lease).await.unwrap();
+    journal.delete_database().await.unwrap();
+    old.delete_database().await.unwrap();
     drop_database(db).await;
 }

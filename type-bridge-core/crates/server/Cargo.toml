@@ -80,6 +80,8 @@ name = "staged_integration_tests"
 required-features = ["typedb", "axum-transport"]
 
 [dev-dependencies]
+type-bridge-schema-migration = { path = "../schema-migration", version = "2.3.2" }
+type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb", version = "2.3.2" }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
