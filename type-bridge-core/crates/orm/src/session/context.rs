@@ -369,6 +369,7 @@ impl TransactionContext {
             }
             Err(_) => None,
         };
+        let contended = transaction.is_none();
         let close = async move {
             let transaction = match transaction {
                 Some(transaction) => transaction,
@@ -382,18 +383,20 @@ impl TransactionContext {
                 let _ = transaction.close().await;
             }
         };
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        if !contended && let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(close);
         } else {
-            // A future can be cancelled after leaving its runtime's context.
-            match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
+            // Drop never waits for an operation holding the context mutex or
+            // for provider cleanup, even outside a Tokio runtime.
+            if let Err(error) = std::thread::Builder::new()
+                .name("migration-transaction-close".into())
+                .spawn(move || match tokio::runtime::Builder::new_current_thread()
+                    .enable_all().build() {
+                    Ok(runtime) => runtime.block_on(close),
+                    Err(error) => tracing::error!(%error, "could not run abandoned migration transaction cleanup"),
+                })
             {
-                Ok(runtime) => runtime.block_on(close),
-                Err(error) => {
-                    tracing::error!(%error, "could not run abandoned migration transaction cleanup")
-                }
+                tracing::error!(%error, "could not spawn abandoned migration transaction cleanup");
             }
         }
     }
@@ -1167,6 +1170,7 @@ mod tests {
 
     #[derive(Default)]
     struct Calls {
+        closed: Notify,
         queries: AtomicUsize,
         commits: AtomicUsize,
         classified_commits: AtomicUsize,
@@ -1285,6 +1289,7 @@ mod tests {
 
         fn close(&mut self) -> BoxFuture<'_, Result<()>> {
             self.calls.closes.fetch_add(1, Ordering::SeqCst);
+            self.calls.closed.notify_one();
             let fails = self.close_fails;
             let gate = self.close_gate.clone();
             Box::pin(async move {
@@ -1369,16 +1374,51 @@ mod tests {
     }
 
     #[test]
+    fn contended_abandoned_callback_returns_before_the_lock_is_released() {
+        let (context, calls) = active_context();
+        let context = context.borrowed();
+        let lock = context.inner.try_lock().unwrap();
+        let escaped = context.clone();
+        let (returned, received) = std::sync::mpsc::channel();
+        let dropping = std::thread::spawn(move || {
+            escaped.abandon_borrowed();
+            returned.send(()).unwrap();
+        });
+        let result = received.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(calls.closes.load(Ordering::SeqCst), 0);
+        drop(lock);
+        dropping.join().unwrap();
+        result.expect("Drop must return while the mutex is still held");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), calls.closed.notified())
+                .await
+                .unwrap();
+            assert!(context.query("insert $p isa person;").await.is_err());
+        });
+        assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn abandoned_callback_closes_outside_a_tokio_runtime() {
         let (context, calls) = active_context();
         let context = context.borrowed();
         context.abandon_borrowed();
         assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
-        assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
+        runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), calls.closed.notified())
+                .await
+                .unwrap();
+        });
+        assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
         assert!(
             runtime
                 .block_on(context.query("insert $p isa person;"))
