@@ -12,6 +12,7 @@ struct Evidence {
     canonical_calls: usize,
     closed: usize,
     hold: bool,
+    holding: Arc<tokio::sync::Notify>,
     answers: VecDeque<QueryResult>,
 }
 struct Backend(Arc<Mutex<Evidence>>);
@@ -35,9 +36,11 @@ impl TransactionOps for Provider {
         let mut state = self.0.lock().unwrap();
         state.queries.push(text.to_owned());
         let hold = state.hold;
+        let holding = Arc::clone(&state.holding);
         let answer = state.answers.pop_front();
         Box::pin(async move {
             if hold {
+                holding.notify_one();
                 std::future::pending::<()>().await;
             }
             Ok(answer.expect("expected statement count"))
@@ -203,7 +206,7 @@ async fn native_control_checks_preserve_preflight_deadline_and_cancellation() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn native_control_reads_obey_inflight_deadline_and_cancellation() {
     for cancelled in [false, true] {
         let evidence = Arc::new(Mutex::new(Evidence {
@@ -215,13 +218,16 @@ async fn native_control_reads_obey_inflight_deadline_and_cancellation() {
         let mut tx = db.read_transaction().await.unwrap();
         let cancellation = AnswerCancellation::default();
         let scope = ManagedScopeId::new("scope").unwrap();
+        let holding = Arc::clone(&evidence.lock().unwrap().holding);
         let deadline =
-            (!cancelled).then(|| std::time::Instant::now() + std::time::Duration::from_millis(30));
+            (!cancelled).then(|| std::time::Instant::now() + std::time::Duration::from_secs(3600));
         let execute = verify_managed_query_control_scope(&mut tx, &scope, deadline, &cancellation);
         let cancel = async {
+            holding.notified().await;
             if cancelled {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 cancellation.cancel();
+            } else {
+                tokio::time::advance(std::time::Duration::from_secs(3601)).await;
             }
         };
         let (result, ()) = tokio::join!(execute, cancel);
