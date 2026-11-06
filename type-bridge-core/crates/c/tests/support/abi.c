@@ -257,9 +257,29 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *batch_result_thing_fn)(
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *batch_result_close_fn)(
     type_bridge_projected_batch_result_t **);
 
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *manager_filter_open_fn)(
+    const type_bridge_schema_package_t *, const type_bridge_projected_token_v1_t *,
+    type_bridge_manager_filter_t **, type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *manager_filter_iid_fn)(
+    const type_bridge_manager_filter_t *, const type_bridge_iid_t *,
+    type_bridge_manager_filter_t **, type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *manager_filter_iids_fn)(
+    const type_bridge_manager_filter_t *, const type_bridge_iid_t *const *, size_t,
+    type_bridge_manager_filter_t **, type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *manager_filter_compare_fn)(
+    const type_bridge_manager_filter_t *, const type_bridge_projected_token_v1_t *,
+    type_bridge_query_comparison_t, const type_bridge_projected_value_t *,
+    type_bridge_manager_filter_t **, type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *manager_filter_close_fn)(type_bridge_manager_filter_t **);
+
 #define TAKE(type, symbol) do { type value = &symbol; (void)value; } while (0)
 
 void type_bridge_abi_probe(void) {
+  TAKE(manager_filter_open_fn, type_bridge_manager_filter_open);
+  TAKE(manager_filter_iid_fn, type_bridge_manager_filter_iid);
+  TAKE(manager_filter_iids_fn, type_bridge_manager_filter_iids);
+  TAKE(manager_filter_compare_fn, type_bridge_manager_filter_compare);
+  TAKE(manager_filter_close_fn, type_bridge_manager_filter_close);
   TAKE(schema_open_fn, type_bridge_schema_package_open_v2);
   TAKE(schema_chunked_open_fn, type_bridge_schema_package_open_chunked_v2);
   TAKE(config_validate_fn, type_bridge_database_config_validate_v2);

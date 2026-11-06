@@ -11,6 +11,9 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C immutable manager filters expose `type_bridge_manager_filter_open`,
+  `_iid`, `_iids`, `_compare`, and `_close`. Predicates use validated IID
+  owners and nominal field/value tokens; an empty IID list matches none.
 - C `type_bridge_database_projected_batch_delete_returning` and
   `type_bridge_write_transaction_projected_batch_delete_returning` return
   complete deleted roots from entity or relation delete batches, omitting

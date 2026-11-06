@@ -131,6 +131,8 @@ pub const GENERATED_INPUT_PLAN_BUILDER: u32 = 43;
 pub const GENERATED_INPUT_PLAN_OPTIONS: u32 = 44;
 /// Validated IID with inline retained text.
 pub const GENERATED_INPUT_IID: u32 = 45;
+/// Immutable canonical manager filter owner.
+pub const GENERATED_INPUT_MANAGER_FILTER: u32 = 46;
 
 /// Frozen generated create-argument graph layout version.
 pub const GENERATED_CREATE_GRAPH_VERSION: u32 = 1;
@@ -453,6 +455,9 @@ fn object_size(kind: u32) -> Option<usize> {
         GENERATED_INPUT_PLAN_BUILDER => Some(size_of::<TypeBridgePlanBuilder>()),
         GENERATED_INPUT_PLAN_OPTIONS => Some(size_of::<TypeBridgePlanOptionsV1>()),
         GENERATED_INPUT_IID => Some(size_of::<crate::iid::TypeBridgeIid>()),
+        GENERATED_INPUT_MANAGER_FILTER => {
+            Some(size_of::<crate::manager_filter::TypeBridgeManagerFilter>())
+        }
         _ => None,
     }
 }
@@ -690,6 +695,11 @@ unsafe fn check_deep_object_ranges(
         GENERATED_INPUT_PROJECTED_BATCH_RESULT => {
             // SAFETY: the complete projected-batch result was checked before dispatch.
             unsafe { &*pointer.cast::<TypeBridgeProjectedBatchResult>() }
+                .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_MANAGER_FILTER => {
+            // SAFETY: the complete immutable filter was checked before dispatch.
+            unsafe { &*pointer.cast::<crate::manager_filter::TypeBridgeManagerFilter>() }
                 .check_borrowed_ranges(outputs)
         }
         _ => Ok(()),
@@ -1396,7 +1406,11 @@ mod tests {
             object_size(GENERATED_INPUT_IID),
             Some(size_of::<crate::iid::TypeBridgeIid>())
         );
-        assert_eq!(object_size(46), None);
+        assert_eq!(
+            object_size(GENERATED_INPUT_MANAGER_FILTER),
+            Some(size_of::<crate::manager_filter::TypeBridgeManagerFilter>())
+        );
+        assert_eq!(object_size(47), None);
         assert_eq!(object_size(u32::MAX), None);
     }
 

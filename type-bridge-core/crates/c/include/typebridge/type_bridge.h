@@ -3614,6 +3614,40 @@ type_bridge_write_transaction_relation_count_v2(
     uint64_t *out_count,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 
+/* Immutable exact-model manager filters. Each append copies its inputs and
+ * returns a new owner; source filters and IID/value owners remain caller-owned.
+ * An empty IID list matches none. Comparison tags are QUERY_COMPARE_EQUAL
+ * through QUERY_COMPARE_GREATER_THAN_OR_EQUAL (1 through 6). */
+typedef struct type_bridge_manager_filter type_bridge_manager_filter_t;
+#define TYPE_BRIDGE_GENERATED_INPUT_MANAGER_FILTER ((type_bridge_generated_opaque_input_kind_t)46)
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_manager_filter_open(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_manager_filter_t **out_filter,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_manager_filter_iid(
+    const type_bridge_manager_filter_t *source, const type_bridge_iid_t *iid,
+    type_bridge_manager_filter_t **out_filter,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_manager_filter_iids(
+    const type_bridge_manager_filter_t *source,
+    const type_bridge_iid_t *const *iids, size_t length,
+    type_bridge_manager_filter_t **out_filter,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_manager_filter_compare(
+    const type_bridge_manager_filter_t *source,
+    const type_bridge_projected_token_v1_t *field,
+    type_bridge_query_comparison_t comparison,
+    const type_bridge_projected_value_t *value,
+    type_bridge_manager_filter_t **out_filter,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_manager_filter_close(type_bridge_manager_filter_t **filter);
+
 /* Bounded homogeneous projected mutation batches. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_projected_batch_builder_open_v1(
