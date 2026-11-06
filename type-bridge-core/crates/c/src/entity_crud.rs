@@ -1071,6 +1071,109 @@ functions:
     }
 
     #[test]
+    fn by_iid_reads_match_canonical_filter_provider_bytes() {
+        for relation in [false, true] {
+            let (database, package, token, state) = if relation {
+                let fixture = relation_fixture(
+                    vec![
+                        documents(vec![membership_document("0x20")]),
+                        documents(vec![membership_document("0x20")]),
+                    ],
+                    COMMIT_SUCCESS,
+                );
+                (
+                    fixture.database,
+                    fixture.package,
+                    fixture.token,
+                    fixture.state,
+                )
+            } else {
+                let fixture = fixture(
+                    vec![
+                        documents(vec![person_document("0x10")]),
+                        documents(vec![person_document("0x10")]),
+                    ],
+                    COMMIT_SUCCESS,
+                );
+                (
+                    fixture.database,
+                    fixture.package,
+                    fixture.token,
+                    fixture.state,
+                )
+            };
+            let iid =
+                crate::iid::TypeBridgeIid::new(if relation { "0x20" } else { "0x10" }).unwrap();
+            let mut thing = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            let get = if relation {
+                crate::relation_crud::type_bridge_database_relation_get_by_iid
+            } else {
+                type_bridge_database_entity_get_by_iid
+            };
+            assert_eq!(
+                unsafe {
+                    get(
+                        &*database,
+                        &token,
+                        &iid,
+                        ptr::null(),
+                        &mut thing,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            close_thing(&mut thing);
+            let mut root = ptr::null_mut();
+            let mut filter = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    crate::manager_filter::filter_open(
+                        &package,
+                        &token,
+                        &mut root,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe {
+                    crate::manager_filter::filter_iid(root, &iid, &mut filter, &mut diagnostics)
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe {
+                    crate::manager_read::type_bridge_database_manager_first(
+                        &*database,
+                        filter,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut thing,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            close_thing(&mut thing);
+            assert_eq!(
+                unsafe { crate::manager_filter::filter_close(&mut filter) },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe { crate::manager_filter::filter_close(&mut root) },
+                TypeBridgeStatus::Ok
+            );
+            let queries = state.queries.lock().unwrap();
+            assert_eq!(queries.len(), 2);
+            assert_eq!(queries[0].as_bytes(), queries[1].as_bytes());
+            assert_eq!(state.closes.load(Ordering::Acquire), 2);
+        }
+    }
+
+    #[test]
     fn database_get_count_and_blind_delete_have_exact_owned_lifecycles() {
         let fixture = fixture(
             vec![

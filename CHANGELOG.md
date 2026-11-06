@@ -112,6 +112,8 @@ All notable changes to TypeBridge will be documented in this file.
   keyword filter's read terminal and explicit instance operations instead.
 
 ### Changed
+- C entity/relation get-by-IID exports now redirect to an IID filter and the
+  canonical `first` terminal, retaining the existing typed-IID signatures.
 
 - C `type_bridge_projected_batch_builder_add_v1` and generated update/delete
   batch builders take validated IID owners. Insert/put pass a null IID; each

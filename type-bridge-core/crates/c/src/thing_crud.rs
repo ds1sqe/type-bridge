@@ -2,25 +2,25 @@
 
 use crate::iid::TypeBridgeIid;
 use std::ffi::c_void;
-use std::mem::{MaybeUninit, size_of};
+use std::mem::size_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::Arc;
 
-use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::id::{Iid, TypeId, TypeKind};
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
 };
 use type_bridge_orm::projected_crud::ProjectedCrudInvocationControl;
 use type_bridge_orm::{
-    AnswerCancellation, ProjectedBatchInvocationControl, ProjectedCrudExecutor, ProjectedThing,
-    QueryExecutionResourceLimits, TxType, lower_execution_error,
+    AnswerCancellation, ProjectedBatchInvocationControl, ProjectedCrudExecutor,
+    ProjectedManagerFilter, ProjectedManagerFilterExecutor,
+    ProjectedManagerFilterInvocationControl, ProjectedThing, QueryExecutionResourceLimits, TxType,
+    lower_execution_error,
 };
 
 use crate::abi::{SchemaPackageState, TypeBridgeStatus, guarded};
-use crate::allocation::{
-    AllocationFailure, AllocationSite, ReservedBox, allocation_checkpoint, allocation_exhausted,
-};
+use crate::allocation::{AllocationSite, ReservedBox, allocation_exhausted};
 use crate::execution_diagnostic::{TypeBridgeExecutionDiagnostics, return_execution_error};
 use crate::generated_preflight::{DirectOutputPreflight, direct_output_preflight};
 use crate::policy::parse_common_limits;
@@ -1042,93 +1042,16 @@ impl ReadTarget<'_> {
         kind: CrudKind,
         type_id: &TypeId,
         iid: &str,
-    ) -> Result<Option<ProjectedThing>, CrudFailure> {
-        match self {
-            Self::Database(database) => {
-                let context = catch_unwind(AssertUnwindSafe(|| {
-                    database.open_transaction_context(TxType::Read)
-                }))
-                .map_err(|_| CrudFailure::Panic)?
-                .map_err(|error| {
-                    CrudFailure::Diagnostic(lower_execution_error(
-                        error,
-                        SdkProviderOperation::OpenReadTransaction,
-                    ))
-                })?;
-                let executor =
-                    ProjectedCrudExecutor::new(&database.package_state().installed_projection);
-                let executed = catch_unwind(AssertUnwindSafe(|| match kind {
-                    CrudKind::Entity => database.block_on(
-                        executor.get_entity_by_iid_in_transaction(&context, type_id, iid),
-                    ),
-                    CrudKind::Relation => database.block_on(
-                        executor.get_relation_by_iid_in_transaction(&context, type_id, iid),
-                    ),
-                }));
-                let result = match executed {
-                    Ok(result) => result.map_err(CrudFailure::Diagnostic),
-                    Err(_) => Err(CrudFailure::Panic),
-                };
-                let closed = catch_unwind(AssertUnwindSafe(|| {
-                    database.close_transaction_context(&context)
-                }));
-                match (result, closed) {
-                    (Err(failure), _) => Err(failure),
-                    (Ok(_), Err(_)) => Err(CrudFailure::Panic),
-                    (Ok(_), Ok(Err(error))) => Err(CrudFailure::Diagnostic(lower_execution_error(
-                        error,
-                        SdkProviderOperation::Close,
-                    ))),
-                    (Ok(value), Ok(Ok(()))) => Ok(value),
-                }
-            }
-            Self::ReadTransaction(transaction) => {
-                if transaction.is_poisoned() {
-                    return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
-                }
-                let context = transaction
-                    .context()
-                    .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
-                let executor =
-                    ProjectedCrudExecutor::new(&transaction.package_state().installed_projection);
-                match catch_unwind(AssertUnwindSafe(|| match kind {
-                    CrudKind::Entity => transaction
-                        .block_on(executor.get_entity_by_iid_in_transaction(context, type_id, iid)),
-                    CrudKind::Relation => transaction.block_on(
-                        executor.get_relation_by_iid_in_transaction(context, type_id, iid),
-                    ),
-                })) {
-                    Ok(result) => result.map_err(CrudFailure::Diagnostic),
-                    Err(_) => {
-                        transaction.mark_poisoned();
-                        Err(CrudFailure::Panic)
-                    }
-                }
-            }
-            Self::WriteTransaction(transaction) => {
-                if transaction.is_poisoned() {
-                    return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
-                }
-                let context = transaction
-                    .context()
-                    .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
-                let executor =
-                    ProjectedCrudExecutor::new(&transaction.package_state().installed_projection);
-                match catch_unwind(AssertUnwindSafe(|| match kind {
-                    CrudKind::Entity => transaction
-                        .block_on(executor.get_entity_by_iid_in_transaction(context, type_id, iid)),
-                    CrudKind::Relation => transaction.block_on(
-                        executor.get_relation_by_iid_in_transaction(context, type_id, iid),
-                    ),
-                })) {
-                    Ok(result) => result.map_err(CrudFailure::Diagnostic),
-                    Err(_) => {
-                        transaction.mark_poisoned();
-                        Err(CrudFailure::Panic)
-                    }
-                }
-            }
-        }
+    ) -> Result<Option<Arc<ProjectedThing>>, CrudFailure> {
+        self.run_get_controlled(
+            kind,
+            type_id,
+            iid,
+            ProjectedManagerFilterInvocationControl::capture(
+                self.answer_ceiling(),
+                AnswerCancellation::default(),
+            ),
+        )
     }
 
     fn run_get_controlled(
@@ -1136,83 +1059,26 @@ impl ReadTarget<'_> {
         kind: CrudKind,
         type_id: &TypeId,
         iid: &str,
-        control: ProjectedCrudInvocationControl,
-    ) -> Result<Option<ProjectedThing>, CrudFailure> {
-        let executor = ProjectedCrudExecutor::new(&self.package_state().installed_projection);
-        let executed = catch_unwind(AssertUnwindSafe(|| match self {
-            Self::Database(database) => (match kind {
-                CrudKind::Entity => {
-                    database.block_on(executor.get_entity_by_iid_controlled_with_control(
-                        database.orm_database(),
-                        type_id,
-                        iid,
-                        control,
-                    ))
-                }
-                CrudKind::Relation => {
-                    database.block_on(executor.get_relation_by_iid_controlled_with_control(
-                        database.orm_database(),
-                        type_id,
-                        iid,
-                        control,
-                    ))
-                }
-            })
-            .map_err(CrudFailure::Diagnostic),
-            Self::ReadTransaction(transaction) => {
-                if transaction.is_poisoned() {
-                    return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
-                }
-                let context = transaction
-                    .context()
-                    .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
-                (match kind {
-                    CrudKind::Entity => transaction.block_on(
-                        executor.get_entity_by_iid_in_transaction_controlled_with_control(
-                            context, type_id, iid, control,
-                        ),
-                    ),
-                    CrudKind::Relation => transaction.block_on(
-                        executor.get_relation_by_iid_in_transaction_controlled_with_control(
-                            context, type_id, iid, control,
-                        ),
-                    ),
-                })
-                .map_err(CrudFailure::Diagnostic)
-            }
-            Self::WriteTransaction(transaction) => {
-                if transaction.is_poisoned() {
-                    return Err(CrudFailure::Diagnostic(poisoned_transaction_diagnostic()));
-                }
-                let context = transaction
-                    .context()
-                    .ok_or_else(|| CrudFailure::Diagnostic(kind.inactive_transaction()))?;
-                (match kind {
-                    CrudKind::Entity => transaction.block_on(
-                        executor.get_entity_by_iid_in_transaction_controlled_with_control(
-                            context, type_id, iid, control,
-                        ),
-                    ),
-                    CrudKind::Relation => transaction.block_on(
-                        executor.get_relation_by_iid_in_transaction_controlled_with_control(
-                            context, type_id, iid, control,
-                        ),
-                    ),
-                })
-                .map_err(CrudFailure::Diagnostic)
-            }
-        }));
-        match executed {
-            Ok(result) => result,
-            Err(_) => {
-                match self {
-                    Self::ReadTransaction(transaction) => transaction.mark_poisoned(),
-                    Self::WriteTransaction(transaction) => transaction.mark_poisoned(),
-                    Self::Database(_) => {}
-                }
-                Err(CrudFailure::Panic)
-            }
-        }
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Option<Arc<ProjectedThing>>, CrudFailure> {
+        self.preflight_get(kind)?;
+        let installed = &self.package_state().installed_projection;
+        let iid = Iid::new(iid).map_err(|_| CrudFailure::Diagnostic(kind.invalid_iid()))?;
+        let filter = ProjectedManagerFilter::try_new(installed, type_id.clone())
+            .and_then(|filter| filter.try_and_iid(installed, &iid))
+            .map_err(CrudFailure::Diagnostic)?;
+        let target = match self {
+            Self::Database(value) => crate::manager_target::Target::Database(value),
+            Self::ReadTransaction(value) => crate::manager_target::Target::Read(value),
+            Self::WriteTransaction(value) => crate::manager_target::Target::Write(value),
+        };
+        let query_target = target.query_target().map_err(CrudFailure::Diagnostic)?;
+        let executor = ProjectedManagerFilterExecutor::new(installed);
+        catch_unwind(AssertUnwindSafe(|| {
+            target.block_on(executor.first_on_target(query_target, &filter, control))
+        }))
+        .map_err(|_| CrudFailure::Panic)?
+        .map_err(|error| CrudFailure::Diagnostic(error.into_diagnostic(SdkProviderOperation::Read)))
     }
 
     fn run_count(&self, kind: CrudKind, type_id: &TypeId) -> Result<u64, CrudFailure> {
@@ -1398,55 +1264,17 @@ fn return_failure(
     }
 }
 
-struct ThingReservation {
-    handle: ReservedBox<TypeBridgeProjectedThing>,
-    value: Arc<MaybeUninit<ProjectedThing>>,
-}
-
-impl ThingReservation {
-    fn try_new() -> Result<Self, AllocationFailure> {
-        let handle = ReservedBox::try_new(AllocationSite::ProjectedThingHandle)?;
-        allocation_checkpoint(AllocationSite::ProjectedThingHandle)?;
-        // The caller-scaled Arc allocation occurs before provider dispatch or
-        // mutation. After success, publication only initializes this storage.
-        let value = Arc::new_uninit();
-        #[cfg(test)]
-        LAST_RESERVED_THING_STORAGE.with(|address| {
-            address.set(Arc::as_ptr(&value).addr());
-        });
-        Ok(Self { handle, value })
-    }
-
-    fn initialize(
-        self,
-        package: &Arc<SchemaPackageState>,
-        thing: ProjectedThing,
-    ) -> Box<TypeBridgeProjectedThing> {
-        let Self { handle, value } = self;
-        // SAFETY: the reservation never clones `value`, so its pointee is
-        // uniquely owned and writable. This initializes it exactly once, then
-        // changes only the Arc's pointee type; neither step can allocate.
-        let value = unsafe {
-            Arc::as_ptr(&value)
-                .cast_mut()
-                .write(MaybeUninit::new(thing));
-            value.assume_init()
-        };
-        handle.initialize(TypeBridgeProjectedThing {
-            package: Arc::clone(package),
-            value,
-            detached_snapshot: false,
-        })
-    }
-}
-
 fn store_thing(
     package: &Arc<SchemaPackageState>,
-    thing: ProjectedThing,
-    reservation: ThingReservation,
+    thing: Arc<ProjectedThing>,
+    reservation: ReservedBox<TypeBridgeProjectedThing>,
     out_thing: *mut *mut TypeBridgeProjectedThing,
 ) {
-    let thing = reservation.initialize(package, thing);
+    // Core owns the immutable root allocation; retain it without copying.
+    let thing = reservation.initialize(TypeBridgeProjectedThing::from_arc(
+        Arc::clone(package),
+        thing,
+    ));
     // SAFETY: every exported caller initializes and retains this writable slot.
     unsafe { out_thing.write_unaligned(Box::into_raw(thing)) };
 }
@@ -1634,7 +1462,9 @@ pub(crate) unsafe fn run_get_call_controlled(
         // SAFETY: CRUD V2 preflight fenced both optional outer inputs.
         let control =
             match unsafe { controlled_crud_call(target.answer_ceiling(), limits, cancellation) } {
-                Ok(call) => ProjectedCrudInvocationControl::capture(call.limits, call.cancellation),
+                Ok(call) => {
+                    ProjectedManagerFilterInvocationControl::capture(call.limits, call.cancellation)
+                }
                 Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
             };
         // SAFETY: generated token storage is caller-readable for this call.
@@ -1654,7 +1484,7 @@ pub(crate) unsafe fn run_get_call_controlled(
         if let Err(diagnostic) = control.checkpoint(&type_id) {
             return return_execution_error(diagnostic, out_diagnostics);
         }
-        let reservation = match ThingReservation::try_new() {
+        let reservation = match ReservedBox::try_new(AllocationSite::ProjectedThingHandle) {
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
         };
@@ -1905,7 +1735,7 @@ pub(crate) unsafe fn run_get_call(
     } = prepared;
     guarded(|| {
         let policy_control = target.answer_limits().map(|limits| {
-            ProjectedCrudInvocationControl::capture(limits, AnswerCancellation::default())
+            ProjectedManagerFilterInvocationControl::capture(limits, AnswerCancellation::default())
         });
         // SAFETY: generated token storage is caller-readable for this call.
         let type_id = match unsafe { resolve_model(kind, target.package_state(), model) } {
@@ -1929,7 +1759,7 @@ pub(crate) unsafe fn run_get_call(
         {
             return return_execution_error(diagnostic, out_diagnostics);
         }
-        let reservation = match ThingReservation::try_new() {
+        let reservation = match ReservedBox::try_new(AllocationSite::ProjectedThingHandle) {
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
         };
