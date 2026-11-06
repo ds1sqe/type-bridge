@@ -423,6 +423,7 @@ fn c_manager_live_runs_when_explicitly_configured() {
         let log = fs::File::create(&server_log_path).expect("server log opens");
         let child = Command::new(binary)
             .env("SMOKE_ALLOW_STAGED_WRITES", "true")
+            .env("SMOKE_ALLOW_RAW", "true")
             .env("SMOKE_TYPEDB_ADDRESS", required_environment(ADDRESS_ENV))
             .env(
                 "SMOKE_TYPEDB_HTTP_PORT",

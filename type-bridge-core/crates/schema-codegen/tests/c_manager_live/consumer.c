@@ -743,6 +743,59 @@ static int check_manager_read_twins(
   return 0;
 }
 
+static int raw_contains(type_bridge_byte_view_t bytes, const char *text) {
+  size_t index, length = strlen(text);
+  if (length > bytes.length) return 0;
+  for (index = 0u; index <= bytes.length - length; ++index)
+    if (memcmp(bytes.data + index, text, length) == 0) return 1;
+  return 0;
+}
+
+static int check_raw_live(const type_bridge_database_t *database,
+                          const type_bridge_proxy_connection_t *proxy) {
+  const type_bridge_byte_view_t read_query = view_of("match $x isa counter; fetch { 'n': $x.counter_value };");
+  const type_bridge_byte_view_t insert_query = view_of("insert $x isa counter, has counter_value 9007199254740993;");
+  type_bridge_raw_transaction_t *transaction = NULL;
+  type_bridge_raw_result_t *result = NULL;
+  type_bridge_diagnostics_t *diagnostics = NULL;
+  type_bridge_byte_view_t json = {0};
+  CHECK((proxy == NULL ? type_bridge_database_execute_query(database, read_query, TYPE_BRIDGE_TRANSACTION_READ, &result, &diagnostics) : type_bridge_proxy_connection_execute_query(proxy, read_query, TYPE_BRIDGE_TRANSACTION_READ, &result, &diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_raw_result_json(result, &json) == TYPE_BRIDGE_STATUS_OK && json.length != 0u);
+  CHECK(type_bridge_raw_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
+  CHECK((proxy == NULL ? type_bridge_database_raw_transaction(database, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, &diagnostics) : type_bridge_proxy_connection_raw_transaction(proxy, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, &diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_raw_transaction_execute_query(transaction, insert_query, &result, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_raw_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
+  if (proxy == NULL) {
+    CHECK(type_bridge_raw_transaction_execute_query(transaction, read_query, &result, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(type_bridge_raw_result_json(result, &json) == TYPE_BRIDGE_STATUS_OK && raw_contains(json, "9007199254740993"));
+    CHECK(type_bridge_raw_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(type_bridge_raw_transaction_rollback(transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  } else {
+    CHECK(type_bridge_raw_transaction_execute_query(transaction, read_query, &result, &diagnostics) == TYPE_BRIDGE_STATUS_EXECUTION_FAILED && result == NULL);
+    CHECK(type_bridge_diagnostics_json(diagnostics, &json) == TYPE_BRIDGE_STATUS_OK && raw_contains(json, "raw_transaction_single_query"));
+    CHECK(type_bridge_diagnostics_close(&diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(type_bridge_raw_transaction_rollback(transaction, &diagnostics) == TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
+    CHECK(type_bridge_diagnostics_json(diagnostics, &json) == TYPE_BRIDGE_STATUS_OK && raw_contains(json, "raw_transaction_already_committed"));
+    CHECK(type_bridge_diagnostics_close(&diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(type_bridge_raw_transaction_close(&transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_database_execute_query(database, read_query, TYPE_BRIDGE_TRANSACTION_READ, &result, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_raw_result_json(result, &json) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(raw_contains(json, "9007199254740993") == (proxy != NULL));
+  CHECK(type_bridge_raw_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
+  if (proxy != NULL) {
+    CHECK(type_bridge_database_execute_query(database, view_of("match $x isa counter, has counter_value 9007199254740993; delete $x;"), TYPE_BRIDGE_TRANSACTION_WRITE, &result, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(type_bridge_raw_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
+  } else {
+    CHECK(type_bridge_database_raw_transaction(database, TYPE_BRIDGE_TRANSACTION_SCHEMA, &transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(type_bridge_raw_transaction_execute_query(transaction, view_of("define attribute raw-smoke-value, value integer;"), &result, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(type_bridge_raw_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(type_bridge_raw_transaction_commit(transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(type_bridge_raw_transaction_close(&transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  }
+  return 0;
+}
+
 static int check_manager_http_if_requested(
     const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database,
@@ -761,6 +814,7 @@ static int check_manager_http_if_requested(
   options.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
   CHECK(type_bridge_proxy_connection_open_v1(package, &options, NULL, &proxy,
                                              diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(check_raw_live(database, proxy) == 0);
   CHECK(check_manager_read_twins(package, database, proxy, diagnostics) == 0);
   CHECK(check_returning_link(package, database, proxy, 0, person_iid, diagnostics) == 0);
   CHECK(check_returning_link(package, database, proxy, 1, person_iid, diagnostics) == 0);
@@ -1033,7 +1087,6 @@ int main(void) {
   CHECK(manager_person_manager_filter_close(&sibling) == TYPE_BRIDGE_STATUS_OK);
 
   plan_mark("");
-  CHECK(check_manager_http_if_requested(package, database, ada_iid.typed, &diagnostics) == 0);
 
   plan_mark("");
   /*
@@ -1049,6 +1102,8 @@ int main(void) {
   CHECK(type_bridge_read_transaction_close(&read, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         read == NULL && diagnostics == NULL);
+  CHECK(check_manager_http_if_requested(package, database, ada_iid.typed, &diagnostics) == 0);
+  CHECK(check_raw_live(database, NULL) == 0);
   CHECK(check_returning_link(package, database, NULL, 0, ada_iid.typed, &diagnostics) == 0);
   {
     const type_bridge_iid_t *iids[] = {dana_iid.typed, ada_iid.typed};
