@@ -60,9 +60,9 @@ impl UserSteps {
                     callback
                         .call_async_catch(context)
                         .await
-                        .map_err(|_| failed())?
+                        .map_err(failed)?
                         .await
-                        .map_err(|_| failed())
+                        .map_err(failed)
                 }
             }
         };
@@ -79,11 +79,13 @@ impl UserSteps {
         Ok(result)
     }
 }
-fn failed() -> type_bridge_contract::diagnostic::Diagnostic {
+fn failed(error: impl std::fmt::Display) -> type_bridge_contract::diagnostic::Diagnostic {
+    let cause = error.to_string();
     use type_bridge_contract::diagnostic::*;
     Diagnostic::new(
         DiagnosticCategory::InvalidContract,
         DiagnosticCode::new("migration_user_step_failed").expect("static diagnostic"),
-        "Node migration callback failed; its transaction will be rolled back",
+        format!("Node migration callback failed; its transaction will be rolled back: {cause}"),
     )
+    .with_detail("cause", cause)
 }

@@ -446,7 +446,7 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *proxy_connection_manager_delete_
     type_bridge_execution_diagnostics_t **diagnostics);
 
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *migration_register_fn)(const type_bridge_migration_catalog_t *, type_bridge_byte_view_t, type_bridge_migration_callback_t, type_bridge_migration_callback_t, void *, type_bridge_execution_diagnostics_t **);
-typedef type_bridge_status_t (TYPE_BRIDGE_CALL *migration_raw_fn)(const type_bridge_write_transaction_t *, type_bridge_byte_view_t, type_bridge_raw_result_t **, type_bridge_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *migration_raw_fn)(const type_bridge_write_transaction_t *, type_bridge_byte_view_t, type_bridge_raw_result_t **, type_bridge_execution_diagnostics_t **);
 
 #define TAKE(type, symbol) do { type value = &symbol; (void)value; } while (0)
 

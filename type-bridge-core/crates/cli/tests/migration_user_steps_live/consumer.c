@@ -63,8 +63,11 @@ derive(type_bridge_write_transaction_t *tx, void *data,
     CHECK(tb_users_ssn_close(&ssn));
     CHECK(tb_users_person_close(&person));
   }
-  if (ctx->fail)
-    return TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
+  if (ctx->fail) {
+    type_bridge_raw_result_t *failed_result = NULL;
+    return type_bridge_migration_transaction_execute_query(
+        tx, view("match $p isa callback_missing_type; fetch {\"p\":$p};"), &failed_result, errors);
+  }
   if (cancellation) {
     CHECK(type_bridge_migration_cancellation_cancel(cancellation));
     thrd_sleep(&(struct timespec){.tv_nsec = 100000000}, NULL);
@@ -72,7 +75,7 @@ derive(type_bridge_write_transaction_t *tx, void *data,
     return TYPE_BRIDGE_STATUS_OK;
   }
   type_bridge_raw_result_t *raw = NULL;
-  type_bridge_diagnostics_t *raw_errors = NULL;
+  type_bridge_execution_diagnostics_t *raw_errors = NULL;
   CHECK(type_bridge_migration_transaction_execute_query(
       tx,
       view("match $p isa person; fetch {\"ssn\":$p.ssn,\"gender\":$p.gender};"),
@@ -86,7 +89,7 @@ reverse(type_bridge_write_transaction_t *tx, void *data,
   (void)data;
   (void)errors;
   type_bridge_raw_result_t *raw = NULL;
-  type_bridge_diagnostics_t *raw_errors = NULL;
+  type_bridge_execution_diagnostics_t *raw_errors = NULL;
   CHECK(type_bridge_migration_transaction_execute_query(
       tx, view("match $p isa person, has gender $g; delete has $g of $p;"),
       &raw, &raw_errors));
@@ -149,6 +152,19 @@ static type_bridge_status_t execute(type_bridge_migration_plan_t *plan,
   type_bridge_status_t status = type_bridge_migration_plan_execute_with_options(
       plan, db, view("c-callback"), &options, &out, &errors);
   CHECK(type_bridge_migration_execution_outcome_close(&out));
+  if (errors) {
+    type_bridge_byte_view_t json = {0};
+    CHECK(type_bridge_diagnostics_json(errors, &json));
+    char *text = malloc(json.length + 1);
+    assert(text);
+    memcpy(text, json.data, json.length);
+    text[json.length] = '\0';
+    if (strstr(text, "migration_user_step_failed")) {
+      assert(strstr(text, "cause"));
+      assert(strstr(text, "callback_missing_type"));
+    }
+    free(text);
+  }
   CHECK(type_bridge_diagnostics_close(&errors));
   return status;
 }
@@ -247,8 +263,8 @@ int main(int argc, char **argv) {
   type_bridge_raw_result_t *raw = NULL;
   assert(type_bridge_migration_transaction_execute_query(
              ctx.escaped, view("match $p isa person; fetch {\"ssn\":$p.ssn};"),
-             &raw, &diagnostics) != TYPE_BRIDGE_STATUS_OK);
-  CHECK(type_bridge_diagnostics_close(&diagnostics));
+             &raw, &errors) != TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_execution_diagnostics_close(&errors));
   p = plan(catalog, ids, 1, 1);
   CHECK(execute(p, db));
   CHECK(type_bridge_migration_plan_close(&p));

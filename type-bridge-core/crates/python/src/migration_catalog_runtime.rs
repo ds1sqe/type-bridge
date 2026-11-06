@@ -848,6 +848,9 @@ fn safety_name(safety: type_bridge_schema::SafetyClass) -> &'static str {
 }
 
 fn py_catalog_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> PyErr {
+    if error.code().as_str() == "migration_user_step_failed" {
+        return pyo3::exceptions::PyValueError::new_err(error.to_string());
+    }
     py_catalog_code(error.code().as_str(), error.to_string())
 }
 

@@ -368,6 +368,27 @@ fn check_slice<T>(values: &[T], preflight: &DirectOutputPreflight) -> Result<(),
 }
 
 impl TypeBridgeExecutionDiagnostics {
+    pub(crate) fn callback_cause(&self) -> String {
+        self.items
+            .iter()
+            .map(|item| {
+                let mut cause = format!(
+                    "{}: {}",
+                    String::from_utf8_lossy(&item.code),
+                    String::from_utf8_lossy(&item.message)
+                );
+                for detail in &item.details {
+                    if detail.kind == TypeBridgeExecutionDiagnosticDetailKind::AdmissionCause {
+                        cause.push_str(": ");
+                        cause.push_str(&String::from_utf8_lossy(&detail.text[0]));
+                    }
+                }
+                cause
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
     pub(crate) fn check_borrowed_ranges(
         &self,
         preflight: &DirectOutputPreflight,

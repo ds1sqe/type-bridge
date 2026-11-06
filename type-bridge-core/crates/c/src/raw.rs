@@ -175,14 +175,14 @@ fn kind(value: u32) -> Result<TxType, TypeBridgeStatus> {
     }
 }
 
-unsafe fn outputs<T>(
+unsafe fn outputs<T, E>(
     out: *mut *mut T,
-    errors: *mut *mut TypeBridgeDiagnostics,
+    errors: *mut *mut E,
     inputs: impl FnOnce(&DirectOutputPreflight) -> Result<(), TypeBridgeStatus>,
 ) -> Result<(), TypeBridgeStatus> {
     let preflight = direct_output_preflight(&[
         (out.cast(), size_of::<*mut T>()),
-        (errors.cast(), size_of::<*mut TypeBridgeDiagnostics>()),
+        (errors.cast(), size_of::<*mut E>()),
     ])?;
     inputs(&preflight)?;
     if out.is_null() || errors.is_null() {
@@ -603,7 +603,7 @@ pub unsafe extern "C" fn type_bridge_migration_transaction_execute_query(
     transaction: *const crate::runtime::TypeBridgeWriteTransaction,
     query: TypeBridgeByteView,
     out: *mut *mut TypeBridgeRawResult,
-    errors: *mut *mut TypeBridgeDiagnostics,
+    errors: *mut *mut crate::execution_diagnostic::TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     // SAFETY: caller retains all inputs throughout execution.
     if let Err(status) = unsafe {
@@ -653,7 +653,29 @@ pub unsafe extern "C" fn type_bridge_migration_transaction_execute_query(
                 TypeBridgeStatus::Ok
             }
             // SAFETY: output was fenced and initialized.
-            Err(error) => unsafe { publish_error(error, errors) },
+            Err(error) => {
+                use type_bridge_contract::diagnostic::{
+                    Diagnostic, DiagnosticCategory, DiagnosticCode,
+                };
+                use type_bridge_contract::sdk_diagnostic::{
+                    SdkExecutionDiagnostic, SdkProviderOperation,
+                };
+                let cause = Diagnostic::new(
+                    DiagnosticCategory::InvalidContract,
+                    DiagnosticCode::new("migration_callback_raw_query_failed")
+                        .expect("static diagnostic code"),
+                    error.message,
+                )
+                .with_detail("status", i64::from(error.status))
+                .with_detail("provider_code", error.code);
+                let handle = crate::execution_diagnostic::admission_diagnostics_handle(
+                    SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Write),
+                    vec![cause],
+                );
+                // SAFETY: output was fenced and initialized.
+                unsafe { errors.write_unaligned(Box::into_raw(Box::new(handle))) };
+                TypeBridgeStatus::ExecutionFailed
+            }
         }
     })
 }

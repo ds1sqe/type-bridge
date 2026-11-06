@@ -123,23 +123,22 @@ impl<S: Schema> UserSteps<S> {
         }
         let database = Arc::new(database.clone_for_migration());
         let mut result = type_bridge_schema_migration_typedb::MigrationUserSteps::default();
-        let bind =
-            |callback: &Callback<S>| {
-                let callback = Arc::clone(callback);
-                let database = Arc::clone(&database);
-                move |tx| {
-                    let future = callback(MigrationTransaction {
-                        tx,
-                        database: database.clone_for_migration(),
-                    });
-                    async move {
-                        future.await.map_err(|_| Diagnostic::new(
+        let bind = |callback: &Callback<S>| {
+            let callback = Arc::clone(callback);
+            let database = Arc::clone(&database);
+            move |tx| {
+                let future = callback(MigrationTransaction {
+                    tx,
+                    database: database.clone_for_migration(),
+                });
+                async move {
+                    future.await.map_err(|error| Diagnostic::new(
                     DiagnosticCategory::InvalidContract,
                     DiagnosticCode::new("migration_user_step_failed").expect("static diagnostic"),
-                    "user migration callback failed; its transaction will be rolled back"))
-                    }
+                    format!("user migration callback failed; its transaction will be rolled back: {error}")).with_detail("cause", error.to_string()))
                 }
-            };
+            }
+        };
         for (id, (forward, reverse)) in &self.0 {
             match reverse {
                 Some(reverse) => {

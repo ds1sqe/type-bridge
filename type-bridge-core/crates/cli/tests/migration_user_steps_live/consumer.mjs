@@ -66,7 +66,7 @@ catalog.register("derive-gender", async tx => {
 
 const genderValues = 'match $p isa person, has gender $g; fetch {"gender":$g};';
 await assert.rejects(
-  plan([ids[0]], [ids[1]]).execute(db, "node-error"), /migration_user_step_failed/,
+  plan([ids[0]], [ids[1]]).execute(db, "node-error"), /migration_user_step_failed.*private failure detail/,
 );
 assert.equal((await db.executeQuery(genderValues, "read")).answers.length, 0);
 fail = false;

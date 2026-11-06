@@ -497,7 +497,9 @@ impl NodeMigrationPlan {
                         database, &catalog, &holder, plan, &control, &user_steps).await
                         .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
                 }
-            }.map(node_execution_report).map_err(|error| catalog_error(error.code().as_str()))
+            }.map(node_execution_report).map_err(|error| {
+                if error.code().as_str() == "migration_user_step_failed" { Error::from_reason(error.to_string()) } else { catalog_error(error.code().as_str()) }
+            })
         }.instrument(entry.clone()))
     }
 }

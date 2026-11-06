@@ -3809,6 +3809,7 @@ typedef int32_t type_bridge_database_pair_state_t;
 #define TYPE_BRIDGE_DATABASE_PAIR_STANDALONE_MANAGED ((type_bridge_database_pair_state_t)2)
 #define TYPE_BRIDGE_DATABASE_PAIR_OWNED ((type_bridge_database_pair_state_t)3)
 #define TYPE_BRIDGE_DATABASE_PAIR_OWNED_JOURNAL_ORPHAN ((type_bridge_database_pair_state_t)4)
+#define TYPE_BRIDGE_DATABASE_PAIR_IMPORT_PENDING ((type_bridge_database_pair_state_t)5)
 typedef int32_t type_bridge_database_create_outcome_t;
 #define TYPE_BRIDGE_DATABASE_CREATE_CREATED ((type_bridge_database_create_outcome_t)1)
 #define TYPE_BRIDGE_DATABASE_CREATE_ALREADY_EXISTS ((type_bridge_database_create_outcome_t)2)
@@ -3919,7 +3920,7 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_migration_catalog_register(const type_bridge_migration_catalog_t *, type_bridge_byte_view_t step_id, type_bridge_migration_callback_t forward, type_bridge_migration_callback_t reverse, void *context, type_bridge_execution_diagnostics_t **);
 /* Raw TypeQL on the callback's transaction; ordinary raw-result ownership. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_migration_transaction_execute_query(const type_bridge_write_transaction_t *, type_bridge_byte_view_t, type_bridge_raw_result_t **, type_bridge_diagnostics_t **);
+type_bridge_migration_transaction_execute_query(const type_bridge_write_transaction_t *, type_bridge_byte_view_t, type_bridge_raw_result_t **, type_bridge_execution_diagnostics_t **);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_migration_catalog_fingerprint(const type_bridge_migration_catalog_t *, type_bridge_byte_view_t *);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL

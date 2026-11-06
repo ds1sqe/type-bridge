@@ -107,6 +107,7 @@ async fn main() {
     );
     let error = p.execute(&db, "rust-error").await.unwrap_err();
     assert!(error.to_string().contains("migration_user_step_failed"));
+    assert!(error.to_string().contains("private failure detail"));
     assert_eq!(
         db.execute_query(
             "match $p isa person, has gender $g; fetch {\"gender\":$g};",

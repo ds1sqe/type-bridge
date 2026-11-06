@@ -142,16 +142,17 @@ impl UserSteps {
                             )
                         };
                         let has_error = !diagnostics.is_null();
-                        if has_error {
-                            // SAFETY: the callback transfers an owned ABI diagnostics handle.
-                            unsafe {
-                                drop(Box::from_raw(diagnostics));
-                            }
-                        }
+                        let cause = if has_error {
+                            // SAFETY: the callback transfers an owned execution diagnostics handle.
+                            let diagnostics = unsafe { Box::from_raw(diagnostics) };
+                            diagnostics.callback_cause()
+                        } else {
+                            format!("callback returned {status:?}")
+                        };
                         if status == TypeBridgeStatus::Ok && !has_error {
                             Ok(())
                         } else {
-                            Err(failed())
+                            Err(failed().with_detail("cause", cause))
                         }
                     })
                     .await
