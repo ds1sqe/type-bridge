@@ -274,6 +274,40 @@ mod tests {
     }
 
     #[test]
+    fn shared_create_commit_panic_keeps_unknown_certainty() {
+        for execute in [
+            type_bridge_database_manager_insert,
+            type_bridge_database_manager_put,
+        ] {
+            let fixture = fixture(
+                vec![documents(vec![person_document("0x10")])],
+                crate::entity_crud::tests::COMMIT_PANIC,
+            );
+            let mut result = ptr::dangling_mut();
+            let mut diagnostics = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    execute(
+                        &*fixture.database,
+                        &fixture.token,
+                        &*fixture.create,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::CommitOutcomeUnknown
+            );
+            assert!(result.is_null());
+            assert_eq!(diagnostic(diagnostics).1, "commit_outcome_unknown");
+            assert_eq!(fixture.state.commits.load(Ordering::Acquire), 1);
+            assert_eq!(fixture.state.rollbacks.load(Ordering::Acquire), 0);
+            close_diagnostics(&mut diagnostics);
+        }
+    }
+
+    #[test]
     fn create_mapping_failure_rolls_back_before_commit() {
         let fixture = fixture(
             vec![documents(vec![person_document("0x10")])],

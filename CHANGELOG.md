@@ -5,6 +5,9 @@ All notable changes to TypeBridge will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Provider panics during shared controlled write commits now report an unknown
+  commit outcome across C, Rust, Python, and Node, preserving durability
+  uncertainty instead of surfacing a generic panic.
 - Historical `CopyAttribute` migrations carrying custom TypeQL or filters can
   apply and roll back through the raw migration path again. Carried forward and
   reverse text stays unchanged and reports no derived counts; structured copies

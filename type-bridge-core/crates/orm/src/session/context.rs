@@ -1,5 +1,7 @@
 //! Shared transaction context for grouping multiple operations.
 
+use std::future::{Future, poll_fn};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -922,7 +924,20 @@ impl TransactionContext {
         let mut inner = self.inner.lock().await;
         let mut transaction = begin_commit(&mut inner)?;
 
-        let result = transaction.commit_classified().await;
+        // Only commit dispatch is guarded: a provider panic after dispatch
+        // cannot establish whether the write committed. Enclosing construction
+        // in the future also catches providers that panic before returning it.
+        let commit = async { transaction.commit_classified().await };
+        let mut commit = std::pin::pin!(commit);
+        let result = poll_fn(|cx| {
+            catch_unwind(AssertUnwindSafe(|| commit.as_mut().poll(cx))).unwrap_or_else(|_| {
+                std::task::Poll::Ready(Err(ClassifiedCommitError::Driver {
+                    certainty: crate::error::CommitFailureCertainty::Unknown,
+                    message: "Provider panicked during commit".into(),
+                }))
+            })
+        })
+        .await;
         inner.state = match &result {
             Ok(()) => TransactionContextState::Committed,
             Err(ClassifiedCommitError::Driver {
@@ -1042,6 +1057,8 @@ mod tests {
         DefinitelyAborted,
         Unknown,
         LegacyFailure,
+        Panic,
+        PanicBeforeFuture,
     }
 
     #[derive(Default)]
@@ -1098,6 +1115,9 @@ mod tests {
                     pending().await
                 }
                 match result {
+                    CommitResult::Panic | CommitResult::PanicBeforeFuture => {
+                        panic!("private commit panic")
+                    }
                     CommitResult::Success => Ok(()),
                     CommitResult::LegacyFailure
                     | CommitResult::DefinitelyAborted
@@ -1112,6 +1132,9 @@ mod tests {
             &mut self,
         ) -> BoxFuture<'_, std::result::Result<(), ClassifiedCommitError>> {
             self.calls.classified_commits.fetch_add(1, Ordering::SeqCst);
+            if matches!(self.commit_result, CommitResult::PanicBeforeFuture) {
+                panic!("private commit construction panic");
+            }
             let result = self.commit_result;
             let gate = self.commit_gate.clone();
             Box::pin(async move {
@@ -1120,6 +1143,9 @@ mod tests {
                     pending().await
                 }
                 match result {
+                    CommitResult::Panic | CommitResult::PanicBeforeFuture => {
+                        panic!("private commit panic")
+                    }
                     CommitResult::Success => Ok(()),
                     CommitResult::DefinitelyAborted => Err(ClassifiedCommitError::Driver {
                         certainty: CommitFailureCertainty::DefinitelyAborted,
@@ -1792,6 +1818,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn commit_panics_are_unknown_and_cannot_redispatch_or_roll_back() {
+        for result in [CommitResult::Panic, CommitResult::PanicBeforeFuture] {
+            let (context, calls) = new_context(result, false, false, None, None, None);
+            let error = context.commit_sdk().await.unwrap_err();
+            assert_eq!(
+                error,
+                SdkExecutionDiagnostic::commit_failure(SdkCommitFailureOutcome::Unknown)
+            );
+            assert_eq!(
+                context.lifecycle_state().await,
+                TransactionContextState::CommitOutcomeUnknown
+            );
+            assert!(context.commit_sdk().await.is_err());
+            assert!(context.rollback().await.is_err());
+            context.close().await.unwrap();
+            assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 1);
+            assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 0);
+            assert_eq!(calls.closes.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
     async fn classified_commit_records_every_terminal_outcome_once() {
         for (result, expected, expected_outcome) in [
             (
@@ -1806,6 +1854,11 @@ mod tests {
             ),
             (
                 CommitResult::Unknown,
+                TransactionContextState::CommitOutcomeUnknown,
+                Some(SdkCommitFailureOutcome::Unknown),
+            ),
+            (
+                CommitResult::Panic,
                 TransactionContextState::CommitOutcomeUnknown,
                 Some(SdkCommitFailureOutcome::Unknown),
             ),
