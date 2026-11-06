@@ -109,7 +109,14 @@ pub(super) fn function_names(
         }
         if model.create().target_name().is_some() {
             for scope in ["database", "write_transaction", "proxy_connection"] {
-                for operation in ["insert", "put", "update", "delete"] {
+                for operation in [
+                    "insert",
+                    "put",
+                    "update",
+                    "delete",
+                    "delete_returning",
+                    "delete_many_returning",
+                ] {
                     names.insert(generated_symbol(&manager, &format!("{scope}_{operation}"))?);
                 }
             }
@@ -671,10 +678,25 @@ fn render_writes(
             "TYPE_BRIDGE_GENERATED_INPUT_PROXY_CONNECTION",
         ),
     ] {
-        for operation in ["insert", "put", "update", "delete"] {
+        for operation in [
+            "insert",
+            "put",
+            "update",
+            "delete",
+            "delete_returning",
+            "delete_many_returning",
+        ] {
             let selected = matches!(operation, "update" | "delete");
             let returns = operation != "delete";
-            let result = format!("{target}_{operation}_batch_result");
+            let returning = operation.ends_with("_returning");
+            let many = operation == "delete_many_returning";
+            let has_create = returns && !returning;
+            let result_operation = if returning {
+                "delete_returning"
+            } else {
+                operation
+            };
+            let result = format!("{target}_{result_operation}_batch_result");
             let _ = write!(
                 output,
                 "\ntype_bridge_status_t TYPE_BRIDGE_CALL {manager}_{scope}_{operation}(\n    const {owner} *owner, const {manager} *manager,"
@@ -682,8 +704,12 @@ fn render_writes(
             if selected {
                 let _ = write!(output, " {filter_ref} filter,");
             }
-            if returns {
+            if has_create {
                 let _ = write!(output, "\n    const {create} *input,");
+            } else if many {
+                output.push_str("\n    const type_bridge_iid_t *const *iids, size_t iid_count,");
+            } else if returning {
+                output.push_str("\n    const type_bridge_iid_t *iid,");
             }
             output.push_str("\n    const type_bridge_query_execution_limits_v1_t *limits,\n    const type_bridge_cancellation_t *cancellation,");
             if returns {
@@ -705,6 +731,9 @@ fn render_writes(
                     "  {filter_ref} filter = {{ NULL, {{0u, 0u, 0u, 0u}} }};"
                 );
             }
+            if many {
+                output.push_str("  size_t iid_index;\n  if (iid_count > SIZE_MAX / sizeof(*iids) || (iid_count != 0u && iids == NULL)) { return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; }\n");
+            }
             let mut extra = format!(
                 r#"
   {add_input}(alias_inputs, &alias_input_count, {owner_kind}, owner, 1u);
@@ -712,10 +741,20 @@ fn render_writes(
   {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION, cancellation, 1u);
 "#
             );
-            if returns {
+            if has_create {
                 let _ = writeln!(
                     extra,
                     "  {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CREATE, input, 1u);"
+                );
+            } else if many {
+                let _ = writeln!(
+                    extra,
+                    "  {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_BYTES, iids, iid_count * sizeof(*iids));"
+                );
+            } else if returning {
+                let _ = writeln!(
+                    extra,
+                    "  {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);"
                 );
             }
             input_fence(
@@ -727,6 +766,21 @@ fn render_writes(
                 &extra,
                 if returns { "out" } else { "NULL" },
             );
+            if many {
+                let _ = write!(
+                    output,
+                    r#"
+  for (iid_index = 0u; iid_index < iid_count; ++iid_index) {{
+    const type_bridge_iid_t *iid;
+    memcpy(&iid, (const unsigned char *)iids + iid_index * sizeof(*iids), sizeof(iid));
+    alias_input_count = 0u;
+    {add_input}(alias_inputs, &alias_input_count, TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);
+    status = {preflight}(alias_inputs, alias_input_count, out, sizeof(*out), out_diagnostics, sizeof(*out_diagnostics));
+    if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}
+  }}
+"#
+                );
+            }
             if !selected {
                 output.push_str("  filter.value = manager->root_filter;\n");
             }
@@ -735,7 +789,9 @@ fn render_writes(
             }
             output.push_str("  if (out_diagnostics != NULL) { *out_diagnostics = NULL; }\n");
             if returns {
-                output.push_str("  if (out == NULL) { return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; }\n");
+                output.push_str(
+                    "  if (out == NULL) { return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; }\n",
+                );
             }
             let _ = write!(
                 output,
@@ -754,8 +810,12 @@ fn render_writes(
                 output,
                 "  status = type_bridge_{scope}_manager_{operation}(owner, {selection},"
             );
-            if returns {
+            if has_create {
                 output.push_str(" (const type_bridge_projected_create_t *)input,");
+            } else if many {
+                output.push_str(" iids, iid_count,");
+            } else if returning {
+                output.push_str(" iid,");
             }
             output.push_str(" limits, cancellation,");
             if returns {

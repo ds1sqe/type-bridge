@@ -166,7 +166,7 @@ fn render_header(
     }
     render_generated_helpers(&mut output, prefix)?;
     for model in projection.models().values() {
-        for operation in extra_single_write_results(model, ordered) {
+        for operation in extra_write_results(model, ordered) {
             render_model_write_result_accessors(&mut output, projection, model, prefix, operation)?;
         }
     }
@@ -269,7 +269,7 @@ fn projected_nominal_names(
         }
     }
     for model in projection.models().values() {
-        for operation in extra_single_write_results(model, ordered) {
+        for operation in extra_write_results(model, ordered) {
             insert(&successor_batch_type_names(model, operation)?[2])?;
         }
     }
@@ -1307,7 +1307,7 @@ fn validate_generated_symbols(
         }
     }
     for model in projection.models().values() {
-        for operation in extra_single_write_results(model, ordered) {
+        for operation in extra_write_results(model, ordered) {
             for symbol in successor_batch_function_names(model, operation)?
                 .into_iter()
                 .skip(7)
@@ -1958,20 +1958,25 @@ fn successor_batch_operations(model: &ModelProjection) -> Vec<SuccessorBatchOper
         .collect()
 }
 
-fn extra_single_write_results(
-    model: &ModelProjection,
-    ordered: bool,
-) -> Vec<SuccessorBatchOperation> {
+fn extra_write_results(model: &ModelProjection, ordered: bool) -> Vec<SuccessorBatchOperation> {
     if model.create().target_name().is_none() {
         return Vec::new();
     }
-    if !ordered {
-        return SUCCESSOR_BATCH_OPERATIONS[..3].to_vec();
-    }
-    if !model_has_reference_key(model) {
-        return vec![SUCCESSOR_BATCH_OPERATIONS[1]];
-    }
-    Vec::new()
+    let mut operations = if !ordered {
+        SUCCESSOR_BATCH_OPERATIONS[..3].to_vec()
+    } else if !model_has_reference_key(model) {
+        vec![SUCCESSOR_BATCH_OPERATIONS[1]]
+    } else {
+        Vec::new()
+    };
+    operations.push(SuccessorBatchOperation {
+        name: "delete_returning",
+        constant: "TYPE_BRIDGE_PROJECTED_BATCH_OPERATION_DELETE",
+        needs_iid: true,
+        needs_create: false,
+        has_thing_result: true,
+    });
+    operations
 }
 
 fn successor_batch_type_names(

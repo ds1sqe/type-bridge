@@ -619,6 +619,59 @@ static int check_manager_iid_filters(
   return 0;
 }
 
+static int check_returning_link(
+    const type_bridge_schema_package_t *package, const type_bridge_database_t *database,
+    const type_bridge_iid_t *person_iid, type_bridge_execution_diagnostics_t **diagnostics) {
+  manager_networkzhlink_manager manager = {0};
+  manager_networkzhlink_create_args_v1_t args = {0};
+  manager_networkzhlink_create *create = NULL;
+  manager_networkzhlink_insert_batch_result *inserted = NULL;
+  manager_networkzhlink_delete_returning_batch_result *deleted = NULL;
+  manager_networkzhlink *link = NULL;
+  manager_person_ref *person = NULL;
+  manager_networkzhlink_origin_player *origin = NULL;
+  manager_networkzhlink_destination_player *destination = NULL;
+  manager_identifier *identifier = NULL;
+  type_bridge_iid_t *iid = NULL;
+  type_bridge_byte_view_t text = {0};
+  size_t count = SIZE_MAX;
+  CHECK(manager_networkzhlink_manager_open(package, &manager, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_text(person_iid, &text) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_ref_from_iid(package, text, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_origin_player_from_person(person, &origin, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_destination_player_from_person(person, &destination, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_identifier_open(package, view_of("returning-link"), &identifier, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  args.struct_size = sizeof(args);
+  args.version = MANAGER_CREATE_ARGS_VERSION;
+  args.field_identifier = identifier;
+  args.role_origin = origin;
+  args.role_destination = destination;
+  CHECK(manager_networkzhlink_create_open(package, &args, &create, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_manager_database_insert(database, &manager, create, NULL, NULL, &inserted, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_insert_batch_result_item(inserted, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK && link != NULL);
+  CHECK(manager_networkzhlink_iid(link, &text, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_open(text, &iid) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_insert_batch_result_close(&inserted) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_manager_database_delete_returning(database, &manager, iid, NULL, NULL, &deleted, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_delete_returning_batch_result_count(deleted, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 1u);
+  CHECK(manager_networkzhlink_delete_returning_batch_result_item(deleted, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK && link != NULL);
+  CHECK(manager_networkzhlink_delete_returning_batch_result_close(&deleted) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_iid(link, &text, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_manager_database_delete_many_returning(database, &manager, (const type_bridge_iid_t *const *)&iid, 1u, NULL, NULL, &deleted, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_delete_returning_batch_result_count(deleted, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
+  CHECK(manager_networkzhlink_delete_returning_batch_result_close(&deleted) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_close(&iid) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_create_close(&create) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_identifier_close(&identifier) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_destination_player_close(&destination) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_origin_player_close(&origin) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_person_ref_close(&person) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(manager_networkzhlink_manager_close(&manager) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
 static int check_manager_read_twins(
     const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database,
@@ -966,12 +1019,27 @@ int main(void) {
   CHECK(type_bridge_read_transaction_close(&read, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         read == NULL && diagnostics == NULL);
-  CHECK(manager_person_database_delete_by_iid(database, dana_iid.typed,
-                                             NULL, &diagnostics) ==
-        TYPE_BRIDGE_STATUS_OK);
-  CHECK(manager_person_database_delete_by_iid(database, ada_iid.typed, NULL,
-                                             &diagnostics) ==
-        TYPE_BRIDGE_STATUS_OK);
+  CHECK(check_returning_link(package, database, ada_iid.typed, &diagnostics) == 0);
+  {
+    const type_bridge_iid_t *iids[] = {dana_iid.typed, ada_iid.typed};
+    manager_person_delete_returning_batch_result *deleted = NULL;
+    size_t deleted_count = SIZE_MAX;
+    CHECK(manager_person_manager_database_delete_returning(database, &manager, dana_iid.typed, NULL, NULL, &deleted, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_person_delete_returning_batch_result_count(deleted, &deleted_count, &diagnostics) == TYPE_BRIDGE_STATUS_OK && deleted_count == 1u);
+    CHECK(manager_person_delete_returning_batch_result_close(&deleted) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_person_manager_database_delete_many_returning(database, &manager, iids, 2u, NULL, NULL, &deleted, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_person_delete_returning_batch_result_count(deleted, &deleted_count, &diagnostics) == TYPE_BRIDGE_STATUS_OK && deleted_count == 1u);
+    CHECK(manager_person_delete_returning_batch_result_item(deleted, &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK && person != NULL);
+    CHECK(manager_person_delete_returning_batch_result_close(&deleted) == TYPE_BRIDGE_STATUS_OK);
+    {
+      char key[64] = {0};
+      CHECK(person_key(person, key, sizeof(key), &diagnostics) && strcmp(key, "data-ada") == 0);
+    }
+    CHECK(manager_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_person_manager_database_delete_many_returning(database, &manager, NULL, 0u, NULL, NULL, &deleted, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_person_delete_returning_batch_result_count(deleted, &deleted_count, &diagnostics) == TYPE_BRIDGE_STATUS_OK && deleted_count == 0u);
+    CHECK(manager_person_delete_returning_batch_result_close(&deleted) == TYPE_BRIDGE_STATUS_OK);
+  }
   CHECK(manager_person_database_count(database, NULL, &count, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         count == 0u);
