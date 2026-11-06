@@ -3658,6 +3658,15 @@ type_bridge_projected_batch_result_count(
     type_bridge_projected_batch_operation_t expected_operation,
     size_t *out_count,
     type_bridge_execution_diagnostics_t **out_diagnostics);
+/* Return an owned item only for exactly one root; otherwise OK and NULL.
+ * The returned thing is independent of the result's lifetime. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_batch_result_item(
+    const type_bridge_projected_batch_result_t *result,
+    const type_bridge_projected_token_v1_t *expected_model,
+    type_bridge_projected_batch_operation_t expected_operation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_projected_batch_result_thing_at(
     const type_bridge_projected_batch_result_t *result,

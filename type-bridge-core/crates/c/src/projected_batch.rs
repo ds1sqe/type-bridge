@@ -1237,6 +1237,49 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_result_thing_at_impl
     out_thing: *mut *mut TypeBridgeProjectedThing,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: forwarded immutable result and disjoint output contract.
+    unsafe {
+        result_thing(
+            result,
+            expected_model,
+            expected_operation,
+            Some(index),
+            out_thing,
+            out_diagnostics,
+        )
+    }
+}
+
+/// Clone the item only when the result contains exactly one root; otherwise return null.
+#[unsafe(export_name = "type_bridge_projected_batch_result_item")]
+pub(crate) unsafe extern "C" fn type_bridge_projected_batch_result_item_impl(
+    result: *const TypeBridgeProjectedBatchResult,
+    expected_model: *const TypeBridgeProjectedTokenV1,
+    expected_operation: TypeBridgeProjectedBatchOperation,
+    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: forwarded immutable result and disjoint output contract.
+    unsafe {
+        result_thing(
+            result,
+            expected_model,
+            expected_operation,
+            None,
+            out_thing,
+            out_diagnostics,
+        )
+    }
+}
+
+unsafe fn result_thing(
+    result: *const TypeBridgeProjectedBatchResult,
+    expected_model: *const TypeBridgeProjectedTokenV1,
+    expected_operation: TypeBridgeProjectedBatchOperation,
+    index: Option<usize>,
+    out_thing: *mut *mut TypeBridgeProjectedThing,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
     let preflight = match preflight_outputs(&[
         (out_thing.cast(), size_of::<*mut TypeBridgeProjectedThing>()),
         (
@@ -1266,10 +1309,13 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_result_thing_at_impl
         if let Err(diagnostic) = validate_result_fence(result, expected_model, expected_operation) {
             return return_execution_error(diagnostic, out_diagnostics);
         }
+        if index.is_none() && (result.input_count != 1 || result.things.len() != 1) {
+            return TypeBridgeStatus::Ok;
+        }
         if result.operation == ProjectedBatchOperation::Delete {
             return return_execution_error(delete_result_has_no_thing(), out_diagnostics);
         }
-        let Some(value) = result.things.get(index) else {
+        let Some(value) = result.things.get(index.unwrap_or(0)) else {
             return return_execution_error(result_index_out_of_bounds(), out_diagnostics);
         };
         let reservation =
@@ -1352,6 +1398,13 @@ const _: unsafe extern "C" fn(
     *mut *mut TypeBridgeProjectedThing,
     *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus = type_bridge_projected_batch_result_thing_at_impl;
+const _: unsafe extern "C" fn(
+    *const TypeBridgeProjectedBatchResult,
+    *const TypeBridgeProjectedTokenV1,
+    TypeBridgeProjectedBatchOperation,
+    *mut *mut TypeBridgeProjectedThing,
+    *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus = type_bridge_projected_batch_result_item_impl;
 const _: unsafe extern "C" fn(*mut *mut TypeBridgeProjectedBatchResult) -> TypeBridgeStatus =
     type_bridge_projected_batch_result_close_impl;
 
@@ -1960,6 +2013,42 @@ plays:
         );
         assert_eq!(count, 2);
         assert!(diagnostics.is_null());
+
+        // Exercise optional item ownership independently of the result owner.
+        // SAFETY: this helper exclusively owns the live fixture result.
+        let original = unsafe { &**result };
+        for length in 0..=original.things.len() {
+            let mut subset = Box::into_raw(Box::new(TypeBridgeProjectedBatchResult {
+                package: Arc::clone(&original.package),
+                model: original.model.clone(),
+                operation,
+                input_count: length,
+                things: original.things[..length].to_vec(),
+            }));
+            let mut item = ptr::dangling_mut();
+            // SAFETY: independent result owner and disjoint output slots.
+            assert_eq!(
+                unsafe {
+                    type_bridge_projected_batch_result_item_impl(
+                        subset,
+                        token,
+                        operation_to_c(operation),
+                        &mut item,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert!(diagnostics.is_null());
+            close_result(&mut subset);
+            if length == 1 {
+                // SAFETY: the item independently retains the immutable thing.
+                assert_eq!(unsafe { &*item }.value.iid(), target_iid(kind, 0));
+                close_thing(&mut item);
+            } else {
+                assert!(item.is_null());
+            }
+        }
 
         if operation == ProjectedBatchOperation::Delete {
             let mut thing = ptr::dangling_mut();
@@ -3346,7 +3435,7 @@ plays:
     }
 
     #[test]
-    fn source_activates_exactly_the_ten_compiler_anchored_batch_entries() {
+    fn source_activates_exactly_the_eleven_compiler_anchored_batch_entries() {
         let source = include_str!("projected_batch.rs");
         for name in [
             "type_bridge_projected_batch_builder_open_v1",
@@ -3358,6 +3447,7 @@ plays:
             "type_bridge_write_transaction_projected_batch_execute_v1",
             "type_bridge_projected_batch_result_count",
             "type_bridge_projected_batch_result_thing_at",
+            "type_bridge_projected_batch_result_item",
             "type_bridge_projected_batch_result_close",
         ] {
             assert!(
@@ -3369,13 +3459,13 @@ plays:
             source
                 .matches("#[unsafe(export_name = \"type_bridge_")
                 .count(),
-            10
+            11
         );
         assert_eq!(
             source
                 .matches("pub(crate) unsafe extern \"C\" fn type_bridge_")
                 .count(),
-            10
+            11
         );
     }
 }

@@ -26,7 +26,7 @@ const C_SIMULTANEOUS_MACRO_MAX: usize = 4_095;
 const C_HOSTED_OBJECT_BYTES_MIN: usize = 65_535;
 const C_EMBEDDED_BYTE_CHUNK_MAX: usize = 32_768;
 const C_CREATE_ARGS_VERSION: u32 = 1;
-const C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 607;
+const C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 608;
 const C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 357;
 // Windows Clang exposes 1580 predefined and stddef/stdint platform macros.
 // Reserve space above that measured count while keeping the complete macro
@@ -2002,6 +2002,10 @@ fn successor_batch_function_names(
             target,
             &format!("{operation_name}_batch_result_thing_at"),
         )?);
+        symbols.push(generated_symbol(
+            target,
+            &format!("{operation_name}_batch_result_item"),
+        )?);
     }
     symbols.push(generated_symbol(
         target,
@@ -2291,6 +2295,9 @@ fn render_successor_model_batch(
     let thing_at = operation
         .has_thing_result
         .then(|| function.next().expect("batch result thing symbol exists"));
+    let item = operation
+        .has_thing_result
+        .then(|| function.next().expect("batch result item symbol exists"));
     let result_close = function.next().expect("batch result close symbol exists");
     debug_assert!(function.next().is_none());
     let model_token = model_token_symbol(projection, prefix, model.id())?;
@@ -2581,11 +2588,20 @@ fn render_successor_model_batch(
          }}\n",
         operation_constant = operation.constant,
     );
-    if let Some(thing_at) = thing_at {
+    for (accessor, index_parameter, index_argument, runtime) in [
+        (
+            thing_at,
+            "size_t index, ",
+            "index, ",
+            "type_bridge_projected_batch_result_thing_at",
+        ),
+        (item, "", "", "type_bridge_projected_batch_result_item"),
+    ] {
+        let Some(accessor) = accessor else { continue };
         let _ = write!(
             output,
-            "static inline type_bridge_status_t TYPE_BRIDGE_CALL {thing_at}(\n\
-               const {result} *result, size_t index, {target} **out_entity,\n\
+            "static inline type_bridge_status_t TYPE_BRIDGE_CALL {accessor}(\n\
+               const {result} *result, {index_parameter} {target} **out_entity,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
                type_bridge_projected_thing_t *generic_entity = NULL;\n\
                type_bridge_generated_opaque_input_v1_t alias_inputs[2];\n\
@@ -2604,9 +2620,9 @@ fn render_successor_model_batch(
                if (out_entity == NULL || out_diagnostics == NULL) {{\n\
                  return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;\n\
                }}\n\
-               status = type_bridge_projected_batch_result_thing_at(\n\
+               status = {runtime}(\n\
                    (const type_bridge_projected_batch_result_t *)result, &{model_token},\n\
-                   {operation_constant}, index,\n\
+                   {operation_constant}, {index_argument}\n\
                    &generic_entity, out_diagnostics);\n\
                if (status == TYPE_BRIDGE_STATUS_OK) {{\n\
                  *out_entity = ({target} *)generic_entity;\n\

@@ -239,6 +239,11 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *write_batch_execute_fn)(
     const type_bridge_query_execution_limits_v1_t *,
     const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
     type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *batch_result_item_fn)(
+    const type_bridge_projected_batch_result_t *,
+    const type_bridge_projected_token_v1_t *,
+    type_bridge_projected_batch_operation_t, type_bridge_projected_thing_t **,
+    type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *batch_result_count_fn)(
     const type_bridge_projected_batch_result_t *,
     const type_bridge_projected_token_v1_t *,
@@ -300,6 +305,7 @@ void type_bridge_abi_probe(void) {
   TAKE(database_batch_execute_fn, type_bridge_database_projected_batch_execute_v1);
   TAKE(write_batch_execute_fn, type_bridge_write_transaction_projected_batch_execute_v1);
   TAKE(batch_result_count_fn, type_bridge_projected_batch_result_count);
+  TAKE(batch_result_item_fn, type_bridge_projected_batch_result_item);
   TAKE(batch_result_thing_fn, type_bridge_projected_batch_result_thing_at);
   TAKE(batch_result_close_fn, type_bridge_projected_batch_result_close);
 }

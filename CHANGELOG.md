@@ -11,6 +11,9 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C projected write results expose `type_bridge_projected_batch_result_item`
+  and generated `*_batch_result_item` accessors: an independently owned item
+  for exactly one root, otherwise a successful null result.
 - C `type_bridge_iid_open`, `type_bridge_iid_text`, and `type_bridge_iid_close`
   own validated TypeDB identities and preserve their original spelling.
 - C unchecked TypeQL supports database/proxy `execute_query` and owned raw
