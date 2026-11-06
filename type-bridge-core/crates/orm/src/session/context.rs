@@ -92,6 +92,7 @@ struct TransactionContextInner {
 /// transaction. Call [`commit`](Self::commit) once when all operations
 /// are complete.
 pub struct TransactionContext {
+    owns_lifecycle: bool,
     inner: Arc<Mutex<TransactionContextInner>>,
     tx_type: TxType,
     match_capabilities: CapabilitySet,
@@ -320,6 +321,67 @@ impl Drop for TransactionContextMutationLease {
 }
 
 impl TransactionContext {
+    fn require_lifecycle_owner(&self) -> Result<()> {
+        if self.owns_lifecycle {
+            Ok(())
+        } else {
+            Err(OrmError::Transaction("Migration callbacks borrow transaction execution; the engine owns commit, rollback and close".into()))
+        }
+    }
+
+    pub(crate) fn borrowed(mut self) -> Self {
+        self.owns_lifecycle = false;
+        self
+    }
+
+    pub(crate) async fn detach_borrowed(&self) -> Result<super::eager::EagerTransaction> {
+        let mut inner = self.inner.lock().await;
+        let active = inner.state == TransactionContextState::Active;
+        inner.state = TransactionContextState::Closed;
+        let mut transaction = inner.transaction.take().ok_or_else(consumed_error)?;
+        if !active {
+            transaction.close().await?;
+            return Err(OrmError::Transaction(
+                "Migration callback transaction is rollback-only".into(),
+            ));
+        }
+        Ok(transaction)
+    }
+
+    pub(crate) fn detach_borrowed_now(&self) -> Option<super::eager::EagerTransaction> {
+        let mut inner = self.inner.try_lock().ok()?;
+        inner.state = TransactionContextState::Closed;
+        inner.transaction.take()
+    }
+
+    pub(crate) fn abandon_borrowed(&self) {
+        let inner = Arc::clone(&self.inner);
+        // Invalidate escaped handles immediately when no operation owns the
+        // mutex. Otherwise close after that operation releases its lease.
+        let transaction = match inner.try_lock() {
+            Ok(mut state) => {
+                state.state = TransactionContextState::Closed;
+                Some(state.transaction.take())
+            }
+            Err(_) => None,
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let transaction = match transaction {
+                    Some(transaction) => transaction,
+                    None => {
+                        let mut state = inner.lock().await;
+                        state.state = TransactionContextState::Closed;
+                        state.transaction.take()
+                    }
+                };
+                if let Some(mut transaction) = transaction {
+                    let _ = transaction.close().await;
+                }
+            });
+        }
+    }
+
     pub(crate) fn new(
         inner: super::eager::EagerTransaction,
         tx_type: TxType,
@@ -329,6 +391,7 @@ impl TransactionContext {
         answer_limits: Option<QueryExecutionResourceLimits>,
     ) -> Self {
         Self {
+            owns_lifecycle: true,
             inner: Arc::new(Mutex::new(TransactionContextInner {
                 transaction: Some(inner),
                 state: TransactionContextState::Active,
@@ -433,6 +496,22 @@ impl TransactionContext {
         let mut guard = self.inner.lock().await;
         let tx = active_transaction(&mut guard)?;
         tx.query(typeql).await
+    }
+
+    /// Execute raw TypeQL on this exact transaction and return the ordinary
+    /// raw API's encoded JSON answer. This never changes lifecycle ownership.
+    pub async fn execute_query(
+        &self,
+        typeql: &str,
+    ) -> std::result::Result<Vec<u8>, super::raw::RawQueryError> {
+        let mut guard = self.inner.lock().await;
+        let tx = active_transaction(&mut guard).map_err(|_| {
+            super::raw::RawQueryError::refusal(
+                "raw_transaction_closed",
+                "transaction is no longer available for raw execution",
+            )
+        })?;
+        tx.query_raw(typeql).await
     }
 
     /// Stream a prepared read while preserving the caller's transaction lifecycle.
@@ -580,6 +659,7 @@ impl TransactionContext {
 
     /// Commit the shared transaction.
     pub async fn commit(&self) -> Result<()> {
+        self.require_lifecycle_owner()?;
         let mut inner = self.inner.lock().await;
         let mut transaction = begin_commit(&mut inner)
             .map_err(CommitOnceError::into_classified)
@@ -600,6 +680,8 @@ impl TransactionContext {
     /// provider-proven abort from an unknown commit outcome without exposing
     /// provider text across their public boundary.
     pub async fn commit_classified(&self) -> std::result::Result<(), ClassifiedCommitError> {
+        self.require_lifecycle_owner()
+            .map_err(ClassifiedCommitError::from)?;
         self.commit_classified_once()
             .await
             .map_err(CommitOnceError::into_classified)
@@ -608,6 +690,9 @@ impl TransactionContext {
     /// Commit with the exact redacted binding-neutral diagnostic contract.
     #[doc(hidden)]
     pub async fn commit_sdk(&self) -> std::result::Result<(), SdkExecutionDiagnostic> {
+        self.require_lifecycle_owner().map_err(|error| {
+            crate::execution_diagnostic::lower_execution_error(error, SdkProviderOperation::Write)
+        })?;
         self.commit_classified_once()
             .await
             .map_err(|error| match error {
@@ -624,6 +709,7 @@ impl TransactionContext {
 
     /// Roll back writes and retain this shared context for more work.
     pub async fn rollback(&self) -> Result<()> {
+        self.require_lifecycle_owner()?;
         let mut inner = self.inner.lock().await;
         let mut transaction = match inner.state {
             TransactionContextState::RolledBack => return Ok(()),
@@ -660,6 +746,7 @@ impl TransactionContext {
 
     /// Close the shared transaction without committing.
     pub async fn close(&self) -> Result<()> {
+        self.require_lifecycle_owner()?;
         let transaction = {
             let mut inner = self.inner.lock().await;
             match inner.state {
@@ -1019,6 +1106,7 @@ fn transaction_rollback_only_diagnostic() -> SdkExecutionDiagnostic {
 impl Clone for TransactionContext {
     fn clone(&self) -> Self {
         Self {
+            owns_lifecycle: self.owns_lifecycle,
             inner: Arc::clone(&self.inner),
             tx_type: self.tx_type,
             match_capabilities: self.match_capabilities.clone(),
@@ -1232,6 +1320,36 @@ mod tests {
 
     fn active_context() -> (TransactionContext, Arc<Calls>) {
         new_context(CommitResult::Success, false, false, None, None, None)
+    }
+
+    #[tokio::test]
+    async fn callback_context_rejects_lifecycle_and_invalidates_every_clone() {
+        let (context, calls) = active_context();
+        let context = context.borrowed();
+        let escaped = context.clone();
+        assert!(context.commit().await.is_err());
+        assert!(context.commit_classified().await.is_err());
+        assert!(context.commit_sdk().await.is_err());
+        assert!(context.rollback().await.is_err());
+        assert!(context.close().await.is_err());
+        context.query("insert $p isa person;").await.unwrap();
+        let mut restored = context.detach_borrowed().await.unwrap();
+        assert!(escaped.query("insert $p isa person;").await.is_err());
+        restored.query("insert $p isa person;").await.unwrap();
+        restored.commit().await.unwrap();
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.commits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn abandoned_callback_closes_without_committing_and_refuses_escaped_handles() {
+        let (context, calls) = active_context();
+        let context = context.borrowed();
+        context.abandon_borrowed();
+        assert!(context.query("insert $p isa person;").await.is_err());
+        tokio::task::yield_now().await;
+        assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
     }
 
     struct PlanTransaction {

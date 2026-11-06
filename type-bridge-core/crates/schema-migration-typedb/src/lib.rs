@@ -30,6 +30,8 @@ pub use legacy_schema::{
 };
 mod observation;
 mod provider;
+mod user_steps;
+pub use user_steps::MigrationUserSteps;
 mod runner;
 mod store;
 mod wire;

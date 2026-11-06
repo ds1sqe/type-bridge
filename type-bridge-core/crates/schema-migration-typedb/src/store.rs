@@ -1721,6 +1721,70 @@ impl<'a> TypeDbMigrationStore<'a> {
         }
     }
 
+    /// Recover the original execution basis from journal ordering. This is only
+    /// a reconstruction hint: the bound plan is subsequently checked against
+    /// every byte of the persisted plan record by the coordinator.
+    pub(crate) async fn load_execution_source_basis(
+        &self,
+        lease: &MigrationLease,
+        rollback: bool,
+    ) -> Result<
+        Option<std::collections::BTreeSet<type_bridge_contract::migration::MigrationId>>,
+        Diagnostic,
+    > {
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Read,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
+        let result = async {
+            load_active_control(&mut transaction, lease).await?;
+            let rows = load_rows(
+                &mut transaction,
+                lease.scope(),
+                Some(if rollback {
+                    ROLLBACK_PLAN_RECORD_KIND
+                } else {
+                    PLAN_RECORD_KIND
+                }),
+            )
+            .await?;
+            let row = match rows.as_slice() {
+                [] => return Ok(None),
+                [row] => row,
+                _ => {
+                    return Err(failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_typedb_multiple_open_plans",
+                        "scope has multiple open execution plans",
+                    ));
+                }
+            };
+            let mut entries = self
+                .load_applied_rows_in_transaction(&mut transaction, lease.scope(), lease.holder())
+                .await?;
+            let mut retired = self
+                .load_rolled_back_in_transaction(&mut transaction, lease.scope(), lease.holder())
+                .await?;
+            entries.retain(|entry| entry.sequence() < row.sequence);
+            retired.retain(|entry| entry.sequence() < row.sequence);
+            let entries = active_applied_entries(entries, &retired)?;
+            Ok(Some(
+                entries
+                    .into_iter()
+                    .map(|entry| entry.record().migration_id().clone())
+                    .collect(),
+            ))
+        }
+        .await;
+        let close = transaction.close().await.map_err(map_orm_error);
+        let result = result?;
+        close?;
+        Ok(result)
+    }
+
     async fn load_applied_inner(
         &self,
         lease: &MigrationLease,

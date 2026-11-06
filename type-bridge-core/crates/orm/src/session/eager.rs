@@ -31,6 +31,20 @@ impl EagerTransaction {
         }
     }
 
+    pub(crate) fn latch_rollback_only(&mut self) {
+        self.plan_rollback_only = true;
+    }
+
+    pub(crate) fn take_for_borrow(&mut self) -> Self {
+        Self {
+            inner: self.inner.take(),
+            tx_type: self.tx_type,
+            server_version: self.server_version,
+            never_commit: self.never_commit,
+            plan_rollback_only: self.plan_rollback_only,
+        }
+    }
+
     pub(crate) fn set_never_commit(&mut self, never_commit: bool) {
         self.never_commit = never_commit;
     }

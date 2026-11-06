@@ -937,8 +937,8 @@ async fn sync_schema_rejects_an_anchor_bound_cutover_before_user_typeql() {
     let queries = queries.lock().unwrap();
     assert_eq!(
         queries.len(),
-        9,
-        "native fence preserves its statement count"
+        6,
+        "imported guard reads only current control and anchor"
     );
     assert!(
         queries
@@ -976,7 +976,7 @@ async fn sync_schema_keeps_a_canonical_cutover_closed_with_a_reserved_function_r
     assert!(
         queries
             .iter()
-            .any(|(query, _)| query.contains(LEGACY_CUTOVER_SENTINEL_NAME))
+            .all(|(query, _)| !query.contains(LEGACY_CUTOVER_SENTINEL_NAME))
     );
     assert!(
         queries
@@ -1014,7 +1014,7 @@ async fn sync_schema_keeps_a_canonical_cutover_closed_with_a_structured_user_att
     assert!(
         queries
             .iter()
-            .any(|(query, _)| query.contains(LEGACY_CUTOVER_SENTINEL_NAME))
+            .all(|(query, _)| !query.contains(LEGACY_CUTOVER_SENTINEL_NAME))
     );
     assert!(
         queries
@@ -1243,7 +1243,7 @@ async fn sync_schema_treats_an_unoccupied_ledger_extension_as_a_released_collisi
 }
 
 #[tokio::test]
-async fn sync_schema_fails_before_sentinel_probes_when_ledger_extensions_have_marker_rows() {
+async fn sync_schema_keeps_imported_cutover_closed_without_probing_old_ledger_extensions() {
     let export = format!(
         "{MANAGED_FENCE_SCHEMA_TYPEQL}\n{}",
         legacy_ledger_schema_with_extensions()
@@ -1254,12 +1254,11 @@ async fn sync_schema_fails_before_sentinel_probes_when_ledger_extensions_have_ma
     let mut schema = SchemaManager::new(&db);
     schema.register_entity::<Person>();
 
-    let error = schema
-        .sync_schema(true, false)
-        .await
-        .expect_err("ledger marker rows turn a frozen-fact extension into corruption");
+    let error = schema.sync_schema(true, false).await.expect_err(
+        "imported anchor keeps schema sync closed independently of old ledger extensions",
+    );
 
-    assert!(error.to_string().contains("cutover state is inconsistent"));
+    assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
     let queries = queries.lock().unwrap();
     assert!(
         queries
@@ -1322,7 +1321,7 @@ async fn sync_schema_allows_complete_cutover_row_lookalikes_without_the_managed_
 }
 
 #[tokio::test]
-async fn sync_schema_fails_closed_when_managed_rows_lose_the_frozen_legacy_schema() {
+async fn sync_schema_keeps_imported_cutover_closed_without_old_ledger_schema() {
     for backend in [
         MockBackend::with_managed_rows_and_missing_legacy_ledger(),
         MockBackend::with_managed_rows_and_partial_legacy_ledger(),
@@ -1335,9 +1334,9 @@ async fn sync_schema_fails_closed_when_managed_rows_lose_the_frozen_legacy_schem
         let error = schema
             .sync_schema(true, false)
             .await
-            .expect_err("managed control/anchor rows make ledger-schema loss corruption");
+            .expect_err("imported control/anchor remain authoritative after old ledger removal");
 
-        assert!(error.to_string().contains("cutover state is inconsistent"));
+        assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
         let queries = queries.lock().unwrap();
         assert!(
             queries
@@ -1354,7 +1353,7 @@ async fn sync_schema_fails_closed_when_managed_rows_lose_the_frozen_legacy_schem
 }
 
 #[tokio::test]
-async fn sync_schema_fails_closed_on_a_mismatched_anchor_sentinel_pair() {
+async fn sync_schema_keeps_imported_cutover_closed_without_reading_old_sentinel() {
     let backend = MockBackend::with_malformed_legacy_cutover();
     let queries = Arc::clone(&backend.queries);
     let db = Database::with_backend(Box::new(backend), "testdb");
@@ -1364,10 +1363,9 @@ async fn sync_schema_fails_closed_on_a_mismatched_anchor_sentinel_pair() {
     let error = schema
         .sync_schema(true, false)
         .await
-        .expect_err("a malformed anchored pair must fail closed");
+        .expect_err("imported anchor remains authoritative independently of the old sentinel");
 
-    assert!(error.to_string().contains("cutover state is inconsistent"));
-    assert!(!error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
+    assert!(error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE));
     let queries = queries.lock().unwrap();
     assert!(
         queries

@@ -120,6 +120,7 @@ impl From<MigrationApplyPlanError> for MigrationDirectoryApplyError {
 /// The runner creates one process-local [`TypeDbExecutionBinding`] at
 /// construction and reuses it for every store and provider it composes.
 pub struct TypeDbMigrationRunner {
+    user_steps: crate::MigrationUserSteps,
     execution_binding: TypeDbExecutionBinding,
     managed_database: Arc<Database>,
     journal_database: Arc<Database>,
@@ -690,6 +691,7 @@ impl TypeDbMigrationRunner {
             context.clone(),
         );
         Self {
+            user_steps: crate::MigrationUserSteps::default(),
             execution_binding,
             managed_database,
             journal_database,
@@ -698,6 +700,12 @@ impl TypeDbMigrationRunner {
             lowering_binding,
             policy,
         }
+    }
+
+    /// Register process-local functions for User programs in this history.
+    pub fn with_user_steps(mut self, steps: crate::MigrationUserSteps) -> Self {
+        self.user_steps = steps;
+        self
     }
 
     fn require_supported_execution_binding(&self) -> Result<(), Diagnostic> {
@@ -805,7 +813,7 @@ impl TypeDbMigrationRunner {
             .await?;
         store.ensure_control_schema().await?;
 
-        let basis = self.load_applied_basis(&store, holder).await?;
+        let (basis, open_basis) = self.load_applied_basis(&store, holder, false).await?;
         let pending = match target {
             MigrationApplyTarget::DefaultHead => graph.plan_apply_to_default_head(&basis)?,
             MigrationApplyTarget::Explicit(targets) => graph.plan_apply(&basis, targets)?,
@@ -845,7 +853,7 @@ impl TypeDbMigrationRunner {
 
         let plan = build_verified_migration_apply_plan(
             graph,
-            &basis,
+            open_basis.as_ref().unwrap_or(&basis),
             target,
             &self.context,
             &self.lowering_binding,
@@ -868,7 +876,8 @@ impl TypeDbMigrationRunner {
             observation_authority.clone(),
             plan.schema_authorities(),
         )?
-        .for_replayed_profile_bridge(graph, &plan);
+        .for_replayed_profile_bridge(graph, &plan)
+        .with_user_steps(self.user_steps.clone());
         let guarded_store = LegacyBoundStore::for_apply(
             &store,
             &self.managed_database,
@@ -942,7 +951,7 @@ impl TypeDbMigrationRunner {
         )
         .await?;
         store.ensure_control_schema().await?;
-        let basis = self.load_applied_basis(&store, holder).await?;
+        let (basis, _) = self.load_applied_basis(&store, holder, false).await?;
         if profile_upgrade_bridge_recorded(&graph, bridge, &basis)? {
             return Ok(MigrationDirectoryApplyOutcome::UpToDate);
         }
@@ -1112,6 +1121,7 @@ impl TypeDbMigrationRunner {
                     crate::provider::data::validate(
                         step,
                         type_bridge_schema_migration::DataStepDirection::Reverse,
+                        &self.user_steps,
                     )?;
                 }
             }
@@ -1144,7 +1154,7 @@ impl TypeDbMigrationRunner {
             .with_import_binding(import_binding);
         store.ensure_control_schema().await?;
 
-        let basis = self.load_applied_basis(&store, holder).await?;
+        let (basis, open_basis) = self.load_applied_basis(&store, holder, true).await?;
         let legacy_binding = LegacyExecutionBinding::from_applied_graph(
             &graph,
             &basis,
@@ -1187,7 +1197,7 @@ impl TypeDbMigrationRunner {
 
         let plan = build_verified_migration_rollback_plan(
             &graph,
-            &basis,
+            open_basis.as_ref().unwrap_or(&basis),
             removals,
             &self.context,
             &self.lowering_binding,
@@ -1207,7 +1217,8 @@ impl TypeDbMigrationRunner {
             self.context.scope_id().as_str().to_owned(),
             observation_authority.clone(),
             plan.schema_authorities(),
-        )?;
+        )?
+        .with_user_steps(self.user_steps.clone());
         let guarded_store = LegacyBoundStore::for_rollback(
             &store,
             &self.managed_database,
@@ -1283,6 +1294,7 @@ impl TypeDbMigrationRunner {
                 crate::provider::data::validate(
                     step,
                     type_bridge_schema_migration::DataStepDirection::Forward,
+                    &self.user_steps,
                 )?;
             }
         }
@@ -1293,12 +1305,18 @@ impl TypeDbMigrationRunner {
         &self,
         store: &TypeDbMigrationStore<'_>,
         holder: &LeaseHolderId,
-    ) -> Result<BTreeSet<MigrationId>, Diagnostic> {
+        rollback: bool,
+    ) -> Result<(BTreeSet<MigrationId>, Option<BTreeSet<MigrationId>>), Diagnostic> {
         let scope = ExecutionScope::new(self.context.scope_id().clone());
         let lease = store.acquire(&scope, holder).await?;
-        let loaded = store.load_applied(&lease).await;
+        let loaded = async {
+            let entries = store.load_applied(&lease).await?;
+            let original = store.load_execution_source_basis(&lease, rollback).await?;
+            Ok((entries, original))
+        }
+        .await;
         let release = store.release(&lease).await;
-        let entries = match (loaded, release) {
+        let (entries, original) = match (loaded, release) {
             (Ok(entries), Ok(())) => entries,
             (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
             (Err(primary), Err(secondary)) => {
@@ -1310,10 +1328,13 @@ impl TypeDbMigrationRunner {
                 ));
             }
         };
-        Ok(entries
-            .iter()
-            .map(|entry| entry.record().migration_id().clone())
-            .collect())
+        Ok((
+            entries
+                .iter()
+                .map(|entry| entry.record().migration_id().clone())
+                .collect(),
+            original,
+        ))
     }
 
     fn expected_applied_state(

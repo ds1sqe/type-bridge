@@ -8,10 +8,14 @@ use type_bridge_schema_migration::{
     await_interruptible_operation,
 };
 
-pub(crate) fn validate(step: &DataStep, direction: DataStepDirection) -> Result<(), Diagnostic> {
+pub(crate) fn validate(
+    step: &DataStep,
+    direction: DataStepDirection,
+    users: &crate::MigrationUserSteps,
+) -> Result<(), Diagnostic> {
     let program = program(step, direction)?;
     if let DataProgram::User { step_id } = program {
-        return Err(failure(DiagnosticCategory::InvalidContract, "migration_user_step_unregistered", "user data step requires a registered callback in an SDK migration catalog; CLI apply cannot execute user code").with_detail("step_id", step_id.as_str().to_owned()));
+        users.callback(step_id, direction)?;
     }
     Ok(())
 }
@@ -141,7 +145,7 @@ impl TypeDbMigrationProvider {
         direction: DataStepDirection,
         control: &MigrationExecutionControl,
     ) -> Result<(), GroupCommitFailure> {
-        validate(step, direction).map_err(definitely_aborted)?;
+        validate(step, direction, &self.user_steps).map_err(definitely_aborted)?;
         self.binding
             .require_lease(lease)
             .map_err(definitely_aborted)?;
@@ -194,8 +198,15 @@ impl TypeDbMigrationProvider {
                 DataProgram::Typeql { text } => {
                     tx.query(text).await.map_err(map_orm_error)?;
                 }
-                DataProgram::User { .. } => {
-                    validate(step, direction)?;
+                DataProgram::User { step_id } => {
+                    let borrowed = tx.borrow_context(&self.binding.managed_database);
+                    let result = self
+                        .user_steps
+                        .execute(step_id, direction, borrowed.context().clone())
+                        .await;
+                    let restored = borrowed.finish().await.map_err(map_orm_error);
+                    result?;
+                    restored?;
                 }
             }
             control.check()?;

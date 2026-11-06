@@ -12,6 +12,24 @@ pub struct OwnedTransaction {
 }
 
 impl OwnedTransaction {
+    /// Lend this exact provider transaction to eager typed managers and raw
+    /// queries. The scope owns invalidation; borrowed contexts cannot commit,
+    /// roll back or close. Call `finish` before resuming engine execution.
+    #[doc(hidden)]
+    pub fn borrow_context<'a>(
+        &'a mut self,
+        database: &super::database::Database,
+    ) -> BorrowedTransactionContext<'a> {
+        let context = database
+            .context_from_owned(self.inner.take_for_borrow())
+            .borrowed();
+        BorrowedTransactionContext {
+            owner: self,
+            context,
+            finished: false,
+        }
+    }
+
     pub(crate) fn from_eager(inner: super::eager::EagerTransaction) -> Self {
         Self { inner }
     }
@@ -88,5 +106,38 @@ impl OwnedTransaction {
     /// The transaction type.
     pub fn tx_type(&self) -> TxType {
         self.inner.tx_type()
+    }
+}
+
+/// Engine-owned scope for a callback's temporary transaction context.
+#[doc(hidden)]
+pub struct BorrowedTransactionContext<'a> {
+    owner: &'a mut OwnedTransaction,
+    context: super::context::TransactionContext,
+    finished: bool,
+}
+impl BorrowedTransactionContext<'_> {
+    /// Shared execution only; lifecycle calls are refused by the context.
+    pub fn context(&self) -> &super::context::TransactionContext {
+        &self.context
+    }
+
+    /// Invalidate all callback handles and return the same transaction to its owner.
+    pub async fn finish(mut self) -> Result<()> {
+        self.owner.inner = self.context.detach_borrowed().await?;
+        self.finished = true;
+        Ok(())
+    }
+}
+impl Drop for BorrowedTransactionContext<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            if let Some(mut transaction) = self.context.detach_borrowed_now() {
+                transaction.latch_rollback_only();
+                self.owner.inner = transaction;
+            } else {
+                self.context.abandon_borrowed();
+            }
+        }
     }
 }

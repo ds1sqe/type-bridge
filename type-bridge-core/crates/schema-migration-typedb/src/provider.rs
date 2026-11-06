@@ -154,6 +154,7 @@ fn require_lease_binding(
 /// Every execution method rejects unbound leases and leases issued under a
 /// different [`TypeDbExecutionBinding`] before opening a TypeDB transaction.
 pub struct TypeDbMigrationProvider {
+    user_steps: crate::MigrationUserSteps,
     schema_authorities: Vec<DeclaredSchema>,
     binding: TypeDbExecutionBinding,
     legacy_binding: Option<(LegacyExecutionBinding, String)>,
@@ -162,6 +163,12 @@ pub struct TypeDbMigrationProvider {
 }
 
 impl TypeDbMigrationProvider {
+    /// Attach process-local user functions for this execution.
+    pub fn with_user_steps(mut self, steps: crate::MigrationUserSteps) -> Self {
+        self.user_steps = steps;
+        self
+    }
+
     /// Construct a provider from one shared exact TypeDB execution binding.
     ///
     /// Pass the same binding used to construct the cooperating
@@ -173,6 +180,7 @@ impl TypeDbMigrationProvider {
     ) -> Result<Self, Diagnostic> {
         binding.require_supported()?;
         Ok(Self {
+            user_steps: crate::MigrationUserSteps::default(),
             schema_authorities: schema_authorities.to_vec(),
             binding: binding.clone(),
             legacy_binding: None,
@@ -308,7 +316,7 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
         step: &DataStep,
         direction: DataStepDirection,
     ) -> Result<(), Diagnostic> {
-        data::validate(step, direction)
+        data::validate(step, direction, &self.user_steps)
     }
     fn observe_data_step<'a>(
         &'a self,
@@ -1064,7 +1072,7 @@ fn provider_schema_cleanup_failure(
     diagnostic
 }
 
-fn failure(
+pub(crate) fn failure(
     category: DiagnosticCategory,
     code: &'static str,
     message: impl Into<String>,

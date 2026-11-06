@@ -604,7 +604,30 @@ impl Database {
         let tx = self
             .open_eager(tx_type.into(), super::staged::TransactionOptions::default())
             .await?;
-        Ok(TransactionContext::new(
+        Ok(self.context_from_eager(tx, tx_type, capabilities, answer_limits))
+    }
+
+    pub(crate) fn context_from_owned(
+        &self,
+        tx: super::eager::EagerTransaction,
+    ) -> TransactionContext {
+        let tx_type = tx.tx_type();
+        self.context_from_eager(
+            tx,
+            tx_type,
+            self.backend.match_capabilities(),
+            self.answer_limits,
+        )
+    }
+
+    fn context_from_eager(
+        &self,
+        tx: super::eager::EagerTransaction,
+        tx_type: TxType,
+        capabilities: crate::match_request::CapabilitySet,
+        answer_limits: Option<QueryExecutionResourceLimits>,
+    ) -> TransactionContext {
+        TransactionContext::new(
             tx,
             tx_type,
             capabilities,
@@ -612,7 +635,7 @@ impl Database {
             self.execution_identity(),
             answer_limits,
         )
-        .with_query_limits(self.query_limits.clone()))
+        .with_query_limits(self.query_limits.clone())
     }
 
     /// Execute read-only plans in one read transaction, then close without
