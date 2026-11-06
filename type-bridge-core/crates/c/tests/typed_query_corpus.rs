@@ -1035,7 +1035,20 @@ fn c_enum_constants_spell_the_corpus_canonical_spellings() {
             .copied()
             .collect();
         let constants = header_constants(prefix);
-        let spelled: BTreeSet<&str> = constants.keys().map(String::as_str).collect();
+        // Public C uses LIKE while the unchanged wire comparator is `regex`.
+        if *kind == "comparison_operator" {
+            assert_eq!(constants.get("like"), Some(&10));
+        }
+        let spelled: BTreeSet<&str> = constants
+            .keys()
+            .map(|name| {
+                if *kind == "comparison_operator" && name == "like" {
+                    "regex"
+                } else {
+                    name.as_str()
+                }
+            })
+            .collect();
         let exposed: BTreeSet<&str> = canonical
             .iter()
             .filter(|spelling| !not_exposed.contains(spelling))
