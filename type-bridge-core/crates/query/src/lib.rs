@@ -207,8 +207,8 @@ impl ValidatedMigrationAssertionPlan {
     pub fn native_plan(
         &self,
         authority: &type_bridge_contract::schema::DeclaredSchema,
-    ) -> Result<type_bridge_contract::query_plan::v3::QueryPlanV3, Diagnostic> {
-        use type_bridge_contract::query_plan::v3::{Operation, PlanSpec, QueryPlanV3, Stage};
+    ) -> Result<type_bridge_contract::query_plan::QueryPlan, Diagnostic> {
+        use type_bridge_contract::query_plan::{Operation, PlanSpec, QueryPlan, Stage};
         if authority.declared_identity_fingerprint() != self.source_state.declared_identity() {
             return Err(Diagnostic::new(
                 DiagnosticCategory::Integrity,
@@ -217,7 +217,7 @@ impl ValidatedMigrationAssertionPlan {
                 "native assertion authority differs from the validated declaration",
             ));
         }
-        QueryPlanV3::new_with_limits(
+        QueryPlan::new_with_limits(
             PlanSpec {
                 bindings: self.plan.bindings().to_vec(),
                 inputs: vec![],
@@ -244,7 +244,7 @@ impl ValidatedMigrationAssertionPlan {
             authority,
             type_bridge_contract::limits::QueryLimits {
                 structural: self.structural_limits,
-                ..type_bridge_contract::limits::QueryLimits::V3
+                ..type_bridge_contract::limits::QueryLimits::PLAN
             },
         )
     }

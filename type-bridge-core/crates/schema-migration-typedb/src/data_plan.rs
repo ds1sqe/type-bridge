@@ -6,8 +6,8 @@ use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
-use type_bridge_contract::query_plan::v3::{
-    DeleteItem, InsertThing, Operation, Pattern, PlanSpec, QueryPlanV3, Stage, WriteReturns,
+use type_bridge_contract::query_plan::{
+    DeleteItem, InsertThing, Operation, Pattern, PlanSpec, QueryPlan, Stage, WriteReturns,
 };
 use type_bridge_contract::query_plan::{QueryOperand, QueryOutput, QueryPattern};
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId, OwnsFactId};
@@ -17,7 +17,7 @@ use type_bridge_orm::session::staged::PlanAnswer;
 
 #[derive(Debug)]
 pub(crate) struct DataQuery {
-    pub(crate) plan: QueryPlanV3,
+    pub(crate) plan: QueryPlan,
     aliases: Vec<String>,
 }
 impl DataQuery {
@@ -175,7 +175,7 @@ impl Builder {
         self,
         operation: Operation,
         columns: Vec<BindingId>,
-    ) -> Result<QueryPlanV3, Diagnostic> {
+    ) -> Result<QueryPlan, Diagnostic> {
         let (schema, semantics) = AUTHORITY.as_ref().map_err(Clone::clone)?;
         self.finish_with(operation, columns, schema, semantics)
     }
@@ -185,8 +185,8 @@ impl Builder {
         columns: Vec<BindingId>,
         schema: &DeclaredSchema,
         semantics: &ManagedSemanticSchemaFingerprint,
-    ) -> Result<QueryPlanV3, Diagnostic> {
-        QueryPlanV3::new(
+    ) -> Result<QueryPlan, Diagnostic> {
+        QueryPlan::new(
             PlanSpec {
                 bindings: self.bindings,
                 inputs: vec![],
@@ -250,7 +250,7 @@ pub(crate) fn read_managed_anchor(bound: &[(&str, &str)]) -> Result<DataQuery, D
     })
 }
 
-pub(crate) fn insert(kind: &str, fields: &[(&str, &str)]) -> Result<QueryPlanV3, Diagnostic> {
+pub(crate) fn insert(kind: &str, fields: &[(&str, &str)]) -> Result<QueryPlan, Diagnostic> {
     let mut builder = Builder {
         bindings: vec![],
         stages: vec![],
@@ -269,7 +269,7 @@ pub(crate) fn delete_kinds(
     scope: &str,
     kind_field: &str,
     kinds: &[&str],
-) -> Result<QueryPlanV3, Diagnostic> {
+) -> Result<QueryPlan, Diagnostic> {
     let mut builder = Builder {
         bindings: vec![],
         stages: vec![],
@@ -316,7 +316,7 @@ pub(crate) fn replace_and_insert(
     replacement: &[(&str, &str)],
     inserted_kind: &str,
     inserted: &[(&str, &str)],
-) -> Result<QueryPlanV3, Diagnostic> {
+) -> Result<QueryPlan, Diagnostic> {
     let mut builder = Builder {
         bindings: vec![],
         stages: vec![],

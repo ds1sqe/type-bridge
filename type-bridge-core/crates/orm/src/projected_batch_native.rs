@@ -9,7 +9,7 @@ use crate::query_plan_exec::{self, remote_value};
 use crate::session::backend::QueryResult;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::query_plan::QueryPattern;
-use type_bridge_contract::query_plan::v3::{DeleteItem, DocumentRole, Stage};
+use type_bridge_contract::query_plan::{DeleteItem, DocumentRole, Stage};
 use type_bridge_contract::query_remote::RemoteValue;
 
 fn diagnostic(error: Diagnostic) -> SdkExecutionDiagnostic {
@@ -501,7 +501,7 @@ impl ProjectedBatchExecutor<'_> {
         let entries = plans
             .iter()
             .map(|native| {
-                type_bridge_contract::query_remote_v3::StagedPlanV3::new(
+                type_bridge_contract::query_remote::StagedPlan::new(
                     native.local(),
                     native.local().given_rows().unwrap_or_default().to_vec(),
                     plan.authority.declared(),
@@ -1128,7 +1128,7 @@ struct ReferenceOrder<'plan, 'schema> {
 struct Consumer<'a, R> {
     record: &'a mut R,
     inner: &'a mut dyn AnswerConsumer,
-    plan: &'a type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &'a type_bridge_contract::query_plan::QueryPlan,
     reply: Reply,
     deferred: Option<SdkExecutionDiagnostic>,
 }
@@ -1350,7 +1350,7 @@ impl<R: FnMut(&AnswerItem) + Send> AnswerConsumer for Consumer<'_, R> {
 }
 
 fn accept_hydration_answer(
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
     answer: crate::query_plan_exec::PlanAnswer,
     inner: &mut dyn AnswerConsumer,
 ) -> Result<(), SdkExecutionDiagnostic> {
@@ -1358,7 +1358,7 @@ fn accept_hydration_answer(
 }
 
 fn accept_native_answer(
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
     answer: crate::query_plan_exec::PlanAnswer,
     reply: Reply,
     inner: &mut dyn AnswerConsumer,
@@ -1395,7 +1395,7 @@ fn accept_native_answer(
     Ok(())
 }
 
-fn deletion_reply(plan: &type_bridge_contract::query_plan::v3::QueryPlanV3) -> Reply {
+fn deletion_reply(plan: &type_bridge_contract::query_plan::QueryPlan) -> Reply {
     if matched_delete(plan) {
         Reply::MatchedDeletion
     } else {
@@ -1403,11 +1403,11 @@ fn deletion_reply(plan: &type_bridge_contract::query_plan::v3::QueryPlanV3) -> R
     }
 }
 
-fn matched_delete(plan: &type_bridge_contract::query_plan::v3::QueryPlanV3) -> bool {
+fn matched_delete(plan: &type_bridge_contract::query_plan::QueryPlan) -> bool {
     matches!(
         plan.operation(),
-        type_bridge_contract::query_plan::v3::Operation::Write {
-            returns: type_bridge_contract::query_plan::v3::WriteReturns::Matched,
+        type_bridge_contract::query_plan::Operation::Write {
+            returns: type_bridge_contract::query_plan::WriteReturns::Matched,
         }
     )
 }
@@ -1498,7 +1498,7 @@ async fn dispatch<R: FnMut(&AnswerItem) + Send>(
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_query<R: FnMut(&AnswerItem) + Send>(
     lease: &mut TransactionContextMutationLease,
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
     query: crate::session::staged::StagedQuery,
     reply: Reply,
     prepared: &PreparedProjectedBatchInvocation<'_>,

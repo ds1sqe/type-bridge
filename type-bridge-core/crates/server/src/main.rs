@@ -167,7 +167,7 @@ async fn build_staged_state(
     outbound_transport: &PreparedSecureTypeDBConnection,
 ) -> Result<transport::staged_state::StagedQueryState, Box<dyn std::error::Error>> {
     use type_bridge_contract::fingerprint::SemanticProfileId;
-    use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
+    use type_bridge_contract::query_plan::query_plan_capability_vocabulary;
     use type_bridge_orm::session::backend::AnswerLimits;
     use type_bridge_schema::{
         ManagedDeltaContext, decode_schema_authority, schema_authority_capability_vocabulary,
@@ -221,7 +221,7 @@ async fn build_staged_state(
     }
 
     // Advertise only the native staged plan vocabulary.
-    let mut advertised = query_plan_v3_capability_vocabulary();
+    let mut advertised = query_plan_capability_vocabulary();
     if database.supports_given_stage() {
         advertised.insert(type_bridge_contract::query_given_rows_capability());
     }

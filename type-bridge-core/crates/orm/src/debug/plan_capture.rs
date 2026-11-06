@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::query_plan::v3::QueryPlanV3;
+use type_bridge_contract::query_plan::QueryPlan;
 
 struct Sink {
     output: PathBuf,
@@ -14,7 +14,7 @@ struct Sink {
     lock: Mutex<()>,
 }
 
-pub(crate) fn record(plan: &QueryPlanV3) {
+pub(crate) fn record(plan: &QueryPlan) {
     static SINK: OnceLock<Option<Sink>> = OnceLock::new();
     let sink = SINK.get_or_init(|| {
         std::env::var_os("TYPE_BRIDGE_TEST_PLAN_CAPTURE").map(|output| Sink {
@@ -32,7 +32,7 @@ pub(crate) fn record(plan: &QueryPlanV3) {
     }
 }
 
-fn append(output: &Path, label: &Path, plans: &[&QueryPlanV3]) -> std::io::Result<()> {
+fn append(output: &Path, label: &Path, plans: &[&QueryPlan]) -> std::io::Result<()> {
     let label = fs::read_to_string(label)?;
     let label = label.trim();
     if label.is_empty() {

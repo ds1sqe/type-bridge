@@ -212,7 +212,7 @@ impl PlanAuthority {
         self.query_limits
             .as_deref()
             .copied()
-            .unwrap_or(type_bridge_contract::limits::QueryLimits::V3)
+            .unwrap_or(type_bridge_contract::limits::QueryLimits::PLAN)
     }
 
     pub(crate) fn draft(&self, transport: super::ValueTransport) -> super::PlanDraft {

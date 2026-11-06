@@ -141,7 +141,7 @@ nav:
       - Upgrading to 3.0: guide/upgrade-3.0.md
       - Upgrading to 2.3: guide/upgrade-2.3.md
       - Upgrading to 2.1: guide/upgrade-v2.md
-  - Query Plan Wire Format: reference/query-plan-v3.md
+  - Query Plan Wire Format: reference/query-plan.md
   - Python API: reference/
   - Development:
     - development/index.md

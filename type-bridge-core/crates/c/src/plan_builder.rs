@@ -32,7 +32,7 @@ use std::sync::Arc;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
 use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
-use type_bridge_contract::query_plan::v3::{ArithOp, Builtin, DocumentRole, Expr, PlanBuilder};
+use type_bridge_contract::query_plan::{ArithOp, Builtin, DocumentRole, Expr, PlanBuilder};
 use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;

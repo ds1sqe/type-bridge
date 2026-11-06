@@ -18,8 +18,8 @@ use type_bridge::{
 use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::query_plan::ModelValue;
-use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
-use type_bridge_contract::query_remote_v3::{StagedRequestV3,StagedReplyV3,StagedOutcomeV3,StagedAnswerV3};
+use type_bridge_contract::query_plan::query_plan_capability_vocabulary;
+use type_bridge_contract::query_remote::{StagedRequest,StagedReply,StagedOutcome,StagedAnswer};
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding, RemoteFieldValue};
 
 use type_bridge_contract::query_model_evidence::{HydrationAttributeEvidence, HydrationGraph, HydrationNodeId, HydrationNodeKind, HydrationNode, HydrationReference, HydrationRoleEvidence};
@@ -84,7 +84,7 @@ impl ProxyExchange for HydrationTransport {
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
         let response = (|| {
             *self.exchanges.lock().expect("exchange counter locks") += 1;
-            let request = StagedRequestV3::decode(request,&self.schema,&self.advertisement_contract).expect("generated request has the native staged wire");
+            let request = StagedRequest::decode(request,&self.schema,&self.advertisement_contract).expect("generated request has the native staged wire");
             assert_eq!(request.plans().len(),1);
             let reply = self
                 .replies
@@ -98,19 +98,19 @@ impl ProxyExchange for HydrationTransport {
                 reply.declared.label().as_str()
             );
             let documents = native_graph_documents(&reply, request.plans()[0].plan());
-            StagedReplyV3::new(&request,StagedOutcomeV3::Committed,vec![StagedAnswerV3::Documents {documents}]).and_then(|response| response.encode_signed(&request,&self.advertisement_contract,&self.signer)).unwrap_or_else(|error|panic!("provider-free {reply_label} response signs canonically: {error:?}"))
+            StagedReply::new(&request,StagedOutcome::Committed,vec![StagedAnswer::Documents {documents}]).and_then(|response| response.encode_signed(&request,&self.advertisement_contract,&self.signer)).unwrap_or_else(|error|panic!("provider-free {reply_label} response signs canonically: {error:?}"))
         })();
         Box::pin(async move { Ok(response) })
     }
 }
 
-fn native_graph_documents(reply:&GraphReply, plan:&type_bridge_contract::query_plan::v3::QueryPlanV3)->Vec<BTreeMap<String,RemoteFieldValue>> {
+fn native_graph_documents(reply:&GraphReply, plan:&type_bridge_contract::query_plan::QueryPlan)->Vec<BTreeMap<String,RemoteFieldValue>> {
     let root=reply.graph.nodes().iter().find(|node|node.id()==reply.root).unwrap();
     let scalar=|value|RemoteFieldValue::Scalar {value};
     let text=|value:&str|scalar(CanonicalValue::String(CanonicalString::new(value).unwrap()));
     let attributes=|node:&HydrationNode|RemoteFieldValue::Document {fields:node.attributes().iter().map(|attribute|(attribute.attribute().label().as_str().to_owned(),if attribute.attribute().label().as_str() == "aliases" {RemoteFieldValue::List {values:attribute.values().iter().map(|value|value.canonical_value().unwrap().clone()).collect()}} else if let Some(value)=attribute.values().first() {scalar(value.canonical_value().unwrap().clone())} else {RemoteFieldValue::Absent})).collect()};
     let mut documents=vec![BTreeMap::from([("_iid".into(),text(root.iid())),("_type".into(),text(root.concrete().label().as_str())),("attributes".into(),attributes(root))])];
-    let fetch=plan.pipeline().iter().find_map(|stage| if let type_bridge_contract::query_plan::v3::Stage::Fetch(fetch)=stage {Some(fetch)} else {None}).unwrap();
+    let fetch=plan.pipeline().iter().find_map(|stage| if let type_bridge_contract::query_plan::Stage::Fetch(fetch)=stage {Some(fetch)} else {None}).unwrap();
     for (index,listed) in fetch.roles.iter().enumerate() {
         let Some(role)=root.roles().iter().find(|role|role.role().label()==listed.role.label()) else {continue;};
         if role.players().is_empty() {continue;}
@@ -128,8 +128,8 @@ fn native_graph_documents(reply:&GraphReply, plan:&type_bridge_contract::query_p
 
 fn hydration_transport(replies: Vec<GraphReply>) -> (HydrationTransport, Arc<Mutex<usize>>) {
     let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
-    let mut capabilities = query_plan_v3_capability_vocabulary();
-    for capability in [type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {capabilities.insert(type_bridge_contract::capability::CapabilityId::new(capability).unwrap());}
+    let mut capabilities = query_plan_capability_vocabulary();
+    for capability in [type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {capabilities.insert(type_bridge_contract::capability::CapabilityId::new(capability).unwrap());}
     let advertisement_contract = RemoteCapabilities::new(
         capabilities,
         RemoteExecutorBinding::new("rust-projected-parity", "epoch-00000000001")

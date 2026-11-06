@@ -19,10 +19,10 @@ pub(crate) mod write;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-use type_bridge_contract::query_plan::v3::{Operation, PlanSpec, QueryPlanV3, Stage};
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput,
 };
+use type_bridge_contract::query_plan::{Operation, PlanSpec, QueryPlan, Stage};
 use type_bridge_contract::value::CanonicalValue;
 
 use authority::PlanAuthority;
@@ -180,7 +180,7 @@ impl PlanDraft {
         output: QueryOutput,
         given_rows: Option<Vec<InputRow>>,
     ) -> Result<BuiltPlan, Diagnostic> {
-        let plan = QueryPlanV3::new_with_limits(
+        let plan = QueryPlan::new_with_limits(
             PlanSpec {
                 bindings: self.bindings,
                 inputs: self.inputs,
@@ -207,13 +207,13 @@ pub(crate) const LITERAL_CONTROL_CHARACTER: &str = "query_plan_literal_control_c
 /// A helper plan and whether its authority was verified.
 #[derive(Debug)]
 pub(crate) struct BuiltPlan {
-    plan: QueryPlanV3,
+    plan: QueryPlan,
     verified: bool,
 }
 
 impl BuiltPlan {
     /// The plan for local execution.
-    pub(crate) const fn local(&self) -> &QueryPlanV3 {
+    pub(crate) const fn local(&self) -> &QueryPlan {
         &self.plan
     }
 
@@ -222,7 +222,7 @@ impl BuiltPlan {
     /// rebuilt from a projection are not that authority.
     // The proxy stages helper plans once helpers stage (phase H).
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn remote(&self) -> Result<&QueryPlanV3, Diagnostic> {
+    pub(crate) fn remote(&self) -> Result<&QueryPlan, Diagnostic> {
         if self.verified {
             Ok(&self.plan)
         } else {
@@ -279,7 +279,7 @@ mod tests {
             // default Boolean ceiling still needs separate candidate reads.
             [(256, 256, 4), (1024, 256, 3), (256, 512, 4), (1024, 512, 1)]
         {
-            let mut limits = QueryLimits::V3;
+            let mut limits = QueryLimits::PLAN;
             limits.structural.bindings = bindings;
             limits.structural.boolean_terms = terms;
             let authority = authority().with_query_limits(Arc::new(limits));
@@ -309,7 +309,7 @@ mod tests {
             while let Some(step) = program.next().unwrap() {
                 statements += 1;
                 assert_eq!(step.plan.local().limits(), limits);
-                let wire = type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows {
+                let wire = type_bridge_contract::query_remote::StagedAnswer::Rows {
                     rows: if expected > 1 && statements == 1 {
                         vec![]
                     } else {
@@ -382,7 +382,7 @@ mod tests {
         let seed = program.next().unwrap().unwrap();
         assert!(!seed.complete);
         assert!(seed.missing_iid_noop);
-        assert!(seed.plan.local().pipeline().iter().any(|stage| matches!(stage, type_bridge_contract::query_plan::v3::Stage::Match { patterns } if patterns.iter().any(|pattern| matches!(pattern, type_bridge_contract::query_plan::v3::Pattern::Read(type_bridge_contract::query_plan::QueryPattern::Try { .. }))))));
+        assert!(seed.plan.local().pipeline().iter().any(|stage| matches!(stage, type_bridge_contract::query_plan::Stage::Match { patterns } if patterns.iter().any(|pattern| matches!(pattern, type_bridge_contract::query_plan::Pattern::Read(type_bridge_contract::query_plan::QueryPattern::Try { .. }))))));
         let QueryOutput::Rows { columns } = seed.plan.local().output() else {
             panic!("seed identities");
         };
@@ -480,7 +480,7 @@ mod tests {
     fn wide_match_put_keeps_every_predicate_in_its_static_branches() {
         use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
         use type_bridge_contract::query_remote::RemoteValue;
-        use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+        use type_bridge_contract::query_remote::StagedAnswer;
         let authority = authority();
         let account = TypeId::new(TypeKind::Entity, "account").unwrap();
         let balance =
@@ -563,7 +563,7 @@ mod tests {
                     _ => unreachable!(),
                 };
                 let iid = if full_match { "0x02" } else { "0x03" };
-                let wire = StagedAnswerV3::Rows {
+                let wire = StagedAnswer::Rows {
                     rows: if present {
                         vec![vec![
                             RemoteValue::Value {
@@ -641,7 +641,7 @@ mod tests {
             .staged_entries(&authority)
             .unwrap()
             .expect("wide role predicates have a static proxy graph");
-        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+        type_bridge_contract::query_remote::validate_staged_result_refs(
             &entries,
             authority.declared(),
         )
@@ -930,7 +930,7 @@ mod tests {
                             .iter()
                             .cloned()
                             .map(|role| {
-                                type_bridge_contract::query_plan::v3::DocumentRole::new(role, false)
+                                type_bridge_contract::query_plan::DocumentRole::new(role, false)
                             })
                             .collect(),
                         include_subtypes: false,
@@ -954,8 +954,8 @@ mod tests {
                     .filter(|stage| {
                         matches!(
                             stage,
-                            type_bridge_contract::query_plan::v3::Stage::Insert { .. }
-                                | type_bridge_contract::query_plan::v3::Stage::Put { .. }
+                            type_bridge_contract::query_plan::Stage::Insert { .. }
+                                | type_bridge_contract::query_plan::Stage::Put { .. }
                         )
                     })
                     .count();
@@ -1136,7 +1136,7 @@ mod tests {
                 .iter()
                 .filter(|stage| matches!(
                     stage,
-                    type_bridge_contract::query_plan::v3::Stage::Insert { .. }
+                    type_bridge_contract::query_plan::Stage::Insert { .. }
                 ))
                 .count(),
             1
@@ -1174,7 +1174,7 @@ mod tests {
             BindingTarget, ProjectionConfig, ProjectionHandler,
         };
         use type_bridge_contract::query_plan::QueryPattern;
-        use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+        use type_bridge_contract::query_plan::{Expr, Pattern};
         let declared = race::schema();
         let profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
         let resolved = type_bridge_schema::resolve(&declared, &profile).unwrap();
@@ -1224,7 +1224,7 @@ mod tests {
         ];
         let actual = cases.into_iter().map(|players| {
             let plan = plans.update_with_output("purchase", Some("0x20"), &vec![], &players, true, false).unwrap().unwrap();
-            let patterns = match &plan.local().pipeline()[0] { type_bridge_contract::query_plan::v3::Stage::Match { patterns } => patterns, _ => panic!("initial match") };
+            let patterns = match &plan.local().pipeline()[0] { type_bridge_contract::query_plan::Stage::Match { patterns } => patterns, _ => panic!("initial match") };
             let iid_lets = patterns.iter().filter(|pattern| matches!(pattern, Pattern::Let { expr: Expr::Iid { .. }, .. })).count();
             let guards = patterns.iter().filter(|pattern| matches!(pattern, Pattern::Read(QueryPattern::Value { comparator: type_bridge_contract::migration_assertion::ValueComparator::NotEqual, .. }))).count();
             (format!("{:x}", Sha256::digest(plan.local().canonical_bytes().unwrap())), iid_lets, guards)
@@ -1266,7 +1266,7 @@ mod tests {
             .iter()
             .rev()
             .find_map(|stage| match stage {
-                type_bridge_contract::query_plan::v3::Stage::Select { bindings } => Some(bindings),
+                type_bridge_contract::query_plan::Stage::Select { bindings } => Some(bindings),
                 _ => None,
             })
             .unwrap();
@@ -1280,8 +1280,8 @@ mod tests {
     #[test]
     fn fetch_terminal_matches_orm_insert_after_variable_normalization() {
         use type_bridge_contract::codec::to_canonical_json;
+        use type_bridge_contract::query_plan::PlanBuilder;
         use type_bridge_contract::query_plan::QueryOperand;
-        use type_bridge_contract::query_plan::v3::PlanBuilder;
         let authority = authority();
         let doctor = TypeId::new(TypeKind::Entity, "doctor").unwrap();
         let field = OwnsFactId::new(doctor.clone(), AttributeId::new("name").unwrap()).unwrap();
@@ -1313,7 +1313,7 @@ mod tests {
 
     #[test]
     fn delete_returning_is_opt_in_and_preserves_the_plain_delete_statement() {
-        use type_bridge_contract::query_plan::v3::{Operation, WriteReturns};
+        use type_bridge_contract::query_plan::{Operation, WriteReturns};
         let authority = authority();
         let doctor = TypeId::new(TypeKind::Entity, "doctor").unwrap();
         let iid = "0x1E00000000000000000001";
@@ -1365,7 +1365,7 @@ mod tests {
     fn snapshot_iid_transport_preserves_existing_rows_and_avoids_name_collisions() {
         use crate::session::backend::GivenValue;
         use type_bridge_contract::migration_assertion::QueryVariable;
-        use type_bridge_contract::query_plan::v3::{
+        use type_bridge_contract::query_plan::{
             DeleteItem, Operation, Pattern, Stage, ThingDocument, WriteReturns,
         };
         use type_bridge_contract::query_plan::{
@@ -1572,7 +1572,7 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
     #[test]
     fn keyed_relation_put_matches_only_its_key_before_replacing_roles() {
         use super::put::{RelationPut, keyed_relation_put};
-        use type_bridge_contract::query_plan::v3::{DocumentRole, Stage};
+        use type_bridge_contract::query_plan::{DocumentRole, Stage};
         let authority = PlanAuthority::new(
             type_bridge_schema_compat::typeql_to_declared(
                 type_bridge_contract::schema::DocumentId::new("keyed-relation-put.typeql").unwrap(),
@@ -1763,9 +1763,7 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
         use type_bridge_contract::limits::QueryLimits;
         use type_bridge_contract::query_plan::QueryOutput;
         use type_bridge_contract::query_remote::RemoteValue;
-        use type_bridge_contract::query_remote_v3::{
-            StagedAnswerV3, validate_staged_result_refs_v3,
-        };
+        use type_bridge_contract::query_remote::{StagedAnswer, validate_staged_result_refs};
         let relation = TypeId::new(TypeKind::Relation, "purchase").unwrap();
         let candidates = [TypeId::new(TypeKind::Entity, "account").unwrap()];
         let role = RoleId::new("purchase", "buyer").unwrap();
@@ -1791,7 +1789,7 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
             .collect::<Vec<_>>();
         for slots in [256, 4] {
             for missing in [false, true] {
-                let mut limits = QueryLimits::V3;
+                let mut limits = QueryLimits::PLAN;
                 limits.structural.selected_slots = slots;
                 let authority = authority().with_query_limits(std::sync::Arc::new(limits));
                 let mut program = write_many(
@@ -1821,7 +1819,7 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
                     .staged_entries(&authority)
                     .unwrap()
                     .expect("guarded proxy graph");
-                validate_staged_result_refs_v3(&entries, authority.declared()).unwrap();
+                validate_staged_result_refs(&entries, authority.declared()).unwrap();
                 let contexts = program.guard_contexts();
                 let mut proofs = 0;
                 loop {
@@ -1840,7 +1838,7 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
                     assert!(columns.len() <= slots);
                     assert!(step.plan.local().pipeline().iter().any(|stage| matches!(
                         stage,
-                        type_bridge_contract::query_plan::v3::Stage::Limit { rows: 1 }
+                        type_bridge_contract::query_plan::Stage::Limit { rows: 1 }
                     )));
                     let cells = resolution
                         .ordinals
@@ -1862,7 +1860,7 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
                         })
                         .collect();
                     let answer = crate::query_plan_exec::PlanAnswer::from_staged_v3(
-                        &StagedAnswerV3::Rows { rows: vec![cells] },
+                        &StagedAnswer::Rows { rows: vec![cells] },
                         step.plan.local(),
                     )
                     .unwrap();

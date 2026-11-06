@@ -28,14 +28,14 @@ use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::TypeId;
 use type_bridge_contract::query_plan::QueryPattern;
-use type_bridge_contract::query_plan::v3::{
-    Pattern, QueryPlanV3, Stage, query_plan_v3_capability_vocabulary,
+use type_bridge_contract::query_plan::{
+    Pattern, QueryPlan, Stage, query_plan_capability_vocabulary,
+};
+use type_bridge_contract::query_remote::{
+    CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_WRITE, StagedAnswer, StagedKind,
+    StagedOutcome as WireStagedOutcome, StagedReply, StagedRequest,
 };
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteCapabilitiesFingerprint};
-use type_bridge_contract::query_remote_v3::{
-    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3, StagedKindV3,
-    StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
-};
 use type_bridge_contract::sdk_diagnostic::{
     SdkCommitFailureOutcome, SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
@@ -168,11 +168,11 @@ impl StagedExecutor {
 
     fn signed(
         &self,
-        request: &StagedRequestV3,
-        outcome: StagedOutcomeV3,
-        answers: Vec<StagedAnswerV3>,
+        request: &StagedRequest,
+        outcome: WireStagedOutcome,
+        answers: Vec<StagedAnswer>,
     ) -> Result<Vec<u8>, Diagnostic> {
-        StagedReplyV3::new(request, outcome, answers)?.encode_signed(
+        StagedReply::new(request, outcome, answers)?.encode_signed(
             request,
             &self.advertisement,
             &self.query.signer,
@@ -180,22 +180,26 @@ impl StagedExecutor {
     }
 
     /// A request-bound signed failure; unbound only if it cannot be signed.
-    fn failed(&self, request: &StagedRequestV3, diagnostic: SdkExecutionDiagnostic) -> Vec<u8> {
+    fn failed(&self, request: &StagedRequest, diagnostic: SdkExecutionDiagnostic) -> Vec<u8> {
         let diagnostic = type_bridge_orm::execution_phases::annotate(diagnostic);
         type_bridge_orm::execution_phases::finish(false);
-        self.signed(request, StagedOutcomeV3::Failed { diagnostic }, Vec::new())
-            .unwrap_or_else(|error| self.unbound(&error))
+        self.signed(
+            request,
+            WireStagedOutcome::Failed { diagnostic },
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| self.unbound(&error))
     }
 
     /// A signed `commit_outcome_unknown` failure.
-    fn unknown(&self, request: &StagedRequestV3) -> Vec<u8> {
+    fn unknown(&self, request: &StagedRequest) -> Vec<u8> {
         self.failed(
             request,
             SdkExecutionDiagnostic::commit_failure(SdkCommitFailureOutcome::Unknown),
         )
     }
 
-    fn refusal(&self, request: Option<&StagedRequestV3>, diagnostic: &Diagnostic) -> Vec<u8> {
+    fn refusal(&self, request: Option<&StagedRequest>, diagnostic: &Diagnostic) -> Vec<u8> {
         match request {
             Some(request) => {
                 self.failed(request, lower_remote_query_diagnostic(diagnostic.clone()))
@@ -221,23 +225,23 @@ pub(super) fn staged_advertisement_for_profile(
         .capabilities()
         .iter()
         .filter(|capability| {
-            capability.as_str() != type_bridge_contract::query_plan::v3::CAP_NEGATED_GIVEN_IID
-                || type_bridge_contract::query_plan::v3::supports_negated_given_iid(profile)
+            capability.as_str() != type_bridge_contract::query_plan::CAP_NEGATED_GIVEN_IID
+                || type_bridge_contract::query_plan::supports_negated_given_iid(profile)
         })
         .cloned()
         .collect();
-    for capability in query_plan_v3_capability_vocabulary().iter() {
-        if capability.as_str() != type_bridge_contract::query_plan::v3::CAP_NEGATED_GIVEN_IID
-            || type_bridge_contract::query_plan::v3::supports_negated_given_iid(profile)
+    for capability in query_plan_capability_vocabulary().iter() {
+        if capability.as_str() != type_bridge_contract::query_plan::CAP_NEGATED_GIVEN_IID
+            || type_bridge_contract::query_plan::supports_negated_given_iid(profile)
         {
             capabilities.insert(capability.clone());
         }
     }
     for capability in [
-        CAP_QUERY_REMOTE_STAGED_V3,
-        CAP_QUERY_REMOTE_WRITE_V3,
-        type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF,
-        type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        CAP_QUERY_REMOTE_STAGED,
+        CAP_QUERY_REMOTE_WRITE,
+        type_bridge_contract::query_remote::CAP_QUERY_STAGE_RESULT_REF,
+        type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
     ] {
         capabilities.insert(CapabilityId::new(capability)?);
     }
@@ -419,7 +423,7 @@ async fn execute_inner(
     let advertisement = state.advertisement.clone();
     let decode = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        StagedRequestV3::decode_with_limits(
+        StagedRequest::decode_with_limits(
             &body,
             &query.declared,
             &advertisement,
@@ -462,9 +466,9 @@ async fn execute_inner(
         .map_or(admission, |deadline| admission.min(deadline))
         .min(expires);
     let kind = match staged.kind() {
-        StagedKindV3::Read => TransactionKind::Read,
-        StagedKindV3::Write => TransactionKind::Write,
-        StagedKindV3::Schema => {
+        StagedKind::Read => TransactionKind::Read,
+        StagedKind::Write => TransactionKind::Write,
+        StagedKind::Schema => {
             let failure = sdk_invalid(
                 "query_remote_v3_kind",
                 "staged requests never open a schema transaction",
@@ -515,10 +519,8 @@ async fn execute_inner(
         let capabilities = (!entry.result_refs().is_empty()).then(|| {
             let mut capabilities = plan.required_capabilities().clone();
             capabilities.insert(
-                CapabilityId::new(
-                    type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF,
-                )
-                .expect("static capability"),
+                CapabilityId::new(type_bridge_contract::query_remote::CAP_QUERY_STAGE_RESULT_REF)
+                    .expect("static capability"),
             );
             capabilities
         });
@@ -595,8 +597,8 @@ struct Window {
 async fn run_staged(
     shared: Arc<StagedExecutor>,
     ctx: RequestContext,
-    staged: StagedRequestV3,
-    plans: Vec<QueryPlanV3>,
+    staged: StagedRequest,
+    plans: Vec<QueryPlan>,
     kind: TransactionKind,
     window: Window,
 ) -> StagedOutcome {
@@ -667,7 +669,7 @@ async fn run_staged(
     )
     .await;
     let (reply, outcome, code) = match executed {
-        Ok(answers) => match state.signed(&staged, StagedOutcomeV3::Committed, answers) {
+        Ok(answers) => match state.signed(&staged, WireStagedOutcome::Committed, answers) {
             Ok(reply) => (reply, StagedOutcomeKind::Committed, "ok".to_owned()),
             // The write already committed, so an unsignable success (e.g.
             // over its byte budget) must not read as a safe-to-retry refusal.
@@ -721,7 +723,7 @@ async fn settle(
     state: &StagedExecutor,
     deadline: Option<Instant>,
     ctx: &RequestContext,
-    staged: &StagedRequestV3,
+    staged: &StagedRequest,
     reply: Vec<u8>,
     kind: StagedOutcomeKind,
     code: &str,
@@ -756,11 +758,11 @@ async fn settle(
 /// provider transaction behind.
 async fn execute_staged(
     state: &StagedExecutor,
-    staged: &StagedRequestV3,
-    plans: &[QueryPlanV3],
+    staged: &StagedRequest,
+    plans: &[QueryPlan],
     kind: TransactionKind,
     deadline: Option<Instant>,
-) -> Result<Vec<StagedAnswerV3>, SdkExecutionDiagnostic> {
+) -> Result<Vec<StagedAnswer>, SdkExecutionDiagnostic> {
     let lower = lower_remote_query_diagnostic;
     await_before_deadline(deadline, state.query.verify_live_authority())
         .await
@@ -853,7 +855,7 @@ fn pending_diagnostic(error: PendingError) -> SdkExecutionDiagnostic {
 }
 
 /// Entity and relation types a plan matches, inserts or puts, sorted.
-fn touched_types(plan: &QueryPlanV3) -> Vec<TypeId> {
+fn touched_types(plan: &QueryPlan) -> Vec<TypeId> {
     fn walk(patterns: &[QueryPattern], types: &mut BTreeSet<TypeId>) {
         for pattern in patterns {
             match pattern {
@@ -944,7 +946,7 @@ async fn refuse(
     state: &StagedExecutor,
     deadline: Option<Instant>,
     ctx: &RequestContext,
-    request: Option<&StagedRequestV3>,
+    request: Option<&StagedRequest>,
     diagnostic: Diagnostic,
 ) -> StagedOutcome {
     let reply = state.refusal(request, &diagnostic);
@@ -964,7 +966,7 @@ async fn finish_failed(
     state: &StagedExecutor,
     deadline: Option<Instant>,
     ctx: &RequestContext,
-    request: &StagedRequestV3,
+    request: &StagedRequest,
     diagnostic: SdkExecutionDiagnostic,
 ) -> StagedOutcome {
     let code = diagnostic.code().as_str().to_owned();
@@ -986,7 +988,7 @@ async fn finish(
     state: &StagedExecutor,
     deadline: Option<Instant>,
     ctx: &RequestContext,
-    request: Option<&StagedRequestV3>,
+    request: Option<&StagedRequest>,
     kind: StagedOutcomeKind,
     code: &str,
     reply: Vec<u8>,

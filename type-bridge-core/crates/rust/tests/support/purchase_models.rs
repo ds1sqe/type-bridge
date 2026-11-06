@@ -257,7 +257,7 @@ pub fn hand_built_purchase(
     order: &str,
     item_id: &str,
     account_id: &str,
-) -> type_bridge_contract::query_plan::v3::QueryPlanV3 {
+) -> type_bridge_contract::query_plan::QueryPlan {
     let (declared, semantics) = authority();
     purchase_plan::hand_built_purchase(&declared, semantics, order, item_id, account_id)
 }

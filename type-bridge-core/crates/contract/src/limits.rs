@@ -1,18 +1,18 @@
 //! Canonical implementation-independent codec ceilings.
 
 /// Maximum aggregate answer items in one staged V3 reply.
-pub const MAX_STAGED_ITEMS_V3: u64 = 65_536;
+pub const MAX_STAGED_ITEMS: u64 = 65_536;
 
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticDetailValue};
 
 /// Maximum plans in one staged V3 transaction; callers may tighten this ceiling.
-pub const MAX_STAGED_PLANS_V3: u32 = 64;
+pub const MAX_STAGED_PLANS: u32 = 64;
 /// Default provider-write statement budget for a staged V3 transaction.
-pub const DEFAULT_STAGED_WRITE_STATEMENTS_V3: u32 = 256;
+pub const DEFAULT_STAGED_WRITE_STATEMENTS: u32 = 256;
 /// Default read statement budget, allowing three statements per staged plan.
-pub const DEFAULT_STAGED_READ_STATEMENTS_V3: u32 = MAX_STAGED_PLANS_V3 * 3;
+pub const DEFAULT_STAGED_READ_STATEMENTS: u32 = MAX_STAGED_PLANS * 3;
 /// Independent hard ceiling for each staged provider statement budget.
-pub const MAX_STAGED_STATEMENTS_V3: u32 = 4_096;
+pub const MAX_STAGED_STATEMENTS: u32 = 4_096;
 
 /// Maximum canonical artifact size: 16 MiB.
 pub const MAX_CANONICAL_BYTES: usize = 16 * 1024 * 1024;
@@ -72,7 +72,7 @@ pub const REMOTE_ENVELOPE_CODEC_LIMITS: CodecLimits = CodecLimits {
 /// V3 opaque plan-byte strings may use the envelope budget. Embedded plans
 /// and canonical scalar values still enforce their independent codec ceilings.
 /// Frozen V1/V2 envelopes retain their original per-string ceiling.
-pub const STAGED_REMOTE_CODEC_LIMITS_V3: CodecLimits = CodecLimits {
+pub const STAGED_REMOTE_CODEC_LIMITS: CodecLimits = CodecLimits {
     max_string_bytes: MAX_REMOTE_ENVELOPE_BYTES,
     ..REMOTE_ENVELOPE_CODEC_LIMITS
 };
@@ -427,7 +427,7 @@ impl QueryLimits {
 
     /// Native V3 columns may expose every bounded binding as identity evidence.
     /// Released V1/V2 and typed model output slots retain `CANONICAL`.
-    pub const V3: Self = Self {
+    pub const PLAN: Self = Self {
         structural: StructuralLimits {
             selected_slots: MAX_BINDINGS,
             ..StructuralLimits::CANONICAL
@@ -436,7 +436,7 @@ impl QueryLimits {
     };
 
     /// Admit V3 limits, where every output column consumes a binding.
-    pub fn validate_v3(self) -> Result<Self, QueryLimitsError> {
+    pub fn validate_plan(self) -> Result<Self, QueryLimitsError> {
         let limits = self.validate()?;
         if limits.structural.selected_slots > limits.structural.bindings {
             return Err(QueryLimitsError::OutOfRange {

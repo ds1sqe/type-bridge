@@ -1030,7 +1030,7 @@ pub(crate) fn adapt_reducers(
 pub(crate) fn document_roles(
     descriptor: &type_bridge_contract::query_plan::HydrationDescriptor,
     authority: &MatchRequestAdapterAuthority,
-) -> Result<Vec<type_bridge_contract::query_plan::v3::DocumentRole>, Diagnostic> {
+) -> Result<Vec<type_bridge_contract::query_plan::DocumentRole>, Diagnostic> {
     use type_bridge_contract::schema::{RelatesFactId, SchemaFactId};
     descriptor
         .roles()
@@ -1059,7 +1059,7 @@ pub(crate) fn document_roles(
                         "effective role has no declared schema token",
                     )
                 })?;
-            Ok(type_bridge_contract::query_plan::v3::DocumentRole::new(
+            Ok(type_bridge_contract::query_plan::DocumentRole::new(
                 declared.clone(),
                 false,
             ))

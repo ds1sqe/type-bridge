@@ -4240,7 +4240,7 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
             .await
             .unwrap();
     }
-    let default_rows = type_bridge_contract::limits::QueryLimits::V3
+    let default_rows = type_bridge_contract::limits::QueryLimits::PLAN
         .structural
         .input_rows;
     for (literal, input_rows) in [false, true]
@@ -4248,7 +4248,7 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
         .flat_map(|literal| [default_rows, 8].map(move |rows| (literal, rows)))
     {
         let (counted, log) = counted_connection(&database, literal).await;
-        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
         limits.structural.input_rows = input_rows;
         let counted = counted.with_query_limits(limits).unwrap();
         let manager =
@@ -4469,7 +4469,7 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
         registry.relation("snapshot-edge").unwrap(),
     );
     let mut failures = Vec::new();
-    let defaults = type_bridge_contract::limits::QueryLimits::V3.structural;
+    let defaults = type_bridge_contract::limits::QueryLimits::PLAN.structural;
     for (literal, (selected_slots, input_rows)) in [false, true].into_iter().flat_map(|literal| {
         [
             (defaults.selected_slots, defaults.input_rows),
@@ -4479,7 +4479,7 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
         .map(move |limits| (literal, limits))
     }) {
         let (counted, log) = counted_connection(&database, literal).await;
-        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
         limits.structural.selected_slots = selected_slots;
         limits.structural.input_rows = input_rows;
         let counted = counted.with_query_limits(limits).unwrap();
@@ -5083,7 +5083,7 @@ async fn generic_manager_query_limits_choose_full_plans_or_existing_pieces_live(
         for (bindings, terms) in [(256, 256), (1024, 256), (256, 512), (1024, 512)] {
             // Reuse identical values so deleted fixtures do not accumulate
             // distinct orphan attributes between policy cases.
-            let mut limits = QueryLimits::V3;
+            let mut limits = QueryLimits::PLAN;
             limits.structural.bindings = bindings;
             limits.structural.boolean_terms = terms;
             let (counted, log) = counted_connection(&database, literal).await;
@@ -5167,15 +5167,14 @@ async fn generic_manager_query_limits_choose_full_plans_or_existing_pieces_live(
 async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live() {
     use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-    use type_bridge_contract::query_plan::v3::{
-        AttachItem, InsertThing, Operation, PlanSpec, QueryPlanV3, Stage, ThingDocument,
-        WriteReturns,
+    use type_bridge_contract::query_plan::{
+        AttachItem, InsertThing, Operation, PlanSpec, QueryPlan, Stage, ThingDocument, WriteReturns,
     };
     use type_bridge_contract::query_plan::{
         InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
     };
     use type_bridge_contract::query_remote::{RemoteFieldValue, RemoteValue};
-    use type_bridge_contract::query_remote_v3::{StagedAnswerV3, StagedPlanV3, StagedResultRefV3};
+    use type_bridge_contract::query_remote::{StagedAnswer, StagedPlan, StagedResultRef};
     use type_bridge_contract::value::ValueTypeTag;
     let _guard = crate::common::integration_test_guard().await;
     let database = setup_db().await;
@@ -5203,7 +5202,7 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
     let field =
         OwnsFactId::new(note.clone(), AttributeId::new("reference-value").unwrap()).unwrap();
     let root = BindingId::new(0).unwrap();
-    let source = QueryPlanV3::new(
+    let source = QueryPlan::new(
         PlanSpec {
             bindings: vec![AssertionBinding::new(
                 root,
@@ -5232,7 +5231,7 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
     )
     .unwrap();
     let discarded = BindingId::new(1).unwrap();
-    let target = QueryPlanV3::new(
+    let target = QueryPlan::new(
         PlanSpec {
             bindings: vec![
                 AssertionBinding::new(root, QueryVariable::new("root").unwrap()),
@@ -5312,14 +5311,14 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
         })
         .collect::<Vec<_>>();
     let stack = vec![
-        StagedPlanV3::new(&source, vec![], &declared).unwrap(),
-        StagedPlanV3::new_with_result_refs(
+        StagedPlan::new(&source, vec![], &declared).unwrap(),
+        StagedPlan::new_with_result_refs(
             &target,
             values
                 .iter()
                 .map(|value| InputRow::new(vec![None, Some(value.clone())]))
                 .collect(),
-            vec![StagedResultRefV3 {
+            vec![StagedResultRef {
                 input: InputColumnId::new(0),
                 source_plan: 0,
                 source_column: 0,
@@ -5365,7 +5364,7 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
             } else {
                 result.unwrap();
                 assert_eq!(roots.len(), 1);
-                let StagedAnswerV3::Rows { rows } =
+                let StagedAnswer::Rows { rows } =
                     pending[0].get().unwrap().to_staged_v3(&source).unwrap()
                 else {
                     panic!("allocated IID")
@@ -5374,7 +5373,7 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
                     panic!("one thing")
                 };
                 assert_eq!(roots[0]["iid"], iid.as_str());
-                let StagedAnswerV3::Documents { documents } =
+                let StagedAnswer::Documents { documents } =
                     pending[1].get().unwrap().to_staged_v3(&target).unwrap()
                 else {
                     panic!("final document")
@@ -5432,7 +5431,7 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
             } else {
                 let answers = answers.unwrap();
                 assert_eq!(answers.len(), 2);
-                let StagedAnswerV3::Documents { documents } =
+                let StagedAnswer::Documents { documents } =
                     answers[1].to_staged_v3(&target).unwrap()
                 else {
                     panic!("borrowed final document")
@@ -5494,14 +5493,14 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
     }
     // A zero-row optional source is a static branch gate, without client IIDs.
     let note = TypeId::new(TypeKind::Entity, "reference-note").unwrap();
-    let mut read = type_bridge_contract::query_plan::v3::PlanBuilder::new();
+    let mut read = type_bridge_contract::query_plan::PlanBuilder::new();
     let selected = read.exact(note.clone());
     read.returning(vec![selected]);
     let read = read
         .build(&declared, managed.managed_semantic_schema().clone())
         .unwrap();
     let ordinal = BindingId::new(1).unwrap();
-    let gate = QueryPlanV3::new(
+    let gate = QueryPlan::new(
         PlanSpec {
             bindings: vec![
                 AssertionBinding::new(root, QueryVariable::new("root").unwrap()),
@@ -5536,9 +5535,9 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
                 }],
                         }
                         .into(),
-                        type_bridge_contract::query_plan::v3::Pattern::Let {
+                        type_bridge_contract::query_plan::Pattern::Let {
                             binding: ordinal,
-                            expr: type_bridge_contract::query_plan::v3::Expr::Operand(
+                            expr: type_bridge_contract::query_plan::Expr::Operand(
                                 QueryOperand::Input {
                                     column: InputColumnId::new(1),
                                 },
@@ -5564,7 +5563,7 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
         &declared,
     )
     .unwrap();
-    let mut present = type_bridge_contract::query_plan::v3::PlanBuilder::new();
+    let mut present = type_bridge_contract::query_plan::PlanBuilder::new();
     let candidate = present.input("candidate_iid", ValueTypeTag::String, true);
     let selected = present.exact(note.clone());
     present
@@ -5573,22 +5572,22 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
     let present = present
         .build(&declared, managed.managed_semantic_schema().clone())
         .unwrap();
-    let reference = StagedResultRefV3 {
+    let reference = StagedResultRef {
         input: InputColumnId::new(0),
         source_plan: 0,
         source_column: 0,
         expected_types: vec![note.clone()],
     };
     let gates = vec![
-        StagedPlanV3::new(&read, vec![], &declared).unwrap(),
-        StagedPlanV3::new_with_result_refs(
+        StagedPlan::new(&read, vec![], &declared).unwrap(),
+        StagedPlan::new_with_result_refs(
             &gate,
             vec![InputRow::new(vec![None, Some(CanonicalValue::Long(0))])],
             vec![reference.clone()],
             &declared,
         )
         .unwrap(),
-        StagedPlanV3::new_with_result_refs(
+        StagedPlan::new_with_result_refs(
             &present,
             vec![InputRow::new(vec![None])],
             vec![reference],
@@ -5604,14 +5603,14 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
                 .stage_plan_stack(gates.clone(), Arc::clone(&declared))
                 .unwrap();
             transaction.commit().await.unwrap();
-            let StagedAnswerV3::Rows { rows } =
+            let StagedAnswer::Rows { rows } =
                 pending[1].get().unwrap().to_staged_v3(&gate).unwrap()
             else {
                 panic!("conditional allocation rows")
             };
             assert_eq!(rows.len(), usize::from(!existing));
             // Matching the captured IID cannot observe the root allocated on a miss.
-            let StagedAnswerV3::Rows { rows } =
+            let StagedAnswer::Rows { rows } =
                 pending[2].get().unwrap().to_staged_v3(&present).unwrap()
             else {
                 panic!("captured present rows")
@@ -5651,15 +5650,13 @@ async fn reduced_full_match_equals_stepwise_candidates_live() {
     use type_bridge_contract::migration_assertion::{
         AssertionBinding, BindingId, QueryVariable, ValueComparator,
     };
-    use type_bridge_contract::query_plan::v3::{
-        Expr, Operation, Pattern, PlanSpec, QueryPlanV3, Stage,
-    };
+    use type_bridge_contract::query_plan::{Expr, Operation, Pattern, PlanSpec, QueryPlan, Stage};
     use type_bridge_contract::query_plan::{
         InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
         ReduceAssignment, Reducer,
     };
     use type_bridge_contract::query_remote::RemoteValue;
-    use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+    use type_bridge_contract::query_remote::StagedAnswer;
     use type_bridge_contract::value::ValueTypeTag;
     use type_bridge_orm::_manager::DynamicEntityManager;
     use type_bridge_orm::Filter;
@@ -5767,7 +5764,7 @@ async fn reduced_full_match_equals_stepwise_candidates_live() {
         let value = id(2);
         let count = id(3);
         let binding = |binding| QueryOperand::Binding { binding };
-        let plan = QueryPlanV3::new(
+        let plan = QueryPlan::new(
             PlanSpec {
                 bindings: ["root", "field", "wanted", "matched"]
                     .into_iter()
@@ -5866,7 +5863,7 @@ async fn reduced_full_match_equals_stepwise_candidates_live() {
             )
             .await
             .unwrap();
-        let StagedAnswerV3::Rows { rows } = answers[0].to_staged_v3(&plan).unwrap() else {
+        let StagedAnswer::Rows { rows } = answers[0].to_staged_v3(&plan).unwrap() else {
             panic!("typed rows")
         };
         let actual = rows
@@ -5938,7 +5935,7 @@ async fn mixed_wide_full_match_puts_use_static_probes_and_rollback_last_piece_li
             .map(|(name, value)| format!("{name}={value:?}"))
             .collect::<std::collections::BTreeSet<_>>()
     };
-    let default_rows = type_bridge_contract::limits::QueryLimits::V3
+    let default_rows = type_bridge_contract::limits::QueryLimits::PLAN
         .structural
         .input_rows;
     for (literal, input_rows) in [false, true]
@@ -5980,7 +5977,7 @@ async fn mixed_wide_full_match_puts_use_static_probes_and_rollback_last_piece_li
         repeated.extend(full[..3].iter().cloned());
         let expected = [normalized(full.clone()), normalized(near.clone())];
         let (counted, log) = counted_connection(&database, literal).await;
-        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
         limits.structural.input_rows = input_rows;
         let counted = counted.with_query_limits(limits).unwrap();
         let statements = if input_rows == 8 { 20 } else { 8 };

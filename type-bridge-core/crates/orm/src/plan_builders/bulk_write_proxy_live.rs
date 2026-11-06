@@ -312,9 +312,9 @@ async fn wide_manager_proxy_preserves_plural_roots_and_rolls_back_last_piece() {
     )
     .await
     .unwrap();
-    let requested = configured_limits("TYPE_BRIDGE_WIDE_QUERY_LIMITS").unwrap_or(QueryLimits::V3);
+    let requested = configured_limits("TYPE_BRIDGE_WIDE_QUERY_LIMITS").unwrap_or(QueryLimits::PLAN);
     proxy = proxy.with_query_limits(requested).unwrap();
-    let server_limits = configured_limits("SMOKE_QUERY_LIMITS").unwrap_or(QueryLimits::V3);
+    let server_limits = configured_limits("SMOKE_QUERY_LIMITS").unwrap_or(QueryLimits::PLAN);
     assert_eq!(proxy.query_limits(), requested.min(server_limits));
     let effective = Arc::new(proxy.query_limits());
     let plans = ManagerPlans::new(Arc::clone(&registry)).with_query_limits(Some(&effective));
@@ -565,7 +565,7 @@ async fn partial_relation_update_by_player_keeps_all_roots_when_pieced() {
             )
         })
         .collect::<DynamicAttributeMap>();
-    let mut raised = QueryLimits::V3;
+    let mut raised = QueryLimits::PLAN;
     raised.structural.bindings = 1024;
     raised.structural.selected_slots = 1024;
     raised.structural.boolean_terms = 1024;
@@ -590,7 +590,7 @@ async fn partial_relation_update_by_player_keeps_all_roots_when_pieced() {
         ManagerWrite::One(_)
     ));
     let expected = high.update(None, &fields, &players).await.unwrap();
-    let mut limits = QueryLimits::V3;
+    let mut limits = QueryLimits::PLAN;
     limits.structural.bindings = 8;
     limits.structural.selected_slots = 8;
     limits.structural.input_rows = 2;
@@ -659,7 +659,7 @@ async fn benchmark_count(
     use crate::projected_crud::ProjectedCrudInvocationControl;
     use crate::session::staged::{TransactionKind, TransactionOptions};
     use type_bridge_contract::query_remote::RemoteValue;
-    use type_bridge_contract::query_remote_v3::{StagedAnswerV3, StagedPlanV3};
+    use type_bridge_contract::query_remote::{StagedAnswer, StagedPlan};
 
     let manager = crate::ProjectedCrudExecutor::new(installed);
     let type_id = TypeId::new(TypeKind::Entity, "proxy-person").unwrap();
@@ -678,9 +678,8 @@ async fn benchmark_count(
     else {
         panic!("one manager count plan")
     };
-    let entries = vec![
-        StagedPlanV3::new(plan.local(), vec![], plans.authority().unwrap().declared()).unwrap(),
-    ];
+    let entries =
+        vec![StagedPlan::new(plan.local(), vec![], plans.authority().unwrap().declared()).unwrap()];
     let schema = Arc::new(plans.authority().unwrap().declared().clone());
     let resources = QueryExecutionResourceLimits::default();
     let cancellation = AnswerCancellation::default();
@@ -719,7 +718,7 @@ async fn benchmark_count(
         let manual_elapsed = start.elapsed();
         assert_eq!(
             answer,
-            StagedAnswerV3::Rows {
+            StagedAnswer::Rows {
                 rows: vec![vec![RemoteValue::Value {
                     value: CanonicalValue::Long(2)
                 }]]

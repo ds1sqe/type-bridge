@@ -1,15 +1,15 @@
-#[path = "support/plan_v3_examples.rs"]
+#[path = "support/plan_examples.rs"]
 mod examples;
 
-#[path = "support/plan_v3.rs"]
+#[path = "support/plan.rs"]
 mod support;
 
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use support::*;
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::query_plan::v3::{
-    AttachItem, DeleteItem, InsertThing, QueryPlanV3, Set, Stage, decode_query_plan_v3,
+use type_bridge_contract::query_plan::{
+    AttachItem, DeleteItem, InsertThing, QueryPlan, Set, Stage, decode_query_plan,
 };
 
 #[test]
@@ -42,7 +42,7 @@ fn keyed_relation_put_requires_a_player_bound_before_allocation() {
                 }],
             },
         ];
-        let plan = QueryPlanV3::new(spec(stages, vec![1]), &schema());
+        let plan = QueryPlan::new(spec(stages, vec![1]), &schema());
         if optional {
             plan.unwrap();
             let mut request = spec(
@@ -71,10 +71,10 @@ fn keyed_relation_put_requires_a_player_bound_before_allocation() {
                     type_bridge_contract::value::CanonicalString::new("key").unwrap(),
                 ),
             )])]);
-            QueryPlanV3::new(request.clone(), &schema()).unwrap();
+            QueryPlan::new(request.clone(), &schema()).unwrap();
             request.pipeline.pop();
             assert_eq!(
-                QueryPlanV3::new(request, &schema())
+                QueryPlan::new(request, &schema())
                     .unwrap_err()
                     .code()
                     .as_str(),
@@ -84,14 +84,14 @@ fn keyed_relation_put_requires_a_player_bound_before_allocation() {
             plan.unwrap();
         }
     }
-    let bare = QueryPlanV3::new(spec(vec![matched(), seed], vec![1]), &schema()).unwrap_err();
+    let bare = QueryPlan::new(spec(vec![matched(), seed], vec![1]), &schema()).unwrap_err();
     assert_eq!(bare.code().as_str(), "query_plan_insert_relation_players");
 }
 
 #[test]
 fn optional_fetch_roles_may_belong_to_a_subset_of_candidates() {
     use type_bridge_contract::id::RoleId;
-    use type_bridge_contract::query_plan::v3::{DocumentRole, ThingDocument};
+    use type_bridge_contract::query_plan::{DocumentRole, ThingDocument};
     let schema = schema_with_subtype_role();
     for (role, required, accepted) in [
         (
@@ -122,7 +122,7 @@ fn optional_fetch_roles_may_belong_to_a_subset_of_candidates() {
                 vec![DocumentRole::new(role, required)],
             )),
         ];
-        let plan = QueryPlanV3::new(spec(stages, vec![]), &schema);
+        let plan = QueryPlan::new(spec(stages, vec![]), &schema);
         if accepted {
             plan.unwrap();
         } else {
@@ -221,7 +221,7 @@ fn deferred_optional_seed_players_require_nonnull_rows_and_matching_existence_gu
         request.given_rows = Some(vec![InputRow::new(vec![Some(CanonicalValue::String(
             CanonicalString::new("0x01").unwrap(),
         ))])]);
-        let valid = QueryPlanV3::new(request.clone(), &schema()).unwrap();
+        let valid = QueryPlan::new(request.clone(), &schema()).unwrap();
         let mut null = request.clone();
         null.given_rows = Some(vec![InputRow::new(vec![None])]);
         let mut unguarded = request.clone();
@@ -233,7 +233,7 @@ fn deferred_optional_seed_players_require_nonnull_rows_and_matching_existence_gu
         let Stage::Match { patterns } = &mut mismatched.pipeline[0] else {
             unreachable!()
         };
-        let type_bridge_contract::query_plan::v3::Pattern::Read(QueryPattern::Or { branches }) =
+        let type_bridge_contract::query_plan::Pattern::Read(QueryPattern::Or { branches }) =
             &mut patterns[1]
         else {
             unreachable!()
@@ -267,7 +267,7 @@ fn deferred_optional_seed_players_require_nonnull_rows_and_matching_existence_gu
             (empty, "query_invocation_missing_inputs"),
         ] {
             assert_eq!(
-                QueryPlanV3::new(unsafe_request, &schema())
+                QueryPlan::new(unsafe_request, &schema())
                     .unwrap_err()
                     .code()
                     .as_str(),
@@ -285,7 +285,7 @@ fn deferred_optional_seed_players_require_nonnull_rows_and_matching_existence_gu
         let mut wire: Value = serde_json::from_slice(&to_canonical_json(&valid).unwrap()).unwrap();
         wire["given_rows"] = json!([[null]]);
         assert_eq!(
-            decode_query_plan_v3(&to_canonical_json(&wire).unwrap(), &schema())
+            decode_query_plan(&to_canonical_json(&wire).unwrap(), &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -312,13 +312,13 @@ fn relation_insert_seeds_require_a_later_player_attachment() {
             player: id(0),
         }],
     };
-    QueryPlanV3::new(
+    QueryPlan::new(
         spec(vec![matched(), seed.clone(), attach], vec![1]),
         &schema(),
     )
     .unwrap();
     assert_eq!(
-        QueryPlanV3::new(spec(vec![matched(), seed], vec![1]), &schema())
+        QueryPlan::new(spec(vec![matched(), seed], vec![1]), &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -330,7 +330,7 @@ use type_bridge_contract::query_plan::{
     ReduceAssignment, Reducer,
 };
 
-fn stage_plans() -> BTreeMap<&'static str, QueryPlanV3> {
+fn stage_plans() -> BTreeMap<&'static str, QueryPlan> {
     let mut plans = BTreeMap::new();
     let schema = schema();
     for (name, stage) in [
@@ -382,7 +382,7 @@ fn stage_plans() -> BTreeMap<&'static str, QueryPlanV3> {
         };
         plans.insert(
             name,
-            QueryPlanV3::new(spec(vec![matched(), stage], output), &schema).unwrap(),
+            QueryPlan::new(spec(vec![matched(), stage], output), &schema).unwrap(),
         );
     }
     for (name, stage) in [
@@ -409,7 +409,7 @@ fn stage_plans() -> BTreeMap<&'static str, QueryPlanV3> {
     ] {
         plans.insert(
             name,
-            QueryPlanV3::new(
+            QueryPlan::new(
                 spec(
                     vec![
                         Stage::Match {
@@ -426,7 +426,7 @@ fn stage_plans() -> BTreeMap<&'static str, QueryPlanV3> {
     }
     plans.insert(
         "insert_first",
-        QueryPlanV3::new(
+        QueryPlan::new(
             spec(
                 vec![Stage::Insert {
                     things: vec![thing(0)],
@@ -439,7 +439,7 @@ fn stage_plans() -> BTreeMap<&'static str, QueryPlanV3> {
     );
     plans.insert(
         "read_tail",
-        QueryPlanV3::new(
+        QueryPlan::new(
             spec(
                 vec![
                     matched(),
@@ -476,14 +476,14 @@ fn v3_stages_have_stable_golden_bytes_and_round_trip() {
     for (name, plan) in stage_plans() {
         let bytes = plan.canonical_bytes().unwrap();
         assert_eq!(bytes, plan.canonical_bytes().unwrap());
-        let decoded = decode_query_plan_v3(&bytes, &schema).unwrap();
+        let decoded = decode_query_plan(&bytes, &schema).unwrap();
         assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
         assert_eq!(decoded.fingerprint().unwrap(), plan.fingerprint().unwrap());
         fixtures.insert(name,json!({"plan":serde_json::from_slice::<Value>(&bytes).unwrap(),"fingerprint":plan.fingerprint().unwrap()}));
     }
     let bytes = to_canonical_json(&fixtures).unwrap();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/query-plan-v3-stages.json");
+        .join("tests/fixtures/query-plan-stages.json");
     if std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_V3_FIXTURES").is_some() {
         std::fs::write(&path, &bytes).unwrap();
     }
@@ -492,14 +492,14 @@ fn v3_stages_have_stable_golden_bytes_and_round_trip() {
 
 #[test]
 fn native_plan_refuses_removed_compatibility_evidence() {
-    let plan = QueryPlanV3::new(spec(vec![matched()], vec![0]), &schema()).unwrap();
+    let plan = QueryPlan::new(spec(vec![matched()], vec![0]), &schema()).unwrap();
     let bytes = plan.canonical_bytes().unwrap();
     let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
     assert!(wire.get("compatibility").is_none());
     for compatibility in [Value::Null, json!({})] {
         wire["compatibility"] = compatibility;
         assert_eq!(
-            decode_query_plan_v3(&to_canonical_json(&wire).unwrap(), &schema())
+            decode_query_plan(&to_canonical_json(&wire).unwrap(), &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -601,7 +601,7 @@ fn write_validation_rejects_unbound_abstract_wrong_schema_key_and_deleted_target
             "query_plan_stage_order",
         ),
     ] {
-        let error = QueryPlanV3::new(spec(pipeline, vec![]), &schema).unwrap_err();
+        let error = QueryPlan::new(spec(pipeline, vec![]), &schema).unwrap_err();
         assert_eq!(error.code().as_str(), code);
         assert!(!format!("{error:?}").contains("private-key"));
     }
@@ -625,7 +625,7 @@ fn write_roles_require_declared_plays_and_relates() {
         vec![1],
     );
     assert_eq!(
-        QueryPlanV3::new(input.clone(), &schema())
+        QueryPlan::new(input.clone(), &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -639,7 +639,7 @@ fn write_roles_require_declared_plays_and_relates() {
         };
     }
     assert_eq!(
-        QueryPlanV3::new(input, &schema())
+        QueryPlan::new(input, &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -657,8 +657,7 @@ fn decode_rejects_unknown_fields_unknown_stages_and_forged_capabilities() {
             "required_capabilities" => value[field] = json!([]),
             _ => value[field] = json!("private-value"),
         }
-        let error =
-            decode_query_plan_v3(&to_canonical_json(&value).unwrap(), &schema()).unwrap_err();
+        let error = decode_query_plan(&to_canonical_json(&value).unwrap(), &schema()).unwrap_err();
         assert!(!format!("{error:?}").contains("private-value"));
     }
 }
@@ -669,14 +668,14 @@ fn deletion_ends_lifetime_for_projection_and_read_tail() {
         items: vec![DeleteItem::Thing { binding: id(0) }],
     };
     assert_eq!(
-        QueryPlanV3::new(spec(vec![matched(), delete.clone()], vec![0]), &schema())
+        QueryPlan::new(spec(vec![matched(), delete.clone()], vec![0]), &schema())
             .unwrap_err()
             .code()
             .as_str(),
         "query_plan_output_not_visible"
     );
     assert_eq!(
-        QueryPlanV3::new(
+        QueryPlan::new(
             spec(
                 vec![
                     matched(),
@@ -702,7 +701,7 @@ fn write_and_read_stages_share_caller_selected_limits() {
     use type_bridge_contract::limits::QueryLimits;
     let mut limits = QueryLimits::CANONICAL;
     limits.structural.predicate_nodes = 1;
-    let error = QueryPlanV3::new_with_limits(
+    let error = QueryPlan::new_with_limits(
         spec(
             vec![Stage::Insert {
                 things: vec![thing(0)],
@@ -735,7 +734,7 @@ fn inherited_owns_and_plays_are_valid_but_inherited_keys_are_immutable() {
             },
         ],
     };
-    QueryPlanV3::new(spec(vec![matched.clone(), update], vec![0]), &schema()).unwrap();
+    QueryPlan::new(spec(vec![matched.clone(), update], vec![0]), &schema()).unwrap();
     let update_key = Stage::Update {
         sets: vec![Set::Field {
             owner: id(0),
@@ -744,7 +743,7 @@ fn inherited_owns_and_plays_are_valid_but_inherited_keys_are_immutable() {
         }],
     };
     assert_eq!(
-        QueryPlanV3::new(spec(vec![matched, update_key], vec![0]), &schema())
+        QueryPlan::new(spec(vec![matched, update_key], vec![0]), &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -758,7 +757,7 @@ fn race_operations_and_every_expression_have_stable_goldens() {
     for (name, plan) in examples::plans() {
         let bytes = plan.canonical_bytes().unwrap();
         assert_eq!(
-            decode_query_plan_v3(&bytes, &schema())
+            decode_query_plan(&bytes, &schema())
                 .unwrap()
                 .canonical_bytes()
                 .unwrap(),
@@ -767,16 +766,14 @@ fn race_operations_and_every_expression_have_stable_goldens() {
         assert_eq!(plan.canonical_bytes().unwrap(), bytes);
         assert!(
             plan.required_capabilities()
-                .missing_from(
-                    &type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary()
-                )
+                .missing_from(&type_bridge_contract::query_plan::query_plan_capability_vocabulary())
                 .is_empty()
         );
         fixtures.insert(name,json!({"plan":serde_json::from_slice::<Value>(&bytes).unwrap(),"fingerprint":plan.fingerprint().unwrap()}));
     }
     let bytes = to_canonical_json(&fixtures).unwrap();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/query-plan-v3-expressions.json");
+        .join("tests/fixtures/query-plan-expressions.json");
     if std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_V3_FIXTURES").is_some() {
         std::fs::write(&path, &bytes).unwrap();
     }
@@ -785,7 +782,7 @@ fn race_operations_and_every_expression_have_stable_goldens() {
 
 #[test]
 fn numeric_promotion_matches_the_typedb_3_13_6_table() {
-    use type_bridge_contract::query_plan::v3::{ArithOp, Expr};
+    use type_bridge_contract::query_plan::{ArithOp, Expr};
     use type_bridge_contract::value::ValueTypeTag::{Decimal, Double, Long};
     let operands = [literal(2), examples::decimal(), examples::double()];
     let ring = [
@@ -825,7 +822,7 @@ fn numeric_promotion_matches_the_typedb_3_13_6_table() {
 
 #[test]
 fn wrong_typed_or_wrong_arity_builtins_are_value_free_errors() {
-    use type_bridge_contract::query_plan::v3::{ArithOp, Builtin, Expr, Pattern};
+    use type_bridge_contract::query_plan::{ArithOp, Builtin, Expr, Pattern};
     let secret = "private-expression-value";
     for expr in [
         Expr::Arith {
@@ -854,7 +851,7 @@ fn wrong_typed_or_wrong_arity_builtins_are_value_free_errors() {
             args: vec![Expr::Operand(literal(1)), Expr::Operand(examples::double())],
         },
     ] {
-        let error = QueryPlanV3::new(
+        let error = QueryPlan::new(
             spec(
                 vec![Stage::Match {
                     patterns: vec![Pattern::Let {
@@ -875,7 +872,7 @@ fn wrong_typed_or_wrong_arity_builtins_are_value_free_errors() {
 #[test]
 fn let_assignments_are_fresh_and_references_are_already_typed() {
     use type_bridge_contract::query_plan::QueryOperand;
-    use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+    use type_bridge_contract::query_plan::{Expr, Pattern};
     for patterns in [
         vec![
             Pattern::Let {
@@ -905,15 +902,13 @@ fn let_assignments_are_fresh_and_references_are_already_typed() {
             },
         ],
     ] {
-        assert!(
-            QueryPlanV3::new(spec(vec![Stage::Match { patterns }], vec![0]), &schema()).is_err()
-        );
+        assert!(QueryPlan::new(spec(vec![Stage::Match { patterns }], vec![0]), &schema()).is_err());
     }
 }
 
 #[test]
 fn operations_cannot_hide_writes_or_invent_them() {
-    use type_bridge_contract::query_plan::v3::{Operation, WriteReturns};
+    use type_bridge_contract::query_plan::{Operation, WriteReturns};
     assert_eq!(
         examples::batch()
             .with_operation(Operation::Rows, &schema())
@@ -922,7 +917,7 @@ fn operations_cannot_hide_writes_or_invent_them() {
             .as_str(),
         "query_plan_operation_write_mismatch"
     );
-    let read = QueryPlanV3::new(spec(vec![matched()], vec![0]), &schema()).unwrap();
+    let read = QueryPlan::new(spec(vec![matched()], vec![0]), &schema()).unwrap();
     assert_eq!(
         read.with_operation(
             Operation::Write {
@@ -1004,7 +999,7 @@ fn given_rows_enforce_types_presence_width_and_the_4096_ceiling() {
 fn let_values_must_match_the_written_field_and_stay_bounded() {
     use type_bridge_contract::limits::QueryLimits;
     use type_bridge_contract::query_plan::QueryOperand;
-    use type_bridge_contract::query_plan::v3::{ArithOp, Expr, Pattern};
+    use type_bridge_contract::query_plan::{ArithOp, Expr, Pattern};
     let expr = Expr::Arith {
         op: ArithOp::Div,
         lhs: Box::new(Expr::Operand(literal(3))),
@@ -1032,15 +1027,12 @@ fn let_values_must_match_the_written_field_and_stay_bounded() {
         vec![0],
     );
     assert_eq!(
-        QueryPlanV3::new(plan, &schema())
-            .unwrap_err()
-            .code()
-            .as_str(),
+        QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
         "query_plan_write_value_type"
     );
     let mut limits = QueryLimits::CANONICAL;
     limits.structural.predicate_depth = 1;
-    let error = QueryPlanV3::new_with_limits(
+    let error = QueryPlan::new_with_limits(
         spec(
             vec![Stage::Match {
                 patterns: vec![Pattern::Let {
@@ -1061,7 +1053,7 @@ fn let_values_must_match_the_written_field_and_stay_bounded() {
 fn let_cannot_reassign_a_branch_local_concept_binding() {
     use type_bridge_contract::migration_assertion::ValueComparator;
     use type_bridge_contract::query_plan::QueryPattern;
-    use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+    use type_bridge_contract::query_plan::{Expr, Pattern};
     let patterns = vec![
         pat(0, entity("account")),
         QueryPattern::Or {
@@ -1081,7 +1073,7 @@ fn let_cannot_reassign_a_branch_local_concept_binding() {
         },
     ];
     assert_eq!(
-        QueryPlanV3::new(spec(vec![Stage::Match { patterns }], vec![1]), &schema())
+        QueryPlan::new(spec(vec![Stage::Match { patterns }], vec![1]), &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -1093,12 +1085,12 @@ fn let_cannot_reassign_a_branch_local_concept_binding() {
 fn native_input_template_binds_without_mutating_the_template() {
     use type_bridge_contract::id::AttributeId;
     use type_bridge_contract::migration_assertion::ValueComparator;
-    use type_bridge_contract::query_plan::v3::{Operation, PlanSpec};
     use type_bridge_contract::query_plan::{
         InputColumn, InputColumnId, InputRow, QueryOperand, QueryPattern,
     };
+    use type_bridge_contract::query_plan::{Operation, PlanSpec};
     use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
-    let template = QueryPlanV3::new(
+    let template = QueryPlan::new(
         PlanSpec {
             bindings: vec![binding(0, "account"), binding(1, "score")],
             inputs: vec![InputColumn::new(
@@ -1140,7 +1132,7 @@ fn native_input_template_binds_without_mutating_the_template() {
     let template_bytes = template.canonical_bytes().unwrap();
     assert!(template.given_rows().is_none());
     assert_eq!(
-        decode_query_plan_v3(&template_bytes, &schema()).unwrap(),
+        decode_query_plan(&template_bytes, &schema()).unwrap(),
         template
     );
     let bound = template
@@ -1157,15 +1149,15 @@ fn native_input_template_binds_without_mutating_the_template() {
     );
     assert_eq!(template.canonical_bytes().unwrap(), template_bytes);
     assert_eq!(
-        decode_query_plan_v3(&bound.canonical_bytes().unwrap(), &schema()).unwrap(),
+        decode_query_plan(&bound.canonical_bytes().unwrap(), &schema()).unwrap(),
         bound
     );
 }
 
 #[test]
-fn shared_plan_v3_fixtures() {
+fn shared_plan_fixtures() {
     let root =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/contracts/plan_v3");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/contracts/plan");
     let write = std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_V3_FIXTURES").is_some();
     if write {
         std::fs::create_dir_all(&root).unwrap();
@@ -1205,7 +1197,7 @@ fn shared_plan_v3_fixtures() {
     let mut manifest = BTreeMap::new();
     for (name, plan) in plans {
         let bytes = plan.canonical_bytes().unwrap();
-        let decoded = decode_query_plan_v3(&bytes, &schema()).unwrap();
+        let decoded = decode_query_plan(&bytes, &schema()).unwrap();
         assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
         let fingerprint = plan
             .fingerprint()
@@ -1257,7 +1249,7 @@ fn shared_plan_v3_fixtures() {
 #[test]
 fn delete_thing_rejects_let_and_function_scalar_bindings() {
     use type_bridge_contract::id::FunctionId;
-    use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+    use type_bridge_contract::query_plan::{Expr, Pattern};
     use type_bridge_contract::query_plan::{LocalFunction, LocalReturn, QueryPattern};
     use type_bridge_contract::value::ValueTypeTag;
     for function in [false, true] {
@@ -1297,10 +1289,7 @@ fn delete_thing_rejects_let_and_function_scalar_bindings() {
             )];
         }
         assert_eq!(
-            QueryPlanV3::new(plan, &schema())
-                .unwrap_err()
-                .code()
-                .as_str(),
+            QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
             "query_plan_delete_untyped_thing"
         );
     }
@@ -1308,7 +1297,7 @@ fn delete_thing_rejects_let_and_function_scalar_bindings() {
 
 #[test]
 fn iid_patterns_identify_typed_things_and_round_trip() {
-    use type_bridge_contract::query_plan::v3::Pattern;
+    use type_bridge_contract::query_plan::Pattern;
     let iid = |binding: u16, iid: &str| Pattern::Iid {
         binding: id(binding),
         iid: iid.to_owned(),
@@ -1324,7 +1313,7 @@ fn iid_patterns_identify_typed_things_and_round_trip() {
             vec![],
         )
     };
-    let plan = QueryPlanV3::new(
+    let plan = QueryPlan::new(
         delete(vec![
             pat(0, entity("account")),
             iid(0, "0x1e00000000000000000001"),
@@ -1340,7 +1329,7 @@ fn iid_patterns_identify_typed_things_and_round_trip() {
     let bytes = plan.canonical_bytes().unwrap();
     let text = std::str::from_utf8(&bytes).unwrap();
     assert!(text.contains(r#"{"binding":0,"iid":"0x1e00000000000000000001","kind":"iid"}"#));
-    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
     for (patterns, code) in [
         (
             vec![pat(0, entity("account")), iid(0, "1e00")],
@@ -1356,10 +1345,7 @@ fn iid_patterns_identify_typed_things_and_round_trip() {
             items: vec![DeleteItem::Thing { binding: id(1) }],
         };
         assert_eq!(
-            QueryPlanV3::new(plan, &schema())
-                .unwrap_err()
-                .code()
-                .as_str(),
+            QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
             code
         );
     }
@@ -1368,8 +1354,8 @@ fn iid_patterns_identify_typed_things_and_round_trip() {
 #[test]
 fn iid_patterns_refuse_attribute_and_optional_or_negated_bindings() {
     use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::query_plan::Pattern;
     use type_bridge_contract::query_plan::QueryPattern;
-    use type_bridge_contract::query_plan::v3::Pattern;
     let iid = Pattern::Iid {
         binding: id(1),
         iid: "0x1e00".to_owned(),
@@ -1400,10 +1386,7 @@ fn iid_patterns_refuse_attribute_and_optional_or_negated_bindings() {
             vec![],
         );
         assert_eq!(
-            QueryPlanV3::new(plan, &schema())
-                .unwrap_err()
-                .code()
-                .as_str(),
+            QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
             "query_plan_iid_untyped_thing"
         );
     }
@@ -1411,9 +1394,7 @@ fn iid_patterns_refuse_attribute_and_optional_or_negated_bindings() {
 
 #[test]
 fn thing_fetch_is_terminal_typed_and_lists_declared_roles_once() {
-    use type_bridge_contract::query_plan::v3::{
-        DocumentRole, Operation, ThingDocument, WriteReturns,
-    };
+    use type_bridge_contract::query_plan::{DocumentRole, Operation, ThingDocument, WriteReturns};
     let plan = examples::fetch_written(true);
     let bytes = plan.canonical_bytes().unwrap();
     let text = std::str::from_utf8(&bytes).unwrap();
@@ -1425,7 +1406,7 @@ fn thing_fetch_is_terminal_typed_and_lists_declared_roles_once() {
             .iter()
             .any(|capability| capability.as_str() == "query.fetch.thing")
     );
-    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
 
     let fetch =
         |thing: u16, roles: Vec<DocumentRole>| Stage::Fetch(ThingDocument::new(id(thing), roles));
@@ -1497,10 +1478,7 @@ fn thing_fetch_is_terminal_typed_and_lists_declared_roles_once() {
         let mut plan = spec(pipeline, output);
         plan.operation = operation;
         assert_eq!(
-            QueryPlanV3::new(plan, &schema())
-                .unwrap_err()
-                .code()
-                .as_str(),
+            QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
             code
         );
     }
@@ -1508,7 +1486,7 @@ fn thing_fetch_is_terminal_typed_and_lists_declared_roles_once() {
 
 #[test]
 fn attach_adds_to_bound_things_and_refuses_unbound_targets() {
-    use type_bridge_contract::query_plan::v3::AttachItem;
+    use type_bridge_contract::query_plan::AttachItem;
     let plan = examples::attach();
     let bytes = plan.canonical_bytes().unwrap();
     let text = std::str::from_utf8(&bytes).unwrap();
@@ -1519,14 +1497,14 @@ fn attach_adds_to_bound_things_and_refuses_unbound_targets() {
             .any(|capability| capability.as_str() == "query.write.attach")
     );
     assert!(plan.writes());
-    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
     let attach = |items: Vec<AttachItem>, patterns| {
         spec(
             vec![Stage::Match { patterns }, Stage::Attach { items }],
             vec![],
         )
     };
-    let key = QueryPlanV3::new(
+    let key = QueryPlan::new(
         attach(
             vec![AttachItem::Has {
                 optional: false,
@@ -1571,10 +1549,7 @@ fn attach_adds_to_bound_things_and_refuses_unbound_targets() {
         ),
     ] {
         assert_eq!(
-            QueryPlanV3::new(plan, &schema())
-                .unwrap_err()
-                .code()
-                .as_str(),
+            QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
             code
         );
     }
@@ -1587,7 +1562,7 @@ fn removing_every_player_of_a_role_needs_a_declared_role_of_the_relation() {
     assert!(std::str::from_utf8(&bytes).unwrap().contains(
         r#"{"items":[{"kind":"players","relation":1,"role":{"declaring_relation":"membership","label":"member"}}],"kind":"delete"}"#
     ));
-    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
     let wrong = spec(
         vec![
             matched(),
@@ -1601,7 +1576,7 @@ fn removing_every_player_of_a_role_needs_a_declared_role_of_the_relation() {
         vec![],
     );
     assert_eq!(
-        QueryPlanV3::new(wrong, &schema())
+        QueryPlan::new(wrong, &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -1627,7 +1602,7 @@ fn typedb_3_14_query_rules_are_refused_at_build_on_every_profile() {
     };
     // Sort on a duration binding: unordered value type.
     assert_eq!(
-        QueryPlanV3::new(
+        QueryPlan::new(
             spec(
                 vec![
                     Stage::Match { patterns: shift() },
@@ -1660,7 +1635,7 @@ fn typedb_3_14_query_rules_are_refused_at_build_on_every_profile() {
             }
             .into(),
         );
-        QueryPlanV3::new(
+        QueryPlan::new(
             spec(vec![Stage::Match { patterns }], vec![0]),
             &schema_with_duration(),
         )
@@ -1680,7 +1655,7 @@ fn typedb_3_14_query_rules_are_refused_at_build_on_every_profile() {
 
 #[test]
 fn deletion_snapshot_keeps_pre_delete_authority_and_requires_write_rows() {
-    use type_bridge_contract::query_plan::v3::{Operation, ThingDocument, WriteReturns};
+    use type_bridge_contract::query_plan::{Operation, ThingDocument, WriteReturns};
     let pipeline = vec![
         matched(),
         Stage::Fetch(ThingDocument::new(id(0), vec![])),
@@ -1692,7 +1667,7 @@ fn deletion_snapshot_keeps_pre_delete_authority_and_requires_write_rows() {
     candidate.operation = Operation::Write {
         returns: WriteReturns::Rows,
     };
-    let plan = QueryPlanV3::new(candidate, &schema()).unwrap();
+    let plan = QueryPlan::new(candidate, &schema()).unwrap();
     assert!(plan.fetch_document_shape().is_some());
     assert!(
         plan.required_capabilities()
@@ -1700,7 +1675,7 @@ fn deletion_snapshot_keeps_pre_delete_authority_and_requires_write_rows() {
             .any(|c| c.as_str() == "query.write.delete-snapshot")
     );
     assert_eq!(
-        decode_query_plan_v3(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
+        decode_query_plan(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
         plan
     );
     for operation in [
@@ -1713,7 +1688,7 @@ fn deletion_snapshot_keeps_pre_delete_authority_and_requires_write_rows() {
         let mut candidate = spec(pipeline.clone(), vec![]);
         candidate.operation = operation;
         assert_eq!(
-            QueryPlanV3::new(candidate, &schema())
+            QueryPlan::new(candidate, &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -1732,7 +1707,7 @@ fn deletion_snapshot_keeps_pre_delete_authority_and_requires_write_rows() {
         returns: WriteReturns::Rows,
     };
     assert_eq!(
-        QueryPlanV3::new(candidate, &schema())
+        QueryPlan::new(candidate, &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -1742,7 +1717,7 @@ fn deletion_snapshot_keeps_pre_delete_authority_and_requires_write_rows() {
 
 #[test]
 fn deletion_snapshot_refuses_replayed_mutations_and_nonterminal_fetches() {
-    use type_bridge_contract::query_plan::v3::{Operation, ThingDocument, WriteReturns};
+    use type_bridge_contract::query_plan::{Operation, ThingDocument, WriteReturns};
     let fetch = Stage::Fetch(ThingDocument::new(id(0), vec![]));
     let delete = Stage::Delete {
         items: vec![DeleteItem::Thing { binding: id(0) }],
@@ -1772,14 +1747,14 @@ fn deletion_snapshot_refuses_replayed_mutations_and_nonterminal_fetches() {
             returns: WriteReturns::Rows,
         };
         assert_eq!(
-            QueryPlanV3::new(candidate, &schema())
+            QueryPlan::new(candidate, &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
             code
         );
     }
-    let ordinary = QueryPlanV3::new(
+    let ordinary = QueryPlan::new(
         spec(
             vec![
                 matched(),
@@ -1807,7 +1782,7 @@ fn diagnostic_shape_fingerprint_omits_given_rows_and_uses_its_own_domain() {
     let original_fingerprint = plan.fingerprint().unwrap();
     let mut changed: Value = serde_json::from_slice(&original_bytes).unwrap();
     changed["given_rows"][0][0]["value"] = json!("other-purchase");
-    let other = decode_query_plan_v3(&to_canonical_json(&changed).unwrap(), &schema()).unwrap();
+    let other = decode_query_plan(&to_canonical_json(&changed).unwrap(), &schema()).unwrap();
     let shape = plan.shape_fingerprint().unwrap();
     assert_eq!(shape, other.shape_fingerprint().unwrap());
     assert_eq!(shape.domain().as_str(), "typebridge.query.plan-shape");
@@ -1862,7 +1837,7 @@ fn string_comparators_require_string_domains_and_bind_input_values() {
             right: literal(2),
         })
         .unwrap();
-        let error = decode_query_plan_v3(&to_canonical_json(&bad).unwrap(), &schema()).unwrap_err();
+        let error = decode_query_plan(&to_canonical_json(&bad).unwrap(), &schema()).unwrap_err();
         assert_eq!(error.code().as_str(), "query_plan_compare_string_type");
     }
 }
@@ -1912,7 +1887,7 @@ fn string_comparisons_validate_branch_local_attribute_domains() {
             ValueTypeTag::String,
             false,
         )];
-        QueryPlanV3::new(spec, &schema()).unwrap();
+        QueryPlan::new(spec, &schema()).unwrap();
     }
 }
 
@@ -1926,7 +1901,7 @@ fn rematch_retains_only_the_selected_scope_and_preserves_other_order_refusals() 
     );
     assert_eq!(plan.statement_counts(), (1, 0));
     let bytes = plan.canonical_bytes().unwrap();
-    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
     let original: Value = serde_json::from_slice(&bytes).unwrap();
     let mut hidden = original.clone();
     hidden["pipeline"][6]["patterns"] = json!([{
@@ -1935,7 +1910,7 @@ fn rematch_retains_only_the_selected_scope_and_preserves_other_order_refusals() 
         "right": {"kind": "literal", "value": {"kind": "string", "value": "A"}}
     }]);
     assert_eq!(
-        decode_query_plan_v3(&to_canonical_json(&hidden).unwrap(), &schema())
+        decode_query_plan(&to_canonical_json(&hidden).unwrap(), &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -1965,7 +1940,7 @@ fn rematch_retains_only_the_selected_scope_and_preserves_other_order_refusals() 
             }
         }
         assert_eq!(
-            decode_query_plan_v3(&to_canonical_json(&invalid).unwrap(), &schema())
+            decode_query_plan(&to_canonical_json(&invalid).unwrap(), &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -1976,7 +1951,7 @@ fn rematch_retains_only_the_selected_scope_and_preserves_other_order_refusals() 
 
 #[test]
 fn iid_expressions_require_present_things_and_infer_string_inside_calls() {
-    use type_bridge_contract::query_plan::v3::{Builtin, Expr, Pattern};
+    use type_bridge_contract::query_plan::{Builtin, Expr, Pattern};
     let plan = examples::iid_expression();
     assert!(
         plan.required_capabilities()
@@ -1984,11 +1959,11 @@ fn iid_expressions_require_present_things_and_infer_string_inside_calls() {
             .any(|cap| cap.as_str() == "query.expr.iid")
     );
     assert_eq!(
-        decode_query_plan_v3(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
+        decode_query_plan(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
         plan
     );
     for typed in [entity("account"), relation()] {
-        QueryPlanV3::new(
+        QueryPlan::new(
             spec(
                 vec![Stage::Match {
                     patterns: vec![
@@ -2033,7 +2008,7 @@ fn iid_expressions_require_present_things_and_infer_string_inside_calls() {
             expr: Expr::Iid { binding: id(1) },
         });
         assert_eq!(
-            QueryPlanV3::new(spec(vec![Stage::Match { patterns }], vec![2]), &schema())
+            QueryPlan::new(spec(vec![Stage::Match { patterns }], vec![2]), &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -2074,10 +2049,10 @@ fn schema_derived_zero_hop_branches_share_the_predicate_node_budget() {
         }],
         vec![0],
     );
-    QueryPlanV3::new(spec.clone(), &schema()).unwrap();
+    QueryPlan::new(spec.clone(), &schema()).unwrap();
     let mut limits = QueryLimits::CANONICAL;
     limits.structural.predicate_nodes = 4;
-    let error = QueryPlanV3::new_with_limits(spec, &schema(), limits).unwrap_err();
+    let error = QueryPlan::new_with_limits(spec, &schema(), limits).unwrap_err();
     assert_eq!(
         error.code().as_str(),
         "query_plan_reachable_expansion_limit"
@@ -2102,16 +2077,19 @@ fn native_output_columns_use_the_binding_budget_while_v1_remains_frozen() {
         .iter()
         .map(|column| binding(*column, &format!("b{column}")))
         .collect();
-    let plan = QueryPlanV3::new(wide.clone(), &schema()).unwrap();
+    let plan = QueryPlan::new(wide.clone(), &schema()).unwrap();
     assert_eq!(plan.limits().structural.selected_slots, MAX_BINDINGS);
     let lower =
-        QueryPlanV3::new_with_limits(wide.clone(), &schema(), QueryLimits::CANONICAL).unwrap_err();
+        QueryPlan::new_with_limits(wide.clone(), &schema(), QueryLimits::CANONICAL).unwrap_err();
     assert_eq!(lower.code().as_str(), "query_plan_output_limit");
-    let mut invalid = QueryLimits::V3;
+    let mut invalid = QueryLimits::PLAN;
     invalid.structural.bindings = 16;
     invalid.structural.selected_slots = 17;
-    assert_eq!(invalid.validate_v3().unwrap_err().limit(), "selected_slots");
-    let invalid = QueryPlanV3::new_with_limits(wide, &schema(), invalid).unwrap_err();
+    assert_eq!(
+        invalid.validate_plan().unwrap_err().limit(),
+        "selected_slots"
+    );
+    let invalid = QueryPlan::new_with_limits(wide, &schema(), invalid).unwrap_err();
     assert_eq!(
         invalid.details().get("limit"),
         Some(
@@ -2127,7 +2105,7 @@ fn native_output_columns_use_the_binding_budget_while_v1_remains_frozen() {
 #[test]
 fn native_write_stages_refuse_ordered_collections_without_a_scalar_escape() {
     use type_bridge_contract::diagnostic::DiagnosticCategory;
-    use type_bridge_contract::query_plan::v3::AttachItem;
+    use type_bridge_contract::query_plan::AttachItem;
     let schema = schema_with_ordered_collections();
     let mut stages = stage_plans()
         .into_iter()
@@ -2183,7 +2161,7 @@ fn native_write_stages_refuse_ordered_collections_without_a_scalar_escape() {
         ));
     }
     for (name, pipeline) in stages {
-        let error = QueryPlanV3::new(spec(pipeline, vec![]), &schema).unwrap_err();
+        let error = QueryPlan::new(spec(pipeline, vec![]), &schema).unwrap_err();
         assert_eq!(
             error.category(),
             DiagnosticCategory::UnsupportedCapability,
@@ -2199,7 +2177,7 @@ fn native_write_stages_refuse_ordered_collections_without_a_scalar_escape() {
 
 #[test]
 fn ownership_delete_accepts_only_bound_schema_typed_optional_owners() {
-    use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+    use type_bridge_contract::query_plan::{Expr, Pattern};
     for (patterns, owner, expected) in [
         (
             vec![
@@ -2234,7 +2212,7 @@ fn ownership_delete_accepts_only_bound_schema_typed_optional_owners() {
             Some("query_plan_write_unbound_target"),
         ),
     ] {
-        let plan = QueryPlanV3::new(
+        let plan = QueryPlan::new(
             spec(
                 vec![
                     Stage::Match { patterns },
@@ -2260,7 +2238,7 @@ fn ownership_delete_accepts_only_bound_schema_typed_optional_owners() {
 
 #[test]
 fn write_rematches_keep_selected_bindings_and_admit_fresh_bindings() {
-    use type_bridge_contract::query_plan::v3::Operation;
+    use type_bridge_contract::query_plan::Operation;
     let put = |target, key| Stage::Put {
         include_subtypes: false,
         things: vec![InsertThing {
@@ -2298,7 +2276,7 @@ fn write_rematches_keep_selected_bindings_and_admit_fresh_bindings() {
     ];
     let mut request = spec(pipeline, vec![0, 1, 2, 3]);
     request.bindings.push(binding(3, "again"));
-    QueryPlanV3::new(request.clone(), &schema()).unwrap();
+    QueryPlan::new(request.clone(), &schema()).unwrap();
     let mut absent = request.clone();
     absent.pipeline[5] = Stage::Select {
         bindings: vec![id(0), id(1)],
@@ -2307,7 +2285,7 @@ fn write_rematches_keep_selected_bindings_and_admit_fresh_bindings() {
         columns: vec![id(0)],
     };
     assert_eq!(
-        QueryPlanV3::new(absent, &schema())
+        QueryPlan::new(absent, &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -2316,7 +2294,7 @@ fn write_rematches_keep_selected_bindings_and_admit_fresh_bindings() {
     let mut reused = request.clone();
     reused.pipeline[4] = put(0, "duplicate");
     assert_eq!(
-        QueryPlanV3::new(reused, &schema())
+        QueryPlan::new(reused, &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -2325,7 +2303,7 @@ fn write_rematches_keep_selected_bindings_and_admit_fresh_bindings() {
     let mut unselected = request;
     unselected.pipeline.drain(1..3);
     assert_eq!(
-        QueryPlanV3::new(unselected, &schema())
+        QueryPlan::new(unselected, &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -2353,17 +2331,14 @@ fn write_rematches_keep_selected_bindings_and_admit_fresh_bindings() {
     );
     read.operation = Operation::Rows;
     assert_eq!(
-        QueryPlanV3::new(read, &schema())
-            .unwrap_err()
-            .code()
-            .as_str(),
+        QueryPlan::new(read, &schema()).unwrap_err().code().as_str(),
         "query_plan_stage_order"
     );
 }
 
 #[test]
 fn optional_has_attachment_requires_a_bound_typed_owner_and_optional_flag() {
-    use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+    use type_bridge_contract::query_plan::{Expr, Pattern};
     for (patterns, owner, optional, expected) in [
         (
             vec![
@@ -2414,7 +2389,7 @@ fn optional_has_attachment_requires_a_bound_typed_owner_and_optional_flag() {
             Some("query_plan_write_unbound_target"),
         ),
     ] {
-        let plan = QueryPlanV3::new(
+        let plan = QueryPlan::new(
             spec(
                 vec![
                     Stage::Match { patterns },
@@ -2456,10 +2431,10 @@ fn native_optional_unions_keep_branch_visibility_and_legacy_fences() {
         }],
         vec![0],
     );
-    let plan = QueryPlanV3::new(request.clone(), &schema()).unwrap();
+    let plan = QueryPlan::new(request.clone(), &schema()).unwrap();
     let bytes = plan.canonical_bytes().unwrap();
     assert_eq!(
-        decode_query_plan_v3(&bytes, &schema())
+        decode_query_plan(&bytes, &schema())
             .unwrap()
             .canonical_bytes()
             .unwrap(),
@@ -2474,7 +2449,7 @@ fn native_optional_unions_keep_branch_visibility_and_legacy_fences() {
         }],
     };
     assert_eq!(
-        QueryPlanV3::new(
+        QueryPlan::new(
             spec(
                 vec![Stage::Match {
                     patterns: vec![not_in_every_branch.into()]
@@ -2503,7 +2478,7 @@ fn native_optional_unions_keep_branch_visibility_and_legacy_fences() {
             },
         ] {
             assert_eq!(
-                QueryPlanV3::new(
+                QueryPlan::new(
                     spec(
                         vec![Stage::Match {
                             patterns: vec![
@@ -2541,7 +2516,7 @@ fn rows_refuses_flat_document_output_before_execution() {
             },
         )],
     };
-    let error = QueryPlanV3::new(request, &schema()).unwrap_err();
+    let error = QueryPlan::new(request, &schema()).unwrap_err();
     assert_eq!(error.code().as_str(), "query_plan_rows_document_output");
     assert_eq!(
         error.category(),

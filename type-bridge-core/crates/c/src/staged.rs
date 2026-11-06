@@ -19,7 +19,7 @@ use std::sync::{Arc, Weak};
 use tracing::Instrument as _;
 
 use type_bridge_contract::diagnostic::Diagnostic;
-use type_bridge_contract::query_plan::v3::{QueryPlanV3, decode_query_plan_v3};
+use type_bridge_contract::query_plan::{QueryPlan, decode_query_plan};
 use type_bridge_contract::schema::decode_declared_schema;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
@@ -72,16 +72,16 @@ pub struct TypeBridgePlan {
     pub(crate) source: Arc<CompiledRawPlan>,
 }
 pub(crate) struct CompiledRawPlan {
-    pub(crate) plan: QueryPlanV3,
+    pub(crate) plan: QueryPlan,
     pub(crate) canonical: Vec<u8>,
 }
-impl AsRef<[QueryPlanV3]> for CompiledRawPlan {
-    fn as_ref(&self) -> &[QueryPlanV3] {
+impl AsRef<[QueryPlan]> for CompiledRawPlan {
+    fn as_ref(&self) -> &[QueryPlan] {
         std::slice::from_ref(&self.plan)
     }
 }
 impl TypeBridgePlan {
-    pub(crate) fn new(plan: QueryPlanV3, canonical: Vec<u8>) -> Self {
+    pub(crate) fn new(plan: QueryPlan, canonical: Vec<u8>) -> Self {
         Self {
             source: Arc::new(CompiledRawPlan { plan, canonical }),
         }
@@ -406,7 +406,7 @@ pub unsafe extern "C" fn type_bridge_plan_decode(
                 );
             }
         };
-        let decoded = decode_query_plan_v3(plan, &schema)
+        let decoded = decode_query_plan(plan, &schema)
             .and_then(|plan| plan.canonical_bytes().map(|canonical| (plan, canonical)));
         let (plan, canonical) = match decoded {
             Ok(value) => value,
@@ -1065,12 +1065,10 @@ mod tests {
     use std::sync::Mutex;
 
     use type_bridge_contract::capability::CapabilityId;
-    use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
+    use type_bridge_contract::query_plan::query_plan_capability_vocabulary;
+    use type_bridge_contract::query_remote::{CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_WRITE};
     use type_bridge_contract::query_remote::{
         RemoteCapabilities, RemoteExecutorBinding, RemoteSigningPublicKey,
-    };
-    use type_bridge_contract::query_remote_v3::{
-        CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3,
     };
     use type_bridge_contract::sdk_diagnostic::{SdkCommitFailureOutcome, SdkProviderOperation};
     use type_bridge_orm::session::backend::QueryResult;
@@ -1089,12 +1087,12 @@ mod tests {
     };
     use crate::runtime::type_bridge_database_close;
 
-    const SCHEMA: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/schema.json");
-    const PURCHASE: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/purchase.json");
-    const ROWS: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/rows.json");
-    const COUNT: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/count.json");
-    const EXISTS: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/exists.json");
-    const BATCH: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/batch.json");
+    const SCHEMA: &[u8] = include_bytes!("../../../../tests/contracts/plan/schema.json");
+    const PURCHASE: &[u8] = include_bytes!("../../../../tests/contracts/plan/purchase.json");
+    const ROWS: &[u8] = include_bytes!("../../../../tests/contracts/plan/rows.json");
+    const COUNT: &[u8] = include_bytes!("../../../../tests/contracts/plan/count.json");
+    const EXISTS: &[u8] = include_bytes!("../../../../tests/contracts/plan/exists.json");
+    const BATCH: &[u8] = include_bytes!("../../../../tests/contracts/plan/batch.json");
     const HEADER: &str = include_str!("../include/typebridge/type_bridge.h");
 
     type Diagnostics = *mut TypeBridgeExecutionDiagnostics;
@@ -2041,8 +2039,8 @@ mod tests {
                 ))
             })
         });
-        let mut capabilities = query_plan_v3_capability_vocabulary();
-        for capability in [CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3] {
+        let mut capabilities = query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_WRITE] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
         let advertisement = RemoteCapabilities::new(
@@ -2099,7 +2097,7 @@ mod tests {
         })]));
         let fixture = fixture(vec![response], COMMIT_SUCCESS);
         let mut plan = decode(include_bytes!(
-            "../../../../tests/contracts/plan_v3/fetch_entity.json"
+            "../../../../tests/contracts/plan/fetch_entity.json"
         ));
         let mut transaction = open(&fixture, TYPE_BRIDGE_TRANSACTION_WRITE);
         let mut pending = stage(transaction, plan);
@@ -2272,14 +2270,13 @@ mod explain_tests {
     #[test]
     fn owned_explanation_matches_core_and_checks_output_aliases() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../tests/contracts/plan_v3");
+            .join("../../../tests/contracts/plan");
         let schema = type_bridge_contract::schema::decode_declared_schema(
             &std::fs::read(root.join("schema.json")).unwrap(),
         )
         .unwrap();
         let bytes = std::fs::read(root.join("purchase.json")).unwrap();
-        let plan =
-            type_bridge_contract::query_plan::v3::decode_query_plan_v3(&bytes, &schema).unwrap();
+        let plan = type_bridge_contract::query_plan::decode_query_plan(&bytes, &schema).unwrap();
         let expected = type_bridge_orm::plan_explain::explain(&plan)
             .unwrap()
             .canonical_bytes()

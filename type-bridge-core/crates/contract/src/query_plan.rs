@@ -23,11 +23,9 @@ pub use types::{
 };
 
 /// Native read/write plans.
-#[path = "query_plan_v3.rs"]
-pub mod v3;
-pub use v3::{
-    QUERY_PLAN_CANONICALIZATION_V3, QUERY_PLAN_FORMAT_V3, QueryPlanV3, decode_query_plan_v3,
-};
+#[path = "query_plan_definition.rs"]
+mod definition;
+pub use definition::*;
 
 #[path = "query_model.rs"]
 mod model;
@@ -1170,7 +1168,7 @@ fn collect_pattern_capabilities(
         QueryPattern::Iid { iid, .. } => {
             insert_capability(capabilities, "query.pattern.nested-iid")?;
             if negative && !matches!(iid, QueryOperand::Literal { .. }) {
-                insert_capability(capabilities, v3::CAP_NEGATED_GIVEN_IID)?;
+                insert_capability(capabilities, CAP_NEGATED_GIVEN_IID)?;
             }
         }
         QueryPattern::Has { .. } | QueryPattern::HasType { .. } => {

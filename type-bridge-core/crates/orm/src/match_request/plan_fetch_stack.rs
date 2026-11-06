@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-use type_bridge_contract::query_plan::v3::{
-    Expr, Operation, Pattern, PlanSpec, QueryPlanV3, Stage, ThingDocument,
+use type_bridge_contract::query_plan::{
+    Expr, Operation, Pattern, PlanSpec, QueryPlan, Stage, ThingDocument,
 };
 use type_bridge_contract::query_plan::{
     HydrationProjection, QueryOperand, QueryOutput, QueryPattern,
@@ -24,8 +24,8 @@ use type_bridge_contract::query_plan::{
 /// Execute `plans()` in order in one transaction, then call `resolve()` before
 /// publishing any model or scalar result.
 pub struct PlanFetchStack {
-    pub(crate) plans: Vec<QueryPlanV3>,
-    bulk: Option<Box<type_bridge_contract::query_plan::v3::BuiltPlans>>,
+    pub(crate) plans: Vec<QueryPlan>,
+    bulk: Option<Box<type_bridge_contract::query_plan::BuiltPlans>>,
     pub(crate) selection: Option<usize>,
     pub(crate) mapping: Option<usize>,
     pub(crate) partitions: Vec<(usize, BindingId, Vec<TypeId>)>,
@@ -39,14 +39,14 @@ pub struct PlanFetchStack {
 
 impl PlanFetchStack {
     /// Executed selection metadata for native scalar decoding.
-    pub fn selection_plan(&self) -> &QueryPlanV3 {
+    pub fn selection_plan(&self) -> &QueryPlan {
         self.bulk.as_ref().map_or_else(
             || &self.plans[self.selection.unwrap_or(0)],
             |plans| plans.projection_plan(),
         )
     }
     /// Ordered read-only plans sharing one selection prefix.
-    pub fn plans(&self) -> &[QueryPlanV3] {
+    pub fn plans(&self) -> &[QueryPlan] {
         self.bulk
             .as_ref()
             .map_or(self.plans.as_slice(), |plans| plans.plans())
@@ -54,7 +54,7 @@ impl PlanFetchStack {
     /// Whether the authored group writes, including an empty model bulk.
     pub fn writes(&self) -> bool {
         self.bulk.as_ref().map_or_else(
-            || self.plans.iter().any(QueryPlanV3::writes),
+            || self.plans.iter().any(QueryPlan::writes),
             |plans| plans.writes(),
         )
     }
@@ -67,7 +67,7 @@ impl PlanFetchStack {
 /// Unsupported shapes are refused before provider execution.
 pub fn build_plan_fetch_stack(
     registry: &DescriptorRegistry,
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     model_slots: &[(BindingId, DescriptorId)],
 ) -> Result<PlanFetchStack, Diagnostic> {
     build_fetch_stack(registry, plan, model_slots, false)
@@ -76,7 +76,7 @@ pub fn build_plan_fetch_stack(
 /// Manager selections already collapse roots before sorting and windowing.
 pub(crate) fn build_unique_plan_fetch_stack(
     registry: &DescriptorRegistry,
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     model_slots: &[(BindingId, DescriptorId)],
 ) -> Result<PlanFetchStack, Diagnostic> {
     build_fetch_stack(registry, plan, model_slots, true)
@@ -84,7 +84,7 @@ pub(crate) fn build_unique_plan_fetch_stack(
 
 fn build_fetch_stack(
     registry: &DescriptorRegistry,
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     model_slots: &[(BindingId, DescriptorId)],
     unique: bool,
 ) -> Result<PlanFetchStack, Diagnostic> {
@@ -132,7 +132,7 @@ fn build_fetch_stack(
 /// order before issuing one model proof. Stage this with Transaction::stage_plan_fetch.
 pub fn build_bulk_plan_fetch_stack(
     registry: &DescriptorRegistry,
-    plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+    plans: type_bridge_contract::query_plan::BuiltPlans,
     model_slot: (BindingId, DescriptorId),
 ) -> Result<PlanFetchStack, Diagnostic> {
     plans.validate_model_projection()?;
@@ -154,7 +154,7 @@ pub(crate) enum FetchProof {
 
 pub(crate) fn build_under_authority(
     registry: &DescriptorRegistry,
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     model_slots: &[(BindingId, DescriptorId)],
     authority: &MatchRequestAdapterAuthority,
     unique_selection: bool,
@@ -444,22 +444,22 @@ pub(crate) fn build_under_authority(
 }
 
 fn rebuild(
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     pipeline: Vec<Stage>,
     columns: Vec<BindingId>,
     authority: &MatchRequestAdapterAuthority,
-) -> Result<QueryPlanV3, Diagnostic> {
+) -> Result<QueryPlan, Diagnostic> {
     rebuild_with_bindings(plan, plan.bindings().to_vec(), pipeline, columns, authority)
 }
 
 fn rebuild_with_bindings(
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     bindings: Vec<AssertionBinding>,
     pipeline: Vec<Stage>,
     columns: Vec<BindingId>,
     authority: &MatchRequestAdapterAuthority,
-) -> Result<QueryPlanV3, Diagnostic> {
-    QueryPlanV3::new_with_limits(
+) -> Result<QueryPlan, Diagnostic> {
+    QueryPlan::new_with_limits(
         PlanSpec {
             bindings,
             inputs: plan.inputs().to_vec(),
@@ -476,9 +476,9 @@ fn rebuild_with_bindings(
 }
 
 fn retain_inputs(
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     authority: &MatchRequestAdapterAuthority,
-) -> Result<QueryPlanV3, Diagnostic> {
+) -> Result<QueryPlan, Diagnostic> {
     if plan.inputs().is_empty() {
         return Ok(plan.clone());
     }
@@ -542,7 +542,7 @@ fn retain_inputs(
         ));
     };
     patterns.splice(0..0, lets);
-    QueryPlanV3::new_with_limits(
+    QueryPlan::new_with_limits(
         PlanSpec {
             bindings,
             inputs: plan.inputs().to_vec(),
@@ -583,7 +583,7 @@ pub enum PlanFetchCell<'a> {
 
 /// Owned proof published once for one committed authored model projection.
 pub struct OwnedPlanFetchResult {
-    evidence: Option<std::sync::Arc<type_bridge_contract::query_remote_v3::StagedAnswerV3>>,
+    evidence: Option<std::sync::Arc<type_bridge_contract::query_remote::StagedAnswer>>,
     columns: Vec<BindingId>,
     selection: std::sync::Arc<crate::query_plan_exec::PlanAnswer>,
     request: super::ValidatedMatchRequest,
@@ -613,7 +613,7 @@ impl OwnedPlanFetchResult {
         if let Some((row, slot)) = self.model_ordinal(row, binding) {
             return Some(PlanFetchCell::Model { row, slot });
         }
-        let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } =
+        let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } =
             self.evidence.as_deref()?
         else {
             return None;
@@ -671,8 +671,8 @@ impl PlanFetchResult<'_> {
         }
     }
 }
-impl AsRef<[QueryPlanV3]> for PlanFetchStack {
-    fn as_ref(&self) -> &[QueryPlanV3] {
+impl AsRef<[QueryPlan]> for PlanFetchStack {
+    fn as_ref(&self) -> &[QueryPlan] {
         self.plans()
     }
 }
@@ -744,9 +744,8 @@ impl PlanFetchStack {
             .zip(answers)
             .map(|(plan, answer)| {
                 let wire = answer.to_staged_v3(plan)?;
-                if let type_bridge_contract::query_remote_v3::StagedAnswerV3::Documents {
-                    documents,
-                } = &wire
+                if let type_bridge_contract::query_remote::StagedAnswer::Documents { documents } =
+                    &wire
                 {
                     if let Some(expected) = plan.standalone_entity_rows() {
                         expected.correlate_proof(documents)?;
@@ -772,7 +771,7 @@ impl PlanFetchStack {
         &self,
         registry: &DescriptorRegistry,
         answers: &[&'a crate::query_plan_exec::PlanAnswer],
-        normalized: &[&type_bridge_contract::query_remote_v3::StagedAnswerV3],
+        normalized: &[&type_bridge_contract::query_remote::StagedAnswer],
         limits: crate::QueryExecutionResourceLimits,
     ) -> Result<PlanFetchResult<'a>, super::MatchError> {
         let fail = |error| super::selected_result_executor::released_plan_execution_error(&error);
@@ -859,8 +858,8 @@ impl PlanFetchStack {
         &self,
         registry: &DescriptorRegistry,
         answers: &[std::sync::Arc<crate::query_plan_exec::PlanAnswer>],
-        evidence: &[std::sync::Arc<type_bridge_contract::query_remote_v3::StagedAnswerV3>],
-        correlations: &[Option<&type_bridge_contract::query_plan::v3::BulkCorrelation>],
+        evidence: &[std::sync::Arc<type_bridge_contract::query_remote::StagedAnswer>],
+        correlations: &[Option<&type_bridge_contract::query_plan::BulkCorrelation>],
         limits: crate::QueryExecutionResourceLimits,
     ) -> Result<OwnedPlanFetchResult, super::MatchError> {
         let references = answers
@@ -900,7 +899,7 @@ impl PlanFetchStack {
     fn meter_verified(
         &self,
         answers: &[&crate::query_plan_exec::PlanAnswer],
-        normalized: &[&type_bridge_contract::query_remote_v3::StagedAnswerV3],
+        normalized: &[&type_bridge_contract::query_remote::StagedAnswer],
         limits: crate::QueryExecutionResourceLimits,
     ) -> Result<(), Diagnostic> {
         use crate::query_plan_exec::PlanAnswer;
@@ -938,7 +937,7 @@ impl PlanFetchStack {
         &self,
         registry: &DescriptorRegistry,
         answers: &[&'a crate::query_plan_exec::PlanAnswer],
-        normalized: &[&type_bridge_contract::query_remote_v3::StagedAnswerV3],
+        normalized: &[&type_bridge_contract::query_remote::StagedAnswer],
         limits: crate::QueryExecutionResourceLimits,
     ) -> Result<PlanFetchResult<'a>, Diagnostic> {
         use super::plan_hydration::{GraphBuilder, HydrationAuthority, insert_plan_documents};
@@ -947,7 +946,7 @@ impl PlanFetchStack {
         use type_bridge_contract::query_model_evidence::{HydratedRow, HydrationSlot};
         use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
         use type_bridge_contract::query_remote::RemoteValue;
-        use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+        use type_bridge_contract::query_remote::StagedAnswer;
         let fail = || {
             integrity(
                 "query_plan_result_window",
@@ -960,7 +959,7 @@ impl PlanFetchStack {
         };
         let index = self.selection.ok_or_else(fail)?;
         let selection = answers[index];
-        let StagedAnswerV3::Rows { rows: selected } = &normalized[index] else {
+        let StagedAnswer::Rows { rows: selected } = &normalized[index] else {
             return Err(fail());
         };
         let QueryOutput::Rows { columns } = self.selection_plan().output() else {
@@ -968,7 +967,7 @@ impl PlanFetchStack {
         };
         let mapping_index = self.mapping.ok_or_else(fail)?;
         let mapping_plan = &self.plans()[mapping_index];
-        let StagedAnswerV3::Rows { rows: mapping } = &normalized[mapping_index] else {
+        let StagedAnswer::Rows { rows: mapping } = &normalized[mapping_index] else {
             return Err(fail());
         };
         let QueryOutput::Rows {
@@ -1200,7 +1199,7 @@ impl PlanFetchStack {
 
 fn build_single_fetch(
     registry: &DescriptorRegistry,
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     model_slots: &[(BindingId, DescriptorId)],
     authority: &MatchRequestAdapterAuthority,
 ) -> Result<PlanFetchStack, Diagnostic> {
@@ -1307,13 +1306,13 @@ fn build_single_fetch(
 }
 
 pub(crate) struct FetchPrefix<'a> {
-    pub(crate) source: &'a QueryPlanV3,
+    pub(crate) source: &'a QueryPlan,
     pub(crate) stages: &'a [Stage],
     pub(crate) rematch: &'a [Pattern],
     pub(crate) baseline: Option<BindingId>,
 }
 fn unique_partition_iids(
-    source: &QueryPlanV3,
+    source: &QueryPlan,
     pipeline: &mut Vec<Stage>,
     binding: BindingId,
 ) -> Result<Vec<AssertionBinding>, Diagnostic> {
@@ -1378,14 +1377,14 @@ pub(crate) fn append_hydration_partitions(
     bindings: &[type_bridge_contract::query_plan::HydrationBinding],
     hydration: &HydrationProjection,
     authority: &MatchRequestAdapterAuthority,
-    plans: &mut Vec<QueryPlanV3>,
+    plans: &mut Vec<QueryPlan>,
 ) -> Result<Vec<(usize, BindingId, Vec<TypeId>)>, Diagnostic> {
     let mut partitions = Vec::new();
     for binding in bindings {
         let mut groups: Vec<(
             Vec<TypeId>,
             &type_bridge_contract::query_plan::HydrationDescriptor,
-            Vec<type_bridge_contract::query_plan::v3::DocumentRole>,
+            Vec<type_bridge_contract::query_plan::DocumentRole>,
         )> = Vec::new();
         for concrete in binding.concrete_descriptors() {
             let descriptor = hydration

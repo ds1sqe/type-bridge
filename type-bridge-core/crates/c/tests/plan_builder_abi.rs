@@ -1109,7 +1109,7 @@ fn typed_constructor_poison_reaches_build_with_one_named_diagnostic() {
 fn typed_fields_key_and_expression_match_explicit_core_bytes() {
     use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
     use type_bridge_contract::migration_assertion::ValueComparator;
-    use type_bridge_contract::query_plan::v3::{ArithOp, Expr, PlanBuilder as CoreBuilder};
+    use type_bridge_contract::query_plan::{ArithOp, Expr, PlanBuilder as CoreBuilder};
     use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
     use type_bridge_contract::schema::OwnsFactId;
     use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
@@ -1201,7 +1201,7 @@ fn typed_fields_key_and_expression_match_explicit_core_bytes() {
 #[test]
 fn typed_iid_match_forwards_core_bytes_and_utf8_faults() {
     use type_bridge_contract::id::{TypeId, TypeKind};
-    use type_bridge_contract::query_plan::v3::PlanBuilder as CoreBuilder;
+    use type_bridge_contract::query_plan::PlanBuilder as CoreBuilder;
     let fixture = purchase_package();
     let package = OpenPackage::new(&fixture);
     let p = B::new();
@@ -1252,8 +1252,8 @@ fn typed_iid_match_forwards_core_bytes_and_utf8_faults() {
 fn typed_lazy_fields_ignore_getter_order_and_unused_carriers() {
     use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
     use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::PlanBuilder as CoreBuilder;
     use type_bridge_contract::query_plan::QueryOperand;
-    use type_bridge_contract::query_plan::v3::PlanBuilder as CoreBuilder;
     let fixture = purchase_package();
     let package = OpenPackage::new(&fixture);
     let mut core = CoreBuilder::new();
@@ -1331,7 +1331,7 @@ fn typed_lazy_arithmetic_has_stable_depth_first_bytes_and_reuses_nodes() {
     use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
     use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
     use type_bridge_contract::query_plan::QueryOperand;
-    use type_bridge_contract::query_plan::v3::{ArithOp, Expr, PlanBuilder as CoreBuilder, Site};
+    use type_bridge_contract::query_plan::{ArithOp, Expr, PlanBuilder as CoreBuilder, Site};
     use type_bridge_contract::value::CanonicalValue;
     fn operation(
         core: &mut CoreBuilder,
@@ -1484,7 +1484,7 @@ fn compiled_lazy_c_and_cpp_expressions_match_core_in_every_creation_order() {
     use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
     use type_bridge_contract::migration_assertion::ValueComparator;
     use type_bridge_contract::query_plan::QueryOperand;
-    use type_bridge_contract::query_plan::v3::{ArithOp, Expr, PlanBuilder as CoreBuilder, Site};
+    use type_bridge_contract::query_plan::{ArithOp, Expr, PlanBuilder as CoreBuilder, Site};
     use type_bridge_contract::value::CanonicalValue;
     let fixture = purchase_package();
     let mut core = CoreBuilder::new();
@@ -2221,7 +2221,7 @@ fn compiled_nominal_union_role_edits_copy_borrowed_arrays_and_refuse_unknown_tag
         return;
     };
     use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
-    use type_bridge_contract::query_plan::v3::PlanBuilder as CoreBuilder;
+    use type_bridge_contract::query_plan::PlanBuilder as CoreBuilder;
     let fixture = purchase_package::package_from_source(
         r#"format: typebridge.schema/v2
 entities:

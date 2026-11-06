@@ -186,7 +186,7 @@ impl<'db> SchemaManager<'db> {
         &self,
         kind: type_bridge_contract::id::TypeKind,
         name: &str,
-    ) -> Result<type_bridge_contract::query_plan::v3::QueryPlanV3> {
+    ) -> Result<type_bridge_contract::query_plan::QueryPlan> {
         use type_bridge_contract::capability::CapabilitySet;
         use type_bridge_contract::codec::FormatVersion;
         use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -194,7 +194,7 @@ impl<'db> SchemaManager<'db> {
         use type_bridge_contract::migration_assertion::{
             AssertionBinding, BindingId, QueryVariable,
         };
-        use type_bridge_contract::query_plan::v3::{Operation, PlanSpec, QueryPlanV3, Stage};
+        use type_bridge_contract::query_plan::{Operation, PlanSpec, QueryPlan, Stage};
         use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
         use type_bridge_contract::schema::{
             DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
@@ -220,7 +220,7 @@ impl<'db> SchemaManager<'db> {
                 )
             })?;
             let root = BindingId::new(0)?;
-            QueryPlanV3::new(
+            QueryPlan::new(
                 PlanSpec {
                     bindings: vec![AssertionBinding::new(root, QueryVariable::new("x")?)],
                     inputs: vec![],

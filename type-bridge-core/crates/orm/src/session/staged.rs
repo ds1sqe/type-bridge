@@ -19,10 +19,8 @@ use crate::match_request::{
 pub use crate::query_plan_exec::{PlanAnswer, merge_plan_answers};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::failure::Failure;
-use type_bridge_contract::query_plan::v3::QueryPlanV3;
-use type_bridge_contract::query_remote_v3::{
-    SdkDiagnosticProjectionV3, StagedPlanV3, StagedRequestV3,
-};
+use type_bridge_contract::query_plan::QueryPlan;
+use type_bridge_contract::query_remote::{SdkDiagnosticProjection, StagedPlan, StagedRequest};
 use type_bridge_contract::sdk_diagnostic::{
     FailureContext, SdkExecutionDiagnostic, SdkProviderOperation,
 };
@@ -176,7 +174,7 @@ impl StagedQuery {
         &self,
         ops: &mut dyn super::backend::TransactionOps,
         limits: AnswerLimits,
-        plan: Option<&QueryPlanV3>,
+        plan: Option<&QueryPlan>,
     ) -> Result<(QueryResult, super::backend::BoundedAnswerStats), OrmError> {
         self.execute_inner(ops, limits, true, plan).await
     }
@@ -188,7 +186,7 @@ impl StagedQuery {
         ops: &mut dyn super::backend::TransactionOps,
         mut limits: AnswerLimits,
         count: bool,
-        validation: Option<&QueryPlanV3>,
+        validation: Option<&QueryPlan>,
     ) -> Result<(QueryResult, super::backend::BoundedAnswerStats), OrmError> {
         use tracing::Instrument;
         let mut meter = (count || self.snapshot.is_some())
@@ -254,7 +252,7 @@ impl StagedQuery {
                         )
                         || matches!(
                             plan.pipeline().last(),
-                            Some(type_bridge_contract::query_plan::v3::Stage::Fetch(_))
+                            Some(type_bridge_contract::query_plan::Stage::Fetch(_))
                         )
                 }),
                 validation,
@@ -362,7 +360,7 @@ async fn collect_counted_given(
     limits: AnswerLimits,
     meter: &mut crate::answer_meter::AnswerMeter,
     documents: bool,
-    validation: Option<&QueryPlanV3>,
+    validation: Option<&QueryPlan>,
 ) -> Result<QueryResult, OrmError> {
     use super::backend::{AnswerControl, AnswerItem};
     let mut answer = if documents {
@@ -631,7 +629,7 @@ impl PendingError {
 struct PendingState<T> {
     answer: Mutex<Result<Arc<T>, PendingError>>,
     correlation:
-        std::sync::OnceLock<Option<Arc<type_bridge_contract::query_plan::v3::BulkCorrelation>>>,
+        std::sync::OnceLock<Option<Arc<type_bridge_contract::query_plan::BulkCorrelation>>>,
 }
 impl<T> PendingState<T> {
     fn new() -> Self {
@@ -676,7 +674,7 @@ impl<T> Pending<T> {
     /// Retained correlation proof from this answer's existing validation pass.
     pub fn correlation(
         &self,
-    ) -> Result<Option<&type_bridge_contract::query_plan::v3::BulkCorrelation>, PendingError> {
+    ) -> Result<Option<&type_bridge_contract::query_plan::BulkCorrelation>, PendingError> {
         self.get()?;
         Ok(self
             .state
@@ -728,15 +726,15 @@ trait StagedProgram: Send + Sync {
         &mut self,
         _schema: &type_bridge_contract::schema::DeclaredSchema,
         _bounds: &BoundedAnswerLimits,
-    ) -> Result<(Vec<StagedPlanV3>, crate::QueryExecutionResourceLimits), OrmError> {
+    ) -> Result<(Vec<StagedPlan>, crate::QueryExecutionResourceLimits), OrmError> {
         Err(OrmError::Transaction(
             "this staged program cannot run through a proxy".into(),
         ))
     }
     fn resolve_remote(
         &mut self,
-        _plans: &mut dyn Iterator<Item = StagedPlanV3>,
-        _answers: &[type_bridge_contract::query_remote_v3::StagedAnswerV3],
+        _plans: &mut dyn Iterator<Item = StagedPlan>,
+        _answers: &[type_bridge_contract::query_remote::StagedAnswer],
     ) -> Result<(), OrmError> {
         Err(OrmError::Transaction(
             "this staged program cannot resolve proxy answers".into(),
@@ -825,7 +823,7 @@ impl StagedProgram for MatchProgram {
         &mut self,
         schema: &type_bridge_contract::schema::DeclaredSchema,
         _bounds: &BoundedAnswerLimits,
-    ) -> Result<(Vec<StagedPlanV3>, crate::QueryExecutionResourceLimits), OrmError> {
+    ) -> Result<(Vec<StagedPlan>, crate::QueryExecutionResourceLimits), OrmError> {
         if let Some(deadline) = self.limits.deadline() {
             self.limits.capture_deadline(deadline);
         }
@@ -842,7 +840,7 @@ impl StagedProgram for MatchProgram {
             .plans
             .iter()
             .map(|plan| {
-                StagedPlanV3::new(plan, plan.given_rows().unwrap_or_default().to_vec(), schema)
+                StagedPlan::new(plan, plan.given_rows().unwrap_or_default().to_vec(), schema)
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(plan_answer_error)?;
@@ -852,8 +850,8 @@ impl StagedProgram for MatchProgram {
     }
     fn resolve_remote(
         &mut self,
-        plans: &mut dyn Iterator<Item = StagedPlanV3>,
-        answers: &[type_bridge_contract::query_remote_v3::StagedAnswerV3],
+        plans: &mut dyn Iterator<Item = StagedPlan>,
+        answers: &[type_bridge_contract::query_remote::StagedAnswer],
     ) -> Result<(), OrmError> {
         let (registry, request, stack, policy) = self
             .remote
@@ -863,7 +861,7 @@ impl StagedProgram for MatchProgram {
             .check_lifecycle_budget()?;
         stack
             .plans
-            .extend(plans.take(answers.len()).map(StagedPlanV3::into_plan));
+            .extend(plans.take(answers.len()).map(StagedPlan::into_plan));
         let answers = answers
             .iter()
             .zip(&stack.plans)
@@ -895,16 +893,16 @@ impl StagedProgram for MatchProgram {
 }
 
 pub(crate) trait SharedPlanSource: Send + Sync {
-    fn plans(&self) -> &[QueryPlanV3];
+    fn plans(&self) -> &[QueryPlan];
 }
-impl<T: AsRef<[QueryPlanV3]> + Send + Sync> SharedPlanSource for T {
-    fn plans(&self) -> &[QueryPlanV3] {
+impl<T: AsRef<[QueryPlan]> + Send + Sync> SharedPlanSource for T {
+    fn plans(&self) -> &[QueryPlan] {
         self.as_ref()
     }
 }
 #[derive(Clone)]
 pub(crate) enum PlanSource {
-    Owned(Arc<QueryPlanV3>),
+    Owned(Arc<QueryPlan>),
     Shared {
         source: Arc<dyn SharedPlanSource>,
         index: usize,
@@ -917,7 +915,7 @@ impl std::fmt::Debug for PlanSource {
     }
 }
 impl PlanSource {
-    pub(crate) fn plan(&self) -> Result<&QueryPlanV3, Diagnostic> {
+    pub(crate) fn plan(&self) -> Result<&QueryPlan, Diagnostic> {
         match self {
             Self::Owned(plan) => Ok(plan),
             Self::Shared {
@@ -947,8 +945,8 @@ enum Resolved {
     Query(QueryResult),
     Plan {
         answer: Arc<PlanAnswer>,
-        wire: Arc<type_bridge_contract::query_remote_v3::StagedAnswerV3>,
-        correlation: Option<Arc<type_bridge_contract::query_plan::v3::BulkCorrelation>>,
+        wire: Arc<type_bridge_contract::query_remote::StagedAnswer>,
+        correlation: Option<Arc<type_bridge_contract::query_plan::BulkCorrelation>>,
     },
     /// The program holds its own answer.
     Program,
@@ -1015,7 +1013,7 @@ impl Slot {
 struct Item {
     query: Option<StagedQuery>,
     /// The validated plan a proxy commit sends instead of `query`.
-    remote: Option<StagedPlanV3>,
+    remote: Option<StagedPlan>,
     deferred: Option<Box<DeferredPlan>>,
     slot: Slot,
 }
@@ -1072,7 +1070,7 @@ trait FetchGroupSource: SharedPlanSource {
 }
 impl<T> FetchGroupSource for T
 where
-    T: AsRef<[QueryPlanV3]> + AsRef<crate::match_request::PlanFetchStack> + Send + Sync,
+    T: AsRef<[QueryPlan]> + AsRef<crate::match_request::PlanFetchStack> + Send + Sync,
 {
     fn fetch(&self) -> &crate::match_request::PlanFetchStack {
         self.as_ref()
@@ -1314,7 +1312,7 @@ fn annotate_match_limit(
     error.remote = Some(Box::new(diagnostic));
 }
 
-pub(crate) fn proxy_failure(projection: &SdkDiagnosticProjectionV3) -> CommitError {
+pub(crate) fn proxy_failure(projection: &SdkDiagnosticProjection) -> CommitError {
     let json = projection.host_json().unwrap_or_default();
     let field = |key: &str| json.get(key).and_then(serde_json::Value::as_str);
     // The server signs `commit_outcome_unknown` for anything that may have
@@ -1507,21 +1505,21 @@ impl Transaction {
     ///
     /// A `Schema` transaction refuses plans; the schema transaction stays
     /// in eager mode.
-    pub fn stage_plan(&mut self, plan: &QueryPlanV3) -> Result<Pending<PlanAnswer>, PendingError> {
+    pub fn stage_plan(&mut self, plan: &QueryPlan) -> Result<Pending<PlanAnswer>, PendingError> {
         self.stage_plan_source(PlanSource::Owned(Arc::new(plan.clone())))
     }
 
     /// Retain one chunk of a shared canonical plan source without copying it.
     ///
     /// The source can be one plan or a generated plan batch implementing
-    /// `AsRef<[QueryPlanV3]>`; erasing its type retains the same Arc allocation.
+    /// `AsRef<[QueryPlan]>`; erasing its type retains the same Arc allocation.
     pub fn stage_shared_plan<T>(
         &mut self,
         source: Arc<T>,
         index: usize,
     ) -> Result<Pending<PlanAnswer>, PendingError>
     where
-        T: AsRef<[QueryPlanV3]> + Send + Sync + 'static,
+        T: AsRef<[QueryPlan]> + Send + Sync + 'static,
     {
         let identity = source
             .as_ref()
@@ -1554,14 +1552,10 @@ impl Transaction {
         limits: crate::QueryExecutionResourceLimits,
     ) -> Result<Pending<crate::match_request::OwnedPlanFetchResult>, PendingError>
     where
-        T: AsRef<[QueryPlanV3]>
-            + AsRef<crate::match_request::PlanFetchStack>
-            + Send
-            + Sync
-            + 'static,
+        T: AsRef<[QueryPlan]> + AsRef<crate::match_request::PlanFetchStack> + Send + Sync + 'static,
     {
         let stack = <T as AsRef<crate::match_request::PlanFetchStack>>::as_ref(source.as_ref());
-        let plans = <T as AsRef<[QueryPlanV3]>>::as_ref(source.as_ref());
+        let plans = <T as AsRef<[QueryPlan]>>::as_ref(source.as_ref());
         if !std::ptr::eq(plans, stack.plans()) {
             return Err(PendingError::InvalidPlan(Box::new(proxy_refusal(
                 "fetch group must retain its canonical plan slice",
@@ -1615,7 +1609,7 @@ impl Transaction {
     fn stage_plan_source_with_entry(
         &mut self,
         source: PlanSource,
-        remote_entry: Option<StagedPlanV3>,
+        remote_entry: Option<StagedPlan>,
     ) -> Result<Pending<PlanAnswer>, PendingError> {
         let plan = source
             .plan()
@@ -1658,7 +1652,7 @@ impl Transaction {
             Backend::Proxy(proxy) => {
                 let entry = match remote_entry {
                     Some(entry) => entry,
-                    None => StagedPlanV3::new(
+                    None => StagedPlan::new(
                         plan,
                         plan.given_rows().unwrap_or_default().to_vec(),
                         proxy.declared(),
@@ -1690,12 +1684,12 @@ impl Transaction {
     /// values bind inside the transaction, and answers publish only on commit.
     pub fn stage_plan_stack(
         &mut self,
-        entries: Vec<StagedPlanV3>,
+        entries: Vec<StagedPlan>,
         schema: Arc<type_bridge_contract::schema::DeclaredSchema>,
     ) -> Result<Vec<Pending<PlanAnswer>>, PendingError> {
         self.admit(false)?;
         self.admit_typed()?;
-        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(&entries, &schema)
+        type_bridge_contract::query_remote::validate_staged_result_refs(&entries, &schema)
             .map_err(|error| PendingError::InvalidPlan(Box::new(error)))?;
         let start = self.stack.0.len();
         let mut pending = Vec::with_capacity(entries.len());
@@ -1726,7 +1720,7 @@ impl Transaction {
 
     fn stage_deferred_plan(
         &mut self,
-        entry: StagedPlanV3,
+        entry: StagedPlan,
         schema: Arc<type_bridge_contract::schema::DeclaredSchema>,
         source_base: usize,
         local_index: usize,
@@ -1764,7 +1758,7 @@ impl Transaction {
         empty_documents: bool,
     ) -> Result<Vec<Pending<PlanAnswer>>, PendingError>
     where
-        T: AsRef<[QueryPlanV3]> + Send + Sync + 'static,
+        T: AsRef<[QueryPlan]> + Send + Sync + 'static,
     {
         let count = source.as_ref().as_ref().len();
         if count == 0 {
@@ -2448,7 +2442,7 @@ impl Transaction {
     #[allow(clippy::too_many_arguments)]
     async fn attempt(
         proxy: &ProxyStaging,
-        encoded: (StagedRequestV3, Vec<u8>),
+        encoded: (StagedRequest, Vec<u8>),
         mut execution: Execution,
         timeout: Option<Duration>,
         counts: Vec<usize>,
@@ -2634,9 +2628,9 @@ impl Transaction {
 mod tests {
     use super::super::backend::{BoxFuture, TransactionOps};
     use super::*;
-    use type_bridge_contract::query_plan::v3::Operation;
+    use type_bridge_contract::query_plan::Operation;
 
-    fn signed(diagnostic: &SdkExecutionDiagnostic) -> SdkDiagnosticProjectionV3 {
+    fn signed(diagnostic: &SdkExecutionDiagnostic) -> SdkDiagnosticProjection {
         let host = serde_json::to_value(diagnostic.host_json()).expect("host json");
         serde_json::from_value(host).expect("a valid projection")
     }
@@ -2757,8 +2751,8 @@ mod tests {
         transport: Option<Arc<dyn super::super::staged_proxy::StagedTransport>>,
     ) -> (Transaction, DescriptorRegistry, Arc<Mutex<usize>>) {
         use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-        use type_bridge_contract::query_remote_v3::{
-            StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+        use type_bridge_contract::query_remote::{
+            StagedAnswer, StagedOutcome, StagedReply, StagedRequest,
         };
         let registry = DescriptorRegistry::new();
         registry
@@ -2777,12 +2771,11 @@ mod tests {
             )
             .unwrap();
         let schema = authority.declared().clone();
-        let mut capabilities =
-            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        let mut capabilities = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
         for name in [
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_WRITE_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_WRITE,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
         ] {
             capabilities.insert(type_bridge_contract::capability::CapabilityId::new(name).unwrap());
         }
@@ -2811,22 +2804,22 @@ mod tests {
                 }
                 // This closure simulates a server; count only client verification spans.
                 let _server_tracing = tracing::dispatcher::set_default(&tracing::Dispatch::none());
-                let request = StagedRequestV3::decode(&bytes, &schema, &ad).unwrap();
+                let request = StagedRequest::decode(&bytes, &schema, &ad).unwrap();
                 let (outcome, answers) = if request.plans().len() as u64
                     > request.limits().max_items
                 {
-                    (StagedOutcomeV3::Failed { diagnostic:SdkExecutionDiagnostic::query_failure(type_bridge_contract::sdk_diagnostic::SdkQueryDiagnosticCategory::ResourceLimit,type_bridge_contract::sdk_diagnostic::SdkDiagnosticCode::new("processed_item_limit").unwrap()) },vec![])
+                    (StagedOutcome::Failed { diagnostic:SdkExecutionDiagnostic::query_failure(type_bridge_contract::sdk_diagnostic::SdkQueryDiagnosticCategory::ResourceLimit,type_bridge_contract::sdk_diagnostic::SdkDiagnosticCode::new("processed_item_limit").unwrap()) },vec![])
                 } else {
                     *committed.lock().unwrap() += 1;
                     (
-                        StagedOutcomeV3::Committed,
+                        StagedOutcome::Committed,
                         request
                             .plans()
                             .iter()
                             .map(|entry| if entry.plan().fetch_document_shape().is_some() {
                                 PlanAnswer::Documents(vec![serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{}})])
                                     .to_staged_v3(entry.plan()).unwrap()
-                            } else { StagedAnswerV3::Rows {
+                            } else { StagedAnswer::Rows {
                                 rows: vec![vec![
                                     type_bridge_contract::query_remote::RemoteValue::Value {
                                         value: type_bridge_contract::value::CanonicalValue::Long(
@@ -2838,7 +2831,7 @@ mod tests {
                             .collect(),
                     )
                 };
-                Ok(StagedReplyV3::new(&request, outcome, answers)
+                Ok(StagedReply::new(&request, outcome, answers)
                     .unwrap()
                     .encode_signed(&request, &ad, signer.as_ref())
                     .unwrap())
@@ -3317,20 +3310,20 @@ mod tests {
     fn iid_reference_stack(
         rows: usize,
     ) -> (
-        Vec<StagedPlanV3>,
+        Vec<StagedPlan>,
         Arc<type_bridge_contract::schema::DeclaredSchema>,
     ) {
         use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
         use type_bridge_contract::migration_assertion::{
             AssertionBinding, BindingId, QueryVariable,
         };
-        use type_bridge_contract::query_plan::v3::{
-            Operation, PlanSpec, QueryPlanV3, Set, Stage, WriteReturns,
-        };
         use type_bridge_contract::query_plan::{
             InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
         };
-        use type_bridge_contract::query_remote_v3::StagedResultRefV3;
+        use type_bridge_contract::query_plan::{
+            Operation, PlanSpec, QueryPlan, Set, Stage, WriteReturns,
+        };
+        use type_bridge_contract::query_remote::StagedResultRef;
         use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
         let schema = Arc::new(crate::query_plan_exec::race::schema());
         let account = TypeId::new(TypeKind::Entity, "account").unwrap();
@@ -3361,7 +3354,7 @@ mod tests {
                 .clone(),
             functions: vec![],
         };
-        let source = QueryPlanV3::new(spec.clone(), &schema).unwrap();
+        let source = QueryPlan::new(spec.clone(), &schema).unwrap();
         spec.inputs = vec![InputColumn::new(
             InputColumnId::new(0),
             QueryVariable::new("target_iid").unwrap(),
@@ -3396,14 +3389,14 @@ mod tests {
         spec.operation = Operation::Write {
             returns: WriteReturns::Rows,
         };
-        let target = QueryPlanV3::new(spec, &schema).unwrap();
+        let target = QueryPlan::new(spec, &schema).unwrap();
         (
             vec![
-                StagedPlanV3::new(&source, vec![], &schema).unwrap(),
-                StagedPlanV3::new_with_result_refs(
+                StagedPlan::new(&source, vec![], &schema).unwrap(),
+                StagedPlan::new_with_result_refs(
                     &target,
                     vec![InputRow::new(vec![None]); rows],
-                    vec![StagedResultRefV3 {
+                    vec![StagedResultRef {
                         input: InputColumnId::new(0),
                         source_plan: 0,
                         source_column: 0,
@@ -3512,11 +3505,11 @@ mod tests {
     #[tokio::test]
     async fn proxy_iid_refs_preserve_authored_bytes_and_rebase_after_earlier_plans() {
         use type_bridge_contract::query_remote::{
-            RemoteCapabilities, RemoteExecutorBinding, RemoteValue,
+            CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_WRITE, CAP_QUERY_STAGE_RESULT_REF,
+            StagedAnswer, StagedOutcome, StagedReply, StagedRequestSpec,
         };
-        use type_bridge_contract::query_remote_v3::{
-            CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, CAP_QUERY_STAGE_RESULT_REF,
-            StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestSpecV3,
+        use type_bridge_contract::query_remote::{
+            RemoteCapabilities, RemoteExecutorBinding, RemoteValue,
         };
         for prefix in [false, true] {
             let (stack, schema) = iid_reference_stack(3);
@@ -3531,10 +3524,10 @@ mod tests {
                     .map(|entry| entry.rebase_result_refs(u32::from(prefix)).unwrap()),
             );
             let mut capabilities =
-                type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+                type_bridge_contract::query_plan::query_plan_capability_vocabulary();
             for cap in [
-                CAP_QUERY_REMOTE_STAGED_V3,
-                CAP_QUERY_REMOTE_WRITE_V3,
+                CAP_QUERY_REMOTE_STAGED,
+                CAP_QUERY_REMOTE_WRITE,
                 CAP_QUERY_STAGE_RESULT_REF,
             ] {
                 capabilities
@@ -3548,7 +3541,7 @@ mod tests {
                 RemoteExecutorBinding::new("proxy-iid-ref-tests", "epoch-00000000001").unwrap(),
                 signer.public_key(),
             )
-            .with_query_limits(type_bridge_contract::limits::QueryLimits::V3)
+            .with_query_limits(type_bridge_contract::limits::QueryLimits::PLAN)
             .unwrap();
             let ad_bytes = advertisement.encode().unwrap();
             let calls = Arc::new(Mutex::new(0));
@@ -3562,9 +3555,9 @@ mod tests {
                 let recorded = Arc::clone(&recorded);
                 Box::pin(async move {
                     *recorded.lock().unwrap() += 1;
-                    let request = StagedRequestV3::decode(&bytes, &schema, &ad).unwrap();
-                    let manual = StagedRequestV3::new(
-                        StagedRequestSpecV3 {
+                    let request = StagedRequest::decode(&bytes, &schema, &ad).unwrap();
+                    let manual = StagedRequest::new(
+                        StagedRequestSpec {
                             nonce: request.nonce().to_owned(),
                             kind: Some(request.kind()),
                             limits: request.limits(),
@@ -3593,7 +3586,7 @@ mod tests {
                     let answers = request
                         .plans()
                         .iter()
-                        .map(|_| StagedAnswerV3::Rows {
+                        .map(|_| StagedAnswer::Rows {
                             rows: vec![vec![RemoteValue::Thing {
                                 iid: "0x10".into(),
                                 type_id: type_bridge_contract::id::TypeId::new(
@@ -3605,7 +3598,7 @@ mod tests {
                         })
                         .collect();
                     Ok(
-                        StagedReplyV3::new(&request, StagedOutcomeV3::Committed, answers)
+                        StagedReply::new(&request, StagedOutcome::Committed, answers)
                             .unwrap()
                             .encode_signed(&request, &ad, signer.as_ref())
                             .unwrap(),
@@ -3655,7 +3648,7 @@ mod tests {
         registry: &DescriptorRegistry,
     ) -> Arc<crate::match_request::PlanFetchStack> {
         use type_bridge_contract::id::{TypeId, TypeKind};
-        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::query_plan::PlanBuilder;
         let authority =
             crate::match_request::descriptor_plan::MatchRequestAdapterAuthority::from_registry(
                 registry,
@@ -3775,7 +3768,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tracing::instrument::WithSubscriber;
         use type_bridge_contract::id::{TypeId, TypeKind};
-        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::query_plan::PlanBuilder;
         for proxy in [false, true] {
             let (remote, registry, _) = proxy_match_fixture(Default::default(), false, None);
             let authority =
@@ -3851,7 +3844,7 @@ mod tests {
     #[tokio::test]
     async fn bulk_fetch_group_correlates_once_before_commit_and_empty_bulk_uses_no_provider() {
         use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
-        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::query_plan::PlanBuilder;
         use type_bridge_contract::schema::OwnsFactId;
         use type_bridge_contract::value::{CanonicalString, CanonicalValue};
         for empty in [false, true] {
@@ -3949,7 +3942,7 @@ mod tests {
         use crate::match_request::{DescriptorId, MatchResult, SlotValue};
         use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
         use type_bridge_contract::query_plan::QueryOperand;
-        use type_bridge_contract::query_plan::v3::{DocumentRole, PlanBuilder};
+        use type_bridge_contract::query_plan::{DocumentRole, PlanBuilder};
         use type_bridge_contract::schema::OwnsFactId;
         use type_bridge_contract::value::CanonicalValue;
         for ordered in [false, true] {
@@ -4377,7 +4370,7 @@ mod tests {
     fn shared_plan_stage_retains_the_original_batch_allocation() {
         let (mut tx, state) = fixture(TransactionOptions::default());
         let source = Arc::new(vec![crate::query_plan_exec::race::stock_read(
-            type_bridge_contract::query_plan::v3::Operation::Rows,
+            type_bridge_contract::query_plan::Operation::Rows,
         )]);
         tx.stage_shared_plan(Arc::clone(&source), 0).unwrap();
         assert_eq!(Arc::strong_count(&source), 2);
@@ -4398,10 +4391,10 @@ mod tests {
         let (mut tx, state) = fixture(TransactionOptions::default());
         let source = Arc::new(vec![
             crate::query_plan_exec::race::stock_read(
-                type_bridge_contract::query_plan::v3::Operation::Rows,
+                type_bridge_contract::query_plan::Operation::Rows,
             ),
             crate::query_plan_exec::race::stock_read(
-                type_bridge_contract::query_plan::v3::Operation::Count,
+                type_bridge_contract::query_plan::Operation::Count,
             ),
         ]);
         assert_eq!(tx.stage_plans(Arc::clone(&source), false).unwrap().len(), 2);
@@ -4435,10 +4428,10 @@ mod tests {
     async fn shared_plan_source_changes_refuse_before_opening_the_provider() {
         struct Switching {
             changed: std::sync::atomic::AtomicBool,
-            original: Vec<QueryPlanV3>,
+            original: Vec<QueryPlan>,
         }
-        impl AsRef<[QueryPlanV3]> for Switching {
-            fn as_ref(&self) -> &[QueryPlanV3] {
+        impl AsRef<[QueryPlan]> for Switching {
+            fn as_ref(&self) -> &[QueryPlan] {
                 if self.changed.load(std::sync::atomic::Ordering::SeqCst) {
                     &[]
                 } else {
@@ -4450,7 +4443,7 @@ mod tests {
         let source = Arc::new(Switching {
             changed: std::sync::atomic::AtomicBool::new(false),
             original: vec![crate::query_plan_exec::race::stock_read(
-                type_bridge_contract::query_plan::v3::Operation::Rows,
+                type_bridge_contract::query_plan::Operation::Rows,
             )],
         });
         let pending = tx.stage_shared_plan(Arc::clone(&source), 0).unwrap();
@@ -4677,9 +4670,9 @@ mod tests {
         }
     }
 
-    fn empty_bulk(documents: bool) -> type_bridge_contract::query_plan::v3::BuiltPlans {
+    fn empty_bulk(documents: bool) -> type_bridge_contract::query_plan::BuiltPlans {
         use type_bridge_contract::id::{TypeId, TypeKind};
-        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::query_plan::PlanBuilder;
         let mut builder = PlanBuilder::new();
         let thing = builder.insert(TypeId::new(TypeKind::Entity, "doctor").unwrap());
         builder.bind_model_rows(thing, vec![]);

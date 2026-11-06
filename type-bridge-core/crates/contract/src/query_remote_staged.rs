@@ -6,14 +6,12 @@ use crate::codec::{from_canonical_json_with_limits, to_canonical_json_with_limit
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use crate::limits::{
-    DEFAULT_STAGED_READ_STATEMENTS_V3, DEFAULT_STAGED_WRITE_STATEMENTS_V3,
-    MAX_REMOTE_ENVELOPE_BYTES, MAX_STAGED_ITEMS_V3, MAX_STAGED_PLANS_V3, MAX_STAGED_STATEMENTS_V3,
-    QueryLimits, STAGED_REMOTE_CODEC_LIMITS_V3,
-};
-use crate::query_plan::v3::{
-    Operation, QueryPlanV3, WriteReturns, decode_query_plan_v3_with_limits,
+    DEFAULT_STAGED_READ_STATEMENTS, DEFAULT_STAGED_WRITE_STATEMENTS, MAX_REMOTE_ENVELOPE_BYTES,
+    MAX_STAGED_ITEMS, MAX_STAGED_PLANS, MAX_STAGED_STATEMENTS, QueryLimits,
+    STAGED_REMOTE_CODEC_LIMITS,
 };
 use crate::query_plan::{InputRow, QueryOutput};
+use crate::query_plan::{Operation, QueryPlan, WriteReturns, decode_query_plan_with_limits};
 use crate::query_plan_wire::{PlanScalarWire, WireScalar};
 use crate::query_remote::{
     DEFAULT_ADMISSION_WINDOW_MILLISECONDS, MAX_REMOTE_CLOCK_SKEW_MS,
@@ -25,29 +23,29 @@ use crate::sdk_diagnostic::SdkExecutionDiagnostic;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[path = "query_remote_v3_failure.rs"]
+#[path = "query_remote_failure.rs"]
 mod pre_request_failure;
 pub use pre_request_failure::{
-    QUERY_REMOTE_FAILURE_FORMAT_V3, StagedFailureV3, decode_signed_staged_failure,
+    QUERY_REMOTE_FAILURE_FORMAT, StagedFailure, decode_signed_staged_failure,
 };
 
-#[path = "query_remote_v3_result_ref.rs"]
+#[path = "query_remote_result_ref.rs"]
 mod result_ref;
-pub use result_ref::{StagedResultRefV3, validate_staged_result_refs_v3};
+pub use result_ref::{StagedResultRef, validate_staged_result_refs};
 
 /// Admission capability for IID dependencies between staged plans.
 pub const CAP_QUERY_STAGE_RESULT_REF: &str = "query.stage.result_ref";
 
 /// Exact request discriminator and fingerprint canonicalization.
-pub const QUERY_REMOTE_REQUEST_FORMAT_V3: &str = "typebridge.query-remote-request/v3";
+pub const QUERY_REMOTE_REQUEST_FORMAT: &str = "typebridge.query-remote-request/v3";
 /// Exact staged reply payload discriminator.
-pub const QUERY_REMOTE_REPLY_FORMAT_V3: &str = "typebridge.query-remote-response/v3";
+pub const QUERY_REMOTE_REPLY_FORMAT: &str = "typebridge.query-remote-response/v3";
 /// Admission capability for the staged envelope.
-pub const CAP_QUERY_REMOTE_STAGED_V3: &str = "query.remote.envelope-v3";
+pub const CAP_QUERY_REMOTE_STAGED: &str = "query.remote.envelope-v3";
 /// Admission capability for additional semantic answer budgets.
 pub const CAP_QUERY_REMOTE_ANSWER_DIMENSIONS: &str = "query.remote.answer-dimensions";
 /// Admission capability for authenticated write staging.
-pub const CAP_QUERY_REMOTE_WRITE_V3: &str = "query.remote.write";
+pub const CAP_QUERY_REMOTE_WRITE: &str = "query.remote.write";
 
 fn invalid(code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::stable(DiagnosticCategory::InvalidContract, code, message)
@@ -67,9 +65,9 @@ fn validate_reply_binding(
     format: &str,
     nonce: &str,
     fingerprint: &str,
-    request: &StagedRequestV3,
+    request: &StagedRequest,
 ) -> Result<(), Diagnostic> {
-    if format != QUERY_REMOTE_REPLY_FORMAT_V3 {
+    if format != QUERY_REMOTE_REPLY_FORMAT {
         return Err(invalid(
             "query_remote_v3_format_unsupported",
             "unsupported staged reply format",
@@ -110,7 +108,7 @@ fn unhex(value: &str) -> Result<Vec<u8>, &'static str> {
 /// Explicit transaction kind. Schema transactions do not admit staged plans.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum StagedKindV3 {
+pub enum StagedKind {
     /// A read-only transaction, closed instead of committed by execution.
     Read,
     /// A write transaction, including a caller-selected write snapshot for reads.
@@ -122,7 +120,7 @@ pub enum StagedKindV3 {
 /// Aggregate staged answer and execution budgets, independent of frozen V2.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct StagedLimitsV3 {
+pub struct StagedLimits {
     /// Collect diagnostic phase records without requiring a tracing subscriber.
     #[serde(default, skip_serializing_if = "is_false")]
     pub collect_phase_timestamps: bool,
@@ -166,26 +164,26 @@ fn default_admission_window() -> u64 {
 fn is_default_admission_window(value: &u64) -> bool {
     *value == DEFAULT_ADMISSION_WINDOW_MILLISECONDS
 }
-impl Default for StagedLimitsV3 {
+impl Default for StagedLimits {
     fn default() -> Self {
         Self {
             collect_phase_timestamps: false,
             deadline_ms: Some(60_000),
             admission_window_milliseconds: DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
             max_bytes: MAX_REMOTE_ENVELOPE_BYTES as u64,
-            max_items: MAX_STAGED_ITEMS_V3,
+            max_items: MAX_STAGED_ITEMS,
             max_graph_nodes: None,
             max_attribute_values: None,
             max_collection_members: None,
             max_role_players: None,
 
-            max_staged_plans: MAX_STAGED_PLANS_V3,
-            max_read_statements: DEFAULT_STAGED_READ_STATEMENTS_V3,
-            max_write_statements: DEFAULT_STAGED_WRITE_STATEMENTS_V3,
+            max_staged_plans: MAX_STAGED_PLANS,
+            max_read_statements: DEFAULT_STAGED_READ_STATEMENTS,
+            max_write_statements: DEFAULT_STAGED_WRITE_STATEMENTS,
         }
     }
 }
-impl StagedLimitsV3 {
+impl StagedLimits {
     /// Refuse unsupported execution budgets; semantic ceilings may be zero.
     pub fn validate(self) -> Result<Self, Diagnostic> {
         if [
@@ -202,11 +200,11 @@ impl StagedLimitsV3 {
             || self.max_items == 0
             || self.max_items > crate::limits::ANSWER_LIMIT_FIELDS[1].maximum
             || self.max_staged_plans == 0
-            || self.max_staged_plans > MAX_STAGED_PLANS_V3
+            || self.max_staged_plans > MAX_STAGED_PLANS
             || self.max_read_statements == 0
-            || self.max_read_statements > MAX_STAGED_STATEMENTS_V3
+            || self.max_read_statements > MAX_STAGED_STATEMENTS
             || self.max_write_statements == 0
-            || self.max_write_statements > MAX_STAGED_STATEMENTS_V3
+            || self.max_write_statements > MAX_STAGED_STATEMENTS
             || self.deadline_ms == Some(0)
             || self.admission_window_milliseconds == 0
         {
@@ -224,7 +222,7 @@ struct PlanWire {
     plan_bytes: String,
     rows: Vec<InputRow>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    result_refs: Vec<StagedResultRefV3>,
+    result_refs: Vec<StagedResultRef>,
 }
 impl<'de> Deserialize<'de> for PlanWire {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -234,7 +232,7 @@ impl<'de> Deserialize<'de> for PlanWire {
             plan_bytes: String,
             rows: Vec<Vec<Option<crate::value::CanonicalValue>>>,
             #[serde(default)]
-            result_refs: Vec<StagedResultRefV3>,
+            result_refs: Vec<StagedResultRef>,
         }
         let raw = Raw::deserialize(d)?;
         Ok(Self {
@@ -250,7 +248,7 @@ struct RawPlanWire {
     plan_bytes: String,
     rows: Vec<Vec<Option<PlanScalarWire>>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    result_refs: Vec<StagedResultRefV3>,
+    result_refs: Vec<StagedResultRef>,
 }
 impl RawPlanWire {
     fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<PlanWire, Diagnostic> {
@@ -273,14 +271,14 @@ impl RawPlanWire {
 
 /// One canonical plan and positional invocation rows in an ordered stack.
 #[derive(Clone, Debug, PartialEq)]
-pub struct StagedPlanV3 {
+pub struct StagedPlan {
     wire: PlanWire,
-    plan: QueryPlanV3,
+    plan: QueryPlan,
 }
-impl StagedPlanV3 {
+impl StagedPlan {
     /// Validate one plan under schema authority and bind its invocation rows.
     pub fn new(
-        plan: &QueryPlanV3,
+        plan: &QueryPlan,
         rows: Vec<InputRow>,
         schema: &DeclaredSchema,
     ) -> Result<Self, Diagnostic> {
@@ -314,7 +312,7 @@ impl StagedPlanV3 {
                 "embedded plan bytes are not canonical lowercase hexadecimal",
             )
         })?;
-        let plan = decode_query_plan_v3_with_limits(&bytes, schema, limits)?;
+        let plan = decode_query_plan_with_limits(&bytes, schema, limits)?;
         if !wire.result_refs.is_empty() {
             if plan.given_rows().is_some() {
                 return Err(invalid(
@@ -346,11 +344,11 @@ impl StagedPlanV3 {
         Ok(Self { wire, plan })
     }
     /// Original trusted plan, whose operation selects the answer kind.
-    pub fn plan(&self) -> &QueryPlanV3 {
+    pub fn plan(&self) -> &QueryPlan {
         &self.plan
     }
     /// Consume this entry and return its validated plan, without copying it.
-    pub fn into_plan(self) -> QueryPlanV3 {
+    pub fn into_plan(self) -> QueryPlan {
         self.plan
     }
 
@@ -359,7 +357,7 @@ impl StagedPlanV3 {
         &self.wire.rows
     }
     /// Materialize invocation values as a trusted plan for the staged executor.
-    pub fn bound_plan(&self, schema: &DeclaredSchema) -> Result<QueryPlanV3, Diagnostic> {
+    pub fn bound_plan(&self, schema: &DeclaredSchema) -> Result<QueryPlan, Diagnostic> {
         if !self.result_refs().is_empty() {
             return Err(invalid(
                 "query_stage_result_ref_unresolved",
@@ -375,15 +373,15 @@ impl StagedPlanV3 {
 }
 
 /// Untrusted request constructor inputs. Expiry is derived from preparation time.
-pub struct StagedRequestSpecV3 {
+pub struct StagedRequestSpec {
     /// Caller nonce, 16..128 ASCII letters, digits, hyphens or underscores.
     pub nonce: String,
     /// Optional kind, otherwise inferred from all plan operations.
-    pub kind: Option<StagedKindV3>,
+    pub kind: Option<StagedKind>,
     /// Aggregate execution budgets.
-    pub limits: StagedLimitsV3,
+    pub limits: StagedLimits,
     /// Ordered transaction stack.
-    pub plans: Vec<StagedPlanV3>,
+    pub plans: Vec<StagedPlan>,
     /// Caller preparation timestamp in Unix milliseconds.
     pub prepared_at_unix_ms: u64,
 }
@@ -394,36 +392,36 @@ struct RequestWire<P = PlanWire> {
     expires_at_unix_ms: u64,
     format: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    kind: Option<StagedKindV3>,
-    limits: StagedLimitsV3,
+    kind: Option<StagedKind>,
+    limits: StagedLimits,
     nonce: String,
     plans: Vec<P>,
     prepared_at_unix_ms: u64,
 }
 /// Validated canonical staged request; no execution opens at construction.
 #[derive(Clone, Debug, PartialEq)]
-pub struct StagedRequestV3 {
+pub struct StagedRequest {
     wire: RequestWire,
-    plans: Vec<StagedPlanV3>,
+    plans: Vec<StagedPlan>,
 }
-impl StagedRequestV3 {
+impl StagedRequest {
     /// Construct a request bound to one exact executor advertisement.
     pub fn new(
-        spec: StagedRequestSpecV3,
+        spec: StagedRequestSpec,
         schema: &DeclaredSchema,
         advertisement: &RemoteCapabilities,
     ) -> Result<Self, Diagnostic> {
-        Self::new_with_limits(spec, schema, advertisement, QueryLimits::V3)
+        Self::new_with_limits(spec, schema, advertisement, QueryLimits::PLAN)
     }
 
     /// Construct under caller query limits, constrained by the advertised receiver limits.
     pub fn new_with_limits(
-        spec: StagedRequestSpecV3,
+        spec: StagedRequestSpec,
         schema: &DeclaredSchema,
         advertisement: &RemoteCapabilities,
         query_limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
-        query_limits.validate_v3().map_err(|_| {
+        query_limits.validate_plan().map_err(|_| {
             invalid(
                 "query_remote_v3_query_limits",
                 "caller query limits are invalid",
@@ -440,7 +438,7 @@ impl StagedRequestV3 {
         let wire = RequestWire {
             advertisement: advertisement.fingerprint()?.digest_hex(),
             expires_at_unix_ms: expires,
-            format: QUERY_REMOTE_REQUEST_FORMAT_V3.into(),
+            format: QUERY_REMOTE_REQUEST_FORMAT.into(),
             kind: spec.kind,
             limits,
             nonce: spec.nonce,
@@ -456,7 +454,7 @@ impl StagedRequestV3 {
         receiver: QueryLimits,
     ) -> Result<Self, Diagnostic> {
         wire.limits.validate()?;
-        if wire.format != QUERY_REMOTE_REQUEST_FORMAT_V3 {
+        if wire.format != QUERY_REMOTE_REQUEST_FORMAT {
             return Err(invalid(
                 "query_remote_v3_format",
                 "unsupported staged request format",
@@ -504,15 +502,15 @@ impl StagedRequestV3 {
             .plans
             .iter()
             .cloned()
-            .map(|p| StagedPlanV3::rebuild(p, schema, limits))
+            .map(|p| StagedPlan::rebuild(p, schema, limits))
             .collect::<Result<Vec<_>, _>>()?;
-        validate_staged_result_refs_v3(&plans, schema)?;
+        validate_staged_result_refs(&plans, schema)?;
         let (reads, writes) = plans.iter().fold((0, 0), |(reads, writes), entry| {
             let (plan_reads, plan_writes) = entry.plan.statement_counts();
             (reads + plan_reads, writes + plan_writes)
         });
-        if wire.kind == Some(StagedKindV3::Schema)
-            || (writes > 0 && wire.kind == Some(StagedKindV3::Read))
+        if wire.kind == Some(StagedKind::Schema)
+            || (writes > 0 && wire.kind == Some(StagedKind::Read))
         {
             return Err(invalid(
                 "query_remote_v3_kind",
@@ -539,7 +537,7 @@ impl StagedRequestV3 {
             .with_detail("source", crate::limits::LIMIT_SOURCE_CONFIGURED));
         }
         let mut capabilities = CapabilitySet::new();
-        capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_STAGED_V3)?);
+        capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_STAGED)?);
         if plans.iter().any(|entry| !entry.result_refs().is_empty()) {
             capabilities.insert(CapabilityId::new(CAP_QUERY_STAGE_RESULT_REF)?);
         }
@@ -555,10 +553,10 @@ impl StagedRequestV3 {
             capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_ANSWER_DIMENSIONS)?);
         }
         if writes > 0 {
-            capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_WRITE_V3)?);
+            capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_WRITE)?);
         }
         if plans.iter().flat_map(|entry| entry.rows()).flat_map(|row| row.values()).flatten().any(|value| matches!(value, crate::value::CanonicalValue::String(text) if text.as_str().len() > crate::limits::MAX_CANONICAL_STRING_BYTES)) {
-            capabilities.insert(CapabilityId::new(crate::query_plan::v3::CAP_QUERY_INPUT_WIDE_STRINGS)?);
+            capabilities.insert(CapabilityId::new(crate::query_plan::CAP_QUERY_INPUT_WIDE_STRINGS)?);
         }
         for plan in &plans {
             for capability in plan.plan.required_capabilities().iter() {
@@ -576,7 +574,7 @@ impl StagedRequestV3 {
         schema: &DeclaredSchema,
         advertisement: &RemoteCapabilities,
     ) -> Result<Self, Diagnostic> {
-        Self::decode_with_limits(bytes, schema, advertisement, QueryLimits::V3)
+        Self::decode_with_limits(bytes, schema, advertisement, QueryLimits::PLAN)
     }
     /// Decode with receiver-owned query limits; senders cannot widen them.
     pub fn decode_with_limits(
@@ -585,7 +583,7 @@ impl StagedRequestV3 {
         advertisement: &RemoteCapabilities,
         limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
-        limits.validate_v3().map_err(|_| {
+        limits.validate_plan().map_err(|_| {
             invalid(
                 "query_remote_v3_query_limits",
                 "receiver query limits are invalid",
@@ -595,7 +593,7 @@ impl StagedRequestV3 {
             bytes,
             crate::limits::CodecLimits {
                 max_bytes: limits.remote_request_bytes.min(MAX_REMOTE_ENVELOPE_BYTES),
-                ..STAGED_REMOTE_CODEC_LIMITS_V3
+                ..STAGED_REMOTE_CODEC_LIMITS
             },
         )?;
         let wire = RequestWire {
@@ -623,13 +621,13 @@ impl StagedRequestV3 {
     }
     /// Encode exact canonical request bytes.
     pub fn encode(&self) -> Result<Vec<u8>, Diagnostic> {
-        to_canonical_json_with_limits(&self.wire, STAGED_REMOTE_CODEC_LIMITS_V3)
+        to_canonical_json_with_limits(&self.wire, STAGED_REMOTE_CODEC_LIMITS)
     }
     /// Fingerprint the complete request, including key, kind, rows and expiry.
     pub fn fingerprint(&self) -> Result<Fingerprint, Diagnostic> {
         Ok(Fingerprint::compute(
             FingerprintDomain::new(QUERY_REMOTE_REQUEST_FINGERPRINT_DOMAIN)?,
-            CanonicalizationVersion::new(QUERY_REMOTE_REQUEST_FORMAT_V3)?,
+            CanonicalizationVersion::new(QUERY_REMOTE_REQUEST_FORMAT)?,
             None,
             &self.encode()?,
         ))
@@ -659,29 +657,29 @@ impl StagedRequestV3 {
         self.wire.expires_at_unix_ms
     }
     /// Aggregate execution budgets.
-    pub fn limits(&self) -> StagedLimitsV3 {
+    pub fn limits(&self) -> StagedLimits {
         self.wire.limits
     }
     /// Ordered validated plans and invocation rows.
-    pub fn plans(&self) -> &[StagedPlanV3] {
+    pub fn plans(&self) -> &[StagedPlan] {
         &self.plans
     }
     /// Consume this request and return its validated entries, without copying them.
-    pub fn into_plans(self) -> Vec<StagedPlanV3> {
+    pub fn into_plans(self) -> Vec<StagedPlan> {
         self.plans
     }
 
     /// Selected or inferred transaction kind.
-    pub fn kind(&self) -> StagedKindV3 {
+    pub fn kind(&self) -> StagedKind {
         self.wire.kind.unwrap_or_else(|| {
             if self
                 .plans
                 .iter()
                 .any(|p| matches!(p.plan.operation(), Operation::Write { .. }))
             {
-                StagedKindV3::Write
+                StagedKind::Write
             } else {
-                StagedKindV3::Read
+                StagedKind::Read
             }
         })
     }
@@ -690,7 +688,7 @@ impl StagedRequestV3 {
 /// Per-plan successful evidence. Array position binds each answer to its plan.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum StagedAnswerV3 {
+pub enum StagedAnswer {
     /// Positional typed rows, including write-returning rows.
     Rows {
         /// Complete rows.
@@ -717,9 +715,9 @@ pub enum StagedAnswerV3 {
         value: u64,
     },
 }
-impl StagedAnswerV3 {
+impl StagedAnswer {
     /// Verify one answer against its trusted plan, also for direct execution.
-    pub fn validate_for(&self, plan: &QueryPlanV3) -> Result<(), Diagnostic> {
+    pub fn validate_for(&self, plan: &QueryPlan) -> Result<(), Diagnostic> {
         validate_answer(self, plan).map(|_| ())
     }
 
@@ -847,7 +845,7 @@ impl StagedAnswerV3 {
 /// Typed server outcome, sharing the existing SDK diagnostic authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub enum StagedOutcomeV3 {
+pub enum StagedOutcome {
     /// The complete stack succeeded; read transactions were closed successfully.
     Committed,
     /// The stack failed; diagnostic certainty governs retry safety.
@@ -860,7 +858,7 @@ pub enum StagedOutcomeV3 {
 /// Authenticated wire projection of an SDK diagnostic, not a second failure
 /// model or a decoder that weakens implementation-owned static SDK messages.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct SdkDiagnosticProjectionV3 {
+pub struct SdkDiagnosticProjection {
     version: u16,
     category: String,
     sdk_category: String,
@@ -870,7 +868,7 @@ pub struct SdkDiagnosticProjectionV3 {
     path: Vec<serde_json::Value>,
     details: BTreeMap<String, serde_json::Value>,
 }
-impl<'de> Deserialize<'de> for SdkDiagnosticProjectionV3 {
+impl<'de> Deserialize<'de> for SdkDiagnosticProjection {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -901,7 +899,7 @@ impl<'de> Deserialize<'de> for SdkDiagnosticProjectionV3 {
         Ok(projection)
     }
 }
-impl SdkDiagnosticProjectionV3 {
+impl SdkDiagnosticProjection {
     fn from_diagnostic(diagnostic: &SdkExecutionDiagnostic) -> Result<Self, Diagnostic> {
         let value = serde_json::to_value(diagnostic.host_json()).map_err(|_| bad_diagnostic())?;
         let projection: Self = serde_json::from_value(value).map_err(|_| bad_diagnostic())?;
@@ -1149,10 +1147,10 @@ impl SdkDiagnosticProjectionV3 {
                 return Err(bad_diagnostic());
             }
         }
-        let bytes = to_canonical_json_with_limits(self, STAGED_REMOTE_CODEC_LIMITS_V3)?;
+        let bytes = to_canonical_json_with_limits(self, STAGED_REMOTE_CODEC_LIMITS)?;
         preflight_diagnostic(
             &bytes,
-            crate::limits::MAX_STAGED_STATEMENTS_V3.saturating_mul(2),
+            crate::limits::MAX_STAGED_STATEMENTS.saturating_mul(2),
         )?;
         if bytes.len() > MAX_REMOTE_ENVELOPE_BYTES {
             return Err(limit(
@@ -1287,13 +1285,11 @@ fn validate_sdk_detail(value: &serde_json::Value) -> Result<(), Diagnostic> {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum OutcomeWire {
     Committed,
-    Failed {
-        diagnostic: SdkDiagnosticProjectionV3,
-    },
+    Failed { diagnostic: SdkDiagnosticProjection },
 }
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ReplyWire<A = StagedAnswerV3> {
+struct ReplyWire<A = StagedAnswer> {
     answers: Vec<A>,
     format: String,
     nonce: String,
@@ -1302,25 +1298,25 @@ struct ReplyWire<A = StagedAnswerV3> {
 }
 /// Server-side reply authoring uses only the typed SDK failure authority.
 #[derive(Clone, Debug)]
-pub struct StagedReplyV3 {
+pub struct StagedReply {
     wire: ReplyWire,
 }
-impl StagedReplyV3 {
+impl StagedReply {
     /// Bind an all-or-nothing outcome and ordered answers to one request.
     pub fn new(
-        request: &StagedRequestV3,
-        outcome: StagedOutcomeV3,
-        answers: Vec<StagedAnswerV3>,
+        request: &StagedRequest,
+        outcome: StagedOutcome,
+        answers: Vec<StagedAnswer>,
     ) -> Result<Self, Diagnostic> {
         let outcome = match outcome {
-            StagedOutcomeV3::Committed => OutcomeWire::Committed,
-            StagedOutcomeV3::Failed { diagnostic } => OutcomeWire::Failed {
-                diagnostic: SdkDiagnosticProjectionV3::from_diagnostic(&diagnostic)?,
+            StagedOutcome::Committed => OutcomeWire::Committed,
+            StagedOutcome::Failed { diagnostic } => OutcomeWire::Failed {
+                diagnostic: SdkDiagnosticProjection::from_diagnostic(&diagnostic)?,
             },
         };
         let wire = ReplyWire {
             answers,
-            format: QUERY_REMOTE_REPLY_FORMAT_V3.into(),
+            format: QUERY_REMOTE_REPLY_FORMAT.into(),
             nonce: request.nonce().into(),
             outcome,
             request: request.fingerprint()?.digest().to_hex(),
@@ -1330,12 +1326,12 @@ impl StagedReplyV3 {
     }
     /// Canonical unsigned payload, used only inside the signed outer envelope.
     pub fn encode_payload(&self) -> Result<Vec<u8>, Diagnostic> {
-        to_canonical_json_with_limits(&self.wire, STAGED_REMOTE_CODEC_LIMITS_V3)
+        to_canonical_json_with_limits(&self.wire, STAGED_REMOTE_CODEC_LIMITS)
     }
     /// Sign with the unchanged V1 outer envelope, bound to the exact advertisement.
     pub fn encode_signed(
         &self,
-        request: &StagedRequestV3,
+        request: &StagedRequest,
         advertisement: &RemoteCapabilities,
         signer: &impl RemoteReplySigner,
     ) -> Result<Vec<u8>, Diagnostic> {
@@ -1364,15 +1360,15 @@ impl StagedReplyV3 {
 /// Authenticated decoded evidence. The SDK diagnostic remains its established
 /// host-JSON wire projection; it is never converted into a new runtime failure.
 #[derive(Clone, Debug, PartialEq)]
-pub struct VerifiedStagedReplyV3 {
+pub struct VerifiedStagedReply {
     wire: ReplyWire,
-    correlations: Vec<Option<std::sync::Arc<crate::query_plan::v3::BulkCorrelation>>>,
+    correlations: Vec<Option<std::sync::Arc<crate::query_plan::BulkCorrelation>>>,
 }
-impl VerifiedStagedReplyV3 {
+impl VerifiedStagedReply {
     /// Authenticate before interpreting any outcome or SDK diagnostic content.
     pub fn decode(
         bytes: &[u8],
-        request: &StagedRequestV3,
+        request: &StagedRequest,
         advertisement: &RemoteCapabilities,
         trusted_key: RemoteSigningPublicKey,
         verifier: &impl RemoteReplyVerifier,
@@ -1391,7 +1387,7 @@ impl VerifiedStagedReplyV3 {
         )?;
         preflight_reply_payload(payload, bytes.len(), request)?;
         let raw: ReplyWire<serde_json::Value> =
-            from_canonical_json_with_limits(payload, STAGED_REMOTE_CODEC_LIMITS_V3)?;
+            from_canonical_json_with_limits(payload, STAGED_REMOTE_CODEC_LIMITS)?;
         if raw.answers.len() != request.plans().len()
             && matches!(raw.outcome, OutcomeWire::Committed)
         {
@@ -1413,9 +1409,7 @@ impl VerifiedStagedReplyV3 {
             request: raw.request,
         };
         let correlations = validate_reply(&wire, request)?;
-        if to_canonical_json_with_limits(&wire, STAGED_REMOTE_CODEC_LIMITS_V3)?.as_slice()
-            != payload
-        {
+        if to_canonical_json_with_limits(&wire, STAGED_REMOTE_CODEC_LIMITS)?.as_slice() != payload {
             return Err(invalid(
                 "query_remote_v3_noncanonical",
                 "staged reply reconstruction changes canonical bytes",
@@ -1436,18 +1430,16 @@ impl VerifiedStagedReplyV3 {
         matches!(self.wire.outcome, OutcomeWire::Committed)
     }
     /// Ordered final answers, empty on failure.
-    pub fn answers(&self) -> &[StagedAnswerV3] {
+    pub fn answers(&self) -> &[StagedAnswer] {
         &self.wire.answers
     }
     /// In-memory correlation proofs retained from answer verification.
     /// These ordinals are never serialized or supplied by the remote peer.
-    pub fn correlations(
-        &self,
-    ) -> &[Option<std::sync::Arc<crate::query_plan::v3::BulkCorrelation>>] {
+    pub fn correlations(&self) -> &[Option<std::sync::Arc<crate::query_plan::BulkCorrelation>>] {
         &self.correlations
     }
     /// Established SDK diagnostic projection when the transaction failed.
-    pub fn diagnostic(&self) -> Option<&SdkDiagnosticProjectionV3> {
+    pub fn diagnostic(&self) -> Option<&SdkDiagnosticProjection> {
         match &self.wire.outcome {
             OutcomeWire::Failed { diagnostic } => Some(diagnostic),
             OutcomeWire::Committed => None,
@@ -1455,13 +1447,13 @@ impl VerifiedStagedReplyV3 {
     }
     /// Exact canonical authenticated payload for fixture round-trips.
     pub fn encode_payload(&self) -> Result<Vec<u8>, Diagnostic> {
-        to_canonical_json_with_limits(&self.wire, STAGED_REMOTE_CODEC_LIMITS_V3)
+        to_canonical_json_with_limits(&self.wire, STAGED_REMOTE_CODEC_LIMITS)
     }
 }
 fn validate_reply(
     wire: &ReplyWire,
-    request: &StagedRequestV3,
-) -> Result<Vec<Option<std::sync::Arc<crate::query_plan::v3::BulkCorrelation>>>, Diagnostic> {
+    request: &StagedRequest,
+) -> Result<Vec<Option<std::sync::Arc<crate::query_plan::BulkCorrelation>>>, Diagnostic> {
     validate_reply_binding(&wire.format, &wire.nonce, &wire.request, request)?;
     if let OutcomeWire::Failed { diagnostic } = &wire.outcome {
         diagnostic.validate()?;
@@ -1540,7 +1532,7 @@ fn validate_reply(
 }
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum ValueWireV3 {
+enum ValueWire {
     Thing {
         iid: String,
         type_id: crate::id::TypeId,
@@ -1554,7 +1546,7 @@ enum ValueWireV3 {
     },
     Absent,
 }
-impl ValueWireV3 {
+impl ValueWire {
     fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<RemoteValue, Diagnostic> {
         Ok(match self {
             Self::Thing { iid, type_id } => RemoteValue::Thing { iid, type_id },
@@ -1575,19 +1567,19 @@ pub fn decode_remote_value_with_limits(
     value: serde_json::Value,
     limits: crate::limits::CodecLimits,
 ) -> Result<RemoteValue, Diagnostic> {
-    serde_json::from_value::<ValueWireV3>(value)
+    serde_json::from_value::<ValueWire>(value)
         .map_err(|_| invalid("query_remote_v3_answer_concept", "invalid V3 row cell"))?
         .rebuild(limits)
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum FieldWireV3 {
+enum FieldWire {
     Documents {
-        documents: Vec<BTreeMap<String, FieldWireV3>>,
+        documents: Vec<BTreeMap<String, FieldWire>>,
     },
     Document {
-        fields: BTreeMap<String, FieldWireV3>,
+        fields: BTreeMap<String, FieldWire>,
     },
     Scalar {
         value: PlanScalarWire,
@@ -1597,7 +1589,7 @@ enum FieldWireV3 {
         values: Vec<PlanScalarWire>,
     },
 }
-impl FieldWireV3 {
+impl FieldWire {
     fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<RemoteFieldValue, Diagnostic> {
         Ok(match self {
             Self::Documents { documents } => RemoteFieldValue::Documents {
@@ -1634,15 +1626,15 @@ impl FieldWireV3 {
 fn decode_answer(
     value: serde_json::Value,
     limits: crate::limits::CodecLimits,
-) -> Result<StagedAnswerV3, Diagnostic> {
+) -> Result<StagedAnswer, Diagnostic> {
     #[derive(Deserialize)]
     #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
     enum Wire {
         Rows {
-            rows: Vec<Vec<ValueWireV3>>,
+            rows: Vec<Vec<ValueWire>>,
         },
         Documents {
-            documents: Vec<BTreeMap<String, FieldWireV3>>,
+            documents: Vec<BTreeMap<String, FieldWire>>,
         },
         Count {
             value: u64,
@@ -1658,7 +1650,7 @@ fn decode_answer(
         match serde_json::from_value(value)
             .map_err(|_| invalid("query_remote_v3_answer_kind", "invalid staged answer"))?
         {
-            Wire::Rows { rows } => StagedAnswerV3::Rows {
+            Wire::Rows { rows } => StagedAnswer::Rows {
                 rows: rows
                     .into_iter()
                     .map(|row| {
@@ -1668,7 +1660,7 @@ fn decode_answer(
                     })
                     .collect::<Result<_, _>>()?,
             },
-            Wire::Documents { documents } => StagedAnswerV3::Documents {
+            Wire::Documents { documents } => StagedAnswer::Documents {
                 documents: documents
                     .into_iter()
                     .map(|document| {
@@ -1679,15 +1671,15 @@ fn decode_answer(
                     })
                     .collect::<Result<_, _>>()?,
             },
-            Wire::Count { value } => StagedAnswerV3::Count { value },
-            Wire::Exists { value } => StagedAnswerV3::Exists { value },
-            Wire::Matched { value } => StagedAnswerV3::Matched { value },
+            Wire::Count { value } => StagedAnswer::Count { value },
+            Wire::Exists { value } => StagedAnswer::Exists { value },
+            Wire::Matched { value } => StagedAnswer::Matched { value },
         },
     )
 }
 
 fn validate_answer_strings(
-    answer: &StagedAnswerV3,
+    answer: &StagedAnswer,
     limits: crate::limits::CodecLimits,
 ) -> Result<(), Diagnostic> {
     fn scalar(
@@ -1725,14 +1717,14 @@ fn validate_answer_strings(
         Ok(())
     }
     match answer {
-        StagedAnswerV3::Rows { rows } => {
+        StagedAnswer::Rows { rows } => {
             for value in rows.iter().flatten() {
                 if let RemoteValue::Value { value } | RemoteValue::Attribute { value, .. } = value {
                     scalar(value, limits)?;
                 }
             }
         }
-        StagedAnswerV3::Documents { documents } => {
+        StagedAnswer::Documents { documents } => {
             for value in documents.iter().flat_map(|document| document.values()) {
                 field(value, limits)?;
             }
@@ -1743,9 +1735,9 @@ fn validate_answer_strings(
 }
 
 fn validate_answer(
-    answer: &StagedAnswerV3,
-    plan: &QueryPlanV3,
-) -> Result<(u64, Option<crate::query_plan::v3::BulkCorrelation>), Diagnostic> {
+    answer: &StagedAnswer,
+    plan: &QueryPlan,
+) -> Result<(u64, Option<crate::query_plan::BulkCorrelation>), Diagnostic> {
     validate_answer_strings(answer, plan.limits().codec)
         .map_err(|error| plan.limits().annotate(error))?;
 
@@ -1756,7 +1748,7 @@ fn validate_answer(
         )
     };
     if let Some(shape) = plan.fetch_document_shape() {
-        let StagedAnswerV3::Documents { documents } = answer else {
+        let StagedAnswer::Documents { documents } = answer else {
             return Err(bad());
         };
         for document in documents {
@@ -1769,17 +1761,17 @@ fn validate_answer(
         return Ok((answer.item_count(), correlation));
     }
     match (answer, plan.operation(), plan.output()) {
-        (StagedAnswerV3::Count { .. }, Operation::Count, _)
-        | (StagedAnswerV3::Exists { .. }, Operation::Exists, _)
+        (StagedAnswer::Count { .. }, Operation::Count, _)
+        | (StagedAnswer::Exists { .. }, Operation::Exists, _)
         | (
-            StagedAnswerV3::Matched { .. },
+            StagedAnswer::Matched { .. },
             Operation::Write {
                 returns: WriteReturns::Matched,
             },
             _,
         ) => Ok((1, None)),
         (
-            StagedAnswerV3::Rows { rows },
+            StagedAnswer::Rows { rows },
             Operation::Rows
             | Operation::Write {
                 returns: WriteReturns::Rows,
@@ -1821,7 +1813,7 @@ fn validate_answer(
             Ok((rows.len() as u64, None))
         }
         (
-            StagedAnswerV3::Documents { documents },
+            StagedAnswer::Documents { documents },
             Operation::Rows
             | Operation::Write {
                 returns: WriteReturns::Rows,
@@ -1867,7 +1859,7 @@ fn validate_answer(
 fn preflight_reply_payload(
     payload: &[u8],
     envelope_bytes: usize,
-    request: &StagedRequestV3,
+    request: &StagedRequest,
 ) -> Result<(), Diagnostic> {
     #[derive(Deserialize)]
     struct Peek<'a> {
@@ -2004,7 +1996,7 @@ mod execution_timeline_preflight_tests {
 
     #[test]
     fn execution_timeline_streaming_preflight_preserves_ordinary_ceiling() {
-        let maximum = MAX_STAGED_STATEMENTS_V3 * 2;
+        let maximum = MAX_STAGED_STATEMENTS * 2;
         let value = diagnostic(maximum);
         let bytes = serde_json::to_vec(&value).unwrap();
         assert!(bytes.len() > crate::limits::MAX_DIAGNOSTIC_BYTES);

@@ -387,7 +387,7 @@ mod tests {
         MAX_CANONICAL_STRING_BYTES, MAX_QUERY_INVOCATION_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
     };
     use type_bridge_contract::managed_scope::ManagedScopeId;
-    use type_bridge_contract::query_plan::v3::PlanBuilder;
+    use type_bridge_contract::query_plan::PlanBuilder;
     use type_bridge_contract::schema::{
         DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
         encode_declared_schema,

@@ -30,9 +30,8 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::limits::{LIMIT_SOURCE_ADVERTISED, MAX_REMOTE_ENVELOPE_BYTES};
 use type_bridge_contract::query_model_limits::RemoteModelLimits;
 use type_bridge_contract::query_remote::RemoteCapabilities;
-use type_bridge_contract::query_remote_v3::{
-    StagedKindV3, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3,
-    VerifiedStagedReplyV3,
+use type_bridge_contract::query_remote::{
+    StagedKind, StagedLimits, StagedPlan, StagedRequest, StagedRequestSpec, VerifiedStagedReply,
 };
 
 /// A native model-query failure retains its structured error authority.
@@ -80,7 +79,7 @@ fn typed_transport_diagnostic(error: Diagnostic) -> Diagnostic {
 struct PreparedModel {
     request: ValidatedMatchRequest,
     stack: AdaptedMatchRequest,
-    staged: StagedRequestV3,
+    staged: StagedRequest,
 }
 struct RemoteModelState {
     lifecycle: AtomicU8,
@@ -224,7 +223,7 @@ impl ClaimedRemoteModelReply {
             .into());
         }
         check_reply_budget(self.state.deadline, cancellation, false)?;
-        let verified = VerifiedStagedReplyV3::decode(
+        let verified = VerifiedStagedReply::decode(
             bytes,
             &self.prepared.staged,
             &self.state.advertisement,
@@ -287,7 +286,7 @@ impl ClaimedRemoteModelReply {
         } = self.prepared;
         stack
             .plans
-            .extend(staged.into_plans().into_iter().map(StagedPlanV3::into_plan));
+            .extend(staged.into_plans().into_iter().map(StagedPlan::into_plan));
         let answers = verified
             .answers()
             .iter()
@@ -482,7 +481,7 @@ pub(crate) fn prepare_remote_model_query_with_policy(
         .plans
         .iter()
         .map(|plan| {
-            StagedPlanV3::new(
+            StagedPlan::new(
                 plan,
                 plan.given_rows().unwrap_or_default().to_vec(),
                 authority.declared(),
@@ -498,11 +497,11 @@ pub(crate) fn prepare_remote_model_query_with_policy(
             "remote request clock is unavailable",
         )
     })?;
-    let staged = StagedRequestV3::new_with_limits(
-        StagedRequestSpecV3 {
+    let staged = StagedRequest::new_with_limits(
+        StagedRequestSpec {
             nonce: nonce.iter().map(|byte| format!("{byte:02x}")).collect(),
-            kind: Some(StagedKindV3::Read),
-            limits: StagedLimitsV3 {
+            kind: Some(StagedKind::Read),
+            limits: StagedLimits {
                 collect_phase_timestamps: held.collect_phase_timestamps,
                 admission_window_milliseconds,
                 deadline_ms: wire_execution_deadline(
@@ -681,11 +680,10 @@ mod tests {
     use crate::{InstalledRuntimeProjection, ProjectedAttributeValue};
 
     fn native_capabilities() -> QueryCapabilitySet {
-        let mut capabilities =
-            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        let mut capabilities = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
         for name in [
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
         ] {
             capabilities.insert(type_bridge_contract::capability::CapabilityId::new(name).unwrap());
         }
@@ -1086,14 +1084,14 @@ functions:
         )
         .unwrap_or_else(|error| panic!("matching limits prepare the request: {error:?}"));
 
-        StagedRequestV3::decode_with_limits(
+        StagedRequest::decode_with_limits(
             pending.request_bytes(),
             authority.declared(),
             &advertisement,
             raised,
         )
         .expect("receiver admits advertised depth");
-        let refused = match StagedRequestV3::decode(
+        let refused = match StagedRequest::decode(
             pending.request_bytes(),
             authority.declared(),
             &advertisement,
@@ -1203,13 +1201,13 @@ functions:
             budget(10),
         )
         .unwrap();
-        let staged = StagedRequestV3::decode(
+        let staged = StagedRequest::decode(
             pending.request_bytes(),
             authority.declared(),
             &advertisement,
         )
         .unwrap();
-        assert_eq!(staged.kind(), StagedKindV3::Read);
+        assert_eq!(staged.kind(), StagedKind::Read);
         assert_eq!(staged.plans().len(), 1);
         let plan = staged.plans()[0].plan();
         assert_eq!(
@@ -1219,10 +1217,10 @@ functions:
         let lowered = crate::query_plan_exec::lower(plan).unwrap();
         let text = type_bridge_core_lib::__internal::render(&lowered.query).unwrap();
         assert!(text.find("qualifying-score").unwrap() < text.find("identity-score").unwrap());
-        let response = type_bridge_contract::query_remote_v3::StagedReplyV3::new(
+        let response = type_bridge_contract::query_remote::StagedReply::new(
             &staged,
-            type_bridge_contract::query_remote_v3::StagedOutcomeV3::Committed,
-            vec![type_bridge_contract::query_remote_v3::StagedAnswerV3::Exists { value: false }],
+            type_bridge_contract::query_remote::StagedOutcome::Committed,
+            vec![type_bridge_contract::query_remote::StagedAnswer::Exists { value: false }],
         )
         .unwrap()
         .encode_signed(&staged, &advertisement, &signer)
@@ -1465,26 +1463,24 @@ functions:
             },
         )
         .expect("typed reduction remote preparation");
-        let envelope = StagedRequestV3::decode(
+        let envelope = StagedRequest::decode(
             pending.request_bytes(),
             authority.declared(),
             &advertisement,
         )
         .unwrap();
-        assert_eq!(envelope.kind(), StagedKindV3::Read);
+        assert_eq!(envelope.kind(), StagedKind::Read);
         assert_eq!(envelope.plans().len(), 1);
-        let response = type_bridge_contract::query_remote_v3::StagedReplyV3::new(
+        let response = type_bridge_contract::query_remote::StagedReply::new(
             &envelope,
-            type_bridge_contract::query_remote_v3::StagedOutcomeV3::Committed,
-            vec![
-                type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows {
-                    rows: vec![vec![
-                        type_bridge_contract::query_remote::RemoteValue::Value {
-                            value: CanonicalValue::Long(7),
-                        },
-                    ]],
-                },
-            ],
+            type_bridge_contract::query_remote::StagedOutcome::Committed,
+            vec![type_bridge_contract::query_remote::StagedAnswer::Rows {
+                rows: vec![vec![
+                    type_bridge_contract::query_remote::RemoteValue::Value {
+                        value: CanonicalValue::Long(7),
+                    },
+                ]],
+            }],
         )
         .unwrap()
         .encode_signed(&envelope, &advertisement, &signer)

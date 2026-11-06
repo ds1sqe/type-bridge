@@ -251,8 +251,8 @@ impl Database {
         mut self,
         limits: QueryLimits,
     ) -> std::result::Result<Self, QueryLimitsError> {
-        let limits = limits.validate_v3()?;
-        self.query_limits = (limits != QueryLimits::V3).then(|| Arc::new(limits));
+        let limits = limits.validate_plan()?;
+        self.query_limits = (limits != QueryLimits::PLAN).then(|| Arc::new(limits));
         Ok(self)
     }
 
@@ -262,7 +262,7 @@ impl Database {
         self.query_limits
             .as_deref()
             .copied()
-            .unwrap_or(QueryLimits::V3)
+            .unwrap_or(QueryLimits::PLAN)
     }
 
     pub(crate) fn shared_query_limits(&self) -> Option<&Arc<QueryLimits>> {
@@ -620,7 +620,7 @@ impl Database {
     /// normalized answers have the same representation as staged replies.
     pub fn execute_plans(
         &self,
-        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        plans: &[type_bridge_contract::query_plan::QueryPlan],
         limits: &QueryExecutionResourceLimits,
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,
@@ -645,7 +645,7 @@ impl Database {
     )]
     fn execute_plans_inner(
         &self,
-        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        plans: &[type_bridge_contract::query_plan::QueryPlan],
         limits: &QueryExecutionResourceLimits,
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,

@@ -12,12 +12,12 @@ use std::time::Duration;
 use crate::common::dynamic_crud::{attr, setup_dynamic_typeql, unique_schema_suffix};
 use crate::internal::*;
 use type_bridge_contract::capability::CapabilityId;
-use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
-use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-use type_bridge_contract::query_remote_v3::{
-    CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedAnswerV3,
-    StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+use type_bridge_contract::query_plan::query_plan_capability_vocabulary;
+use type_bridge_contract::query_remote::{
+    CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED, StagedAnswer, StagedOutcome,
+    StagedReply, StagedRequest,
 };
+use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
 use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
 use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticDetailValue, SdkDiagnosticName};
 use type_bridge_orm::plan_authority::QueryAuthority;
@@ -78,11 +78,8 @@ fn signer() -> RemoteReplySigningKey {
 
 /// A default-configured server's advertisement: no answer-limit overrides.
 fn advertisement() -> RemoteCapabilities {
-    let mut capabilities = query_plan_v3_capability_vocabulary();
-    for capability in [
-        CAP_QUERY_REMOTE_STAGED_V3,
-        CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
-    ] {
+    let mut capabilities = query_plan_capability_vocabulary();
+    for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
         capabilities.insert(CapabilityId::new(capability).unwrap());
     }
     RemoteCapabilities::new(
@@ -113,9 +110,9 @@ async fn execute_staged(
     pending: &PendingRemoteModelQuery,
     authority: &QueryAuthority,
     advertisement: &RemoteCapabilities,
-) -> (Vec<u8>, Vec<StagedAnswerV3>) {
+) -> (Vec<u8>, Vec<StagedAnswer>) {
     let request =
-        StagedRequestV3::decode(pending.request_bytes(), authority.declared(), advertisement)
+        StagedRequest::decode(pending.request_bytes(), authority.declared(), advertisement)
             .expect("server admits staged request");
     let mut tx = db.transaction(
         TransactionOptions::default()
@@ -134,7 +131,7 @@ async fn execute_staged(
         .collect::<Vec<_>>();
     let (outcome, answers) = match tx.commit().await {
         Ok(()) => (
-            StagedOutcomeV3::Committed,
+            StagedOutcome::Committed,
             pending
                 .iter()
                 .zip(&plans)
@@ -142,13 +139,13 @@ async fn execute_staged(
                 .collect(),
         ),
         Err(error) => (
-            StagedOutcomeV3::Failed {
+            StagedOutcome::Failed {
                 diagnostic: error.diagnostic(),
             },
             vec![],
         ),
     };
-    let response = StagedReplyV3::new(&request, outcome, answers.clone())
+    let response = StagedReply::new(&request, outcome, answers.clone())
         .unwrap()
         .encode_signed(&request, advertisement, &signer())
         .unwrap();
@@ -271,7 +268,7 @@ async fn default_answer_limits_follow_the_transport_live() {
         .unwrap_or_else(|error| panic!("proxy request prepares: {error}"));
     let (response, answers) = execute_staged(&db, &pending, &authority, &advertisement).await;
     assert!(
-        matches!(answers.as_slice(), [StagedAnswerV3::Rows { rows }] if rows.len() == 1),
+        matches!(answers.as_slice(), [StagedAnswer::Rows { rows }] if rows.len() == 1),
         "V3 CountBy reads one provider aggregate row"
     );
     let (_, counted) = ProxyQueryConnection::finish(&pending, &response, &cancellation, deadline)

@@ -12,7 +12,7 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::failure::Failure;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::MigrationId;
-use type_bridge_contract::query_plan::v3::QueryPlanV3;
+use type_bridge_contract::query_plan::QueryPlan;
 use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
 use type_bridge_orm::session::DatabaseCreateOutcome;
@@ -2548,7 +2548,7 @@ async fn query_documents<T: MigrationQuery + ?Sized>(
 }
 async fn execute_data_plan<T: MigrationQuery + ?Sized>(
     transaction: &mut T,
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
 ) -> Result<(), Diagnostic> {
     transaction
         .execute_plan(plan)
@@ -2600,7 +2600,7 @@ enum LeaseWrite {
 /// stands, because an absent row in one snapshot proves nothing.
 async fn commit_lease_plan(
     database: &Database,
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     settled: &DataQuery,
 ) -> Result<LeaseWrite, Diagnostic> {
     let mut transaction =
@@ -3028,7 +3028,7 @@ fn journal_schema_state(export: &str) -> Result<JournalSchemaState, Diagnostic> 
 fn insert_journal_owner_query(
     managed_database_name: &str,
     managed_scope_id: &ManagedScopeId,
-) -> Result<QueryPlanV3, Diagnostic> {
+) -> Result<QueryPlan, Diagnostic> {
     journal_insert(
         "owner",
         JOURNAL_OWNER_ENTITY,
@@ -3121,7 +3121,7 @@ fn journal_insert(
     _variable: &str,
     kind: &str,
     fields: &[(&str, &str)],
-) -> Result<QueryPlanV3, Diagnostic> {
+) -> Result<QueryPlan, Diagnostic> {
     data_plan::insert(kind, fields)
 }
 
@@ -3226,13 +3226,13 @@ async fn rollback_and_close(transaction: &mut Transaction) -> Result<(), OrmErro
 trait MigrationQuery: Send {
     fn execute_plan<'a>(
         &'a mut self,
-        plan: &'a QueryPlanV3,
+        plan: &'a QueryPlan,
     ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<Vec<PlanAnswer>, OrmError>>;
 }
 impl MigrationQuery for Transaction {
     fn execute_plan<'a>(
         &'a mut self,
-        plan: &'a QueryPlanV3,
+        plan: &'a QueryPlan,
     ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<Vec<PlanAnswer>, OrmError>> {
         Box::pin(async move {
             let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
@@ -3249,7 +3249,7 @@ impl MigrationQuery for Transaction {
 impl MigrationQuery for type_bridge_orm::OwnedTransaction {
     fn execute_plan<'a>(
         &'a mut self,
-        plan: &'a QueryPlanV3,
+        plan: &'a QueryPlan,
     ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<Vec<PlanAnswer>, OrmError>> {
         Box::pin(async move {
             let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
@@ -4402,10 +4402,7 @@ mod lease_tests {
         }
     }
 
-    pub(super) async fn lowered(
-        given: bool,
-        plan: &QueryPlanV3,
-    ) -> (String, Option<GivenRowsSpec>) {
+    pub(super) async fn lowered(given: bool, plan: &QueryPlan) -> (String, Option<GivenRowsSpec>) {
         let script = Scripted::new(given, 1, Commit::Ok, 0);
         let settled = data_plan::read(CONTROL_ENTITY, &[], &[]).unwrap();
         commit_lease_plan(&script.database(), plan, &settled)

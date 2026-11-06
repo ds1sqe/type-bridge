@@ -5,7 +5,7 @@
 
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{RoleId, TypeId};
-use type_bridge_contract::query_plan::v3::{
+use type_bridge_contract::query_plan::{
     AttachItem, DeleteItem, DocumentRole, InsertThing, Operation, Pattern, Stage, ThingDocument,
     WriteReturns,
 };

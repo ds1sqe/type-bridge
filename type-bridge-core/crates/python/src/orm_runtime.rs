@@ -665,7 +665,7 @@ impl PyDatabase {
         query_limits: Option<PyRef<'_, PyQueryLimits>>,
     ) -> PyResult<Self> {
         let query_limits = query_limits
-            .map(|limits| limits.inner().validate_v3())
+            .map(|limits| limits.inner().validate_plan())
             .transpose()
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         // Resolve every caller-controlled configuration value before creating

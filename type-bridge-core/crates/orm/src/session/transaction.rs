@@ -20,7 +20,7 @@ impl OwnedTransaction {
     /// plans on Write or Schema transactions, without changing ownership.
     pub async fn execute_plans(
         &mut self,
-        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        plans: &[type_bridge_contract::query_plan::QueryPlan],
         limits: &crate::QueryExecutionResourceLimits,
         cancellation: &super::backend::AnswerCancellation,
         deadline: crate::QueryExecutionDeadline,

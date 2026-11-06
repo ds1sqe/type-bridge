@@ -149,7 +149,7 @@ async fn sdk_deadline_fixture_serves_until_stopped() {
         "profile": type_bridge_core_lib::version::semantic_profile_id(&held[0].server_version().expect("version")).expect("profile"),
         "declared_hex": super::hex(&type_bridge_contract::schema::encode_declared_schema(&race::schema()).expect("schema")),
         "purchase_hex": super::hex(&race::purchase("O1", "I1", "A1").canonical_bytes().expect("purchase")),
-        "count_hex": super::hex(&race::stock_read(type_bridge_contract::query_plan::v3::Operation::Count).canonical_bytes().expect("count")),
+        "count_hex": super::hex(&race::stock_read(type_bridge_contract::query_plan::Operation::Count).canonical_bytes().expect("count")),
     });
     std::fs::write(dir.join("fixture.json"), fixture.to_string()).expect("fixture written");
     while !dir.join("stop").exists() {

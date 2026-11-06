@@ -1,10 +1,10 @@
-#[path = "support/plan_v3.rs"]
+#[path = "support/plan.rs"]
 #[allow(dead_code)]
 mod support;
 
 use support::*;
 use type_bridge_contract::query_plan::QueryPattern;
-use type_bridge_contract::query_plan::v3::{Pattern, QueryPlanV3, Stage, decode_query_plan_v3};
+use type_bridge_contract::query_plan::{Pattern, QueryPlan, Stage, decode_query_plan};
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 
 #[test]
@@ -18,7 +18,7 @@ fn nested_iids_are_capability_fenced_and_round_trip_without_changing_root_iids()
         binding: id(0),
         iid: string(iid),
     };
-    let existing = QueryPlanV3::new(
+    let existing = QueryPlan::new(
         spec(
             vec![Stage::Match {
                 patterns: vec![isa(0, entity("account")).into(), root()],
@@ -28,7 +28,7 @@ fn nested_iids_are_capability_fenced_and_round_trip_without_changing_root_iids()
         &schema(),
     )
     .unwrap();
-    let equivalent = QueryPlanV3::new(
+    let equivalent = QueryPlan::new(
         spec(
             vec![Stage::Match {
                 patterns: vec![isa(0, entity("account")).into(), nested().into()],
@@ -55,7 +55,7 @@ fn nested_iids_are_capability_fenced_and_round_trip_without_changing_root_iids()
             patterns: vec![nested()],
         },
     ] {
-        let plan = QueryPlanV3::new(
+        let plan = QueryPlan::new(
             spec(
                 vec![Stage::Match {
                     patterns: vec![isa(0, entity("account")).into(), predicate.into()],
@@ -72,7 +72,7 @@ fn nested_iids_are_capability_fenced_and_round_trip_without_changing_root_iids()
         );
         let bytes = plan.canonical_bytes().unwrap();
         assert_eq!(
-            decode_query_plan_v3(&bytes, &schema())
+            decode_query_plan(&bytes, &schema())
                 .unwrap()
                 .canonical_bytes()
                 .unwrap(),
@@ -91,7 +91,7 @@ fn nested_iids_require_canonical_ids_and_positively_typed_things_in_their_scope(
             "query_plan_iid_untyped_thing",
         ),
     ] {
-        let error = QueryPlanV3::new(
+        let error = QueryPlan::new(
             spec(
                 vec![Stage::Match {
                     patterns: vec![
@@ -116,7 +116,7 @@ fn nested_iids_require_canonical_ids_and_positively_typed_things_in_their_scope(
 
 #[test]
 fn subtype_put_is_opt_in_and_exact_put_bytes_omit_the_member() {
-    let exact = QueryPlanV3::new(
+    let exact = QueryPlan::new(
         spec(
             vec![Stage::Put {
                 things: vec![thing(0)],
@@ -130,7 +130,7 @@ fn subtype_put_is_opt_in_and_exact_put_bytes_omit_the_member() {
     let exact_json: serde_json::Value =
         serde_json::from_slice(&exact.canonical_bytes().unwrap()).unwrap();
     assert!(exact_json["pipeline"][0].get("include_subtypes").is_none());
-    let inclusive = QueryPlanV3::new(
+    let inclusive = QueryPlan::new(
         spec(
             vec![Stage::Put {
                 things: vec![thing(0)],
@@ -155,7 +155,7 @@ fn subtype_put_is_opt_in_and_exact_put_bytes_omit_the_member() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["pipeline"][0]["include_subtypes"], true);
     assert_eq!(
-        decode_query_plan_v3(&bytes, &schema())
+        decode_query_plan(&bytes, &schema())
             .unwrap()
             .canonical_bytes()
             .unwrap(),
@@ -167,11 +167,11 @@ fn subtype_put_is_opt_in_and_exact_put_bytes_omit_the_member() {
 fn collected_roles_and_scalar_fields_are_default_preserving_and_fail_closed() {
     use std::collections::BTreeMap;
     use type_bridge_contract::migration_assertion::QueryVariable;
-    use type_bridge_contract::query_plan::v3::{
+    use type_bridge_contract::query_plan::{
         DocumentRole, DocumentScalar, Expr, Operation, ThingDocument,
     };
     use type_bridge_contract::query_remote::RemoteFieldValue;
-    use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+    use type_bridge_contract::query_remote::StagedAnswer;
     let mut document = ThingDocument::new(id(0), vec![DocumentRole::collected(role())]);
     document.scalars.push(DocumentScalar {
         key: QueryVariable::new("ordinal").unwrap(),
@@ -193,10 +193,10 @@ fn collected_roles_and_scalar_fields_are_default_preserving_and_fail_closed() {
         vec![],
     );
     native.operation = Operation::Rows;
-    let plan = QueryPlanV3::new(native, &schema()).unwrap();
+    let plan = QueryPlan::new(native, &schema()).unwrap();
     let bytes = plan.canonical_bytes().unwrap();
     assert_eq!(
-        decode_query_plan_v3(&bytes, &schema())
+        decode_query_plan(&bytes, &schema())
             .unwrap()
             .canonical_bytes()
             .unwrap(),
@@ -238,7 +238,7 @@ fn collected_roles_and_scalar_fields_are_default_preserving_and_fail_closed() {
             },
         ),
     ]);
-    let answer = |document| StagedAnswerV3::Documents {
+    let answer = |document| StagedAnswer::Documents {
         documents: vec![document],
     };
     answer(root.clone()).validate_for(&plan).unwrap();
@@ -306,9 +306,9 @@ fn collected_roles_and_scalar_fields_are_default_preserving_and_fail_closed() {
 fn document_scalars_capture_bound_thing_iids_and_optional_absence() {
     use std::collections::BTreeMap;
     use type_bridge_contract::migration_assertion::QueryVariable;
-    use type_bridge_contract::query_plan::v3::{DocumentScalar, ThingDocument};
+    use type_bridge_contract::query_plan::{DocumentScalar, ThingDocument};
     use type_bridge_contract::query_remote::RemoteFieldValue;
-    use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+    use type_bridge_contract::query_remote::StagedAnswer;
     let text = |value: &str| RemoteFieldValue::Scalar {
         value: CanonicalValue::String(CanonicalString::new(value).unwrap()),
     };
@@ -319,7 +319,7 @@ fn document_scalars_capture_bound_thing_iids_and_optional_absence() {
             binding: id(1),
         });
         let peer = isa(1, entity("account"));
-        let plan = QueryPlanV3::new(
+        let plan = QueryPlan::new(
             spec(
                 vec![
                     Stage::Match {
@@ -344,7 +344,7 @@ fn document_scalars_capture_bound_thing_iids_and_optional_absence() {
         .unwrap();
         let bytes = plan.canonical_bytes().unwrap();
         assert_eq!(
-            decode_query_plan_v3(&bytes, &schema())
+            decode_query_plan(&bytes, &schema())
                 .unwrap()
                 .canonical_bytes()
                 .unwrap(),
@@ -361,7 +361,7 @@ fn document_scalars_capture_bound_thing_iids_and_optional_absence() {
             ),
             ("reference".into(), text("0x02")),
         ]);
-        let answer = |document| StagedAnswerV3::Documents {
+        let answer = |document| StagedAnswer::Documents {
             documents: vec![document],
         };
         answer(root.clone()).validate_for(&plan).unwrap();
@@ -383,7 +383,7 @@ fn document_scalars_capture_bound_thing_iids_and_optional_absence() {
             vec![],
         );
         assert_eq!(
-            QueryPlanV3::new(bad.clone(), &schema())
+            QueryPlan::new(bad.clone(), &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -404,10 +404,7 @@ fn document_scalars_capture_bound_thing_iids_and_optional_absence() {
             .into(),
         );
         assert_eq!(
-            QueryPlanV3::new(bad, &schema())
-                .unwrap_err()
-                .code()
-                .as_str(),
+            QueryPlan::new(bad, &schema()).unwrap_err().code().as_str(),
             "query_plan_fetch_scalar_binding"
         );
     }
@@ -442,7 +439,7 @@ fn reduced_accounts(
 
 #[test]
 fn reduced_read_rematch_preserves_typed_thing_scalar_groups_and_count() {
-    use type_bridge_contract::query_plan::v3::{ArithOp, Expr};
+    use type_bridge_contract::query_plan::{ArithOp, Expr};
     let mut pipeline = reduced_accounts(vec![id(0), id(1)]);
     pipeline.extend([
         Stage::Match {
@@ -465,7 +462,7 @@ fn reduced_read_rematch_preserves_typed_thing_scalar_groups_and_count() {
     ]);
     let mut specification = spec(pipeline, vec![0, 2, 3]);
     specification.bindings.push(binding(3, "sum"));
-    let plan = QueryPlanV3::new(specification, &schema()).unwrap();
+    let plan = QueryPlan::new(specification, &schema()).unwrap();
     assert_eq!(
         plan.scalar_value_type(id(2)),
         Some(type_bridge_contract::value::ValueTypeTag::Long)
@@ -479,12 +476,12 @@ fn reduced_read_rematch_preserves_typed_thing_scalar_groups_and_count() {
         &std::collections::BTreeSet::from([entity("account")])
     );
     let bytes = plan.canonical_bytes().unwrap();
-    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
 }
 
 #[test]
 fn reduced_rematch_does_not_admit_write_plans_even_through_projection() {
-    use type_bridge_contract::query_plan::v3::Set;
+    use type_bridge_contract::query_plan::Set;
     for projected in [false, true] {
         let mut pipeline = reduced_accounts(vec![id(0)]);
         pipeline.push(Stage::Match {
@@ -515,7 +512,7 @@ fn reduced_rematch_does_not_admit_write_plans_even_through_projection() {
             }],
         });
         assert_eq!(
-            QueryPlanV3::new(spec(pipeline, vec![0]), &schema())
+            QueryPlan::new(spec(pipeline, vec![0]), &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -554,7 +551,7 @@ fn reduced_rematch_refuses_dropped_binding_and_keeps_count_type_checks() {
             ],
         });
         assert_eq!(
-            QueryPlanV3::new(spec(pipeline, vec![0]), &schema())
+            QueryPlan::new(spec(pipeline, vec![0]), &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -572,7 +569,7 @@ fn reduced_rematch_refuses_dropped_binding_and_keeps_count_type_checks() {
         patterns: vec![isa(0, entity("account")).into()],
     });
     assert_eq!(
-        QueryPlanV3::new(spec(pipeline, vec![0]), &schema())
+        QueryPlan::new(spec(pipeline, vec![0]), &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -582,8 +579,8 @@ fn reduced_rematch_refuses_dropped_binding_and_keeps_count_type_checks() {
 
 #[test]
 fn terminal_count_retains_its_scalar_domain_through_codec_roundtrip() {
-    let plan = QueryPlanV3::new(spec(reduced_accounts(vec![]), vec![2]), &schema()).unwrap();
-    let decoded = decode_query_plan_v3(&plan.canonical_bytes().unwrap(), &schema()).unwrap();
+    let plan = QueryPlan::new(spec(reduced_accounts(vec![]), vec![2]), &schema()).unwrap();
+    let decoded = decode_query_plan(&plan.canonical_bytes().unwrap(), &schema()).unwrap();
     for plan in [plan, decoded] {
         assert_eq!(
             plan.scalar_value_type(id(2)),
@@ -594,7 +591,7 @@ fn terminal_count_retains_its_scalar_domain_through_codec_roundtrip() {
 
 #[test]
 fn sorted_bounded_attach_and_delete_keep_the_matching_binding_types() {
-    use type_bridge_contract::query_plan::v3::{AttachItem, DeleteItem};
+    use type_bridge_contract::query_plan::{AttachItem, DeleteItem};
     use type_bridge_contract::query_plan::{OrderDirection, OrderTerm, QueryOperand};
     let prefix = || Stage::Match {
         patterns: vec![
@@ -626,7 +623,7 @@ fn sorted_bounded_attach_and_delete_keep_the_matching_binding_types() {
         }],
     };
     for mutation in [attach(), delete()] {
-        let plan = QueryPlanV3::new(
+        let plan = QueryPlan::new(
             spec(vec![prefix(), sort(), limit(), mutation], vec![0, 1]),
             &schema(),
         )
@@ -636,7 +633,7 @@ fn sorted_bounded_attach_and_delete_keep_the_matching_binding_types() {
             Some(type_bridge_contract::value::ValueTypeTag::Long)
         );
         assert_eq!(
-            decode_query_plan_v3(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
+            decode_query_plan(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
             plan
         );
         assert_eq!(plan.statement_counts(), (0, 1));
@@ -652,7 +649,7 @@ fn sorted_bounded_attach_and_delete_keep_the_matching_binding_types() {
         pipeline.extend(middle);
         pipeline.push(attach());
         assert_eq!(
-            QueryPlanV3::new(spec(pipeline, vec![]), &schema())
+            QueryPlan::new(spec(pipeline, vec![]), &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -666,7 +663,7 @@ fn sorted_bounded_attach_and_delete_keep_the_matching_binding_types() {
             sort(),
             limit(),
             Stage::Update {
-                sets: vec![type_bridge_contract::query_plan::v3::Set::Field {
+                sets: vec![type_bridge_contract::query_plan::Set::Field {
                     owner: id(0),
                     field: field("score"),
                     operand: literal(1),
@@ -675,7 +672,7 @@ fn sorted_bounded_attach_and_delete_keep_the_matching_binding_types() {
         ],
     ] {
         assert_eq!(
-            QueryPlanV3::new(spec(pipeline, vec![]), &schema())
+            QueryPlan::new(spec(pipeline, vec![]), &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -686,14 +683,14 @@ fn sorted_bounded_attach_and_delete_keep_the_matching_binding_types() {
 
 #[test]
 fn unordered_single_witness_requires_terminal_select_limit_one_and_read_only_rows() {
-    use type_bridge_contract::query_plan::v3::{AttachItem, Operation};
+    use type_bridge_contract::query_plan::{AttachItem, Operation};
     let matched = || Stage::Match {
         patterns: vec![isa(0, entity("account")).into()],
     };
     let selected = || Stage::Select {
         bindings: vec![id(0)],
     };
-    let plan = QueryPlanV3::new(
+    let plan = QueryPlan::new(
         spec(
             vec![matched(), selected(), Stage::Limit { rows: 1 }],
             vec![0],
@@ -703,7 +700,7 @@ fn unordered_single_witness_requires_terminal_select_limit_one_and_read_only_row
     .unwrap();
     assert_eq!(plan.statement_counts(), (1, 0));
     assert_eq!(
-        decode_query_plan_v3(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
+        decode_query_plan(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
         plan
     );
     for (tail, expected) in [
@@ -731,7 +728,7 @@ fn unordered_single_witness_requires_terminal_select_limit_one_and_read_only_row
         let mut pipeline = vec![matched()];
         pipeline.extend(tail);
         assert_eq!(
-            QueryPlanV3::new(spec(pipeline, vec![0]), &schema())
+            QueryPlan::new(spec(pipeline, vec![0]), &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -745,7 +742,7 @@ fn unordered_single_witness_requires_terminal_select_limit_one_and_read_only_row
         );
         specification.operation = operation;
         assert_eq!(
-            QueryPlanV3::new(specification, &schema())
+            QueryPlan::new(specification, &schema())
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -761,7 +758,7 @@ fn unordered_single_witness_requires_terminal_select_limit_one_and_read_only_row
         }],
     };
     assert_eq!(
-        QueryPlanV3::new(
+        QueryPlan::new(
             spec(
                 vec![matched(), write, selected(), Stage::Limit { rows: 1 }],
                 vec![0]

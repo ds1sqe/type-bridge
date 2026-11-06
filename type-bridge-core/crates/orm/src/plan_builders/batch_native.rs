@@ -6,7 +6,7 @@ use crate::session::backend::{GivenRowsSpec, GivenValue};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::TypeId;
 use type_bridge_contract::migration_assertion::BindingId;
-use type_bridge_contract::query_plan::v3::{Expr, Operation, Pattern, Stage, WriteReturns};
+use type_bridge_contract::query_plan::{Expr, Operation, Pattern, Stage, WriteReturns};
 use type_bridge_contract::query_plan::{InputRow, QueryOperand, QueryOutput, QueryPattern};
 use type_bridge_contract::temporal::{CanonicalDateTimeTz, CanonicalDuration, TimeZoneDesignator};
 use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, ValueTypeTag};

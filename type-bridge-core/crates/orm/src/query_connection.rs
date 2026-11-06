@@ -134,9 +134,9 @@ impl StagedAdvertisement {
 
     fn apply_policy(&mut self, requested: Option<&Arc<QueryLimits>>) {
         let effective = requested
-            .map_or(QueryLimits::V3, |limits| **limits)
+            .map_or(QueryLimits::PLAN, |limits| **limits)
             .min(self.advertised_limits);
-        self.effective_limits = (effective != QueryLimits::V3).then(|| {
+        self.effective_limits = (effective != QueryLimits::PLAN).then(|| {
             requested
                 .filter(|limits| ***limits == effective)
                 .cloned()
@@ -343,8 +343,8 @@ impl ProxyQueryConnection {
     /// # Errors
     /// Returns an unsupported limit before any provider I/O.
     pub fn with_query_limits(mut self, limits: QueryLimits) -> Result<Self, QueryLimitsError> {
-        let limits = limits.validate_v3()?;
-        self.requested_query_limits = (limits != QueryLimits::V3).then(|| Arc::new(limits));
+        let limits = limits.validate_plan()?;
+        self.requested_query_limits = (limits != QueryLimits::PLAN).then(|| Arc::new(limits));
         if let Some(staged) = self.staged_cache().as_mut() {
             staged.apply_policy(self.requested_query_limits.as_ref());
         }
@@ -358,7 +358,7 @@ impl ProxyQueryConnection {
         self.shared_query_limits()
             .as_deref()
             .copied()
-            .unwrap_or(QueryLimits::V3)
+            .unwrap_or(QueryLimits::PLAN)
     }
 
     pub(crate) fn shared_query_limits(&self) -> Option<Arc<QueryLimits>> {
@@ -535,7 +535,7 @@ impl ProxyQueryConnection {
     #[doc(hidden)]
     pub async fn execute_write_stack(
         &self,
-        entries: Vec<type_bridge_contract::query_remote_v3::StagedPlanV3>,
+        entries: Vec<type_bridge_contract::query_remote::StagedPlan>,
         resources: QueryExecutionResourceLimits,
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,
@@ -549,7 +549,7 @@ impl ProxyQueryConnection {
     #[doc(hidden)]
     pub async fn execute_write_stack_mapped<T, F>(
         &self,
-        entries: Vec<type_bridge_contract::query_remote_v3::StagedPlanV3>,
+        entries: Vec<type_bridge_contract::query_remote::StagedPlan>,
         resources: QueryExecutionResourceLimits,
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,
@@ -642,17 +642,17 @@ impl ProxyQueryConnection {
 
     pub(crate) async fn execute_read_plans(
         &self,
-        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        plans: &[type_bridge_contract::query_plan::QueryPlan],
         resources: QueryExecutionResourceLimits,
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,
     ) -> Result<Vec<crate::query_plan_exec::PlanAnswer>, QueryTargetError> {
-        use type_bridge_contract::query_remote_v3::StagedPlanV3;
+        use type_bridge_contract::query_remote::StagedPlan;
         let (resources, deadline) = QueryTarget::Proxy(self).budget(resources, deadline);
         deadline.check(cancellation)?;
         if plans
             .iter()
-            .any(type_bridge_contract::query_plan::v3::QueryPlanV3::writes)
+            .any(type_bridge_contract::query_plan::QueryPlan::writes)
         {
             return Err(QueryTargetError::Direct(
                 crate::match_request::MatchError::new(
@@ -681,7 +681,7 @@ impl ProxyQueryConnection {
         let entries = plans
             .iter()
             .map(|plan| {
-                StagedPlanV3::new(
+                StagedPlan::new(
                     plan,
                     plan.given_rows().unwrap_or_default().to_vec(),
                     staging.declared(),
@@ -1101,10 +1101,10 @@ mod policy_tests {
     use type_bridge_contract::query_remote::{RemoteExecutorBinding, RemoteSigningPublicKey};
 
     fn advertisement(limits: QueryLimits) -> RemoteCapabilities {
-        let mut caps = type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        let mut caps = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
         caps.insert(
             type_bridge_contract::capability::CapabilityId::new(
-                type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+                type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
             )
             .unwrap(),
         );
@@ -1119,7 +1119,7 @@ mod policy_tests {
 
     #[tokio::test]
     async fn native_read_stacks_refuse_writes_before_transport() {
-        let connection = connection(advertisement(QueryLimits::V3));
+        let connection = connection(advertisement(QueryLimits::PLAN));
         let limits = QueryExecutionResourceLimits::default();
         let cancellation = AnswerCancellation::default();
         let deadline = QueryExecutionDeadline::for_limits(limits);
@@ -1166,8 +1166,8 @@ mod policy_tests {
             &'a self,
             bytes: &'a [u8],
         ) -> crate::session::backend::BoxFuture<'a, Result<Vec<u8>, QueryTargetError>> {
-            use type_bridge_contract::query_remote_v3::{
-                StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+            use type_bridge_contract::query_remote::{
+                StagedAnswer, StagedOutcome, StagedReply, StagedRequest,
             };
             self.seen.lock().unwrap().push(bytes.to_vec());
             self.entered.notify_one();
@@ -1180,24 +1180,24 @@ mod policy_tests {
                 if self.mode == 3 {
                     std::future::pending::<()>().await;
                 }
-                let request = StagedRequestV3::decode(
+                let request = StagedRequest::decode(
                     bytes,
                     &crate::query_plan_exec::race::schema(),
                     &self.advertisement,
                 )
                 .unwrap();
                 let (outcome, answers) = if self.mode == 1 {
-                    (StagedOutcomeV3::Failed { diagnostic: SdkExecutionDiagnostic::query_failure(
+                    (StagedOutcome::Failed { diagnostic: SdkExecutionDiagnostic::query_failure(
                         type_bridge_contract::sdk_diagnostic::SdkQueryDiagnosticCategory::InvalidPlan,
                         type_bridge_contract::sdk_diagnostic::SdkDiagnosticCode::new("write_policy_refused").unwrap(),
                     ) }, vec![])
                 } else {
                     (
-                        StagedOutcomeV3::Committed,
+                        StagedOutcome::Committed,
                         request
                             .plans()
                             .iter()
-                            .map(|_| StagedAnswerV3::Matched {
+                            .map(|_| StagedAnswer::Matched {
                                 value: if self.mode == 4 { 0 } else { 1 },
                             })
                             .collect(),
@@ -1206,7 +1206,7 @@ mod policy_tests {
                 if self.mode == 5 {
                     self.reply_cancellation.cancel();
                 }
-                Ok(StagedReplyV3::new(&request, outcome, answers)
+                Ok(StagedReply::new(&request, outcome, answers)
                     .unwrap()
                     .encode_signed(&request, &self.advertisement, &self.signer)
                     .unwrap())
@@ -1215,11 +1215,11 @@ mod policy_tests {
     }
     fn write_stack_fixture(mode: u8) -> (ProxyQueryConnection, Arc<WriteStackTransport>) {
         let signer = crate::remote_signing::RemoteReplySigningKey::from_secret_bytes([0x47; 32]);
-        let mut caps = type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        let mut caps = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
         for name in [
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_WRITE_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_WRITE,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
         ] {
             caps.insert(type_bridge_contract::capability::CapabilityId::new(name).unwrap());
         }
@@ -1243,9 +1243,9 @@ mod policy_tests {
     }
     fn purchase_entry(
         connection: &ProxyQueryConnection,
-    ) -> type_bridge_contract::query_remote_v3::StagedPlanV3 {
+    ) -> type_bridge_contract::query_remote::StagedPlan {
         let plan = crate::query_plan_exec::race::purchase("O1", "I1", "A1");
-        type_bridge_contract::query_remote_v3::StagedPlanV3::new(
+        type_bridge_contract::query_remote::StagedPlan::new(
             &plan,
             plan.given_rows().unwrap().to_vec(),
             connection.authority.adapter_authority().declared(),
@@ -1279,7 +1279,7 @@ mod policy_tests {
                 .await;
             let seen = transport.seen.lock().unwrap();
             assert_eq!(seen.len(), 1);
-            let request = type_bridge_contract::query_remote_v3::StagedRequestV3::decode(
+            let request = type_bridge_contract::query_remote::StagedRequest::decode(
                 &seen[0],
                 &crate::query_plan_exec::race::schema(),
                 &transport.advertisement,
@@ -1287,7 +1287,7 @@ mod policy_tests {
             .unwrap();
             assert_eq!(
                 request.kind(),
-                type_bridge_contract::query_remote_v3::StagedKindV3::Write
+                type_bridge_contract::query_remote::StagedKind::Write
             );
             assert_eq!(request.plans()[0].plan().canonical_bytes().unwrap(), bytes);
             let policy = request.limits();
@@ -1485,7 +1485,7 @@ mod policy_tests {
 
     #[test]
     fn staged_connections_share_the_cached_declared_schema() {
-        let connection = connection(advertisement(QueryLimits::V3));
+        let connection = connection(advertisement(QueryLimits::PLAN));
         let authority = connection.authority.adapter_authority();
         let advertisement = connection.staged_advertisement().unwrap();
         for _ in 0..2 {
@@ -1575,11 +1575,11 @@ mod policy_tests {
 
     #[test]
     fn proxy_origins_share_only_the_same_executor_key_epoch_and_scope() {
-        let base = advertisement(QueryLimits::V3);
+        let base = advertisement(QueryLimits::PLAN);
         let original = connection(base.clone());
         let reopened = connection(base.clone());
         assert_eq!(original.execution_identity(), reopened.execution_identity());
-        let mut limits = QueryLimits::V3;
+        let mut limits = QueryLimits::PLAN;
         limits.structural.bindings = 1024;
         let policy_changed = connection(advertisement(limits));
         assert_eq!(
@@ -1611,15 +1611,15 @@ mod policy_tests {
 
     #[test]
     fn proxy_query_policy_intersects_every_dimension_and_shares_custom_values() {
-        let default = connection(advertisement(QueryLimits::V3));
-        assert_eq!(default.query_limits(), QueryLimits::V3);
+        let default = connection(advertisement(QueryLimits::PLAN));
+        assert_eq!(default.query_limits(), QueryLimits::PLAN);
         assert!(default.shared_query_limits().is_none());
-        let mut server = QueryLimits::V3;
+        let mut server = QueryLimits::PLAN;
         server.structural.bindings = 768;
         server.structural.boolean_terms = 300;
         server.structural.predicate_depth = 16;
         server.codec.max_bytes /= 2;
-        let mut client = QueryLimits::V3;
+        let mut client = QueryLimits::PLAN;
         client.structural.bindings = 1024;
         client.structural.boolean_terms = 512;
         client.structural.predicate_depth = 32;
@@ -1647,16 +1647,16 @@ mod policy_tests {
 
     #[test]
     fn staged_advertisement_recomputes_policy_and_invalid_values_are_refused() {
-        let mut requested = QueryLimits::V3;
+        let mut requested = QueryLimits::PLAN;
         requested.structural.bindings = 1024;
         requested.structural.boolean_terms = 512;
         let mut server = requested;
         server.structural.bindings = 512;
         server.structural.boolean_terms = 300;
-        let connection = connection(advertisement(QueryLimits::V3))
+        let connection = connection(advertisement(QueryLimits::PLAN))
             .with_query_limits(requested)
             .unwrap();
-        assert_eq!(connection.query_limits(), QueryLimits::V3);
+        assert_eq!(connection.query_limits(), QueryLimits::PLAN);
         let connection = connection
             .with_staged_advertisement(advertisement(server).encode().unwrap())
             .unwrap();
@@ -1691,7 +1691,7 @@ mod policy_tests {
                 })
             }
         }
-        let connection = connection(advertisement(QueryLimits::V3));
+        let connection = connection(advertisement(QueryLimits::PLAN));
         assert_eq!(
             connection
                 .raw_transaction(crate::TxType::Write)

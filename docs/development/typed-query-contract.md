@@ -1,6 +1,6 @@
 # Generated Typed Query Contract
 
-The read/write [query-plan wire specification](../reference/query-plan-v3.md)
+The read/write [query-plan wire specification](../reference/query-plan.md)
 defines canonical bytes, expressions, write stages, operations and shared examples.
 Typed queries and manager terminals lower to this one native plan path.
 Historical parity captures remain test oracles; retired query encodings are
@@ -726,7 +726,7 @@ canonical native plans, given rows, transaction kind, resource budgets, the
 executor advertisement identity, a nonce and bounded admission expiry. Replies
 bind the request and carry validated answers or structured execution failures.
 The connection verifies the advertised reply key and complete request binding
-before publishing values. See the [wire specification](../reference/query-plan-v3.md#staged-remote-envelope-v3)
+before publishing values. See the [wire specification](../reference/query-plan.md#staged-remote-envelope-v3)
 for exact fields, tags and signing rules.
 
 `/v2/query` and `/v2/capabilities` are removed. Clients use `/v3/staged` and
@@ -760,7 +760,7 @@ once per connection. The server admits writes only from a caller an
 interceptor vouches for (`on_v3_write_authority`), or from any caller under
 `[staged] allow_unauthenticated_staged_writes`. The wire format and failure
 vocabulary are in the
-[staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3).
+[staged remote envelope](../reference/query-plan.md#staged-remote-envelope-v3).
 
 Fetch plans return a distinct `Documents` answer directly and remotely. The
 shared Rust verifier checks the document against the plan's possible exact

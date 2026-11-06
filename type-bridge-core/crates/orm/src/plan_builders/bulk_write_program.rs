@@ -3,7 +3,7 @@ use super::*;
 use crate::query_plan_exec::PlanAnswer;
 use std::collections::VecDeque;
 use type_bridge_contract::query_remote::RemoteValue;
-use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+use type_bridge_contract::query_remote::StagedAnswer;
 
 #[path = "bulk_write_match.rs"]
 mod match_put;
@@ -175,10 +175,10 @@ impl WriteProgram {
     pub(crate) fn staged_entries(
         &self,
         authority: &PlanAuthority,
-    ) -> Result<Option<Vec<type_bridge_contract::query_remote_v3::StagedPlanV3>>, Diagnostic> {
-        use type_bridge_contract::query_remote_v3::StagedPlanV3;
+    ) -> Result<Option<Vec<type_bridge_contract::query_remote::StagedPlan>>, Diagnostic> {
+        use type_bridge_contract::query_remote::StagedPlan;
         let entry = |plan: &BuiltPlan| {
-            StagedPlanV3::new(
+            StagedPlan::new(
                 plan.local(),
                 plan.local().given_rows().unwrap_or_default().to_vec(),
                 authority.declared(),
@@ -380,7 +380,7 @@ impl WriteStep {
         &self,
         answer: &PlanAnswer,
     ) -> Result<Vec<(usize, String)>, Diagnostic> {
-        let StagedAnswerV3::Rows { rows } = answer.to_staged_v3(self.plan.local())? else {
+        let StagedAnswer::Rows { rows } = answer.to_staged_v3(self.plan.local())? else {
             return Err(identity_error());
         };
         let QueryOutput::Rows { columns } = self.plan.local().output() else {
@@ -426,7 +426,7 @@ impl WriteStep {
     }
 
     pub(crate) fn identity(&self, answer: &PlanAnswer) -> Result<Option<String>, Diagnostic> {
-        let StagedAnswerV3::Rows { rows } = answer.to_staged_v3(self.plan.local())? else {
+        let StagedAnswer::Rows { rows } = answer.to_staged_v3(self.plan.local())? else {
             return Err(identity_error());
         };
         if (self.reference_guard || self.missing_iid_noop) && rows.is_empty() {

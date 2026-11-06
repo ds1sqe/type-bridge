@@ -1854,7 +1854,7 @@ pub(crate) struct AuthoredPlanProjection {
 impl AuthoredPlanProjection {
     pub(crate) fn with_plans(
         &self,
-        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        plans: type_bridge_contract::query_plan::BuiltPlans,
     ) -> napi::Result<Self> {
         Self::prepare(
             Arc::clone(&self.package),
@@ -1868,7 +1868,7 @@ impl AuthoredPlanProjection {
     fn prepare(
         package: Arc<InstalledPackage>,
         registry: Arc<type_bridge_orm::_registry::DescriptorRegistry>,
-        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        plans: type_bridge_contract::query_plan::BuiltPlans,
         binding: type_bridge_contract::migration_assertion::BindingId,
         declared: TypeId,
         tuple: Option<Vec<(type_bridge_contract::migration_assertion::BindingId, TypeId)>>,
@@ -2039,7 +2039,7 @@ impl AuthoredPlanProjection {
 impl NodeRuntimeProjection {
     pub(crate) fn prepare_authored_plan(
         &self,
-        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        plans: type_bridge_contract::query_plan::BuiltPlans,
         binding: type_bridge_contract::migration_assertion::BindingId,
         declared: &str,
     ) -> napi::Result<AuthoredPlanProjection> {
@@ -2062,7 +2062,7 @@ impl NodeRuntimeProjection {
     }
     pub(crate) fn prepare_authored_tuple(
         &self,
-        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        plans: type_bridge_contract::query_plan::BuiltPlans,
         bindings: Vec<u32>,
         declared: Vec<String>,
     ) -> napi::Result<AuthoredPlanProjection> {
@@ -7614,7 +7614,7 @@ entities:
             QueryAuthority::from_declared_bytes(&declared, "node-native", "typedb-3.12.1/v1")
                 .unwrap();
         let advertisement = RemoteCapabilities::new(
-            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary(),
+            type_bridge_contract::query_plan::query_plan_capability_vocabulary(),
             RemoteExecutorBinding::new("batch-target-selector", "epoch-00000000001").unwrap(),
             RemoteReplySigningKey::from_secret_bytes([0x5c; 32]).public_key(),
         )
@@ -8102,7 +8102,7 @@ entities:
     #[cfg(feature = "contract-test-adapter")]
     #[test]
     fn authored_plan_mixed_rows_preserve_core_ordinals_canonical_scalars_and_origins() {
-        use type_bridge_contract::query_plan::v3::{BuiltPlans, PlanBuilder};
+        use type_bridge_contract::query_plan::{BuiltPlans, PlanBuilder};
         use type_bridge_orm::session::backend::QueryResult;
         let projection = ordered_runtime();
         let compiled = authority(ORDERED_SCHEMA, "node-create-admission.yaml");
@@ -8194,7 +8194,7 @@ entities:
     #[cfg(feature = "contract-test-adapter")]
     #[test]
     fn authored_plan_model_envelopes_consume_core_proofs_and_keep_direct_deleted_origins() {
-        use type_bridge_contract::query_plan::v3::{BuiltPlans, PlanBuilder};
+        use type_bridge_contract::query_plan::{BuiltPlans, PlanBuilder};
         use type_bridge_orm::session::backend::QueryResult;
         for deleted in [false, true] {
             let projection = ordered_runtime();

@@ -2533,7 +2533,7 @@ fn plan_read_count(
         )?;
         let mut answers = target.read_plan(&program).await?;
         let answer = answers.pop().ok_or_else(|| snapshot_error(name))?;
-        let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } = answer
+        let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } = answer
             .to_staged_v3(&program.plans()[0])
             .map_err(crate::plan_builders::manager::diagnostic)?
         else {
@@ -2604,7 +2604,7 @@ async fn plan_identity_rows(
     let [answer] = answers.as_slice() else {
         return Err(snapshot_error("identity"));
     };
-    let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } = answer
+    let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } = answer
         .to_staged_v3(&program.plans()[0])
         .map_err(crate::plan_builders::manager::diagnostic)?
     else {
@@ -2789,7 +2789,7 @@ async fn plan_aggregate(
     let [answer] = answers.as_slice() else {
         return Err(snapshot_error("aggregate"));
     };
-    let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } = answer
+    let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } = answer
         .to_staged_v3(plan.local())
         .map_err(crate::plan_builders::manager::diagnostic)?
     else {

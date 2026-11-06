@@ -171,7 +171,7 @@ fn later_chunk_admission_failure_leaves_no_unobserved_staged_write() {
         ],
     );
     assert_eq!(
-        AsRef::<[QueryPlanV3]>::as_ref(builder.finish_selection(selection).unwrap().as_ref()).len(),
+        AsRef::<[QueryPlan]>::as_ref(builder.finish_selection(selection).unwrap().as_ref()).len(),
         2
     );
     let admissions = Arc::new(AtomicUsize::new(0));

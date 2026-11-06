@@ -345,7 +345,7 @@ async fn delete_chunks_on_lease<T>(
 
 pub(crate) fn capture_rows(
     registry: &DescriptorRegistry,
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
     documents: &[serde_json::Value],
     descriptor: &crate::match_request::DescriptorId,
     policy: QueryExecutionResourceLimits,

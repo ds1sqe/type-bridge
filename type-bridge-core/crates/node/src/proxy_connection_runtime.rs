@@ -67,7 +67,7 @@ impl NodeProxyConnection {
         query_limits: Option<&NodeQueryLimits>,
     ) -> napi::Result<Object<'static>> {
         let query_limits = query_limits
-            .map(|limits| limits.inner().validate_v3())
+            .map(|limits| limits.inner().validate_plan())
             .transpose()
             .map_err(|error| napi::Error::new(napi::Status::InvalidArg, error.to_string()))?;
         if header_names.len() != header_values.len() {

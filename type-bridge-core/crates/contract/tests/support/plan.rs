@@ -3,7 +3,7 @@ use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-use type_bridge_contract::query_plan::v3::{InsertThing, Operation, PlanSpec, Stage, WriteReturns};
+use type_bridge_contract::query_plan::{InsertThing, Operation, PlanSpec, Stage, WriteReturns};
 use type_bridge_contract::query_plan::{QueryOperand, QueryOutput, QueryPattern};
 use type_bridge_contract::schema::*;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
@@ -337,7 +337,7 @@ pub fn matched() -> Stage {
     }
 }
 
-pub fn pat(n: u16, type_id: TypeId) -> type_bridge_contract::query_plan::v3::Pattern {
+pub fn pat(n: u16, type_id: TypeId) -> type_bridge_contract::query_plan::Pattern {
     isa(n, type_id).into()
 }
 

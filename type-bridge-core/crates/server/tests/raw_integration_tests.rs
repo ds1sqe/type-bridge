@@ -584,11 +584,11 @@ async fn wait_for_production_health(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB; optionally tests TYPE_BRIDGE_SERVER_IMAGE"]
 async fn production_binary_serves_staged_and_removed_routes() {
-    use type_bridge_contract::query_plan::v3::Operation;
+    use type_bridge_contract::query_plan::Operation;
     use type_bridge_contract::query_remote::RemoteCapabilities;
-    use type_bridge_contract::query_remote_v3::{
-        StagedAnswerV3, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3,
-        VerifiedStagedReplyV3,
+    use type_bridge_contract::query_remote::{
+        StagedAnswer, StagedLimits, StagedPlan, StagedRequest, StagedRequestSpec,
+        VerifiedStagedReply,
     };
     use type_bridge_orm::remote_signing::Ed25519RemoteReplyVerifier;
     use type_bridge_schema::{build_schema_authority, encode_schema_authority};
@@ -706,13 +706,13 @@ async fn production_binary_serves_staged_and_removed_routes() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
-    let request = StagedRequestV3::new(
-        StagedRequestSpecV3 {
+    let request = StagedRequest::new(
+        StagedRequestSpec {
             nonce: format!("binary-{}", uuid::Uuid::new_v4()),
             kind: None,
-            limits: StagedLimitsV3::default(),
+            limits: StagedLimits::default(),
             plans: vec![
-                StagedPlanV3::new(
+                StagedPlan::new(
                     &staged_live::race::stock_read(Operation::Count),
                     vec![],
                     &declared,
@@ -733,7 +733,7 @@ async fn production_binary_serves_staged_and_removed_routes() {
         .await
         .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let reply = VerifiedStagedReplyV3::decode(
+    let reply = VerifiedStagedReply::decode(
         &response.bytes().await.unwrap(),
         &request,
         &advertisement,
@@ -742,7 +742,7 @@ async fn production_binary_serves_staged_and_removed_routes() {
     )
     .unwrap();
     assert!(reply.committed(), "{:?}", reply.diagnostic());
-    assert_eq!(reply.answers(), [StagedAnswerV3::Count { value: 1 }]);
+    assert_eq!(reply.answers(), [StagedAnswer::Count { value: 1 }]);
     assert!(server.exited().is_none(), "{}", server.diagnostics());
     server.stop().unwrap();
     direct.delete_database(&name).await.unwrap();

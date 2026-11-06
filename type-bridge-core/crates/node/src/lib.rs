@@ -26,7 +26,7 @@ mod proxy_connection_runtime;
 #[cfg(test)]
 #[path = "../../rust/tests/support/purchase_plan.rs"]
 mod purchase_plan;
-mod query_plan_v3_codec;
+mod query_plan_codec;
 mod raw_runtime;
 mod runtime_projection;
 #[cfg(test)]
@@ -64,7 +64,7 @@ pub use plan_model_remote_runtime::{
     plan_remote_model_context_with_resources,
 };
 pub use proxy_connection_runtime::NodeProxyConnection;
-pub use query_plan_v3_codec::{_query_plan_v3_round_trip, QueryPlanV3Encoding};
+pub use query_plan_codec::{_query_plan_round_trip, QueryPlanEncoding};
 pub use runtime_projection::{
     NodeProjectedModelManager, NodeRuntimeProjection, install_plan_runtime_projection,
     projected_batch_deleted,
@@ -649,7 +649,7 @@ pub fn connect_rust_database(
     query_limits: Option<&match_runtime::NodeQueryLimits>,
 ) -> Result<NodeRustDatabase> {
     let query_limits = query_limits
-        .map(|limits| limits.inner().validate_v3())
+        .map(|limits| limits.inner().validate_plan())
         .transpose()
         .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?;
     let options = napi_secure_connect_options(http_port, server_version, tls_enabled, tls_root_ca)?;

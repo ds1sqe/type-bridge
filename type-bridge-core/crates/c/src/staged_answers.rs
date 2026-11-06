@@ -6,7 +6,7 @@ use std::ptr;
 use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
-use type_bridge_contract::query_plan::v3::{FetchDocumentShape, QueryPlanV3, Stage};
+use type_bridge_contract::query_plan::{FetchDocumentShape, QueryPlan, Stage};
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_orm::session::staged::{Pending, PlanAnswer};
 
@@ -110,7 +110,7 @@ impl PendingState {
         }
     }
 
-    pub(crate) fn new(pending: Pending<PlanAnswer>, plan: &QueryPlanV3) -> Self {
+    pub(crate) fn new(pending: Pending<PlanAnswer>, plan: &QueryPlan) -> Self {
         Self {
             pending: PendingSource::Raw(pending),
             shape: plan.fetch_document_shape().cloned().map(Arc::new),
@@ -896,12 +896,12 @@ pub(crate) mod tests {
     use serde_json::json;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
-    use type_bridge_contract::query_plan::v3::{DocumentRole, PlanBuilder};
+    use type_bridge_contract::query_plan::{DocumentRole, PlanBuilder};
     use type_bridge_contract::schema::DocumentId;
     use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
 
-    pub(crate) fn plan() -> QueryPlanV3 {
+    pub(crate) fn plan() -> QueryPlan {
         let source = r#"format: typebridge.schema/v2
 attributes:
   key: { value: string }

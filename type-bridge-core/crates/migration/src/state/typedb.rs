@@ -1084,7 +1084,7 @@ async fn owned_state_documents(
 
 async fn execute_context_plan(
     context: &TransactionContext,
-    plan: type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: type_bridge_contract::query_plan::QueryPlan,
 ) -> Result<()> {
     let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
     context
@@ -1501,7 +1501,7 @@ mod tests {
         };
 
         use type_bridge_contract::query_plan::QueryOperand;
-        use type_bridge_contract::query_plan::v3::{AttachItem, Stage};
+        use type_bridge_contract::query_plan::{AttachItem, Stage};
         let plan = plans::run(&record).unwrap();
         let values = plan
             .pipeline()

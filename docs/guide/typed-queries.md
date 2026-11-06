@@ -385,7 +385,7 @@ Generated models author plans inside `with Plan()` (Python), `Plan.build`
 (TypeScript and Rust), or a generated package recording (C). Handles belong
 to that recording. Comparisons and assignments forward to the shared Rust
 builder. Caller literals become typed `given` columns; see the
-[implicit input naming rule](../reference/query-plan-v3.md#implicit-input-names).
+[implicit input naming rule](../reference/query-plan.md#implicit-input-names).
 Building and inspecting a plan performs no database I/O. Staging defers its
 execution until commit. A result can be read only after commit succeeds.
 
@@ -936,7 +936,7 @@ Python `staged_advertisement=`, TypeScript `stagedAdvertisement`).
 The server admits a staged write only from a caller an interceptor vouches for
 (`on_v3_write_authority`), or from any caller when the operator sets
 `[v2] allow_unauthenticated_staged_writes`; otherwise the commit fails with the
-typed `staged_write_not_authorized` failure. The [staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3)
+typed `staged_write_not_authorized` failure. The [staged remote envelope](../reference/query-plan.md#staged-remote-envelope-v3)
 defines the wire format.
 
 ## Query limits

@@ -17,8 +17,8 @@ use type_bridge_contract::id::{AttributeId, TypeId};
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable, ValueComparator,
 };
-use type_bridge_contract::query_plan::v3::{
-    ArithOp, Builtin, Expr, Operation, Pattern, PlanSpec, QueryPlanV3, Stage,
+use type_bridge_contract::query_plan::{
+    ArithOp, Builtin, Expr, Operation, Pattern, PlanSpec, QueryPlan, Stage,
 };
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
@@ -362,8 +362,8 @@ impl<'a> Draft<'a> {
         pipeline: Vec<Stage>,
         operation: Operation,
         columns: Vec<BindingId>,
-    ) -> Result<QueryPlanV3, Diagnostic> {
-        QueryPlanV3::new_with_limits(
+    ) -> Result<QueryPlan, Diagnostic> {
+        QueryPlan::new_with_limits(
             PlanSpec {
                 bindings: self.bindings.clone(),
                 inputs: self.inputs.clone(),
@@ -406,7 +406,7 @@ fn comparator(operator: ComparisonOp) -> ValueComparator {
 }
 
 pub(crate) struct AdaptedMatchRequest {
-    pub(crate) plans: Vec<QueryPlanV3>,
+    pub(crate) plans: Vec<QueryPlan>,
     pub(crate) layout: Layout,
     pub(crate) hydration: type_bridge_contract::query_plan::HydrationProjection,
     pub(crate) predicate: Option<type_bridge_contract::query_plan::ModelPredicate>,
@@ -457,7 +457,7 @@ pub(crate) enum Layout {
 }
 
 impl Draft<'_> {
-    fn count(&mut self, root: super::BindingId) -> Result<QueryPlanV3, Diagnostic> {
+    fn count(&mut self, root: super::BindingId) -> Result<QueryPlan, Diagnostic> {
         use type_bridge_contract::query_plan::{ReduceAssignment, Reducer};
         let result = self.allocate()?;
         self.finish(
@@ -941,7 +941,7 @@ impl Draft<'_> {
         group: Option<&type_bridge_contract::query_plan::ModelReductionKey>,
         terms: &[&super::ReduceTerm],
         long_input: bool,
-    ) -> Result<QueryPlanV3, Diagnostic> {
+    ) -> Result<QueryPlan, Diagnostic> {
         use type_bridge_contract::query_plan::{ReduceAssignment, Reducer};
         let mut patterns = self.prefix.clone();
         let mut groups = Vec::new();

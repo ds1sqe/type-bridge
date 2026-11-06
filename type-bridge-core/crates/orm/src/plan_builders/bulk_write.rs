@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::ValueComparator;
-use type_bridge_contract::query_plan::v3::{
+use type_bridge_contract::query_plan::{
     AttachItem, DeleteItem, DocumentRole, Expr, InsertThing, Operation, Pattern, Stage,
     ThingDocument, WriteReturns,
 };
@@ -802,14 +802,14 @@ pub(crate) fn build_many(
         let mut document = ThingDocument::new(root, shape.document_roles);
         document
             .scalars
-            .push(type_bridge_contract::query_plan::v3::DocumentScalar {
+            .push(type_bridge_contract::query_plan::DocumentScalar {
                 key: type_bridge_contract::migration_assertion::QueryVariable::new("ordinal")?,
                 binding: ordinal,
             });
         for (role, binding) in reference_snapshots {
             document
                 .scalars
-                .push(type_bridge_contract::query_plan::v3::DocumentScalar {
+                .push(type_bridge_contract::query_plan::DocumentScalar {
                     key: type_bridge_contract::migration_assertion::QueryVariable::new(format!(
                         "reference_{role}_{}",
                         binding.get()

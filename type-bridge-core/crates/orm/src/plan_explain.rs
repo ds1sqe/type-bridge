@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::TypeId;
-use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
+use type_bridge_contract::query_plan::{Operation, QueryPlan};
 
 /// Exact provider statements and bounded metadata for a built plan.
 ///
@@ -73,7 +73,7 @@ impl PlanExplanation {
 }
 
 /// Explain a trusted bound plan through the execution renderer and limits.
-pub fn explain(plan: &QueryPlanV3) -> Result<PlanExplanation, Diagnostic> {
+pub fn explain(plan: &QueryPlan) -> Result<PlanExplanation, Diagnostic> {
     let query = crate::query_plan_exec::staged_query(plan, true)?;
     let mut statements = Vec::new();
     if let Some((snapshot, _)) = query.snapshot {
@@ -171,7 +171,7 @@ mod tests {
                 .as_array_mut()
                 .unwrap()
                 .push(constant);
-            let plan = type_bridge_contract::query_plan::v3::decode_query_plan_v3(
+            let plan = type_bridge_contract::query_plan::decode_query_plan(
                 &type_bridge_contract::codec::to_canonical_json(&wire).unwrap(),
                 &crate::query_plan_exec::race::schema(),
             )

@@ -523,3 +523,12 @@ This checklist uses the same source as the 3.0 changelog so that removed names,
 replacements and behavioral changes cannot drift between the two pages.
 
 --8<-- "CHANGELOG.md:breaking-3-0"
+
+## Contract imports
+
+Use `type_bridge_contract::query_plan` for both plan vocabulary and builders;
+use `type_bridge_contract::query_remote` for staged envelopes and signing.
+`QueryPlanV3` becomes `QueryPlan`, and `StagedRequestV3`, `StagedAnswerV3`,
+`StagedLimitsV3` and `StagedReplyV3` lose their `V3` suffix. The complete
+old-to-new public-name table is included in the breaking-change inventory above.
+These source renames do not change plan or envelope bytes.

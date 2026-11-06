@@ -230,7 +230,7 @@ fn native_stack_answers(
     stack: &crate::match_request::plan_adapter::AdaptedMatchRequest,
 ) -> Vec<crate::query_plan_exec::PlanAnswer> {
     use crate::query_plan_exec::PlanAnswer;
-    use type_bridge_contract::query_plan::v3::{Operation, Stage};
+    use type_bridge_contract::query_plan::{Operation, Stage};
     use type_bridge_contract::query_remote::RemoteValue;
     stack.plans.iter().map(|plan| {
         if let Some(Stage::Fetch(document)) = plan.pipeline().last() {
@@ -482,7 +482,7 @@ fn native_relation_subtypes_with_extra_roles_get_exact_complete_hydration_plans(
         crate::match_request::plan_adapter::adapt_match_request(&registry, &request).unwrap();
     let mut sizes = BTreeMap::new();
     for plan in &stack.plans {
-        if let Some(type_bridge_contract::query_plan::v3::Stage::Fetch(document)) =
+        if let Some(type_bridge_contract::query_plan::Stage::Fetch(document)) =
             plan.pipeline().last()
         {
             let types = plan
@@ -537,7 +537,7 @@ async fn native_typed_read_stacks_match_live_rows_pages_counts_and_subtype_roles
             let result = stack.resolve(&models, &answers, policy).unwrap();
             assert_eq!(result.model_rows().len(), expected);
             assert_eq!(result.validation_count(), stack.plans().len());
-            let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows {rows} = result.selection().to_staged_v3(stack.selection_plan()).unwrap() else { panic!("generic selection rows"); };
+            let type_bridge_contract::query_remote::StagedAnswer::Rows {rows} = result.selection().to_staged_v3(stack.selection_plan()).unwrap() else { panic!("generic selection rows"); };
             assert!(rows.iter().all(|row| row.iter().any(|value| matches!(value,type_bridge_contract::query_remote::RemoteValue::Value {value:type_bridge_contract::value::CanonicalValue::Long(7)}))));
             println!("GENERIC_NATIVE_READ_OK given={given} models={} rows={expected} plans={}",slots.len(),stack.plans().len());
         }
@@ -737,10 +737,10 @@ pub(crate) fn generic_model_selection(
     given: bool,
 ) -> (
     Arc<DescriptorRegistry>,
-    type_bridge_contract::query_plan::v3::QueryPlanV3,
+    type_bridge_contract::query_plan::QueryPlan,
 ) {
     use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-    use type_bridge_contract::query_plan::v3::{Expr, Operation, PlanSpec, QueryPlanV3, Stage};
+    use type_bridge_contract::query_plan::{Expr, Operation, PlanSpec, QueryPlan, Stage};
     use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, QueryOperand};
     use type_bridge_contract::value::{CanonicalString, CanonicalValue};
     let registry = registry();
@@ -753,7 +753,7 @@ pub(crate) fn generic_model_selection(
             type_id: TypeId::new(TypeKind::Entity, "person").unwrap(),
         }
         .into(),
-        type_bridge_contract::query_plan::v3::Pattern::Let {
+        type_bridge_contract::query_plan::Pattern::Let {
             binding: binding(1),
             expr: Expr::Operand(QueryOperand::Literal {
                 value: CanonicalValue::Long(7),
@@ -794,7 +794,7 @@ pub(crate) fn generic_model_selection(
         );
     }
     let columns = columns.iter().map(|n| binding(*n)).collect::<Vec<_>>();
-    let plan = QueryPlanV3::new_with_limits(
+    let plan = QueryPlan::new_with_limits(
         PlanSpec {
             bindings: (0..if tuple { 4 } else { 3 })
                 .map(|n| {
@@ -842,7 +842,7 @@ pub(crate) fn generic_model_selection(
 fn generic_model_stack_preserves_mixed_rows_duplicates_and_core_ordinals() {
     use crate::query_plan_exec::PlanAnswer;
     use type_bridge_contract::migration_assertion::BindingId;
-    use type_bridge_contract::query_plan::v3::Stage;
+    use type_bridge_contract::query_plan::Stage;
     use type_bridge_contract::query_remote::RemoteValue;
     use type_bridge_contract::value::CanonicalValue;
     for columns in [&[0][..], &[0, 1][..]] {
@@ -939,7 +939,7 @@ fn generic_model_stack_preserves_mixed_rows_duplicates_and_core_ordinals() {
 fn generic_model_tuple_uses_one_shared_validation_pass_and_refuses_invalid_slots() {
     use crate::query_plan_exec::PlanAnswer;
     use type_bridge_contract::migration_assertion::BindingId;
-    use type_bridge_contract::query_plan::v3::Stage;
+    use type_bridge_contract::query_plan::Stage;
     use type_bridge_contract::query_remote::RemoteValue;
     use type_bridge_contract::value::CanonicalValue;
     let (registry, plan) = generic_model_selection(&[0, 1, 3], false);
@@ -986,7 +986,7 @@ fn generic_model_tuple_uses_one_shared_validation_pass_and_refuses_invalid_slots
 fn native_witness_reduction_uses_minimum_witness_iid_with_existing_reducer() {
     use crate::_descriptor::TypeDescriptor;
     use crate::query_plan_exec::PlanAnswer;
-    use type_bridge_contract::query_plan::v3::Stage;
+    use type_bridge_contract::query_plan::Stage;
     let modified = DescriptorRegistry::new();
     for descriptor in registry().snapshot() {
         match descriptor {
@@ -1128,7 +1128,7 @@ fn generic_model_partition_refuses_exhausted_binding_budget_before_io() {
     let mut limits = source.limits();
     limits.structural.bindings = source.bindings().len();
     limits.structural.selected_slots = limits.structural.bindings;
-    let source = type_bridge_contract::query_plan::v3::decode_query_plan_v3_with_limits(
+    let source = type_bridge_contract::query_plan::decode_query_plan_with_limits(
         &source.canonical_bytes().unwrap(),
         authority.declared(),
         limits,

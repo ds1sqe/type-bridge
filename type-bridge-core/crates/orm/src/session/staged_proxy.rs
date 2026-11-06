@@ -9,8 +9,8 @@ use rand_core::{OsRng, RngCore};
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, QueryLimits};
 use type_bridge_contract::query_remote::RemoteCapabilities;
-use type_bridge_contract::query_remote_v3::{
-    StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3, VerifiedStagedReplyV3,
+use type_bridge_contract::query_remote::{
+    StagedLimits, StagedPlan, StagedRequest, StagedRequestSpec, VerifiedStagedReply,
 };
 use type_bridge_contract::schema::DeclaredSchema;
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
@@ -155,7 +155,7 @@ impl ProxyStaging {
             limits,
             admission_window_milliseconds:
                 type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
-            query_limits: QueryLimits::V3,
+            query_limits: QueryLimits::PLAN,
         })
     }
 
@@ -191,12 +191,12 @@ impl ProxyStaging {
     /// Build one request with a fresh nonce and an optional Match aggregate policy.
     pub(crate) fn request_with_policy(
         &self,
-        plans: Vec<StagedPlanV3>,
+        plans: Vec<StagedPlan>,
         kind: super::staged::TransactionKind,
         deadline_ms: Option<u64>,
         policy: Option<QueryExecutionResourceLimits>,
-    ) -> Result<StagedRequestV3, Diagnostic> {
-        use type_bridge_contract::query_remote_v3::StagedKindV3;
+    ) -> Result<StagedRequest, Diagnostic> {
+        use type_bridge_contract::query_remote::StagedKind;
         let mut nonce = [0u8; 16];
         OsRng.fill_bytes(&mut nonce);
         let nonce = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -206,25 +206,25 @@ impl ProxyStaging {
                 u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
             });
         let kind = match kind {
-            super::staged::TransactionKind::Read => StagedKindV3::Read,
-            super::staged::TransactionKind::Write => StagedKindV3::Write,
-            super::staged::TransactionKind::Schema => StagedKindV3::Schema,
+            super::staged::TransactionKind::Read => StagedKind::Read,
+            super::staged::TransactionKind::Write => StagedKind::Write,
+            super::staged::TransactionKind::Schema => StagedKind::Schema,
         };
         let deadline_ms = crate::QueryTimeout::from_milliseconds(deadline_ms.unwrap_or(0))
             .constrained_by(self.match_limits()?.timeout_milliseconds)
             .milliseconds();
-        StagedRequestV3::new_with_limits(
-            StagedRequestSpecV3 {
+        StagedRequest::new_with_limits(
+            StagedRequestSpec {
                 nonce,
                 kind: Some(kind),
                 limits: policy.map_or_else(
-                    || StagedLimitsV3 {
+                    || StagedLimits {
                         collect_phase_timestamps: self.limits.collect_phase_timestamps,
                         deadline_ms,
                         admission_window_milliseconds: self.admission_window_milliseconds,
                         ..Default::default()
                     },
-                    |policy| StagedLimitsV3 {
+                    |policy| StagedLimits {
                         collect_phase_timestamps: self.limits.collect_phase_timestamps
                             || policy.collect_phase_timestamps,
                         deadline_ms: crate::QueryTimeout::from_milliseconds(
@@ -282,9 +282,9 @@ impl ProxyStaging {
     pub(crate) fn verify(
         &self,
         reply: &[u8],
-        request: &StagedRequestV3,
-    ) -> Result<VerifiedStagedReplyV3, Diagnostic> {
-        VerifiedStagedReplyV3::decode(
+        request: &StagedRequest,
+    ) -> Result<VerifiedStagedReply, Diagnostic> {
+        VerifiedStagedReply::decode(
             reply,
             request,
             &self.advertisement,
@@ -321,7 +321,7 @@ mod tests {
             .unwrap();
         let signer = crate::remote_signing::RemoteReplySigningKey::from_secret_bytes([0x62; 32]);
         let advertisement = RemoteCapabilities::new(
-            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary(),
+            type_bridge_contract::query_plan::query_plan_capability_vocabulary(),
             RemoteExecutorBinding::new("invalid-match-limits", "epoch-00000000001").unwrap(),
             signer.public_key(),
         );
@@ -378,14 +378,14 @@ mod tests {
 mod query_policy_tests {
     use super::*;
     use type_bridge_contract::query_plan::QueryOperand;
-    use type_bridge_contract::query_plan::v3::{Expr, PlanBuilder};
+    use type_bridge_contract::query_plan::{Expr, PlanBuilder};
     use type_bridge_contract::query_remote::{RemoteExecutorBinding, RemoteSigningPublicKey};
     use type_bridge_contract::value::CanonicalValue;
 
     #[test]
     fn staged_requests_honor_raised_client_limits_and_tighter_server_limits() {
         let schema = crate::query_plan_exec::race::schema();
-        let mut raised = QueryLimits::V3;
+        let mut raised = QueryLimits::PLAN;
         raised.structural.bindings = 1024;
         raised.structural.boolean_terms = 512;
         let mut builder = PlanBuilder::with_limits(raised);
@@ -406,11 +406,11 @@ mod query_policy_tests {
                     .clone(),
             )
             .unwrap();
-        let entry = StagedPlanV3::new(&plan, vec![], &schema).unwrap();
-        let mut caps = type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        let entry = StagedPlan::new(&plan, vec![], &schema).unwrap();
+        let mut caps = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
         caps.insert(
             type_bridge_contract::capability::CapabilityId::new(
-                type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+                type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
             )
             .unwrap(),
         );
@@ -454,7 +454,7 @@ mod query_policy_tests {
             )
             .unwrap();
         assert_eq!(request.plans()[0].plan().bindings().len(), 300);
-        let tighter = advertisement.with_query_limits(QueryLimits::V3).unwrap();
+        let tighter = advertisement.with_query_limits(QueryLimits::PLAN).unwrap();
         assert!(
             make_proxy(&tighter)
                 .with_query_limits(raised)

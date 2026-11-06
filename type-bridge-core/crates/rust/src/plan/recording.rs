@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
 use type_bridge_contract::query_plan::QueryOperand;
-use type_bridge_contract::query_plan::v3::{
+use type_bridge_contract::query_plan::{
     ArithOp, Expr as CoreExpr, PlanBuilder as CoreBuilder, Site,
 };
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
@@ -1337,7 +1337,7 @@ impl<R, S: Schema> PlanAuthoring<R, S> {
                     .iter()
                     .map(|(role, required)| {
                         super::role_id(role).map(|role| {
-                            type_bridge_contract::query_plan::v3::DocumentRole::new(role, *required)
+                            type_bridge_contract::query_plan::DocumentRole::new(role, *required)
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;

@@ -7,4 +7,4 @@ case "${1:---check}" in
   *) echo 'usage: check-plan-v3-fixtures.sh [--check|--write]' >&2; exit 2 ;;
 esac
 exec cargo test --manifest-path type-bridge-core/Cargo.toml \
-  -p type-bridge-contract --test query_plan_v3 shared_plan_v3_fixtures -- --exact
+  -p type-bridge-contract --test query_plan shared_plan_fixtures -- --exact

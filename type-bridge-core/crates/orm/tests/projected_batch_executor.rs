@@ -3029,7 +3029,7 @@ async fn raised_query_dimensions_keep_wide_projected_batches_in_one_statement() 
     let installed = installed();
     let person = type_id(TypeKind::Entity, "person");
     let tag = field(&person, "tag");
-    let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+    let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
     limits.structural.bindings = 1024;
     limits.structural.boolean_terms = 512;
     for given in [false, true] {

@@ -94,10 +94,9 @@ impl ExecutionPhases {
         }
         if let Some((anchor, stamps)) = self.timeline.as_deref_mut()
             && index.is_none_or(|index| {
-                index < type_bridge_contract::limits::MAX_STAGED_STATEMENTS_V3.saturating_mul(2)
+                index < type_bridge_contract::limits::MAX_STAGED_STATEMENTS.saturating_mul(2)
             })
-            && (stamps.len()
-                < type_bridge_contract::limits::MAX_STAGED_STATEMENTS_V3 as usize * 2 + 5
+            && (stamps.len() < type_bridge_contract::limits::MAX_STAGED_STATEMENTS as usize * 2 + 5
                 || matches!(phase, ExecutionPhase::Committed | ExecutionPhase::Failed))
         {
             let offset = u64::try_from(
@@ -504,7 +503,7 @@ mod tests {
     }
     #[tokio::test]
     async fn collected_direct_statements_are_bounded_before_diagnostic_validation() {
-        let limit = type_bridge_contract::limits::MAX_STAGED_STATEMENTS_V3 * 2;
+        let limit = type_bridge_contract::limits::MAX_STAGED_STATEMENTS * 2;
         let (_, phases) = observe(tokio::time::Instant::now().into_std(), true, async {
             record(ExecutionPhase::Accepted);
             record(ExecutionPhase::ExecutionStarted);

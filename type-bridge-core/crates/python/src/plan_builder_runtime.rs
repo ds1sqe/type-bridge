@@ -14,12 +14,12 @@ use std::sync::Arc;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId};
 use type_bridge_contract::migration_assertion::BindingId;
-use type_bridge_contract::query_plan::v3::{
-    ArithOp, BuildSelection, BuiltPlans, Builtin, DocumentRole, Expr, PlanBuilder, QueryPlanV3,
-    Site, ThingDocument,
+use type_bridge_contract::query_plan::{
+    ArithOp, BuildSelection, BuiltPlans, Builtin, DocumentRole, Expr, PlanBuilder, QueryPlan, Site,
+    ThingDocument,
 };
 use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, QueryOperand};
-use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
+use type_bridge_contract::query_remote::{StagedPlan, StagedResultRef};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_orm::plan_scalar::plan_value_type;
@@ -78,7 +78,7 @@ fn invocation_rows(
 /// One immutable invocation template authored by the shared builder.
 #[pyclass(name = "StagedPlan", module = "type_bridge_core", frozen)]
 pub(crate) struct PyStagedPlan {
-    pub(crate) entry: StagedPlanV3,
+    pub(crate) entry: StagedPlan,
     pub(crate) authority: Arc<type_bridge_orm::plan_authority::QueryAuthority>,
 }
 
@@ -729,7 +729,7 @@ impl PyPlanBuilderCore {
         }
         let authority = authority.authority();
         let rows = invocation_rows(self.core.input_columns(), rows)?;
-        let refs: Vec<StagedResultRefV3> = serde_json::from_str(references).map_err(|_| {
+        let refs: Vec<StagedResultRef> = serde_json::from_str(references).map_err(|_| {
             value_error(&invalid(
                 "query_stage_result_ref_input",
                 "result references are malformed",
@@ -845,7 +845,7 @@ pub(crate) enum PyPlanProgram {
     Models(Box<crate::runtime_projection::AuthoredPlanProjection>),
 }
 impl PyPlanProgram {
-    pub(crate) fn plans(&self) -> &[QueryPlanV3] {
+    pub(crate) fn plans(&self) -> &[QueryPlan] {
         match self {
             Self::Raw(plans) => plans.plans(),
             Self::Models(model) => model.stack.plans(),
@@ -870,8 +870,8 @@ impl PyPlanProgram {
         }
     }
 }
-impl AsRef<[QueryPlanV3]> for PyPlanProgram {
-    fn as_ref(&self) -> &[QueryPlanV3] {
+impl AsRef<[QueryPlan]> for PyPlanProgram {
+    fn as_ref(&self) -> &[QueryPlan] {
         self.plans()
     }
 }
@@ -902,7 +902,7 @@ impl PyPlan {
         })
     }
 
-    pub(crate) fn inner(&self) -> PyResult<&QueryPlanV3> {
+    pub(crate) fn inner(&self) -> PyResult<&QueryPlan> {
         match self.built()?.plans() {
             [plan] => Ok(plan),
             _ => Err(value_error(&invalid(

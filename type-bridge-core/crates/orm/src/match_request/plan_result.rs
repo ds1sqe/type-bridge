@@ -17,7 +17,7 @@ use type_bridge_contract::query_model_evidence::ModelOutcome;
 use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
 use type_bridge_contract::query_plan::{ModelOutputSlot, QueryOutput};
 use type_bridge_contract::query_remote::RemoteValue;
-use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+use type_bridge_contract::query_remote::StagedAnswer;
 use type_bridge_contract::value::CanonicalValue;
 
 type Types = BTreeMap<(u16, String), TypeId>;
@@ -59,7 +59,7 @@ fn rows(
         })?
         .to_staged_v3(plan)?;
     answer.validate_for(plan)?;
-    let (StagedAnswerV3::Rows { rows }, QueryOutput::Rows { columns }) = (answer, plan.output())
+    let (StagedAnswer::Rows { rows }, QueryOutput::Rows { columns }) = (answer, plan.output())
     else {
         return Err(failure(
             "query_plan_result_rows",
@@ -183,7 +183,7 @@ fn count(
         .get(index)
         .ok_or_else(|| failure("query_plan_result_stack", "count answer is missing"))?
         .to_staged_v3(&stack.plans[index])?;
-    let StagedAnswerV3::Rows { rows } = answer else {
+    let StagedAnswer::Rows { rows } = answer else {
         return Err(failure(
             "query_plan_result_count",
             "count plan did not return a scalar row",
@@ -685,7 +685,7 @@ fn scalar_rows(
         .to_staged_v3(plan)?;
     answer.validate_for(plan)?;
     match answer {
-        StagedAnswerV3::Rows { rows } => Ok(rows
+        StagedAnswer::Rows { rows } => Ok(rows
             .into_iter()
             .map(|row| {
                 row.into_iter()

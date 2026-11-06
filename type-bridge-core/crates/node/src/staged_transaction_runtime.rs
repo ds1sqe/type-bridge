@@ -10,7 +10,7 @@ use std::sync::Arc;
 use napi::bindgen_prelude::{ClassInstance, Env, Object, Unknown};
 use napi_derive::napi;
 use tracing::Instrument as _;
-use type_bridge_contract::query_plan::v3::{BuiltPlans, decode_query_plan_v3};
+use type_bridge_contract::query_plan::{BuiltPlans, decode_query_plan};
 use type_bridge_contract::schema::decode_declared_schema;
 use type_bridge_orm::ProviderRuntimeOwner;
 use type_bridge_orm::session::staged::{
@@ -343,7 +343,7 @@ impl NodeStagedTransaction {
         let schema_bytes = non_shared_buffer(&env, schema_bytes)?;
         let schema = decode_declared_schema(&schema_bytes)
             .map_err(|error| crate::plan_runtime::napi_error(&error))?;
-        let plan = decode_query_plan_v3(&plan_bytes, &schema)
+        let plan = decode_query_plan(&plan_bytes, &schema)
             .map_err(|error| crate::plan_runtime::napi_error(&error))?;
         let plans = Arc::new(NodePlanProgram::Raw(Box::new(BuiltPlans::single(plan))));
         let inner = self

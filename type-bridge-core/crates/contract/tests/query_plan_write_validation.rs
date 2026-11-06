@@ -1,4 +1,4 @@
-#[path = "support/plan_v3.rs"]
+#[path = "support/plan.rs"]
 #[allow(dead_code)]
 mod support;
 
@@ -7,7 +7,7 @@ use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::query_plan::QueryPattern;
-use type_bridge_contract::query_plan::v3::{InsertThing, QueryPlanV3, Set, Stage};
+use type_bridge_contract::query_plan::{InsertThing, QueryPlan, Set, Stage};
 use type_bridge_contract::schema::*;
 
 #[test]
@@ -34,7 +34,7 @@ fn insert_and_put_reject_attribute_types_and_playerless_relations() {
             } else {
                 Stage::Insert { things }
             };
-            let error = QueryPlanV3::new(spec(vec![stage], vec![0]), &schema()).unwrap_err();
+            let error = QueryPlan::new(spec(vec![stage], vec![0]), &schema()).unwrap_err();
             assert_eq!(error.code().as_str(), code);
         }
     }
@@ -56,7 +56,7 @@ fn relation_insert_checks_player_type_and_accepts_same_stage_player() {
             players: vec![(role(), id(0))],
         };
         // Register all fresh types before checking players: this is one stage.
-        let result = QueryPlanV3::new(
+        let result = QueryPlan::new(
             spec(
                 vec![Stage::Insert {
                     things: vec![player, relation],
@@ -68,7 +68,7 @@ fn relation_insert_checks_player_type_and_accepts_same_stage_player() {
         if accepted {
             let plan = result.unwrap();
             assert_eq!(
-                type_bridge_contract::query_plan::v3::decode_query_plan_v3(
+                type_bridge_contract::query_plan::decode_query_plan(
                     &plan.canonical_bytes().unwrap(),
                     &schema()
                 )
@@ -93,10 +93,7 @@ fn native_read_revalidates_schema_instead_of_trusting_type_labels() {
         vec![0],
     );
     assert_eq!(
-        QueryPlanV3::new(plan, &schema())
-            .unwrap_err()
-            .code()
-            .as_str(),
+        QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
         "query_plan_unknown_type"
     );
 }
@@ -135,7 +132,7 @@ fn subtype_inclusive_updates_check_keys_declared_on_descendants() {
         (entity("account"), true, false),
         (entity("child_account"), false, false),
     ] {
-        let result = QueryPlanV3::new(
+        let result = QueryPlan::new(
             spec(
                 vec![
                     Stage::Match {

@@ -15,7 +15,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use pythonize::pythonize;
 use tracing::Instrument as _;
-use type_bridge_contract::query_plan::v3::{BuiltPlans, decode_query_plan_v3};
+use type_bridge_contract::query_plan::{BuiltPlans, decode_query_plan};
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use type_bridge_orm::ProviderRuntimeOwner;
 use type_bridge_orm::plan_authority::QueryAuthority;
@@ -241,7 +241,7 @@ impl PyStagedTransaction {
             let bytes = PythonBytes::extract(plan, "plan")?.bounded_snapshot(
                 type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1),
             );
-            let decoded = decode_query_plan_v3(&bytes, authority.declared())
+            let decoded = decode_query_plan(&bytes, authority.declared())
                 .map_err(|error| value_error(&error))?;
             Arc::new(PyPlanProgram::Raw(Box::new(BuiltPlans::single(decoded))))
         };

@@ -1,10 +1,10 @@
-#[path = "support/plan_v3.rs"]
+#[path = "support/plan.rs"]
 #[allow(dead_code)]
 mod support;
 use support::*;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::query_plan::QueryPattern;
-use type_bridge_contract::query_plan::v3::{DeleteItem, QueryPlanV3, Stage, decode_query_plan_v3};
+use type_bridge_contract::query_plan::{DeleteItem, QueryPlan, Stage, decode_query_plan};
 
 fn selective_unlink() -> DeleteItem {
     DeleteItem::HasValue {
@@ -28,7 +28,7 @@ fn matched_attribute(name: &str) -> Stage {
 }
 #[test]
 fn selective_unlink_round_trips_and_preserves_the_bound_attribute() {
-    let plan = QueryPlanV3::new(
+    let plan = QueryPlan::new(
         spec(
             vec![
                 matched_attribute("score"),
@@ -47,9 +47,9 @@ fn selective_unlink_round_trips_and_preserves_the_bound_attribute() {
         &std::collections::BTreeSet::from([TypeId::new(TypeKind::Attribute, "score").unwrap()])
     );
     let bytes = plan.canonical_bytes().unwrap();
-    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../tests/contracts/plan_v3/delete_has_value.json");
+        .join("../../../tests/contracts/plan/delete_has_value.json");
     if std::env::var_os("TYPE_BRIDGE_WRITE_OWNERSHIP_FIXTURES").is_some() {
         std::fs::write(&path, &bytes).unwrap();
     }
@@ -74,14 +74,14 @@ fn selective_unlink_rejects_missing_wrong_or_twice_deleted_values() {
             "query_plan_duplicate_ownership_delete",
         ),
     ] {
-        let error = QueryPlanV3::new(
+        let error = QueryPlan::new(
             spec(vec![matched, Stage::Delete { items }], vec![0]),
             &schema(),
         )
         .unwrap_err();
         assert_eq!(error.code().as_str(), expected);
     }
-    let error = QueryPlanV3::new(
+    let error = QueryPlan::new(
         spec(
             vec![
                 matched_attribute("score"),
@@ -113,7 +113,7 @@ fn selective_unlink_accepts_an_attribute_subtype_but_refuses_a_thing() {
         ),
         (entity("account"), false),
     ] {
-        let plan = QueryPlanV3::new(
+        let plan = QueryPlan::new(
             spec(
                 vec![
                     Stage::Match {
@@ -141,8 +141,8 @@ fn selective_unlink_accepts_an_attribute_subtype_but_refuses_a_thing() {
 fn mode_plan(
     mode: type_bridge_contract::query_plan::TypeMatchMode,
     schema: &type_bridge_contract::schema::DeclaredSchema,
-) -> Result<QueryPlanV3, type_bridge_contract::diagnostic::Diagnostic> {
-    QueryPlanV3::new(
+) -> Result<QueryPlan, type_bridge_contract::diagnostic::Diagnostic> {
+    QueryPlan::new(
         spec(
             vec![Stage::Match {
                 patterns: vec![
@@ -173,19 +173,19 @@ fn ownership_modes_are_explicit_and_round_trip_without_changing_exact_has() {
     for mode in [TypeMatchMode::Isa, TypeMatchMode::IsaExact] {
         let plan = mode_plan(mode, &schema()).unwrap();
         let bytes = plan.canonical_bytes().unwrap();
-        assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+        assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
         let mut wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         wire["pipeline"][0]["patterns"][1]
             .as_object_mut()
             .unwrap()
             .remove("mode");
         let missing = type_bridge_contract::codec::to_canonical_json(&wire).unwrap();
-        let error = decode_query_plan_v3(&missing, &schema()).unwrap_err();
+        let error = decode_query_plan(&missing, &schema()).unwrap_err();
         assert_eq!(error.code().as_str(), "query_plan_type_match_mode");
         assert!(error.message().contains("isa or isa!"));
         if mode == TypeMatchMode::Isa {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../tests/contracts/plan_v3/has_type.json");
+                .join("../../../tests/contracts/plan/has_type.json");
             if std::env::var_os("TYPE_BRIDGE_WRITE_OWNERSHIP_FIXTURES").is_some() {
                 std::fs::write(&path, &bytes).unwrap();
             }
@@ -228,7 +228,7 @@ fn abstract_attribute_isa_matches_only_the_owning_subtype_and_isa_exact_refuses(
 fn exact_abstract_mode_is_refused_even_under_negation() {
     use type_bridge_contract::query_plan::TypeMatchMode;
     let schema = schema_with_ownership_modes(true);
-    let error = QueryPlanV3::new(
+    let error = QueryPlan::new(
         spec(
             vec![Stage::Match {
                 patterns: vec![

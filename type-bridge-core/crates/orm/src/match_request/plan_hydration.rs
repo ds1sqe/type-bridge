@@ -1627,7 +1627,7 @@ pub(crate) fn evidence_failure(code: &'static str, message: &'static str) -> Dia
 pub(crate) fn graph_from_verified_plan_documents(
     registry: &crate::_registry::DescriptorRegistry,
     request: &super::ValidatedMatchRequest,
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
     documents: &[JsonValue],
     limits: crate::QueryExecutionResourceLimits,
 ) -> ExecResult<(HydrationGraph, Vec<HydrationReference>)> {
@@ -1660,7 +1660,7 @@ pub(crate) fn graph_from_verified_plan_documents(
 }
 
 pub(crate) fn validate_plan_documents(
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
     documents: &[JsonValue],
     limits: crate::QueryExecutionResourceLimits,
 ) -> ExecResult<()> {
@@ -1730,10 +1730,10 @@ pub(crate) fn insert_plan_documents(
     graph: &mut GraphBuilder,
     authority: &HydrationAuthority<'_>,
     binding: u16,
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
     documents: &[JsonValue],
 ) -> ExecResult<Vec<String>> {
-    use type_bridge_contract::query_plan::v3::Stage;
+    use type_bridge_contract::query_plan::Stage;
     let document = plan
         .pipeline()
         .iter()

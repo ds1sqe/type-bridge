@@ -45,13 +45,13 @@ pub fn hand_built_purchase(
     order: &str,
     item_id: &str,
     account_id: &str,
-) -> type_bridge_contract::query_plan::v3::QueryPlanV3 {
+) -> type_bridge_contract::query_plan::QueryPlan {
     use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
     use type_bridge_contract::migration_assertion::{
         AssertionBinding, BindingId, QueryVariable, ValueComparator,
     };
-    use type_bridge_contract::query_plan::v3::{
-        ArithOp, Expr, InsertThing, Operation, Pattern, PlanSpec, QueryPlanV3, Set, Stage,
+    use type_bridge_contract::query_plan::{
+        ArithOp, Expr, InsertThing, Operation, Pattern, PlanSpec, QueryPlan, Set, Stage,
         WriteReturns,
     };
     use type_bridge_contract::query_plan::{
@@ -197,7 +197,7 @@ pub fn hand_built_purchase(
         managed_semantics: semantics,
         functions: vec![],
     };
-    QueryPlanV3::new(spec, declared).unwrap()
+    QueryPlan::new(spec, declared).unwrap()
 }
 
 /// Read-back golden shared by the four SDK builder tests.
@@ -205,11 +205,11 @@ pub fn read_back(
     declared: &type_bridge_contract::schema::DeclaredSchema,
     semantics: type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint,
     item_required: bool,
-) -> type_bridge_contract::query_plan::v3::QueryPlanV3 {
+) -> type_bridge_contract::query_plan::QueryPlan {
     use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
     use type_bridge_contract::migration_assertion::ValueComparator;
     use type_bridge_contract::query_plan::QueryOperand;
-    use type_bridge_contract::query_plan::v3::{DocumentRole, PlanBuilder};
+    use type_bridge_contract::query_plan::{DocumentRole, PlanBuilder};
     use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
     let mut plan = PlanBuilder::new();
     let purchase = plan.exact(TypeId::new(TypeKind::Relation, "purchase").unwrap());
@@ -240,11 +240,11 @@ pub fn authored_purchase(
     order: &str,
     item_id: &str,
     account_id: &str,
-) -> type_bridge_contract::query_plan::v3::QueryPlanV3 {
+) -> type_bridge_contract::query_plan::QueryPlan {
     use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
     use type_bridge_contract::migration_assertion::ValueComparator;
     use type_bridge_contract::query_plan::QueryOperand;
-    use type_bridge_contract::query_plan::v3::{ArithOp, Expr, PlanBuilder};
+    use type_bridge_contract::query_plan::{ArithOp, Expr, PlanBuilder};
     use type_bridge_contract::schema::OwnsFactId;
     use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
     let entity = |label| TypeId::new(TypeKind::Entity, label).unwrap();

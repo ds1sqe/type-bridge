@@ -86,7 +86,7 @@ impl EagerTransaction {
     /// plans on Write or Schema transactions, without changing ownership.
     pub async fn execute_plans(
         &mut self,
-        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        plans: &[type_bridge_contract::query_plan::QueryPlan],
         policy: &crate::QueryExecutionResourceLimits,
         cancellation: &super::backend::AnswerCancellation,
         deadline: crate::QueryExecutionDeadline,
@@ -94,7 +94,7 @@ impl EagerTransaction {
         self.check_plan_latch()?;
         let writes = plans
             .iter()
-            .any(type_bridge_contract::query_plan::v3::QueryPlanV3::writes);
+            .any(type_bridge_contract::query_plan::QueryPlan::writes);
         if writes && self.tx_type == TxType::Read {
             return Err(crate::match_request::MatchError::new(
                 crate::match_request::MatchErrorCategory::InvalidPlan,

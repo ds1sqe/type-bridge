@@ -18,7 +18,7 @@ use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-use type_bridge_contract::query_plan::v3::{Operation, PlanSpec, QueryPlanV3, Stage};
+use type_bridge_contract::query_plan::{Operation, PlanSpec, QueryPlan, Stage};
 use type_bridge_contract::query_plan::{OrderDirection, OrderTerm, QueryOutput, QueryPattern};
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
@@ -178,14 +178,14 @@ fn declared_bytes_with_nickname(include_nickname: bool) -> Vec<u8> {
     encode_declared_schema(&declared).unwrap()
 }
 
-fn person_name_plan(authority: &QueryAuthority) -> QueryPlanV3 {
+fn person_name_plan(authority: &QueryAuthority) -> QueryPlan {
     let binding = |id: u16, variable: &str| {
         AssertionBinding::new(
             BindingId::new(id).unwrap(),
             QueryVariable::new(variable).unwrap(),
         )
     };
-    QueryPlanV3::new(
+    QueryPlan::new(
         PlanSpec {
             bindings: vec![binding(0, "person"), binding(1, "name")],
             inputs: vec![],
@@ -233,7 +233,7 @@ fn person_name_plan(authority: &QueryAuthority) -> QueryPlanV3 {
 
 async fn execute_plan(
     database: &Database,
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut transaction = database.transaction(TransactionOptions::default());
     let answer = transaction.stage_plan(plan)?;

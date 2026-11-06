@@ -219,7 +219,7 @@
       "symbol": "impl ClaimedRemoteModelReply"
     },
     "remote_structured_failure": {
-      "path": "type-bridge-core/crates/contract/src/query_remote_v3_failure.rs",
+      "path": "type-bridge-core/crates/contract/src/query_remote_failure.rs",
       "symbol": "pub struct StagedFailureV3"
     },
     "canonical_value": {

@@ -10,7 +10,7 @@ from .write_result import WriteResult as WriteResult
 # Leading underscores exclude them from wildcard exports.
 _ArchivedTypeSchema = type_bridge_core._ArchivedTypeSchema
 _QueryDescriptorRegistry = type_bridge_core._QueryDescriptorRegistry
-_query_plan_v3_round_trip = type_bridge_core._query_plan_v3_round_trip
+_query_plan_round_trip = type_bridge_core._query_plan_round_trip
 _archived_classify_schema_diff = type_bridge_core._archived_classify_schema_diff
 _archived_compute_schema_diff = type_bridge_core._archived_compute_schema_diff
 _archived_generate_define_block = type_bridge_core._archived_generate_define_block

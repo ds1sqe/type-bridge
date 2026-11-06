@@ -45,14 +45,12 @@ pub mod projection;
 pub mod projection_wire;
 pub mod query_model_evidence;
 pub mod query_model_limits;
-/// Versioned schema identities, facts, provenance, and fingerprints.
-/// Reusable typed query plans and the first public V2 read vocabulary.
+/// Canonical typed read/write plans and their shared vocabulary.
 pub mod query_plan;
+/// Staged transaction envelopes and authenticated replies.
 pub mod query_remote;
 /// Bounded structured diagnostics shared by remote plan transports.
 pub mod query_remote_diagnostic;
-/// Additive staged transaction envelopes and authenticated replies.
-pub mod query_remote_v3;
 pub mod reserved;
 
 mod query_plan_wire;

@@ -72,8 +72,8 @@ impl DirectConnectionPolicy {
         mut self,
         limits: type_bridge_contract::limits::QueryLimits,
     ) -> Result<Self, type_bridge_contract::limits::QueryLimitsError> {
-        let limits = limits.validate_v3()?;
-        self.query_limits = (limits != type_bridge_contract::limits::QueryLimits::V3)
+        let limits = limits.validate_plan()?;
+        self.query_limits = (limits != type_bridge_contract::limits::QueryLimits::PLAN)
             .then(|| std::sync::Arc::new(limits));
         Ok(self)
     }
@@ -353,15 +353,15 @@ mod tests {
         use type_bridge_contract::limits::QueryLimits;
         let policy = DirectConnectionPolicy::new("unused", "unused", "unused", "unused");
         assert!(policy.query_limits.is_none());
-        let mut limits = QueryLimits::V3;
+        let mut limits = QueryLimits::PLAN;
         limits.structural.bindings = 1024;
         let policy = policy.query_limits(limits).unwrap();
         assert_eq!(policy.query_limits.as_deref(), Some(&limits));
         assert_eq!(
             limits.structural.boolean_terms,
-            QueryLimits::V3.structural.boolean_terms
+            QueryLimits::PLAN.structural.boolean_terms
         );
-        let policy = policy.query_limits(QueryLimits::V3).unwrap();
+        let policy = policy.query_limits(QueryLimits::PLAN).unwrap();
         assert!(policy.query_limits.is_none());
         limits.structural.bindings = type_bridge_contract::limits::MAX_SUPPORTED_BINDINGS + 1;
         assert!(policy.query_limits(limits).is_err());

@@ -10,9 +10,9 @@ use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
-use type_bridge_contract::query_plan::v3::{
+use type_bridge_contract::query_plan::{
     ArithOp, AttachItem, DeleteItem, DocumentRole, Expr, InsertThing, Operation, Pattern,
-    PlanBuilder, PlanSpec, QueryPlanV3, Set, Site, Stage, ThingDocument, WriteReturns,
+    PlanBuilder, PlanSpec, QueryPlan, Set, Site, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
@@ -336,23 +336,23 @@ fn purchase_spec() -> PlanSpec {
 }
 
 /// The purchase as a reusable template without bound rows.
-pub fn purchase_template() -> QueryPlanV3 {
-    QueryPlanV3::new(purchase_spec(), &schema()).unwrap()
+pub fn purchase_template() -> QueryPlan {
+    QueryPlan::new(purchase_spec(), &schema()).unwrap()
 }
 
 /// The purchase bound to one order, item and buyer.
-pub fn purchase(order: &str, item: &str, account: &str) -> QueryPlanV3 {
+pub fn purchase(order: &str, item: &str, account: &str) -> QueryPlan {
     let mut plan = purchase_spec();
     plan.given_rows = Some(vec![InputRow::new(vec![
         Some(text(order)),
         Some(text(item)),
         Some(text(account)),
     ])]);
-    QueryPlanV3::new(plan, &schema()).unwrap()
+    QueryPlan::new(plan, &schema()).unwrap()
 }
 
 /// The same purchase with caller values bound by the shared core builder.
-pub fn implicit_purchase(order_id: &str, item_id: &str, account_id: &str) -> QueryPlanV3 {
+pub fn implicit_purchase(order_id: &str, item_id: &str, account_id: &str) -> QueryPlan {
     let mut p = PlanBuilder::new();
     let item = p.exact(entity("item"));
     let account = p.exact(entity("account"));
@@ -424,13 +424,13 @@ fn touch_spec(output: Vec<u16>, operation: Operation) -> PlanSpec {
 }
 
 /// Rewrite every doctor's on-call value with itself.
-pub fn touch() -> QueryPlanV3 {
-    QueryPlanV3::new(touch_spec(vec![], MATCHED), &schema()).unwrap()
+pub fn touch() -> QueryPlan {
+    QueryPlan::new(touch_spec(vec![], MATCHED), &schema()).unwrap()
 }
 
 /// The touch, returning the touched doctors from the same pipeline.
-pub fn touch_rows() -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn touch_rows() -> QueryPlan {
+    QueryPlan::new(
         touch_spec(
             vec![0],
             Operation::Write {
@@ -443,8 +443,8 @@ pub fn touch_rows() -> QueryPlanV3 {
 }
 
 /// Add an on-call value to every doctor without replacing one.
-pub fn attach_on_call() -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn attach_on_call() -> QueryPlan {
+    QueryPlan::new(
         spec(
             &["doctor"],
             vec![
@@ -471,8 +471,8 @@ pub fn attach_on_call() -> QueryPlanV3 {
 }
 
 /// Remove every buyer of every purchase.
-pub fn drop_buyers() -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn drop_buyers() -> QueryPlan {
+    QueryPlan::new(
         spec(
             &["purchase"],
             vec![
@@ -495,7 +495,7 @@ pub fn drop_buyers() -> QueryPlanV3 {
 }
 
 /// The touch, answering each touched doctor's hydration document.
-pub fn touch_fetch() -> QueryPlanV3 {
+pub fn touch_fetch() -> QueryPlan {
     let mut plan = touch_spec(
         vec![],
         Operation::Write {
@@ -504,12 +504,12 @@ pub fn touch_fetch() -> QueryPlanV3 {
     );
     plan.pipeline
         .push(Stage::Fetch(ThingDocument::new(id(0), vec![])));
-    QueryPlanV3::new(plan, &schema()).unwrap()
+    QueryPlan::new(plan, &schema()).unwrap()
 }
 
 /// Every purchase with its buyer (required) and item (optional) documents.
-pub fn purchase_fetch() -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn purchase_fetch() -> QueryPlan {
+    QueryPlan::new(
         spec(
             &["purchase"],
             vec![
@@ -548,8 +548,8 @@ fetch {
 };"#;
 
 /// Delete the price of item `I1`.
-pub fn drop_price() -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn drop_price() -> QueryPlan {
+    QueryPlan::new(
         spec(
             &["item", "item_key"],
             vec![
@@ -580,8 +580,8 @@ pub fn drop_price() -> QueryPlanV3 {
 }
 
 /// Read item stock with one read operation.
-pub fn stock_read(operation: Operation) -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn stock_read(operation: Operation) -> QueryPlan {
+    QueryPlan::new(
         spec(
             &["item", "stock"],
             vec![Stage::Match {
@@ -600,8 +600,8 @@ pub fn stock_read(operation: Operation) -> QueryPlanV3 {
 }
 
 /// Insert a doctor and fetch its document in the same provider statement.
-pub fn insert_doctor_fetch(name: &str) -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn insert_doctor_fetch(name: &str) -> QueryPlan {
+    QueryPlan::new(
         spec(
             &["doctor"],
             vec![
@@ -641,16 +641,16 @@ pub fn insert_doctor_fetch(name: &str) -> QueryPlanV3 {
 }
 
 /// Capture all doctors before deleting them in the same write transaction.
-pub fn delete_doctors_returning() -> QueryPlanV3 {
+pub fn delete_doctors_returning() -> QueryPlan {
     delete_doctors_plan(true)
 }
 
 /// The unchanged plain-delete counterpart used by the cost comparison.
-pub fn delete_doctors() -> QueryPlanV3 {
+pub fn delete_doctors() -> QueryPlan {
     delete_doctors_plan(false)
 }
 
-fn delete_doctors_plan(returning: bool) -> QueryPlanV3 {
+fn delete_doctors_plan(returning: bool) -> QueryPlan {
     let mut pipeline = vec![Stage::Match {
         patterns: vec![isa(0, entity("doctor"))],
     }];
@@ -660,7 +660,7 @@ fn delete_doctors_plan(returning: bool) -> QueryPlanV3 {
     pipeline.push(Stage::Delete {
         items: vec![DeleteItem::Thing { binding: id(0) }],
     });
-    QueryPlanV3::new(
+    QueryPlan::new(
         spec(
             &["doctor"],
             pipeline,
@@ -679,8 +679,8 @@ fn delete_doctors_plan(returning: bool) -> QueryPlanV3 {
 }
 
 /// Delete purchases, retaining both role slots and optionally requiring a buyer.
-pub fn delete_purchases_returning(require_buyer: bool) -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn delete_purchases_returning(require_buyer: bool) -> QueryPlan {
+    QueryPlan::new(
         spec(
             &["purchase"],
             vec![
@@ -709,7 +709,7 @@ pub fn delete_purchases_returning(require_buyer: bool) -> QueryPlanV3 {
 }
 
 /// Capture and delete only doctors selected by supplied given-row names.
-pub fn delete_named_doctors_returning(names: &[&str]) -> QueryPlanV3 {
+pub fn delete_named_doctors_returning(names: &[&str]) -> QueryPlan {
     let mut plan = spec(
         &["doctor", "name"],
         vec![
@@ -742,7 +742,7 @@ pub fn delete_named_doctors_returning(names: &[&str]) -> QueryPlanV3 {
             .map(|name| InputRow::new(vec![Some(text(name))]))
             .collect(),
     );
-    QueryPlanV3::new(plan, &schema()).unwrap()
+    QueryPlan::new(plan, &schema()).unwrap()
 }
 
 /// Extend only the deletion parity fixture, preserving the existing race schema.
@@ -775,8 +775,8 @@ pub fn deletion_subtype_schema() -> DeclaredSchema {
 }
 
 /// Capture concrete doctor subtypes selected by a shared attribute filter.
-pub fn delete_doctor_subtypes_returning() -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn delete_doctor_subtypes_returning() -> QueryPlan {
+    QueryPlan::new(
         spec(
             &["doctor", "on_call"],
             vec![
@@ -814,7 +814,7 @@ pub fn delete_doctor_subtypes_returning() -> QueryPlanV3 {
 }
 
 /// Read doctor documents using a correlated given string comparator.
-pub fn string_read(comparator: ValueComparator, needles: &[&str]) -> QueryPlanV3 {
+pub fn string_read(comparator: ValueComparator, needles: &[&str]) -> QueryPlan {
     string_read_with_limits(
         comparator,
         needles,
@@ -826,7 +826,7 @@ pub fn string_read_with_limits(
     comparator: ValueComparator,
     needles: &[&str],
     limits: type_bridge_contract::limits::QueryLimits,
-) -> QueryPlanV3 {
+) -> QueryPlan {
     let mut plan = spec(
         &["doctor", "name"],
         vec![
@@ -863,12 +863,12 @@ pub fn string_read_with_limits(
             })
             .collect(),
     );
-    QueryPlanV3::new_with_limits(plan, &schema(), limits).unwrap()
+    QueryPlan::new_with_limits(plan, &schema(), limits).unwrap()
 }
 
 /// Count stocked items through a provider reduction rather than loading roots.
-pub fn stock_reduce_count() -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn stock_reduce_count() -> QueryPlan {
+    QueryPlan::new(
         spec(
             &["item", "stock", "total"],
             vec![
@@ -893,8 +893,8 @@ pub fn stock_reduce_count() -> QueryPlanV3 {
 }
 
 /// Read a purchase with both declared role players.
-pub fn purchase_read() -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn purchase_read() -> QueryPlan {
+    QueryPlan::new(
         spec(
             &["purchase"],
             vec![
@@ -918,9 +918,9 @@ pub fn purchase_read() -> QueryPlanV3 {
 }
 
 /// Reintroduce a discarded doctor under the selected name window.
-pub fn rematch_doctor_window() -> QueryPlanV3 {
+pub fn rematch_doctor_window() -> QueryPlan {
     use type_bridge_contract::query_plan::{OrderDirection, OrderTerm};
-    QueryPlanV3::new(
+    QueryPlan::new(
         spec(
             &["doctor", "name", "peer"],
             vec![
@@ -955,7 +955,7 @@ pub fn rematch_doctor_window() -> QueryPlanV3 {
 }
 
 /// Mix a given IID comparison and an ordinary field predicate in one OR.
-pub fn doctor_iid_or_name(iid: &str, name: &str) -> QueryPlanV3 {
+pub fn doctor_iid_or_name(iid: &str, name: &str) -> QueryPlan {
     let mut plan = spec(
         &["doctor", "name", "identity"],
         vec![
@@ -1004,11 +1004,11 @@ pub fn doctor_iid_or_name(iid: &str, name: &str) -> QueryPlanV3 {
         ),
     ];
     plan.given_rows = Some(vec![InputRow::new(vec![Some(text(iid)), Some(text(name))])]);
-    QueryPlanV3::new(plan, &schema()).unwrap()
+    QueryPlan::new(plan, &schema()).unwrap()
 }
 
 /// A given IID scoped by a role-player disjunction, with optional negation.
-pub fn scoped_given_iid(iid: &str, negative: bool, optional: bool) -> QueryPlanV3 {
+pub fn scoped_given_iid(iid: &str, negative: bool, optional: bool) -> QueryPlan {
     use type_bridge_contract::migration_assertion::AssertionRolePlayer;
     let branch = vec![
         QueryPattern::Isa {
@@ -1064,5 +1064,5 @@ pub fn scoped_given_iid(iid: &str, negative: bool, optional: bool) -> QueryPlanV
         false,
     )];
     plan.given_rows = Some(vec![InputRow::new(vec![Some(text(iid))])]);
-    QueryPlanV3::new(plan, &schema()).unwrap()
+    QueryPlan::new(plan, &schema()).unwrap()
 }

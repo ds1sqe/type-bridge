@@ -137,7 +137,7 @@ impl ProjectedCrudExecutor<'_> {
             )
             .await;
         };
-        let entry = type_bridge_contract::query_remote_v3::StagedPlanV3::new(
+        let entry = type_bridge_contract::query_remote::StagedPlan::new(
             single.plan.local(),
             single
                 .plan
@@ -927,7 +927,7 @@ mod tests {
         mutation_columns: std::sync::atomic::AtomicUsize,
         missing_guard_ordinal: std::sync::atomic::AtomicUsize,
         dispatched_writes: std::sync::atomic::AtomicUsize,
-        seen: std::sync::Mutex<Vec<type_bridge_contract::query_remote_v3::StagedRequestV3>>,
+        seen: std::sync::Mutex<Vec<type_bridge_contract::query_remote::StagedRequest>>,
     }
     impl crate::session::staged_proxy::StagedTransport for SingleProxyTransport {
         fn staged_capabilities(
@@ -942,11 +942,11 @@ mod tests {
         ) -> crate::session::backend::BoxFuture<'a, Result<Vec<u8>, crate::QueryTargetError>>
         {
             use type_bridge_contract::query_remote::RemoteValue;
-            use type_bridge_contract::query_remote_v3::{
-                StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+            use type_bridge_contract::query_remote::{
+                StagedAnswer, StagedOutcome, StagedReply, StagedRequest,
             };
             Box::pin(async move {
-                let request = StagedRequestV3::decode_with_limits(
+                let request = StagedRequest::decode_with_limits(
                     bytes,
                     &self.schema,
                     &self.advertisement,
@@ -973,9 +973,9 @@ mod tests {
                     let plan = match entry.bind_results(&answers, &self.schema) {
                         Ok(plan) => plan,
                         Err(error) => {
-                            let reply = StagedReplyV3::new(
+                            let reply = StagedReply::new(
                                 &request,
-                                StagedOutcomeV3::Failed {
+                                StagedOutcome::Failed {
                                     diagnostic:
                                         crate::execution_diagnostic::lower_remote_query_diagnostic(
                                             error,
@@ -1006,9 +1006,9 @@ mod tests {
                         let mut cells = Vec::new();
                         for pair in columns.chunks_exact(2) {
                             let ordinal = plan.pipeline().iter().find_map(|stage| {
-                                let type_bridge_contract::query_plan::v3::Stage::Match { patterns } = stage else { return None; };
+                                let type_bridge_contract::query_plan::Stage::Match { patterns } = stage else { return None; };
                                 patterns.iter().find_map(|pattern| match pattern {
-                                    type_bridge_contract::query_plan::v3::Pattern::Let { binding, expr: type_bridge_contract::query_plan::v3::Expr::Operand(type_bridge_contract::query_plan::QueryOperand::Literal { value: CanonicalValue::Long(ordinal) }) } if *binding == pair[0] => Some(*ordinal),
+                                    type_bridge_contract::query_plan::Pattern::Let { binding, expr: type_bridge_contract::query_plan::Expr::Operand(type_bridge_contract::query_plan::QueryOperand::Literal { value: CanonicalValue::Long(ordinal) }) } if *binding == pair[0] => Some(*ordinal),
                                     _ => None,
                                 })
                             }).unwrap();
@@ -1040,14 +1040,12 @@ mod tests {
                                 },
                             );
                         }
-                        answers.push(StagedAnswerV3::Rows { rows: vec![cells] });
+                        answers.push(StagedAnswer::Rows { rows: vec![cells] });
                         continue;
                     }
                     let answer = if let Some(fetch) =
                         plan.pipeline().iter().find_map(|stage| match stage {
-                            type_bridge_contract::query_plan::v3::Stage::Fetch(fetch) => {
-                                Some(fetch)
-                            }
+                            type_bridge_contract::query_plan::Stage::Fetch(fetch) => Some(fetch),
                             _ => None,
                         }) {
                         let mut documents = Vec::new();
@@ -1085,14 +1083,14 @@ mod tests {
                                 crate::query_plan_exec::remote_document(&document, &plan).unwrap(),
                             );
                         }
-                        StagedAnswerV3::Documents { documents }
+                        StagedAnswer::Documents { documents }
                     } else if matches!(
                         plan.operation(),
-                        type_bridge_contract::query_plan::v3::Operation::Write {
-                            returns: type_bridge_contract::query_plan::v3::WriteReturns::Matched,
+                        type_bridge_contract::query_plan::Operation::Write {
+                            returns: type_bridge_contract::query_plan::WriteReturns::Matched,
                         }
                     ) {
-                        StagedAnswerV3::Matched {
+                        StagedAnswer::Matched {
                             value: self.roots as u64,
                         }
                     } else {
@@ -1106,7 +1104,7 @@ mod tests {
                             self.mutation_columns
                                 .load(std::sync::atomic::Ordering::Relaxed)
                         );
-                        StagedAnswerV3::Rows {
+                        StagedAnswer::Rows {
                             rows: ["0x20", "0x22", "0x24"]
                                 .iter()
                                 .take(self.roots)
@@ -1131,7 +1129,7 @@ mod tests {
                     };
                     answers.push(answer);
                 }
-                let reply = StagedReplyV3::new(&request, StagedOutcomeV3::Committed, answers)
+                let reply = StagedReply::new(&request, StagedOutcome::Committed, answers)
                     .unwrap()
                     .encode_signed(&request, &self.advertisement, &self.signer)
                     .unwrap();
@@ -1153,7 +1151,7 @@ mod tests {
             model,
             roots,
             tags,
-            type_bridge_contract::limits::QueryLimits::V3,
+            type_bridge_contract::limits::QueryLimits::PLAN,
         )
     }
 
@@ -1209,12 +1207,12 @@ mod tests {
         )
         .unwrap();
         let signer = crate::remote_signing::RemoteReplySigningKey::from_secret_bytes([0x52; 32]);
-        let mut caps = type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        let mut caps = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
         for name in [
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_WRITE_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_WRITE,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+            type_bridge_contract::query_remote::CAP_QUERY_STAGE_RESULT_REF,
         ] {
             caps.insert(type_bridge_contract::capability::CapabilityId::new(name).unwrap());
         }
@@ -1429,7 +1427,7 @@ mod tests {
             let role = RoleId::new("wide-edge", "member").unwrap();
             let key =
                 OwnsFactId::new(model.clone(), AttributeId::new("item-key").unwrap()).unwrap();
-            let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+            let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
             limits.structural.selected_slots = 4;
             let (installed, proxy, transport) =
                 single_proxy_fixture_with_limits(model.clone(), 1, 300, limits);
@@ -2091,7 +2089,7 @@ mod tests {
                         model.clone(),
                         1,
                         1,
-                        type_bridge_contract::limits::QueryLimits::V3,
+                        type_bridge_contract::limits::QueryLimits::PLAN,
                         wide_single_projection_for_target(false, target),
                     );
                     let original = if subtypes {
@@ -2182,7 +2180,7 @@ mod tests {
                         model.clone(),
                         1,
                         tags,
-                        type_bridge_contract::limits::QueryLimits::V3,
+                        type_bridge_contract::limits::QueryLimits::PLAN,
                         wide_single_projection_for_target(false, target),
                     );
                     let input = proxy_single_input(&installed, &model, tags);
@@ -2274,7 +2272,7 @@ mod tests {
                             model.clone(),
                             roots,
                             0,
-                            type_bridge_contract::limits::QueryLimits::V3,
+                            type_bridge_contract::limits::QueryLimits::PLAN,
                             wide_single_projection_for_target(true, target),
                         );
                         transport
@@ -2593,7 +2591,7 @@ mod tests {
 
     #[tokio::test]
     async fn single_proxy_write_negotiates_query_limits_before_selecting_pieces() {
-        let mut raised = type_bridge_contract::limits::QueryLimits::V3;
+        let mut raised = type_bridge_contract::limits::QueryLimits::PLAN;
         raised.structural.bindings = 1024;
         raised.structural.boolean_terms = 512;
         for client_raised in [false, true] {
@@ -2606,14 +2604,14 @@ mod tests {
                     if server_raised {
                         raised
                     } else {
-                        type_bridge_contract::limits::QueryLimits::V3
+                        type_bridge_contract::limits::QueryLimits::PLAN
                     },
                 );
                 let proxy = proxy
                     .with_query_limits(if client_raised {
                         raised
                     } else {
-                        type_bridge_contract::limits::QueryLimits::V3
+                        type_bridge_contract::limits::QueryLimits::PLAN
                     })
                     .unwrap();
                 let input = proxy_single_input(&installed, &model, 300);
@@ -2648,7 +2646,7 @@ mod tests {
                     if client_raised && server_raised {
                         raised
                     } else {
-                        type_bridge_contract::limits::QueryLimits::V3
+                        type_bridge_contract::limits::QueryLimits::PLAN
                     }
                 );
             }
@@ -2804,7 +2802,7 @@ mod tests {
                 .unwrap();
             assert_eq!(prepared.is_none(), cut, "count={count} bytes={bytes}");
             if count == 300 {
-                let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+                let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
                 limits.structural.bindings = 1024;
                 limits.structural.boolean_terms = 512;
                 let limits = Arc::new(limits);

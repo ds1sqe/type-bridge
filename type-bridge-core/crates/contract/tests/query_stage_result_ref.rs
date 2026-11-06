@@ -1,30 +1,30 @@
-#[path = "support/plan_v3.rs"]
+#[path = "support/plan.rs"]
 #[allow(dead_code)]
 mod support;
 use support::*;
 use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::migration_assertion::QueryVariable;
-use type_bridge_contract::query_plan::v3::{Expr, Pattern, QueryPlanV3, Stage};
+use type_bridge_contract::query_plan::{Expr, Pattern, QueryPlan, Stage};
 use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, QueryOperand};
+use type_bridge_contract::query_remote::*;
 use type_bridge_contract::query_remote::{
     RemoteCapabilities, RemoteExecutorBinding, RemoteSigningPublicKey, RemoteValue,
 };
-use type_bridge_contract::query_remote_v3::*;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
-fn source() -> StagedPlanV3 {
-    let plan = QueryPlanV3::new(spec(vec![matched()], vec![0]), &schema()).unwrap();
-    StagedPlanV3::new(&plan, vec![], &schema()).unwrap()
+fn source() -> StagedPlan {
+    let plan = QueryPlan::new(spec(vec![matched()], vec![0]), &schema()).unwrap();
+    StagedPlan::new(&plan, vec![], &schema()).unwrap()
 }
-fn reference(input: u16, source_plan: u32) -> StagedResultRefV3 {
-    StagedResultRefV3 {
+fn reference(input: u16, source_plan: u32) -> StagedResultRef {
+    StagedResultRef {
         input: InputColumnId::new(input),
         source_plan,
         source_column: 0,
         expected_types: vec![entity("account")],
     }
 }
-fn target(rows: usize, optional: bool, refs: Vec<StagedResultRefV3>) -> StagedPlanV3 {
+fn target(rows: usize, optional: bool, refs: Vec<StagedResultRef>) -> StagedPlan {
     let width = refs
         .iter()
         .map(|r| usize::from(r.input.get()) + 1)
@@ -55,8 +55,8 @@ fn target(rows: usize, optional: bool, refs: Vec<StagedResultRefV3>) -> StagedPl
             )
         })
         .collect();
-    let plan = QueryPlanV3::new(plan, &schema()).unwrap();
-    StagedPlanV3::new_with_result_refs(
+    let plan = QueryPlan::new(plan, &schema()).unwrap();
+    StagedPlan::new_with_result_refs(
         &plan,
         vec![InputRow::new(vec![None; width]); rows],
         refs,
@@ -64,8 +64,8 @@ fn target(rows: usize, optional: bool, refs: Vec<StagedResultRefV3>) -> StagedPl
     )
     .unwrap()
 }
-fn answer(ids: &[&str]) -> StagedAnswerV3 {
-    StagedAnswerV3::Rows {
+fn answer(ids: &[&str]) -> StagedAnswer {
+    StagedAnswer::Rows {
         rows: ids
             .iter()
             .map(|iid| {
@@ -86,7 +86,7 @@ fn iid(value: &str) -> Option<CanonicalValue> {
 #[test]
 fn iid_refs_broadcast_zip_and_allow_absence_only_for_optional_inputs() {
     let target = target(3, false, vec![reference(0, 0), reference(1, 0)]);
-    validate_staged_result_refs_v3(&[source(), target.clone()], &schema()).unwrap();
+    validate_staged_result_refs(&[source(), target.clone()], &schema()).unwrap();
     let bound = target
         .bind_results(&[answer(&["0x10"])], &schema())
         .unwrap();
@@ -135,7 +135,7 @@ fn iid_refs_broadcast_zip_and_allow_absence_only_for_optional_inputs() {
 #[test]
 fn one_fixed_template_inherits_all_rows_of_one_iid_source() {
     let template = target(1, false, vec![reference(0, 0), reference(1, 0)]);
-    validate_staged_result_refs_v3(&[source(), template.clone()], &schema()).unwrap();
+    validate_staged_result_refs(&[source(), template.clone()], &schema()).unwrap();
     let bound = template
         .bind_results(&[answer(&["0x30", "0x10"])], &schema())
         .unwrap();
@@ -143,7 +143,7 @@ fn one_fixed_template_inherits_all_rows_of_one_iid_source() {
         bound.given_rows().unwrap(),
         ["0x30", "0x10"].map(|v| InputRow::new(vec![iid(v), iid(v)]))
     );
-    let fixed = StagedPlanV3::new_with_result_refs(
+    let fixed = StagedPlan::new_with_result_refs(
         template.plan(),
         vec![InputRow::new(vec![None, iid("0x40")])],
         vec![reference(0, 0)],
@@ -175,7 +175,7 @@ fn one_fixed_template_inherits_all_rows_of_one_iid_source() {
 fn iid_ref_graph_refuses_forward_scalar_and_incompatible_columns() {
     let forward = target(1, false, vec![reference(0, 1)]);
     assert_eq!(
-        validate_staged_result_refs_v3(&[source(), forward], &schema())
+        validate_staged_result_refs(&[source(), forward], &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -184,7 +184,7 @@ fn iid_ref_graph_refuses_forward_scalar_and_incompatible_columns() {
     let mut outside = reference(0, 0);
     outside.source_column = 99;
     assert_eq!(
-        validate_staged_result_refs_v3(&[source(), target(1, false, vec![outside])], &schema())
+        validate_staged_result_refs(&[source(), target(1, false, vec![outside])], &schema())
             .unwrap_err()
             .code()
             .as_str(),
@@ -193,31 +193,28 @@ fn iid_ref_graph_refuses_forward_scalar_and_incompatible_columns() {
     let count = source()
         .plan()
         .with_operation(
-            type_bridge_contract::query_plan::v3::Operation::Count,
+            type_bridge_contract::query_plan::Operation::Count,
             &schema(),
         )
         .unwrap();
-    let count = StagedPlanV3::new(&count, vec![], &schema()).unwrap();
+    let count = StagedPlan::new(&count, vec![], &schema()).unwrap();
     assert_eq!(
-        validate_staged_result_refs_v3(
-            &[count, target(1, false, vec![reference(0, 0)])],
-            &schema()
-        )
-        .unwrap_err()
-        .code()
-        .as_str(),
+        validate_staged_result_refs(&[count, target(1, false, vec![reference(0, 0)])], &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
         "query_stage_result_ref_column"
     );
     let mut wrong_type = reference(0, 0);
     wrong_type.expected_types = vec![entity("item")];
     assert_eq!(
-        validate_staged_result_refs_v3(&[source(), target(1, false, vec![wrong_type])], &schema())
+        validate_staged_result_refs(&[source(), target(1, false, vec![wrong_type])], &schema())
             .unwrap_err()
             .code()
             .as_str(),
         "query_stage_result_ref_type"
     );
-    let scalar = QueryPlanV3::new(
+    let scalar = QueryPlan::new(
         spec(
             vec![Stage::Match {
                 patterns: vec![Pattern::Let {
@@ -230,9 +227,9 @@ fn iid_ref_graph_refuses_forward_scalar_and_incompatible_columns() {
         &schema(),
     )
     .unwrap();
-    let scalar = StagedPlanV3::new(&scalar, vec![], &schema()).unwrap();
+    let scalar = StagedPlan::new(&scalar, vec![], &schema()).unwrap();
     assert_eq!(
-        validate_staged_result_refs_v3(
+        validate_staged_result_refs(
             &[scalar, target(1, false, vec![reference(0, 0)])],
             &schema()
         )
@@ -247,7 +244,7 @@ fn iid_ref_graph_refuses_forward_scalar_and_incompatible_columns() {
 fn iid_ref_templates_refuse_different_sources_and_authored_cells() {
     let template = target(1, false, vec![reference(0, 0), reference(1, 0)]);
     assert_eq!(
-        StagedPlanV3::new_with_result_refs(
+        StagedPlan::new_with_result_refs(
             template.plan(),
             template.rows().to_vec(),
             vec![reference(0, 0), reference(1, 1)],
@@ -259,7 +256,7 @@ fn iid_ref_templates_refuse_different_sources_and_authored_cells() {
         "query_stage_result_ref_sources"
     );
     assert_eq!(
-        StagedPlanV3::new_with_result_refs(
+        StagedPlan::new_with_result_refs(
             template.plan(),
             vec![InputRow::new(vec![iid("0x10"), None])],
             template.result_refs().to_vec(),
@@ -281,7 +278,7 @@ fn result_refs_survive_canonical_request_bytes_without_runtime_iids() {
             caps.insert(cap.clone());
         }
     }
-    for cap in [CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_STAGE_RESULT_REF] {
+    for cap in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_STAGE_RESULT_REF] {
         caps.insert(CapabilityId::new(cap).unwrap());
     }
     let ad = RemoteCapabilities::new(
@@ -289,13 +286,13 @@ fn result_refs_survive_canonical_request_bytes_without_runtime_iids() {
         RemoteExecutorBinding::new("result-ref-executor", "result-ref-epoch").unwrap(),
         RemoteSigningPublicKey::from_bytes([7; 32]),
     )
-    .with_query_limits(type_bridge_contract::limits::QueryLimits::V3)
+    .with_query_limits(type_bridge_contract::limits::QueryLimits::PLAN)
     .unwrap();
-    let request = StagedRequestV3::new(
-        StagedRequestSpecV3 {
+    let request = StagedRequest::new(
+        StagedRequestSpec {
             nonce: "result-ref-nonce-00001".into(),
             kind: None,
-            limits: StagedLimitsV3::default(),
+            limits: StagedLimits::default(),
             plans,
             prepared_at_unix_ms: 1_000_000,
         },
@@ -314,11 +311,11 @@ fn result_refs_survive_canonical_request_bytes_without_runtime_iids() {
             .with_query_limits(ad.query_limits())
             .unwrap();
     assert_eq!(
-        StagedRequestV3::new(
-            StagedRequestSpecV3 {
+        StagedRequest::new(
+            StagedRequestSpec {
                 nonce: "result-ref-nonce-00001".into(),
                 kind: None,
-                limits: StagedLimitsV3::default(),
+                limits: StagedLimits::default(),
                 plans: request.plans().to_vec(),
                 prepared_at_unix_ms: 1_000_000,
             },
@@ -331,8 +328,7 @@ fn result_refs_survive_canonical_request_bytes_without_runtime_iids() {
         "unsupported_required_capability"
     );
     let bytes = request.encode().unwrap();
-    let root =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/query-remote-v3");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/query-remote");
     for (name, fixture) in [
         ("advertisement-result-ref.json", ad.encode().unwrap()),
         ("request-result-ref.json", bytes.clone()),
@@ -343,7 +339,7 @@ fn result_refs_survive_canonical_request_bytes_without_runtime_iids() {
         }
         assert_eq!(std::fs::read(path).unwrap(), fixture);
     }
-    let decoded = StagedRequestV3::decode(&bytes, &schema(), &ad).unwrap();
+    let decoded = StagedRequest::decode(&bytes, &schema(), &ad).unwrap();
     assert_eq!(decoded.encode().unwrap(), bytes);
     assert_eq!(decoded.plans()[1].result_refs(), &[reference(0, 0)]);
     assert!(decoded.plans()[1].plan().given_rows().is_none());
@@ -358,13 +354,13 @@ fn result_refs_survive_canonical_request_bytes_without_runtime_iids() {
 fn runtime_iid_refs_refuse_incompatible_answers_before_binding() {
     let target = target(1, false, vec![reference(0, 0)]);
     for answer in [
-        StagedAnswerV3::Count { value: 1 },
-        StagedAnswerV3::Rows {
+        StagedAnswer::Count { value: 1 },
+        StagedAnswer::Rows {
             rows: vec![vec![RemoteValue::Value {
                 value: CanonicalValue::Long(1),
             }]],
         },
-        StagedAnswerV3::Rows {
+        StagedAnswer::Rows {
             rows: vec![vec![RemoteValue::Thing {
                 iid: "0x10".into(),
                 type_id: entity("item"),
@@ -380,7 +376,7 @@ fn runtime_iid_refs_refuse_incompatible_answers_before_binding() {
             "query_stage_result_ref_answer"
         );
     }
-    let absent = StagedAnswerV3::Rows {
+    let absent = StagedAnswer::Rows {
         rows: vec![vec![RemoteValue::Absent]],
     };
     let failure = target
@@ -410,7 +406,7 @@ fn iid_ref_types_use_the_final_selected_domain_and_accept_subtypes() {
         "child-membership",
     )
     .unwrap();
-    let source = QueryPlanV3::new(
+    let source = QueryPlan::new(
         spec(
             vec![
                 Stage::Match {
@@ -436,7 +432,7 @@ fn iid_ref_types_use_the_final_selected_domain_and_accept_subtypes() {
         &schema,
     )
     .unwrap();
-    let source = StagedPlanV3::new(&source, vec![], &schema).unwrap();
+    let source = StagedPlan::new(&source, vec![], &schema).unwrap();
     let mut target_spec = spec(
         vec![Stage::Match {
             patterns: vec![
@@ -458,23 +454,23 @@ fn iid_ref_types_use_the_final_selected_domain_and_accept_subtypes() {
         ValueTypeTag::String,
         false,
     )];
-    let plan = QueryPlanV3::new(target_spec, &schema).unwrap();
+    let plan = QueryPlan::new(target_spec, &schema).unwrap();
     for expected_type in [child.clone(), relation()] {
-        let reference = StagedResultRefV3 {
+        let reference = StagedResultRef {
             input: InputColumnId::new(0),
             source_plan: 0,
             source_column: 0,
             expected_types: vec![expected_type],
         };
-        let target = StagedPlanV3::new_with_result_refs(
+        let target = StagedPlan::new_with_result_refs(
             &plan,
             vec![InputRow::new(vec![None])],
             vec![reference],
             &schema,
         )
         .unwrap();
-        validate_staged_result_refs_v3(&[source.clone(), target.clone()], &schema).unwrap();
-        let answer = StagedAnswerV3::Rows {
+        validate_staged_result_refs(&[source.clone(), target.clone()], &schema).unwrap();
+        let answer = StagedAnswer::Rows {
             rows: vec![vec![RemoteValue::Thing {
                 iid: "0x10".into(),
                 type_id: child.clone(),
@@ -507,8 +503,8 @@ fn iid_refs_accept_a_canonical_union_of_unrelated_player_types() {
         }],
         vec![0],
     );
-    let source = QueryPlanV3::new(plan.clone(), &schema()).unwrap();
-    let source = StagedPlanV3::new(&source, vec![], &schema()).unwrap();
+    let source = QueryPlan::new(plan.clone(), &schema()).unwrap();
+    let source = StagedPlan::new(&source, vec![], &schema()).unwrap();
     plan.inputs = vec![InputColumn::new(
         InputColumnId::new(0),
         QueryVariable::new("target").unwrap(),
@@ -527,10 +523,10 @@ fn iid_refs_accept_a_canonical_union_of_unrelated_player_types() {
         }
         .into(),
     );
-    let plan = QueryPlanV3::new(plan, &schema()).unwrap();
+    let plan = QueryPlan::new(plan, &schema()).unwrap();
     let mut reference = reference(0, 0);
     reference.expected_types = vec![entity("item"), entity("account"), entity("item")];
-    let target = StagedPlanV3::new_with_result_refs(
+    let target = StagedPlan::new_with_result_refs(
         &plan,
         vec![InputRow::new(vec![None]); 2],
         vec![reference],
@@ -541,8 +537,8 @@ fn iid_refs_accept_a_canonical_union_of_unrelated_player_types() {
         target.result_refs()[0].expected_types,
         [entity("account"), entity("item")]
     );
-    validate_staged_result_refs_v3(&[source, target.clone()], &schema()).unwrap();
-    let rows = StagedAnswerV3::Rows {
+    validate_staged_result_refs(&[source, target.clone()], &schema()).unwrap();
+    let rows = StagedAnswer::Rows {
         rows: vec![
             vec![RemoteValue::Thing {
                 iid: "0x10".into(),
@@ -569,7 +565,7 @@ fn iid_refs_accept_a_canonical_union_of_unrelated_player_types() {
 
 #[test]
 fn shared_builder_authors_the_same_iid_reference_as_the_contract_constructor() {
-    use type_bridge_contract::query_plan::v3::PlanBuilder;
+    use type_bridge_contract::query_plan::PlanBuilder;
     let mut builder = PlanBuilder::new();
     let input = builder.input("target_iid", ValueTypeTag::String, false);
     let root = builder.exact(entity("account"));
@@ -581,14 +577,14 @@ fn shared_builder_authors_the_same_iid_reference_as_the_contract_constructor() {
         .build_staged(&schema(), semantics.clone(), rows.clone(), refs.clone())
         .unwrap();
     let ordinary = builder.build(&schema(), semantics).unwrap();
-    let manual = StagedPlanV3::new_with_result_refs(&ordinary, rows, refs, &schema()).unwrap();
+    let manual = StagedPlan::new_with_result_refs(&ordinary, rows, refs, &schema()).unwrap();
     assert_eq!(
         authored.plan().canonical_bytes().unwrap(),
         manual.plan().canonical_bytes().unwrap()
     );
     assert_eq!(authored.rows(), manual.rows());
     assert_eq!(authored.result_refs(), manual.result_refs());
-    validate_staged_result_refs_v3(&[source(), authored.clone()], &schema()).unwrap();
+    validate_staged_result_refs(&[source(), authored.clone()], &schema()).unwrap();
     let bound = authored
         .bind_results(&[answer(&["0x10"])], &schema())
         .unwrap();

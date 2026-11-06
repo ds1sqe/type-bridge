@@ -7,8 +7,8 @@ use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
-use type_bridge_contract::query_plan::v3::{
-    AttachItem, DeleteItem, InsertThing, Operation, Pattern, PlanSpec, QueryPlanV3, Stage,
+use type_bridge_contract::query_plan::{
+    AttachItem, DeleteItem, InsertThing, Operation, Pattern, PlanSpec, QueryPlan, Stage,
     ThingDocument, WriteReturns,
 };
 use type_bridge_contract::query_plan::{QueryOperand, QueryOutput, QueryPattern};
@@ -67,13 +67,13 @@ fn build(
     bindings: Vec<AssertionBinding>,
     pipeline: Vec<Stage>,
     operation: Operation,
-) -> Result<QueryPlanV3> {
+) -> Result<QueryPlan> {
     let (schema, semantics) = AUTHORITY
         .as_ref()
         .map_err(|message| MigrationError::State {
             message: message.clone(),
         })?;
-    QueryPlanV3::new(
+    QueryPlan::new(
         PlanSpec {
             bindings,
             inputs: vec![],
@@ -131,7 +131,7 @@ fn matches(kind: &str, fixed: &[(&str, &str)]) -> Result<(Vec<AssertionBinding>,
     }
     Ok((bindings, patterns))
 }
-pub(super) fn read(kind: &str, fixed: &[(&str, &str)]) -> Result<QueryPlanV3> {
+pub(super) fn read(kind: &str, fixed: &[(&str, &str)]) -> Result<QueryPlan> {
     let (bindings, patterns) = matches(kind, fixed)?;
     build(
         bindings,
@@ -142,7 +142,7 @@ pub(super) fn read(kind: &str, fixed: &[(&str, &str)]) -> Result<QueryPlanV3> {
         Operation::Rows,
     )
 }
-pub(super) fn delete(kind: &str, fixed: &[(&str, &str)]) -> Result<QueryPlanV3> {
+pub(super) fn delete(kind: &str, fixed: &[(&str, &str)]) -> Result<QueryPlan> {
     let (bindings, patterns) = matches(kind, fixed)?;
     build(
         bindings,
@@ -163,7 +163,7 @@ pub(super) fn write(
     kind: &str,
     fields: Vec<(&str, CanonicalValue)>,
     replace: bool,
-) -> Result<QueryPlanV3> {
+) -> Result<QueryPlan> {
     let type_id = TypeId::new(TypeKind::Entity, kind).map_err(diagnostic)?;
     let key = if kind == APPLIED_ENTITY {
         MIGRATION_ID
@@ -235,7 +235,7 @@ pub(super) fn write(
     )
 }
 
-pub(super) fn run(record: &super::MigrationRunRecord) -> Result<QueryPlanV3> {
+pub(super) fn run(record: &super::MigrationRunRecord) -> Result<QueryPlan> {
     let mut fields = vec![
         (RUN_ID, text(&record.run_id)?),
         (APP_LABEL, text(&record.app_label)?),

@@ -87,7 +87,7 @@ impl MatchProgram {
         step: &WriteStep,
         answer: &PlanAnswer,
     ) -> Result<(), Diagnostic> {
-        let StagedAnswerV3::Rows { rows } = answer.to_staged_v3(step.plan.local())? else {
+        let StagedAnswer::Rows { rows } = answer.to_staged_v3(step.plan.local())? else {
             return Err(identity_error());
         };
         let mut matched = std::collections::BTreeSet::new();
@@ -318,7 +318,7 @@ pub(in crate::plan_builders::bulk_write) fn wide_match(
         let mut document = ThingDocument::new(root, shape.document_roles.clone());
         document
             .scalars
-            .push(type_bridge_contract::query_plan::v3::DocumentScalar {
+            .push(type_bridge_contract::query_plan::DocumentScalar {
                 key: type_bridge_contract::migration_assertion::QueryVariable::new("ordinal")?,
                 binding: ordinal_binding,
             });
@@ -738,7 +738,7 @@ fn predicate_probe(
         let mut document = ThingDocument::new(root, shape.document_roles.clone());
         document
             .scalars
-            .push(type_bridge_contract::query_plan::v3::DocumentScalar {
+            .push(type_bridge_contract::query_plan::DocumentScalar {
                 key: type_bridge_contract::migration_assertion::QueryVariable::new("ordinal")?,
                 binding: output_ordinal,
             });
@@ -831,7 +831,7 @@ fn fixed_probe(
         let mut document = ThingDocument::new(root, shape.document_roles.clone());
         document
             .scalars
-            .push(type_bridge_contract::query_plan::v3::DocumentScalar {
+            .push(type_bridge_contract::query_plan::DocumentScalar {
                 key: type_bridge_contract::migration_assertion::QueryVariable::new("ordinal")?,
                 binding: output_ordinal,
             });

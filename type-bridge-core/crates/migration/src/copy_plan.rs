@@ -4,8 +4,8 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-use type_bridge_contract::query_plan::v3::{
-    AttachItem, DeleteItem, Operation, Pattern, PlanSpec, QueryPlanV3, Stage, WriteReturns,
+use type_bridge_contract::query_plan::{
+    AttachItem, DeleteItem, Operation, Pattern, PlanSpec, QueryPlan, Stage, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     QueryOperand, QueryOutput, QueryPattern, ReduceAssignment, Reducer, TypeMatchMode,
@@ -112,7 +112,7 @@ pub(crate) fn build(
         .into(),
     );
     let build = |pipeline, operation, columns| {
-        QueryPlanV3::new(
+        QueryPlan::new(
             PlanSpec {
                 bindings: bindings.clone(),
                 inputs: vec![],
@@ -193,7 +193,7 @@ pub(crate) fn build(
     ))
 }
 
-pub(crate) fn validate_count(plan: &QueryPlanV3) -> Result<(), Diagnostic> {
+pub(crate) fn validate_count(plan: &QueryPlan) -> Result<(), Diagnostic> {
     if plan.operation() == Operation::Rows
         && matches!(plan.output(), QueryOutput::Rows { columns } if columns.len() == 1
             && plan.scalar_value_type(columns[0]) == Some(ValueTypeTag::Long))

@@ -12,7 +12,7 @@ use crate::query_plan_wire::{
     InputColumnWire, LocalFunctionWire as CommonLocalFunctionWire, QueryBindingWire,
     QueryOperandWire as CommonOperandWire, rebuild_output, rebuild_read_stage,
 };
-use crate::query_plan_wire::{PlanScalarWire, WireScalar, rebuild_pattern_v3};
+use crate::query_plan_wire::{PlanScalarWire, WireScalar, rebuild_pattern};
 type QueryOperandWire = CommonOperandWire<PlanScalarWire>;
 type LocalFunctionWire = CommonLocalFunctionWire<PlanScalarWire>;
 
@@ -22,9 +22,9 @@ use crate::schema::{
 };
 
 /// Exact discriminator of the additive write-plan format.
-pub const QUERY_PLAN_FORMAT_V3: &str = "typebridge.query-plan/v3";
+pub const QUERY_PLAN_FORMAT: &str = "typebridge.query-plan/v3";
 /// Canonicalization version separating V3 fingerprints from frozen V2.
-pub const QUERY_PLAN_CANONICALIZATION_V3: &str = "typebridge.query-plan-c14n/v3";
+pub const QUERY_PLAN_CANONICALIZATION: &str = "typebridge.query-plan-c14n/v3";
 /// Domain for diagnostic plan shapes, excluding transported caller values.
 pub const QUERY_PLAN_SHAPE_FINGERPRINT_DOMAIN: &str = "typebridge.query.plan-shape";
 /// Read-only re-match after a selected window or reduction, retaining visible bindings.
@@ -41,20 +41,20 @@ pub fn supports_negated_given_iid(profile: Option<&str>) -> bool {
 /// String scalar values above the default one-MiB byte ceiling.
 pub const CAP_QUERY_INPUT_WIDE_STRINGS: &str = "query.input.wide-strings";
 
-#[path = "query_plan_v3_document.rs"]
+#[path = "query_plan_document.rs"]
 mod document;
-#[path = "query_plan_v3_expr.rs"]
+#[path = "query_plan_expr.rs"]
 mod expression;
-#[path = "query_plan_v3_seed.rs"]
+#[path = "query_plan_seed.rs"]
 mod seed;
 pub use document::FetchDocumentShape;
 pub use expression::{ArithOp, Builtin, Expr};
 use expression::{ExprWire, operand_type};
 
-#[path = "query_plan_v3_builder.rs"]
+#[path = "query_plan_builder.rs"]
 mod builder;
 pub use builder::{BuildSelection, PlanBuilder, Site};
-#[path = "query_plan_v3_bulk.rs"]
+#[path = "query_plan_bulk.rs"]
 mod bulk;
 use bulk::BulkChunk;
 pub use bulk::{
@@ -154,7 +154,7 @@ pub enum WriteReturns {
 /// endpoint advertises.
 ///
 #[must_use]
-pub fn query_plan_v3_capability_vocabulary() -> CapabilitySet {
+pub fn query_plan_capability_vocabulary() -> CapabilitySet {
     [
         "query.plan",
         "query.pattern.isa",
@@ -576,7 +576,7 @@ impl Stage {
     }
 }
 
-/// Untrusted constructor inputs; QueryPlanV3 validates them against authority.
+/// Untrusted constructor inputs; QueryPlan validates them against authority.
 #[derive(Clone, Debug)]
 pub struct PlanSpec {
     /// Dense ordered binding declarations.
@@ -599,7 +599,7 @@ pub struct PlanSpec {
 
 /// A trusted canonical V3 plan. Decoding always rebuilds through validation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct QueryPlanV3 {
+pub struct QueryPlan {
     bindings: Vec<AssertionBinding>,
     format: String,
     functions: Vec<LocalFunction>,
@@ -627,7 +627,7 @@ pub struct QueryPlanV3 {
     standalone_scalar_entity: bool,
 }
 
-impl QueryPlanV3 {
+impl QueryPlan {
     /// Schema-derived possible types observed for a binding across the pipeline.
     pub fn binding_types(&self, binding: BindingId) -> Option<&BTreeSet<TypeId>> {
         self.binding_types.get(&binding)
@@ -640,7 +640,7 @@ impl QueryPlanV3 {
 
     /// Validate one program against declared schema authority and fixed limits.
     pub fn new(spec: PlanSpec, schema: &DeclaredSchema) -> Result<Self, Diagnostic> {
-        Self::new_with_limits(spec, schema, QueryLimits::V3)
+        Self::new_with_limits(spec, schema, QueryLimits::PLAN)
     }
 
     /// Validate with caller-selected limits, which never enter canonical bytes.
@@ -668,7 +668,7 @@ impl QueryPlanV3 {
                 }
             }
         }
-        limits.validate_v3().map_err(|error| {
+        limits.validate_plan().map_err(|error| {
             let mut diagnostic = failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_invalid_limits",
@@ -898,7 +898,7 @@ impl QueryPlanV3 {
         let plan = Self {
             bindings: spec.bindings,
 
-            format: QUERY_PLAN_FORMAT_V3.into(),
+            format: QUERY_PLAN_FORMAT.into(),
             functions: spec.functions,
             inputs: spec.inputs,
             given_rows: spec.given_rows,
@@ -1074,7 +1074,7 @@ impl QueryPlanV3 {
     pub fn fingerprint(&self) -> Result<QueryPlanFingerprint, Diagnostic> {
         Ok(QueryPlanFingerprint(Fingerprint::compute(
             FingerprintDomain::new(QUERY_PLAN_FINGERPRINT_DOMAIN)?,
-            CanonicalizationVersion::new(QUERY_PLAN_CANONICALIZATION_V3)?,
+            CanonicalizationVersion::new(QUERY_PLAN_CANONICALIZATION)?,
             None,
             &self.canonical_bytes()?,
         )))
@@ -1088,7 +1088,7 @@ impl QueryPlanV3 {
         shape.given_rows = None;
         Ok(Fingerprint::compute(
             FingerprintDomain::new(QUERY_PLAN_SHAPE_FINGERPRINT_DOMAIN)?,
-            CanonicalizationVersion::new(QUERY_PLAN_CANONICALIZATION_V3)?,
+            CanonicalizationVersion::new(QUERY_PLAN_CANONICALIZATION)?,
             None,
             &shape.canonical_bytes()?,
         ))
@@ -2852,7 +2852,7 @@ fn decode_stage(
                             iid: wire.iid,
                         })
                     } else {
-                        Ok(Pattern::Read(rebuild_pattern_v3(value, limits)?))
+                        Ok(Pattern::Read(rebuild_pattern(value, limits)?))
                     }
                 })
                 .collect::<Result<_, Diagnostic>>()?,
@@ -2922,29 +2922,26 @@ fn decode_stage(
 }
 
 /// Decode exact canonical V3 bytes using local schema authority.
-pub fn decode_query_plan_v3(
-    bytes: &[u8],
-    schema: &DeclaredSchema,
-) -> Result<QueryPlanV3, Diagnostic> {
-    decode_query_plan_v3_with_limits(bytes, schema, QueryLimits::V3)
+pub fn decode_query_plan(bytes: &[u8], schema: &DeclaredSchema) -> Result<QueryPlan, Diagnostic> {
+    decode_query_plan_with_limits(bytes, schema, QueryLimits::PLAN)
 }
 
 /// Decode under caller-selected codec and structural ceilings.
-pub fn decode_query_plan_v3_with_limits(
+pub fn decode_query_plan_with_limits(
     bytes: &[u8],
     schema: &DeclaredSchema,
     limits: QueryLimits,
-) -> Result<QueryPlanV3, Diagnostic> {
+) -> Result<QueryPlan, Diagnostic> {
     let wire: PlanWire = from_canonical_json_with_limits(bytes, limits.codec)
         .map_err(|error| limits.annotate(error))?;
-    if wire.format != QUERY_PLAN_FORMAT_V3 {
+    if wire.format != QUERY_PLAN_FORMAT {
         return Err(invalid(
             "query_plan_format_unsupported",
             "V3 decoding requires the exact V3 discriminator",
         ));
     }
     let claims = wire.required_capabilities;
-    let plan = QueryPlanV3::new_with_limits(
+    let plan = QueryPlan::new_with_limits(
         PlanSpec {
             bindings: wire
                 .bindings
@@ -3211,8 +3208,8 @@ fn collect_produced_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<Bin
     }
 }
 
-impl AsRef<[QueryPlanV3]> for QueryPlanV3 {
-    fn as_ref(&self) -> &[QueryPlanV3] {
+impl AsRef<[QueryPlan]> for QueryPlan {
+    fn as_ref(&self) -> &[QueryPlan] {
         std::slice::from_ref(self)
     }
 }

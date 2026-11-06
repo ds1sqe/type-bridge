@@ -16,15 +16,15 @@ use std::sync::Arc;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId};
-use type_bridge_contract::query_plan::v3::{
+use type_bridge_contract::query_plan::{
     ArithOp, AttachItem, BuiltPlans, Builtin, DeleteItem, Expr, InsertThing, Operation, Pattern,
-    QueryPlanV3, Set, Stage, ThingDocument, WriteReturns,
+    QueryPlan, Set, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     DocumentSource, InputColumn, OrderDirection, QueryOperand, QueryOutput, QueryPattern,
 };
+use type_bridge_contract::query_remote::StagedAnswer;
 use type_bridge_contract::query_remote::{RemoteFieldValue, RemoteValue};
-use type_bridge_contract::query_remote_v3::StagedAnswerV3;
 use type_bridge_contract::sdk_diagnostic::FailureContext;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
@@ -65,7 +65,7 @@ impl PlanAnswer {
     /// Direct provider concepts and verified proxy values share this path.
     pub fn scalar_rows(
         &self,
-        plan: &QueryPlanV3,
+        plan: &QueryPlan,
     ) -> Result<Vec<Vec<type_bridge_contract::value::CanonicalValue>>, Diagnostic> {
         let (Self::Rows(rows), QueryOutput::Rows { columns }) = (self, plan.output()) else {
             return Err(staged_answer_shape());
@@ -104,12 +104,12 @@ impl PlanAnswer {
     ///
     /// Rows carry one provider concept per output binding, keyed by the
     /// binding's variable. Fetch scalars use the validated schema domains.
-    pub fn to_staged_v3(&self, plan: &QueryPlanV3) -> Result<StagedAnswerV3, Diagnostic> {
+    pub fn to_staged_v3(&self, plan: &QueryPlan) -> Result<StagedAnswer, Diagnostic> {
         Ok(match self {
-            Self::Count(value) => StagedAnswerV3::Count { value: *value },
-            Self::Exists(value) => StagedAnswerV3::Exists { value: *value },
-            Self::Matched(value) => StagedAnswerV3::Matched { value: *value },
-            Self::Documents(documents) => StagedAnswerV3::Documents {
+            Self::Count(value) => StagedAnswer::Count { value: *value },
+            Self::Exists(value) => StagedAnswer::Exists { value: *value },
+            Self::Matched(value) => StagedAnswer::Matched { value: *value },
+            Self::Documents(documents) => StagedAnswer::Documents {
                 documents: documents
                     .iter()
                     .map(|document| remote_document(document, plan))
@@ -137,7 +137,7 @@ impl PlanAnswer {
                             .collect()
                     })
                     .collect::<Result<_, _>>()?;
-                StagedAnswerV3::Rows { rows }
+                StagedAnswer::Rows { rows }
             }
         })
     }
@@ -145,23 +145,23 @@ impl PlanAnswer {
     /// Resolve one answer of a verified staged V3 reply. Rows become
     /// objects keyed by the projected variable, holding the typed remote
     /// value; fetched documents retain their validated scalar domains.
-    pub fn from_staged_v3(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<Self, Diagnostic> {
+    pub fn from_staged_v3(answer: &StagedAnswer, plan: &QueryPlan) -> Result<Self, Diagnostic> {
         answer.validate_for(plan)?;
         Self::from_verified_staged_v3(answer, plan)
     }
 
     pub(crate) fn from_verified_staged_v3(
-        answer: &StagedAnswerV3,
-        plan: &QueryPlanV3,
+        answer: &StagedAnswer,
+        plan: &QueryPlan,
     ) -> Result<Self, Diagnostic> {
         let fingerprint = plan.shape_fingerprint()?.digest().to_hex();
         let _span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.answer", %fingerprint, transport = "proxy").entered();
-        tracing::debug!(target: "type_bridge.plan", items = match answer { StagedAnswerV3::Rows { rows } => rows.len(), StagedAnswerV3::Documents { documents } => documents.len(), _ => 1 }, wire_bytes = serde_json::to_vec(answer).map_or(0, |bytes| bytes.len()), "type_bridge.plan.answer");
+        tracing::debug!(target: "type_bridge.plan", items = match answer { StagedAnswer::Rows { rows } => rows.len(), StagedAnswer::Documents { documents } => documents.len(), _ => 1 }, wire_bytes = serde_json::to_vec(answer).map_or(0, |bytes| bytes.len()), "type_bridge.plan.answer");
         Ok(match answer {
-            StagedAnswerV3::Count { value } => Self::Count(*value),
-            StagedAnswerV3::Exists { value } => Self::Exists(*value),
-            StagedAnswerV3::Matched { value } => Self::Matched(*value),
-            StagedAnswerV3::Documents { documents } => {
+            StagedAnswer::Count { value } => Self::Count(*value),
+            StagedAnswer::Exists { value } => Self::Exists(*value),
+            StagedAnswer::Matched { value } => Self::Matched(*value),
+            StagedAnswer::Documents { documents } => {
                 plan.fetch_document_shape()
                     .ok_or_else(staged_answer_shape)?;
                 Self::Documents(
@@ -171,7 +171,7 @@ impl PlanAnswer {
                         .collect::<Result<_, _>>()?,
                 )
             }
-            StagedAnswerV3::Rows { rows } => {
+            StagedAnswer::Rows { rows } => {
                 let QueryOutput::Rows { columns } = plan.output() else {
                     return Err(staged_answer_shape());
                 };
@@ -203,10 +203,10 @@ impl PlanAnswer {
 }
 
 pub(crate) fn check_provider(
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     version: Option<type_bridge_core_lib::version::Version>,
 ) -> Result<(), Diagnostic> {
-    use type_bridge_contract::query_plan::v3::{CAP_NEGATED_GIVEN_IID, supports_negated_given_iid};
+    use type_bridge_contract::query_plan::{CAP_NEGATED_GIVEN_IID, supports_negated_given_iid};
     if plan
         .required_capabilities()
         .iter()
@@ -231,14 +231,14 @@ pub(crate) fn check_provider(
 /// whether its invocation values are already bound or refer to preceding answers.
 #[derive(Clone, Copy)]
 pub(crate) enum PlanExecutionStack<'a> {
-    Bound(&'a [QueryPlanV3]),
+    Bound(&'a [QueryPlan]),
     Staged {
-        entries: &'a [type_bridge_contract::query_remote_v3::StagedPlanV3],
+        entries: &'a [type_bridge_contract::query_remote::StagedPlan],
         schema: &'a type_bridge_contract::schema::DeclaredSchema,
     },
 }
 impl<'a> PlanExecutionStack<'a> {
-    pub(crate) fn plans(&self) -> impl ExactSizeIterator<Item = &QueryPlanV3> {
+    pub(crate) fn plans(&self) -> impl ExactSizeIterator<Item = &QueryPlan> {
         let (bound, staged) = match self {
             Self::Bound(plans) => (*plans, &[][..]),
             Self::Staged { entries, .. } => (&[][..], *entries),
@@ -291,11 +291,11 @@ impl<'a> PlanExecutionStack<'a> {
 }
 
 enum ExecutionPlan<'a> {
-    Borrowed(&'a QueryPlanV3),
-    Bound(Box<QueryPlanV3>),
+    Borrowed(&'a QueryPlan),
+    Bound(Box<QueryPlan>),
 }
-impl AsRef<QueryPlanV3> for ExecutionPlan<'_> {
-    fn as_ref(&self) -> &QueryPlanV3 {
+impl AsRef<QueryPlan> for ExecutionPlan<'_> {
+    fn as_ref(&self) -> &QueryPlan {
         match self {
             Self::Borrowed(plan) => plan,
             Self::Bound(plan) => plan,
@@ -305,12 +305,12 @@ impl AsRef<QueryPlanV3> for ExecutionPlan<'_> {
 
 pub(crate) enum PreparedPlanStack<'a> {
     Bound {
-        plans: std::slice::Iter<'a, QueryPlanV3>,
+        plans: std::slice::Iter<'a, QueryPlan>,
         queries: std::vec::IntoIter<StagedQuery>,
     },
     Staged {
-        entries: std::slice::Iter<'a, type_bridge_contract::query_remote_v3::StagedPlanV3>,
-        prepared: std::vec::IntoIter<Option<(QueryPlanV3, StagedQuery)>>,
+        entries: std::slice::Iter<'a, type_bridge_contract::query_remote::StagedPlan>,
+        prepared: std::vec::IntoIter<Option<(QueryPlan, StagedQuery)>>,
         schema: &'a type_bridge_contract::schema::DeclaredSchema,
     },
 }
@@ -340,7 +340,7 @@ impl<'a> PreparedPlanStack<'a> {
 
     fn next(
         &mut self,
-        answers: &[StagedAnswerV3],
+        answers: &[StagedAnswer],
         supports_given: bool,
     ) -> crate::error::Result<Option<(ExecutionPlan<'a>, StagedQuery)>> {
         match self {
@@ -374,7 +374,7 @@ impl<'a> PreparedPlanStack<'a> {
     }
 }
 
-fn prepare_query(plan: &QueryPlanV3, supports_given: bool) -> crate::error::Result<StagedQuery> {
+fn prepare_query(plan: &QueryPlan, supports_given: bool) -> crate::error::Result<StagedQuery> {
     if supports_given {
         staged_query(plan, true)
     } else {
@@ -388,7 +388,7 @@ fn prepare_query(plan: &QueryPlanV3, supports_given: bool) -> crate::error::Resu
 pub(crate) fn execute_plans_counted<'a, const ALLOW_WRITES: bool>(
     provider: &'a mut dyn crate::session::backend::TransactionOps,
     supports_given: bool,
-    plans: &'a [QueryPlanV3],
+    plans: &'a [QueryPlan],
     policy: crate::QueryExecutionResourceLimits,
     cancellation: &'a crate::session::backend::AnswerCancellation,
     deadline: crate::QueryExecutionDeadline,
@@ -431,7 +431,7 @@ pub(crate) fn execute_plan_stack_counted<const ALLOW_WRITES: bool>(
         let limits = plan_answer_limits(policy, cancellation, deadline)?;
         let check = || BoundedAnswerReader::new(limits.answer.clone()).check_before_read();
         check()?;
-        if !ALLOW_WRITES && stack.plans().any(QueryPlanV3::writes) {
+        if !ALLOW_WRITES && stack.plans().any(QueryPlan::writes) {
             return Err(plan_execution_error(
                 "query_plan_read_only",
                 "one-shot plan execution requires read-only plans",
@@ -582,7 +582,7 @@ fn staged_value_unserializable() -> Diagnostic {
 pub fn merge_plan_answers(
     plans: &BuiltPlans,
     answers: &[Arc<PlanAnswer>],
-    correlations: &[Option<&type_bridge_contract::query_plan::v3::BulkCorrelation>],
+    correlations: &[Option<&type_bridge_contract::query_plan::BulkCorrelation>],
 ) -> Result<Arc<PlanAnswer>, Diagnostic> {
     let bad = || {
         failure(
@@ -710,7 +710,7 @@ pub(crate) fn remote_value(
     if let Some(value) = row.get(variable)
         && value.get("kind").is_some()
     {
-        return type_bridge_contract::query_remote_v3::decode_remote_value_with_limits(
+        return type_bridge_contract::query_remote::decode_remote_value_with_limits(
             value.clone(),
             limits,
         );
@@ -765,16 +765,16 @@ pub(crate) struct LoweredPlan {
     pub(crate) value_bearing_inputs: BTreeSet<String>,
 }
 
-pub(crate) fn lower(plan: &QueryPlanV3) -> Result<LoweredPlan, Diagnostic> {
+pub(crate) fn lower(plan: &QueryPlan) -> Result<LoweredPlan, Diagnostic> {
     lower_inner(plan, false, false)
 }
 
-pub(crate) fn lower_redacted(plan: &QueryPlanV3) -> Result<LoweredPlan, Diagnostic> {
+pub(crate) fn lower_redacted(plan: &QueryPlan) -> Result<LoweredPlan, Diagnostic> {
     lower_inner(plan, true, false)
 }
 
 fn lower_inner(
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     redact_inputs: bool,
     inline_inputs: bool,
 ) -> Result<LoweredPlan, Diagnostic> {
@@ -1112,12 +1112,12 @@ fn inline_placeholder(domain: ValueTypeTag) -> Result<CanonicalValue, Diagnostic
     })
 }
 
-pub(crate) fn staged_literal_query(plan: &QueryPlanV3) -> Result<StagedQuery, Diagnostic> {
+pub(crate) fn staged_literal_query(plan: &QueryPlan) -> Result<StagedQuery, Diagnostic> {
     staged_query_for_source(plan, false, None, true)
 }
 
 pub(crate) fn staged_query(
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     supports_given_rows: bool,
 ) -> Result<StagedQuery, Diagnostic> {
     staged_query_for_source(plan, supports_given_rows, None, false)
@@ -1131,7 +1131,7 @@ pub(crate) fn staged_query_with_source(
 }
 
 fn staged_query_for_source(
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     supports_given_rows: bool,
     source: Option<&PlanSource>,
     inline_inputs: bool,
@@ -1171,7 +1171,7 @@ fn staged_query_for_source(
 }
 
 fn staged_query_inner(
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     supports_given_rows: bool,
     fingerprint: Option<String>,
     source: Option<&PlanSource>,
@@ -1242,10 +1242,7 @@ fn staged_query_inner(
 }
 
 /// Validate capture evidence before dispatching the destructive statement.
-pub(crate) fn validate_snapshot(
-    plan: &QueryPlanV3,
-    result: &QueryResult,
-) -> Result<(), Diagnostic> {
+pub(crate) fn validate_snapshot(plan: &QueryPlan, result: &QueryResult) -> Result<(), Diagnostic> {
     let QueryResult::Documents(documents) = result else {
         return Err(staged_answer_shape());
     };
@@ -1257,7 +1254,7 @@ pub(crate) fn validate_snapshot(
 
 /// Validate document evidence before a transaction can commit.
 pub(crate) fn resolve_plan(
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     result: QueryResult,
 ) -> Result<PlanAnswer, Diagnostic> {
     resolve_plan_with_wire(plan, result).map(|resolved| resolved.answer)
@@ -1265,12 +1262,12 @@ pub(crate) fn resolve_plan(
 
 pub(crate) struct ResolvedPlanAnswer {
     pub answer: PlanAnswer,
-    pub wire: StagedAnswerV3,
-    pub correlation: Option<Arc<type_bridge_contract::query_plan::v3::BulkCorrelation>>,
+    pub wire: StagedAnswer,
+    pub correlation: Option<Arc<type_bridge_contract::query_plan::BulkCorrelation>>,
 }
 
 pub(crate) fn resolve_plan_with_wire(
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
     result: QueryResult,
 ) -> Result<ResolvedPlanAnswer, Diagnostic> {
     if plan.fetch_document_shape().is_some() {
@@ -1293,7 +1290,7 @@ pub(crate) fn resolve_plan_with_wire(
         );
         return Ok(ResolvedPlanAnswer {
             answer,
-            wire: StagedAnswerV3::Documents { documents },
+            wire: StagedAnswer::Documents { documents },
             correlation,
         });
     }
@@ -1329,7 +1326,7 @@ pub(crate) fn take_document_validation_count() -> usize {
 
 pub(crate) fn remote_document(
     document: &serde_json::Value,
-    plan: &QueryPlanV3,
+    plan: &QueryPlan,
 ) -> Result<BTreeMap<String, RemoteFieldValue>, Diagnostic> {
     let shape = plan
         .fetch_document_shape()
@@ -1343,8 +1340,8 @@ pub(crate) fn remote_document(
 
 fn decode_document(
     document: &serde_json::Value,
-    plan: &QueryPlanV3,
-    shape: &type_bridge_contract::query_plan::v3::FetchDocumentShape,
+    plan: &QueryPlan,
+    shape: &type_bridge_contract::query_plan::FetchDocumentShape,
     context_role: Option<usize>,
 ) -> Result<BTreeMap<String, RemoteFieldValue>, Diagnostic> {
     let object = document.as_object().ok_or_else(staged_answer_shape)?;
@@ -1508,7 +1505,7 @@ pub(crate) fn resolve(operation: Operation, result: QueryResult) -> Result<PlanA
 }
 
 /// Value-free schema identities of the plan's first write.
-fn failure_context(plan: &QueryPlanV3) -> FailureContext {
+fn failure_context(plan: &QueryPlan) -> FailureContext {
     for stage in plan.pipeline() {
         match stage {
             Stage::Update { sets } => {
@@ -1540,7 +1537,7 @@ struct SnapshotIidInput<'a> {
     actual: String,
 }
 
-fn snapshot_iid_inputs(plan: &QueryPlanV3) -> Vec<SnapshotIidInput<'_>> {
+fn snapshot_iid_inputs(plan: &QueryPlan) -> Vec<SnapshotIidInput<'_>> {
     if !matches!(plan.pipeline().last(), Some(Stage::Delete { .. }))
         || !plan
             .pipeline()
@@ -1584,8 +1581,8 @@ fn snapshot_iid_inputs(plan: &QueryPlanV3) -> Vec<SnapshotIidInput<'_>> {
     result
 }
 
-fn given_regex_inputs(plan: &QueryPlanV3) -> BTreeSet<String> {
-    fn collect(patterns: &[QueryPattern], plan: &QueryPlanV3, columns: &mut BTreeSet<String>) {
+fn given_regex_inputs(plan: &QueryPlan) -> BTreeSet<String> {
+    fn collect(patterns: &[QueryPattern], plan: &QueryPlan, columns: &mut BTreeSet<String>) {
         use type_bridge_contract::migration_assertion::ValueComparator;
         for pattern in patterns {
             match pattern {
@@ -1751,7 +1748,7 @@ pub(crate) fn string_comparison(
 }
 
 struct Scope<'a> {
-    plan: &'a QueryPlanV3,
+    plan: &'a QueryPlan,
     bindings: &'a [AssertionBinding],
     inputs: std::borrow::Cow<'a, [InputColumn]>,
     snapshot_iids: std::slice::Iter<'a, SnapshotIidInput<'a>>,
@@ -2221,7 +2218,7 @@ pub(crate) mod race;
 mod tests {
     #[test]
     fn scalar_tuples_share_direct_and_proxy_decoding_and_reject_non_scalars() {
-        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::query_plan::PlanBuilder;
         use type_bridge_contract::value::CanonicalValue;
         let mut builder = PlanBuilder::new();
         let item = builder.exact(
@@ -2277,7 +2274,7 @@ mod tests {
 
     #[test]
     fn bulk_answers_correlate_values_and_restore_interleaved_input_order() {
-        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::query_plan::PlanBuilder;
         use type_bridge_contract::schema::OwnsFactId;
         use type_bridge_contract::split::SplitLimits;
         use type_bridge_contract::value::{CanonicalString, CanonicalValue};
@@ -2374,7 +2371,7 @@ mod tests {
         );
     }
 
-    fn typeql(plan: &QueryPlanV3) -> (String, Option<GivenRowsSpec>) {
+    fn typeql(plan: &QueryPlan) -> (String, Option<GivenRowsSpec>) {
         let lowered = lower(plan).unwrap();
         (tql::render(&lowered.query).unwrap(), lowered.given)
     }
@@ -2389,7 +2386,7 @@ mod tests {
     #[test]
     fn explicit_ownership_modes_lower_to_the_named_typeql_forms() {
         use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
-        use type_bridge_contract::query_plan::{TypeMatchMode, v3::PlanBuilder};
+        use type_bridge_contract::query_plan::{PlanBuilder, TypeMatchMode};
         for (mode, operator) in [
             (TypeMatchMode::Isa, "isa"),
             (TypeMatchMode::IsaExact, "isa!"),
@@ -2418,7 +2415,7 @@ mod tests {
     #[test]
     fn selective_ownership_delete_uses_the_bound_value_without_a_rematch() {
         use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
-        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::query_plan::PlanBuilder;
         use type_bridge_contract::schema::OwnsFactId;
         let owner_type = TypeId::new(TypeKind::Entity, "item").unwrap();
         let attribute = AttributeId::new("price").unwrap();
@@ -2450,7 +2447,7 @@ mod tests {
 
     #[test]
     fn negated_given_iids_are_derived_and_refused_on_unsupported_providers() {
-        use type_bridge_contract::query_plan::v3::CAP_NEGATED_GIVEN_IID;
+        use type_bridge_contract::query_plan::CAP_NEGATED_GIVEN_IID;
         let negative = race::scoped_given_iid("0x10", true, false);
         assert!(
             negative
@@ -2702,7 +2699,7 @@ mod tests {
     fn thing_iid_document_scalars_lower_without_an_extra_statement() {
         use crate::plan_builders::{PlanDraft, ValueTransport, authority::PlanAuthority};
         use type_bridge_contract::migration_assertion::QueryVariable;
-        use type_bridge_contract::query_plan::v3::DocumentScalar;
+        use type_bridge_contract::query_plan::DocumentScalar;
         for optional in [false, true] {
             let authority = PlanAuthority::new(
                 race::schema(),

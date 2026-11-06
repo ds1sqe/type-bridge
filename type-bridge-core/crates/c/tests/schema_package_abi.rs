@@ -6988,7 +6988,7 @@ fn live_c17_consumer_stages_and_commits_contract_v3_plans() {
         .filter(|port| *port != 0)
         .expect("TYPEDB_HTTP_PORT must be an integer from 1 through 65535");
     let plan_directory = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../tests/contracts/plan_v3")
+        .join("../../../tests/contracts/plan")
         .canonicalize()
         .expect("the contract plan-v3 fixtures exist");
 

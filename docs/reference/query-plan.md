@@ -296,7 +296,7 @@ Existing plain delete plans, answers and fingerprints are unchanged.
 `GET /v3/capabilities` and admitted on the staged route. Fetch answers use
 schema-validated document evidence. The fixtures `attach.json`,
 `replace_players.json` (players deletion then attach), `fetch_entity.json`
-and `fetch_relation.json` in `tests/contracts/plan_v3` show their canonical
+and `fetch_relation.json` in `tests/contracts/plan` show their canonical
 bytes.
 
 The read tail is an ordered subsequence of this list, each stage at most once:
@@ -461,7 +461,7 @@ The retained read vocabulary is `query.pattern.isa`, `query.pattern.isa-subtypes
 Inputs or any literal/input operand add `query.input.given-rows`.
 Providers must advertise every required feature.
 
-Derivation and advertisement are separate. `query_plan_v3_capability_vocabulary()`
+Derivation and advertisement are separate. `query_plan_capability_vocabulary()`
 owns the complete advertised read vocabulary, including `query.pattern.iid`,
 `query.plan.v3`, the insert/update/delete/put write capabilities, `query.let`
 and every `query.expr.*` name. The staged advertisement at
@@ -471,7 +471,7 @@ vocabulary, `query.remote.envelope-v3` and `query.remote.write`.
 
 ## Plan builder
 
-`query_plan::v3::PlanBuilder` is the one rule set every SDK builder calls, so
+`query_plan::PlanBuilder` is the one rule set every SDK builder calls, so
 the same program gives the same canonical bytes in every language:
 
 - Binding IDs are dense and follow creation order; input column IDs follow
@@ -535,7 +535,7 @@ once (`query_plan_builder_fetch_once`) and cannot be combined with
 (`query_plan_builder_terminal_conflict`).
 
 The builder has no attach, players-deletion or iid call; such plans are constructed as a
-`PlanSpec` and validated by `QueryPlanV3::new`.
+`PlanSpec` and validated by `QueryPlan::new`.
 
 ## IID scalar expressions
 
@@ -617,7 +617,7 @@ lowercase plan variables.
 
 ## Versioning
 
-Construct native V3 plans with `QueryPlanV3::new` or the shared `PlanBuilder`.
+Construct native V3 plans with `QueryPlan::new` or the shared `PlanBuilder`.
 Legacy plans cannot be lifted into V3. The decoder rejects a `compatibility`
 member, including `null`. Bind invocation rows and choose count/exists on a
 native template explicitly as needed.
@@ -631,7 +631,7 @@ new format and canonicalization version.
 
 ## Worked canonical examples
 
-The following are exact files from `tests/contracts/plan_v3`, without the
+The following are exact files from `tests/contracts/plan`, without the
 Markdown line terminator. A Rust test validates them under the separate
 `schema.json`, compares fixture bytes and recomputes the displayed fingerprints.
 Their managed fingerprint identifies fixture authority, not a production schema.
@@ -1006,7 +1006,7 @@ authenticates the outer envelope and only then interprets/correlates the V3
 payload. Unknown fields/tags and noncanonical reconstruction are refused.
 
 Rust's genuine Ed25519 golden fixtures are in
-`type-bridge-core/crates/contract/tests/fixtures/query-remote-v3/`: advertisement,
+`type-bridge-core/crates/contract/tests/fixtures/query-remote/`: advertisement,
 request, request fingerprint, committed reply and failed reply. Existing V2
 envelope and V2/V3 plan fixtures remain byte-for-byte unchanged.
 
@@ -1065,7 +1065,7 @@ budget. `given.canonical_bytes` uses the bounded canonical JSON encoder over
 the native transported row array; it includes no TypeQL text or column header.
 The complete explanation uses that same bounded encoder for its canonical JSON.
 
-The core purchase fixture is `tests/contracts/plan_v3/explain/purchase.json`.
+The core purchase fixture is `tests/contracts/plan/explain/purchase.json`.
 The SDK purchase program has profile-specific `purchase-sdk.*.json` fixtures
 beside it, compared exactly in the writes suite. See
 [Debugging plans](../guide/debugging.md) for the four SDK examples, host logger
@@ -1116,5 +1116,5 @@ and canonical literal IID filters used by managers, retain their lowering.
 
 The shared `PlanBuilder::by_iid_input` matches a thing using a declared IID
 input. `PlanBuilder::build_staged` finalizes the ordinary plan with invocation
-templates and `StagedResultRefV3` metadata. Referenced cells are absent in those
+templates and `StagedResultRef` metadata. Referenced cells are absent in those
 templates; validating the complete stack proves their earlier source columns.

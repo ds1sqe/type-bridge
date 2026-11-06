@@ -56,7 +56,7 @@ use crate::session::database::DatabaseExecutionIdentity;
 use crate::session::{Database, TransactionContext, TxType};
 use crate::value::AttributeValue;
 use crate::{ClassifiedCommitError, OrmError};
-use type_bridge_contract::query_plan::v3::DocumentRole;
+use type_bridge_contract::query_plan::DocumentRole;
 
 #[path = "projected_crud_controlled_update.rs"]
 mod controlled_update;
@@ -3431,11 +3431,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
 
     fn resolve_exact_count(
         &self,
-        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+        plan: &type_bridge_contract::query_plan::QueryPlan,
         answer: &PlanAnswer,
         type_id: &TypeId,
     ) -> Result<u64, SdkExecutionDiagnostic> {
-        let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } =
+        let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } =
             answer.to_staged_v3(plan).map_err(|error| {
                 orm_at_type(
                     crate::plan_builders::manager::diagnostic(error),
@@ -5861,7 +5861,7 @@ async fn plan_transport(
 /// may follow writes, so it poisons a borrowed transaction.
 async fn execute_write_rows(
     transaction: &TransactionContext,
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
     type_id: &TypeId,
     mode: ExecutionMode<'_>,
 ) -> Result<Vec<serde_json::Value>, SdkExecutionDiagnostic> {
@@ -7294,11 +7294,11 @@ plays:
         use crate::{ProxyQueryConnection, QueryTarget, QueryTargetError};
         use type_bridge_contract::capability::CapabilityId;
         use type_bridge_contract::query_remote::RemoteValue;
-        use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-        use type_bridge_contract::query_remote_v3::{
-            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedAnswerV3,
-            StagedKindV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+        use type_bridge_contract::query_remote::{
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED, StagedAnswer, StagedKind,
+            StagedOutcome, StagedReply, StagedRequest,
         };
+        use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
 
         struct Transport {
             schema: type_bridge_contract::schema::DeclaredSchema,
@@ -7324,8 +7324,8 @@ plays:
                     self.calls
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let request =
-                        StagedRequestV3::decode(bytes, &self.schema, &self.advertisement).unwrap();
-                    assert_eq!(request.kind(), StagedKindV3::Read);
+                        StagedRequest::decode(bytes, &self.schema, &self.advertisement).unwrap();
+                    assert_eq!(request.kind(), StagedKind::Read);
                     let mut answers = Vec::new();
                     for entry in request.plans() {
                         let plan = entry.plan();
@@ -7335,15 +7335,15 @@ plays:
                         );
                         let answer = if matches!(
                             plan.pipeline().last(),
-                            Some(type_bridge_contract::query_plan::v3::Stage::Fetch(_))
+                            Some(type_bridge_contract::query_plan::Stage::Fetch(_))
                         ) {
-                            StagedAnswerV3::Documents { documents: vec![] }
+                            StagedAnswer::Documents { documents: vec![] }
                         } else {
-                            StagedAnswerV3::Rows {
+                            StagedAnswer::Rows {
                                 rows: if plan.pipeline().iter().any(|stage| {
                                     matches!(
                                         stage,
-                                        type_bridge_contract::query_plan::v3::Stage::Reduce { .. }
+                                        type_bridge_contract::query_plan::Stage::Reduce { .. }
                                     )
                                 }) {
                                     vec![vec![RemoteValue::Value {
@@ -7357,7 +7357,7 @@ plays:
                         answers.push(answer);
                     }
                     Ok(
-                        StagedReplyV3::new(&request, StagedOutcomeV3::Committed, answers)
+                        StagedReply::new(&request, StagedOutcome::Committed, answers)
                             .unwrap()
                             .encode_signed(&request, &self.advertisement, &self.signer)
                             .unwrap(),
@@ -7404,15 +7404,11 @@ plays:
             .unwrap(),
         );
         let signer = RemoteReplySigningKey::from_secret_bytes([73; 32]);
-        let mut capabilities =
-            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
-        for capability in [
-            CAP_QUERY_REMOTE_STAGED_V3,
-            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
-        ] {
+        let mut capabilities = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
-        let mut server = type_bridge_contract::limits::QueryLimits::V3;
+        let mut server = type_bridge_contract::limits::QueryLimits::PLAN;
         server.structural.bindings = 16;
         server.structural.selected_slots = 16;
         let server = Arc::new(server);
@@ -7424,7 +7420,7 @@ plays:
         .with_query_limits(*server)
         .unwrap();
 
-        let mut client = type_bridge_contract::limits::QueryLimits::V3;
+        let mut client = type_bridge_contract::limits::QueryLimits::PLAN;
         client.structural.bindings = 1024;
         client.structural.selected_slots = 1024;
         client.structural.boolean_terms = 1024;
@@ -7520,11 +7516,11 @@ plays:
         use crate::{ProxyQueryConnection, QueryTarget, QueryTargetError};
         use type_bridge_contract::capability::CapabilityId;
         use type_bridge_contract::query_remote::RemoteValue;
-        use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-        use type_bridge_contract::query_remote_v3::{
-            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedAnswerV3,
-            StagedKindV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+        use type_bridge_contract::query_remote::{
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED, StagedAnswer, StagedKind,
+            StagedOutcome, StagedReply, StagedRequest,
         };
+        use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
 
         struct Transport {
             schema: type_bridge_contract::schema::DeclaredSchema,
@@ -7551,8 +7547,8 @@ plays:
                         ))));
                     }
                     let request =
-                        StagedRequestV3::decode(bytes, &self.schema, &self.advertisement).unwrap();
-                    assert_eq!(request.kind(), StagedKindV3::Read);
+                        StagedRequest::decode(bytes, &self.schema, &self.advertisement).unwrap();
+                    assert_eq!(request.kind(), StagedKind::Read);
                     assert_eq!(request.plans().len(), 1);
                     let plan = request.plans()[0].plan();
                     assert_eq!(
@@ -7561,18 +7557,18 @@ plays:
                     );
                     let answer = if matches!(
                         plan.pipeline().last(),
-                        Some(type_bridge_contract::query_plan::v3::Stage::Fetch(_))
+                        Some(type_bridge_contract::query_plan::Stage::Fetch(_))
                     ) {
-                        StagedAnswerV3::Documents { documents: vec![] }
+                        StagedAnswer::Documents { documents: vec![] }
                     } else {
-                        StagedAnswerV3::Rows {
+                        StagedAnswer::Rows {
                             rows: vec![vec![RemoteValue::Value {
                                 value: CanonicalValue::Long(2),
                             }]],
                         }
                     };
                     Ok(
-                        StagedReplyV3::new(&request, StagedOutcomeV3::Committed, vec![answer])
+                        StagedReply::new(&request, StagedOutcome::Committed, vec![answer])
                             .unwrap()
                             .encode_signed(&request, &self.advertisement, &self.signer)
                             .unwrap(),
@@ -7606,12 +7602,8 @@ plays:
             .unwrap(),
         );
         let signer = RemoteReplySigningKey::from_secret_bytes([73; 32]);
-        let mut capabilities =
-            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
-        for capability in [
-            CAP_QUERY_REMOTE_STAGED_V3,
-            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
-        ] {
+        let mut capabilities = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
         let advertisement = RemoteCapabilities::new(

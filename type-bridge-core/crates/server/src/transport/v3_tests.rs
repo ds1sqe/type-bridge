@@ -1,13 +1,13 @@
 // Staged route tests sharing the mock backend, authority and policy fixtures.
 
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::query_plan::v3::{
-    DeleteItem, InsertThing, Operation, PlanSpec, QueryPlanV3, Stage, WriteReturns,
+use type_bridge_contract::query_plan::{
+    DeleteItem, InsertThing, Operation, PlanSpec, QueryPlan, Stage, WriteReturns,
 };
 use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, QueryOperand};
-use type_bridge_contract::query_remote_v3::{
-    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3,
-    StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3, VerifiedStagedReplyV3,
+use type_bridge_contract::query_remote::{
+    CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_WRITE, StagedAnswer,
+    StagedLimits, StagedPlan, StagedRequestSpec, StagedRequest, VerifiedStagedReply,
 };
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
@@ -95,7 +95,7 @@ fn configured_v3_fixture(
 
 /// Call the library entry the way an embedding host does: admit the caller
 /// through the pipeline, then hand over the signed request bytes.
-async fn direct(fixture: &V3Fixture, request: &StagedRequestV3) -> StagedOutcome {
+async fn direct(fixture: &V3Fixture, request: &StagedRequest) -> StagedOutcome {
     let body = request.encode().expect("request bytes");
     let pipeline = fixture.executor.pipeline();
     let mut metadata = staged_request_metadata(&HeaderMap::new(), "staged");
@@ -180,7 +180,7 @@ fn spec(operation: Operation, pipeline: Vec<Stage>, columns: Vec<BindingId>) -> 
     }
 }
 
-fn insert_plan(declared: &DeclaredSchema) -> QueryPlanV3 {
+fn insert_plan(declared: &DeclaredSchema) -> QueryPlan {
     insert_returning(declared, WriteReturns::Matched, vec![])
 }
 
@@ -188,7 +188,7 @@ fn insert_returning(
     declared: &DeclaredSchema,
     returns: WriteReturns,
     columns: Vec<BindingId>,
-) -> QueryPlanV3 {
+) -> QueryPlan {
     let name = AttributeId::new("transport-name").expect("attribute");
     let thing = InsertThing {
         binding: BindingId::new(0).expect("binding"),
@@ -205,10 +205,10 @@ fn insert_returning(
     let pipeline = vec![Stage::Insert {
         things: vec![thing],
     }];
-    QueryPlanV3::new(spec(operation, pipeline, columns), declared).expect("insert plan")
+    QueryPlan::new(spec(operation, pipeline, columns), declared).expect("insert plan")
 }
 
-fn rows_plan(declared: &DeclaredSchema) -> QueryPlanV3 {
+fn rows_plan(declared: &DeclaredSchema) -> QueryPlan {
     let binding = BindingId::new(0).expect("binding");
     let pattern = QueryPattern::Isa {
         binding,
@@ -218,10 +218,10 @@ fn rows_plan(declared: &DeclaredSchema) -> QueryPlanV3 {
     let pipeline = vec![Stage::Match {
         patterns: vec![pattern.into()],
     }];
-    QueryPlanV3::new(spec(Operation::Rows, pipeline, vec![binding]), declared).expect("rows plan")
+    QueryPlan::new(spec(Operation::Rows, pipeline, vec![binding]), declared).expect("rows plan")
 }
 
-fn count_plan(declared: &DeclaredSchema) -> QueryPlanV3 {
+fn count_plan(declared: &DeclaredSchema) -> QueryPlan {
     rows_plan(declared)
         .with_operation(Operation::Count, declared)
         .expect("count plan")
@@ -237,18 +237,18 @@ fn now_ms() -> u64 {
     .expect("millis")
 }
 
-fn staged(fixture: &V3Fixture, plans: &[QueryPlanV3], nonce: &str) -> StagedRequestV3 {
-    let spec = StagedRequestSpecV3 {
+fn staged(fixture: &V3Fixture, plans: &[QueryPlan], nonce: &str) -> StagedRequest {
+    let spec = StagedRequestSpec {
         nonce: nonce.into(),
         kind: None,
-        limits: StagedLimitsV3::default(),
+        limits: StagedLimits::default(),
         plans: plans
             .iter()
-            .map(|plan| StagedPlanV3::new(plan, vec![], &fixture.declared).expect("entry"))
+            .map(|plan| StagedPlan::new(plan, vec![], &fixture.declared).expect("entry"))
             .collect(),
         prepared_at_unix_ms: now_ms(),
     };
-    StagedRequestV3::new(spec, &fixture.declared, &fixture.advertisement).expect("request")
+    StagedRequest::new(spec, &fixture.declared, &fixture.advertisement).expect("request")
 }
 
 async fn call(router: &Router, method: &str, uri: &str, body: Vec<u8>) -> Vec<u8> {
@@ -274,13 +274,13 @@ async fn call(router: &Router, method: &str, uri: &str, body: Vec<u8>) -> Vec<u8
         .to_vec()
 }
 
-async fn post(fixture: &V3Fixture, request: &StagedRequestV3) -> Vec<u8> {
+async fn post(fixture: &V3Fixture, request: &StagedRequest) -> Vec<u8> {
     let body = request.encode().expect("request bytes");
     call(&fixture.router, "POST", "/v3/staged", body).await
 }
 
-fn verify(fixture: &V3Fixture, request: &StagedRequestV3, reply: &[u8]) -> VerifiedStagedReplyV3 {
-    VerifiedStagedReplyV3::decode(
+fn verify(fixture: &V3Fixture, request: &StagedRequest, reply: &[u8]) -> VerifiedStagedReply {
+    VerifiedStagedReply::decode(
         reply,
         request,
         &fixture.advertisement,
@@ -290,7 +290,7 @@ fn verify(fixture: &V3Fixture, request: &StagedRequestV3, reply: &[u8]) -> Verif
     .expect("signed staged reply verifies")
 }
 
-fn failure_code(reply: &VerifiedStagedReplyV3) -> &str {
+fn failure_code(reply: &VerifiedStagedReply) -> &str {
     reply.diagnostic().expect("failed reply").code()
 }
 
@@ -301,9 +301,9 @@ async fn staged_capabilities_match_the_executor_authority() {
     let v3 = RemoteCapabilities::decode(&v3).expect("staged advertisement");
     assert_eq!(v3, fixture.advertisement);
     for capability in [
-        CAP_QUERY_REMOTE_STAGED_V3,
-        CAP_QUERY_REMOTE_WRITE_V3,
-        type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF,
+        CAP_QUERY_REMOTE_STAGED,
+        CAP_QUERY_REMOTE_WRITE,
+        type_bridge_contract::query_remote::CAP_QUERY_STAGE_RESULT_REF,
         "query.fetch.thing",
         "query.write.attach",
     ] {
@@ -314,7 +314,7 @@ async fn staged_capabilities_match_the_executor_authority() {
     }
     assert_eq!(v3.executor(), fixture.query.advertisement.executor());
     let capabilities = fixture.query.advertisement.capabilities();
-    assert!(capabilities.contains(&CapabilityId::new(CAP_QUERY_REMOTE_STAGED_V3).expect("capability")));
+    assert!(capabilities.contains(&CapabilityId::new(CAP_QUERY_REMOTE_STAGED).expect("capability")));
 }
 
 #[tokio::test]
@@ -323,7 +323,7 @@ async fn staged_read_commits_and_signs_its_reply() {
     let request = staged(&fixture, &[count_plan(&fixture.declared)], TEST_NONCE);
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert!(reply.committed());
-    assert_eq!(reply.answers(), [StagedAnswerV3::Count { value: 0 }]);
+    assert_eq!(reply.answers(), [StagedAnswer::Count { value: 0 }]);
     assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
 
     // An unkeyed request replays its nonce only once.
@@ -484,7 +484,7 @@ async fn hanging_write_authority_times_out_before_anything_opens() {
         Some(Duration::from_millis(200)),
     );
     let request = staged_with(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE,
-        StagedLimitsV3 { collect_phase_timestamps: true, ..Default::default() }, now_ms());
+        StagedLimits { collect_phase_timestamps: true, ..Default::default() }, now_ms());
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), "transaction_deadline_exceeded");
@@ -516,8 +516,8 @@ async fn vouched_or_explicitly_allowed_staged_writes_commit() {
         assert_eq!(
             reply.answers(),
             [
-                StagedAnswerV3::Matched { value: 1 },
-                StagedAnswerV3::Count { value: 0 }
+                StagedAnswer::Matched { value: 1 },
+                StagedAnswer::Count { value: 0 }
             ]
         );
         assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
@@ -544,21 +544,21 @@ async fn staged_standalone_inserts_refuse_missing_or_extra_provider_rows() {
 async fn unsignable_reply_after_a_committed_write_reports_an_unknown_outcome() {
     let fixture = v3_fixture(default_pipeline(), true);
     // The provider row fits, but the signed reply does not: commit stays unknown.
-    let spec = StagedRequestSpecV3 {
+    let spec = StagedRequestSpec {
         nonce: TEST_NONCE.into(),
         kind: None,
-        limits: StagedLimitsV3 {
+        limits: StagedLimits {
             max_bytes: 128,
-            ..StagedLimitsV3::default()
+            ..StagedLimits::default()
         },
         plans: vec![
-            StagedPlanV3::new(&insert_plan(&fixture.declared), vec![], &fixture.declared)
+            StagedPlan::new(&insert_plan(&fixture.declared), vec![], &fixture.declared)
                 .expect("entry"),
         ],
         prepared_at_unix_ms: now_ms(),
     };
     let request =
-        StagedRequestV3::new(spec, &fixture.declared, &fixture.advertisement).expect("request");
+        StagedRequest::new(spec, &fixture.declared, &fixture.advertisement).expect("request");
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), "commit_outcome_unknown");
@@ -738,7 +738,7 @@ async fn concurrent_writes_from_one_caller_are_all_in_flight_at_once() {
 
 /// What one plan policy saw: index, capabilities, types and row count.
 type SeenPlan = (usize, Vec<String>, Vec<String>, Option<usize>);
-type SeenReferences = (usize, Vec<type_bridge_contract::query_remote_v3::StagedResultRefV3>, Option<Vec<InputRow>>);
+type SeenReferences = (usize, Vec<type_bridge_contract::query_remote::StagedResultRef>, Option<Vec<InputRow>>);
 /// What one commit observer saw: kind, committed, code, certainty, provider
 /// code.
 type SeenCommit = (
@@ -861,7 +861,7 @@ fn hook_pipeline(policies: &[&Arc<HookPolicy>]) -> QueryPipeline {
         .expect("query pipeline")
 }
 
-fn delete_plan(declared: &DeclaredSchema) -> QueryPlanV3 {
+fn delete_plan(declared: &DeclaredSchema) -> QueryPlan {
     let binding = BindingId::new(0).expect("binding");
     let pattern = QueryPattern::Isa {
         binding,
@@ -879,11 +879,11 @@ fn delete_plan(declared: &DeclaredSchema) -> QueryPlanV3 {
     let operation = Operation::Write {
         returns: WriteReturns::Matched,
     };
-    QueryPlanV3::new(spec(operation, pipeline, vec![]), declared).expect("delete plan")
+    QueryPlan::new(spec(operation, pipeline, vec![]), declared).expect("delete plan")
 }
 
 /// An insert whose name is an input column, staged with one bound row.
-fn insert_input_entry(declared: &DeclaredSchema) -> StagedPlanV3 {
+fn insert_input_entry(declared: &DeclaredSchema) -> StagedPlan {
     let name = AttributeId::new("transport-name").expect("attribute");
     let column = InputColumnId::new(0);
     let thing = InsertThing {
@@ -910,11 +910,11 @@ fn insert_input_entry(declared: &DeclaredSchema) -> StagedPlanV3 {
         ValueTypeTag::String,
         false,
     )];
-    let plan = QueryPlanV3::new(spec, declared).expect("input insert plan");
+    let plan = QueryPlan::new(spec, declared).expect("input insert plan");
     let row = InputRow::new(vec![Some(CanonicalValue::String(
         CanonicalString::new("grace").expect("text"),
     ))]);
-    StagedPlanV3::new(&plan, vec![row], declared).expect("entry")
+    StagedPlan::new(&plan, vec![row], declared).expect("entry")
 }
 
 #[tokio::test]
@@ -967,15 +967,15 @@ async fn plan_policy_sees_capabilities_and_types_but_rows_only_on_request() {
         ..HookPolicy::default()
     });
     let fixture = v3_fixture(hook_pipeline(&[&blind, &sighted]), false);
-    let spec = StagedRequestSpecV3 {
+    let spec = StagedRequestSpec {
         nonce: TEST_NONCE.into(),
         kind: None,
-        limits: StagedLimitsV3::default(),
+        limits: StagedLimits::default(),
         plans: vec![insert_input_entry(&fixture.declared)],
         prepared_at_unix_ms: now_ms(),
     };
     let request =
-        StagedRequestV3::new(spec, &fixture.declared, &fixture.advertisement).expect("request");
+        StagedRequest::new(spec, &fixture.declared, &fixture.advertisement).expect("request");
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert_eq!(failure_code(&reply), "query_remote_policy_rejected");
     let (index, capabilities, types, rows) = blind.plans.lock().expect("plans")[0].clone();
@@ -1036,22 +1036,22 @@ async fn commit_observer_sees_commits_and_stc2_conflicts() {
 /// A request at `prepared_at` with `limits`, outside the default helper.
 fn staged_with(
     fixture: &V3Fixture,
-    plans: &[QueryPlanV3],
+    plans: &[QueryPlan],
     nonce: &str,
-    limits: StagedLimitsV3,
+    limits: StagedLimits,
     prepared_at_unix_ms: u64,
-) -> StagedRequestV3 {
-    let spec = StagedRequestSpecV3 {
+) -> StagedRequest {
+    let spec = StagedRequestSpec {
         nonce: nonce.into(),
         kind: None,
         limits,
         plans: plans
             .iter()
-            .map(|plan| StagedPlanV3::new(plan, vec![], &fixture.declared).expect("entry"))
+            .map(|plan| StagedPlan::new(plan, vec![], &fixture.declared).expect("entry"))
             .collect(),
         prepared_at_unix_ms,
     };
-    StagedRequestV3::new(spec, &fixture.declared, &fixture.advertisement).expect("request")
+    StagedRequest::new(spec, &fixture.declared, &fixture.advertisement).expect("request")
 }
 
 fn ceilings(max_items: u64, max_bytes: u64) -> AnswerLimits {
@@ -1076,9 +1076,9 @@ async fn staged_reads_enforce_the_advertised_answer_ceilings() {
     // The request's own tighter budget binds below the ceiling too.
     let fixture = v3_fixture(default_pipeline(), false);
     *fixture.metrics.rows.lock().expect("rows lock") = vec![serde_json::json!({}); 3];
-    let limits = StagedLimitsV3 {
+    let limits = StagedLimits {
         max_items: 2,
-        ..StagedLimitsV3::default()
+        ..StagedLimits::default()
     };
     let plans = [rows_plan(&fixture.declared)];
     let request = staged_with(&fixture, &plans, TEST_NONCE, limits, now_ms());
@@ -1146,7 +1146,7 @@ async fn malformed_staged_requests_are_refused_before_anything_opens() {
         &fixture,
         &plans,
         TEST_NONCE,
-        StagedLimitsV3::default(),
+        StagedLimits::default(),
         now_ms() - 10 * 60 * 1_000,
     );
     let reply = verify(&fixture, &stale, &post(&fixture, &stale).await);
@@ -1340,9 +1340,9 @@ fn sdk_staged_advertisement_must_match_the_connection_signer() {
     );
 }
 
-fn fetch_plan(declared: &DeclaredSchema) -> QueryPlanV3 {
-    use type_bridge_contract::query_plan::v3::ThingDocument;
-    QueryPlanV3::new(
+fn fetch_plan(declared: &DeclaredSchema) -> QueryPlan {
+    use type_bridge_contract::query_plan::ThingDocument;
+    QueryPlan::new(
         spec(
             Operation::Rows,
             vec![
@@ -1396,7 +1396,7 @@ async fn staged_fetch_documents_are_validated_and_metered_before_signing() {
             None => {
                 assert!(reply.committed());
                 assert!(
-                    matches!(&reply.answers()[0], StagedAnswerV3::Documents { documents } if documents.len() == 1)
+                    matches!(&reply.answers()[0], StagedAnswer::Documents { documents } if documents.len() == 1)
                 );
             }
         }
@@ -1592,8 +1592,8 @@ async fn staged_io_traces_use_nonce_without_payload_fingerprints() {
     let outcome = direct(&fixture, &read).with_subscriber(dispatch.clone()).await;
     assert_eq!(outcome.kind, StagedOutcomeKind::Committed);
     let nonce = "server-trace-given-000001";
-    let request = StagedRequestV3::new(StagedRequestSpecV3 {
-        nonce: nonce.into(), kind: None, limits: StagedLimitsV3::default(),
+    let request = StagedRequest::new(StagedRequestSpec {
+        nonce: nonce.into(), kind: None, limits: StagedLimits::default(),
         plans: vec![insert_input_entry(&fixture.declared)], prepared_at_unix_ms: now_ms(),
     }, &fixture.declared, &fixture.advertisement).unwrap();
     // The mock refuses given transport, but the accepted payload must still stay private.
@@ -1945,8 +1945,8 @@ mod raw_tests {
     }
 }
 
-fn iid_reference_request(fixture: &V3Fixture) -> StagedRequestV3 {
-    use type_bridge_contract::query_remote_v3::StagedResultRefV3;
+fn iid_reference_request(fixture: &V3Fixture) -> StagedRequest {
+    use type_bridge_contract::query_remote::StagedResultRef;
     let root = BindingId::new(0).unwrap();
     let source = insert_returning(&fixture.declared, WriteReturns::Rows, vec![root]);
     let mut target = spec(Operation::Write { returns: WriteReturns::Matched }, vec![
@@ -1957,12 +1957,12 @@ fn iid_reference_request(fixture: &V3Fixture) -> StagedRequestV3 {
         Stage::Delete { items: vec![DeleteItem::Thing { binding: root }] },
     ], vec![]);
     target.inputs = vec![InputColumn::new(InputColumnId::new(0), QueryVariable::new("target").unwrap(), type_bridge_contract::value::ValueTypeTag::String, false)];
-    let target = QueryPlanV3::new(target, &fixture.declared).unwrap();
-    StagedRequestV3::new(StagedRequestSpecV3 {
-        nonce: "server-iid-reference-0001".into(), kind: None, limits: StagedLimitsV3::default(),
+    let target = QueryPlan::new(target, &fixture.declared).unwrap();
+    StagedRequest::new(StagedRequestSpec {
+        nonce: "server-iid-reference-0001".into(), kind: None, limits: StagedLimits::default(),
         plans: vec![
-            StagedPlanV3::new(&source, vec![], &fixture.declared).unwrap(),
-            StagedPlanV3::new_with_result_refs(&target, vec![InputRow::new(vec![None])], vec![StagedResultRefV3 { input: InputColumnId::new(0), source_plan: 0, source_column: 0, expected_types: vec![person()] }], &fixture.declared).unwrap(),
+            StagedPlan::new(&source, vec![], &fixture.declared).unwrap(),
+            StagedPlan::new_with_result_refs(&target, vec![InputRow::new(vec![None])], vec![StagedResultRef { input: InputColumnId::new(0), source_plan: 0, source_column: 0, expected_types: vec![person()] }], &fixture.declared).unwrap(),
         ], prepared_at_unix_ms: now_ms(),
     }, &fixture.declared, &fixture.advertisement).unwrap()
 }
@@ -1997,9 +1997,9 @@ async fn staged_iid_ref_missing_and_last_piece_failures_commit_nothing() {
                 QueryPattern::Value { comparator: type_bridge_contract::migration_assertion::ValueComparator::Equal, left: QueryOperand::Binding { binding: BindingId::new(1).unwrap() }, right: QueryOperand::Literal { value: CanonicalValue::String(CanonicalString::new("missing-player").unwrap()) } }.into(),
             ] }], vec![BindingId::new(0).unwrap()]);
             source.bindings.push(AssertionBinding::new(BindingId::new(1).unwrap(), QueryVariable::new("selected_name").unwrap()));
-            let source = QueryPlanV3::new(source, &fixture.declared).unwrap();
-            let entries = vec![request.plans()[0].clone(), StagedPlanV3::new(&source, vec![], &fixture.declared).unwrap(), request.plans()[1].clone().rebase_result_refs(1).unwrap()];
-            request = StagedRequestV3::new(StagedRequestSpecV3 { nonce: request.nonce().to_owned(), kind: None, limits: request.limits(), plans: entries, prepared_at_unix_ms: now_ms() }, &fixture.declared, &fixture.advertisement).unwrap();
+            let source = QueryPlan::new(source, &fixture.declared).unwrap();
+            let entries = vec![request.plans()[0].clone(), StagedPlan::new(&source, vec![], &fixture.declared).unwrap(), request.plans()[1].clone().rebase_result_refs(1).unwrap()];
+            request = StagedRequest::new(StagedRequestSpec { nonce: request.nonce().to_owned(), kind: None, limits: request.limits(), plans: entries, prepared_at_unix_ms: now_ms() }, &fixture.declared, &fixture.advertisement).unwrap();
         }
         let bytes = post(&fixture, &request).await;
         let reply = verify(&fixture, &request, &bytes);
@@ -2015,7 +2015,7 @@ async fn staged_iid_ref_missing_and_last_piece_failures_commit_nothing() {
 
 #[tokio::test]
 async fn staged_iid_ref_policy_sees_metadata_and_templates_before_provider_io() {
-    use type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF;
+    use type_bridge_contract::query_remote::CAP_QUERY_STAGE_RESULT_REF;
     for wants_rows in [false, true] {
         for refuse in [false, true] {
             let policy = Arc::new(HookPolicy { wants_rows, refuse: refuse.then_some(CAP_QUERY_STAGE_RESULT_REF), ..Default::default() });

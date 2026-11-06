@@ -2,8 +2,8 @@ use crate::support::*;
 use std::collections::BTreeMap;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::ValueComparator;
-use type_bridge_contract::query_plan::v3::{
-    ArithOp, Builtin, DeleteItem, Expr, InsertThing, Operation, Pattern, QueryPlanV3, Set, Stage,
+use type_bridge_contract::query_plan::{
+    ArithOp, Builtin, DeleteItem, Expr, InsertThing, Operation, Pattern, QueryPlan, Set, Stage,
     WriteReturns,
 };
 use type_bridge_contract::query_plan::{
@@ -62,7 +62,7 @@ fn text(value: &str) -> CanonicalValue {
     CanonicalValue::String(CanonicalString::new(value).unwrap())
 }
 
-pub fn purchase() -> QueryPlanV3 {
+pub fn purchase() -> QueryPlan {
     let patterns = vec![
         pat(0, entity("item")),
         pat(1, entity("account")),
@@ -161,11 +161,11 @@ pub fn purchase() -> QueryPlanV3 {
         Some(text("item-1")),
         Some(text("buyer-1")),
     ])]);
-    QueryPlanV3::new(plan, &schema()).unwrap()
+    QueryPlan::new(plan, &schema()).unwrap()
 }
 
-pub fn touch() -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn touch() -> QueryPlan {
+    QueryPlan::new(
         spec(
             vec![
                 Stage::Match {
@@ -186,8 +186,8 @@ pub fn touch() -> QueryPlanV3 {
     .unwrap()
 }
 
-pub fn relation_assign() -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn relation_assign() -> QueryPlan {
+    QueryPlan::new(
         spec(
             vec![
                 Stage::Match {
@@ -219,7 +219,7 @@ pub fn relation_assign() -> QueryPlanV3 {
     .unwrap()
 }
 
-pub fn batch() -> QueryPlanV3 {
+pub fn batch() -> QueryPlan {
     let mut plan = spec(
         vec![Stage::Insert {
             things: vec![InsertThing {
@@ -239,11 +239,11 @@ pub fn batch() -> QueryPlanV3 {
         InputRow::new(vec![Some(text("account-1")), Some(CanonicalValue::Long(1))]),
         InputRow::new(vec![Some(text("account-2")), Some(CanonicalValue::Long(2))]),
     ]);
-    QueryPlanV3::new(plan, &schema()).unwrap()
+    QueryPlan::new(plan, &schema()).unwrap()
 }
 
-pub fn expression_plan(expr: Expr) -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn expression_plan(expr: Expr) -> QueryPlan {
+    QueryPlan::new(
         spec(
             vec![Stage::Match {
                 patterns: vec![Pattern::Let {
@@ -270,8 +270,8 @@ pub fn double() -> QueryOperand {
 }
 
 /// Write a thing and fetch its hydration document in the same pipeline.
-pub fn fetch_written(relation_players: bool) -> QueryPlanV3 {
-    use type_bridge_contract::query_plan::v3::{DocumentRole, ThingDocument};
+pub fn fetch_written(relation_players: bool) -> QueryPlan {
+    use type_bridge_contract::query_plan::{DocumentRole, ThingDocument};
     let mut pipeline = Vec::new();
     let document = if relation_players {
         pipeline.push(Stage::Match {
@@ -297,13 +297,13 @@ pub fn fetch_written(relation_players: bool) -> QueryPlanV3 {
     plan.operation = Operation::Write {
         returns: WriteReturns::Rows,
     };
-    QueryPlanV3::new(plan, &schema()).unwrap()
+    QueryPlan::new(plan, &schema()).unwrap()
 }
 
 /// Add a score value and a member to bound things, keeping existing ones.
-pub fn attach() -> QueryPlanV3 {
-    use type_bridge_contract::query_plan::v3::AttachItem;
-    QueryPlanV3::new(
+pub fn attach() -> QueryPlan {
+    use type_bridge_contract::query_plan::AttachItem;
+    QueryPlan::new(
         spec(
             vec![
                 Stage::Match {
@@ -334,9 +334,9 @@ pub fn attach() -> QueryPlanV3 {
 }
 
 /// Remove every member of a membership, then attach a new one.
-pub fn replace_players() -> QueryPlanV3 {
-    use type_bridge_contract::query_plan::v3::AttachItem;
-    QueryPlanV3::new(
+pub fn replace_players() -> QueryPlan {
+    use type_bridge_contract::query_plan::AttachItem;
+    QueryPlan::new(
         spec(
             vec![
                 Stage::Match {
@@ -364,7 +364,7 @@ pub fn replace_players() -> QueryPlanV3 {
     .unwrap()
 }
 
-pub fn plans() -> BTreeMap<&'static str, QueryPlanV3> {
+pub fn plans() -> BTreeMap<&'static str, QueryPlan> {
     let mut result = BTreeMap::from([
         ("purchase", purchase()),
         ("touch", touch()),
@@ -419,7 +419,7 @@ pub fn plans() -> BTreeMap<&'static str, QueryPlanV3> {
             },
         );
         plan.operation = operation;
-        result.insert(name, QueryPlanV3::new(plan, &schema()).unwrap());
+        result.insert(name, QueryPlan::new(plan, &schema()).unwrap());
     }
     let matched = touch()
         .with_operation(
@@ -434,8 +434,8 @@ pub fn plans() -> BTreeMap<&'static str, QueryPlanV3> {
 }
 
 /// Capture an existing entity or relation immediately before deleting it.
-pub fn delete_returning(relation_players: bool) -> QueryPlanV3 {
-    use type_bridge_contract::query_plan::v3::{DocumentRole, ThingDocument};
+pub fn delete_returning(relation_players: bool) -> QueryPlan {
+    use type_bridge_contract::query_plan::{DocumentRole, ThingDocument};
     let root = if relation_players {
         relation()
     } else {
@@ -461,12 +461,12 @@ pub fn delete_returning(relation_players: bool) -> QueryPlanV3 {
     plan.operation = Operation::Write {
         returns: WriteReturns::Rows,
     };
-    QueryPlanV3::new(plan, &schema()).unwrap()
+    QueryPlan::new(plan, &schema()).unwrap()
 }
 
 /// Purchase hydration through the public builder, shared by all wrappers.
-pub fn purchase_read_back() -> QueryPlanV3 {
-    use type_bridge_contract::query_plan::v3::{DocumentRole, PlanBuilder};
+pub fn purchase_read_back() -> QueryPlan {
+    use type_bridge_contract::query_plan::{DocumentRole, PlanBuilder};
     let mut plan = PlanBuilder::new();
     let purchase = plan.exact(TypeId::new(TypeKind::Relation, "purchase").unwrap());
     let key = plan.field(purchase, AttributeId::new("purchase-id").unwrap());
@@ -490,7 +490,7 @@ pub fn purchase_read_back() -> QueryPlanV3 {
 }
 
 /// String comparator template with given input values.
-pub fn compare_string(comparator: ValueComparator) -> QueryPlanV3 {
+pub fn compare_string(comparator: ValueComparator) -> QueryPlan {
     let mut spec = spec(
         vec![Stage::Match {
             patterns: vec![
@@ -508,12 +508,12 @@ pub fn compare_string(comparator: ValueComparator) -> QueryPlanV3 {
     );
     spec.inputs = vec![column(0, "needle", ValueTypeTag::String)];
     spec.given_rows = Some(vec![InputRow::new(vec![Some(text("Ada"))])]);
-    QueryPlanV3::new(spec, &schema()).unwrap()
+    QueryPlan::new(spec, &schema()).unwrap()
 }
 
 /// Rehydrate a discarded binding under an already selected, ordered window.
-pub fn rematch_window() -> QueryPlanV3 {
-    QueryPlanV3::new(
+pub fn rematch_window() -> QueryPlan {
+    QueryPlan::new(
         spec(
             vec![
                 Stage::Match {
@@ -539,7 +539,7 @@ pub fn rematch_window() -> QueryPlanV3 {
                 Stage::Match {
                     patterns: vec![pat(1, entity("account")), has(1, 2, "id")],
                 },
-                Stage::Fetch(type_bridge_contract::query_plan::v3::ThingDocument::new(
+                Stage::Fetch(type_bridge_contract::query_plan::ThingDocument::new(
                     id(1),
                     vec![],
                 )),
@@ -552,7 +552,7 @@ pub fn rematch_window() -> QueryPlanV3 {
 }
 
 /// Compare a canonical thing IID as a scalar inside a boolean scope.
-pub fn iid_expression() -> QueryPlanV3 {
+pub fn iid_expression() -> QueryPlan {
     let mut spec = spec(
         vec![Stage::Match {
             patterns: vec![
@@ -586,5 +586,5 @@ pub fn iid_expression() -> QueryPlanV3 {
     spec.given_rows = Some(vec![InputRow::new(vec![Some(text(
         "0x1e00000000000000000001",
     ))])]);
-    QueryPlanV3::new(spec, &schema()).unwrap()
+    QueryPlan::new(spec, &schema()).unwrap()
 }

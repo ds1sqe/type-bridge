@@ -295,7 +295,7 @@ impl StagedSection {
                 type_bridge_contract::limits::MAX_BINDINGS.min(limits.structural.bindings);
         }
         limits
-            .validate_v3()
+            .validate_plan()
             .map_err(|error| format!("staged query limits are rejected: {error}"))
     }
 }
@@ -3455,7 +3455,7 @@ enabled = ["audit-log", "rate-limiter", "custom"]
         );
         assert_eq!(
             section(&[]).resolved_staged_query_limits().unwrap(),
-            QueryLimits::V3
+            QueryLimits::PLAN
         );
         assert_eq!(
             section(&[("selected_slots", 16)])

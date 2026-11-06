@@ -30,7 +30,7 @@ mod proxy_connection_runtime;
 #[cfg(test)]
 #[path = "../../rust/tests/support/purchase_plan.rs"]
 mod purchase_plan;
-mod query_plan_v3_codec;
+mod query_plan_codec;
 mod raw_runtime;
 pub mod runtime_projection;
 pub mod schema;
@@ -588,7 +588,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     match_runtime::register(m)?;
     migration_runtime::register(m)?;
     migration_catalog_runtime::register(m)?;
-    query_plan_v3_codec::register(m)?;
+    query_plan_codec::register(m)?;
     plan_runtime::register(m)?;
     plan_model_remote_runtime::register(m)?;
     proxy_connection_runtime::register(m)?;

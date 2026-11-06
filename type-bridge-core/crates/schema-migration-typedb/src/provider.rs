@@ -17,7 +17,7 @@ use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
 #[cfg(test)]
 use type_bridge_contract::migration_backfill::COPY_ATTRIBUTE_BACKFILL_CAPABILITY;
-use type_bridge_contract::query_plan::v3::QueryPlanV3;
+use type_bridge_contract::query_plan::QueryPlan;
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId, ManagedSchemaState};
 use type_bridge_core_lib::version::{GeneratedPackageRelease, Version};
 use type_bridge_orm::migration_assertion::{
@@ -686,14 +686,14 @@ async fn require_no_backfill_conflict(
 
 async fn query_has_answers(
     transaction: &mut Transaction,
-    query: &QueryPlanV3,
+    query: &QueryPlan,
 ) -> Result<bool, Diagnostic> {
     Ok(query_answer_count(transaction, query).await? != 0)
 }
 
 async fn query_answer_count(
     transaction: &mut Transaction,
-    query: &QueryPlanV3,
+    query: &QueryPlan,
 ) -> Result<u64, Diagnostic> {
     // Preserve the previous executor policy; the plan bounds witnesses and batches.
     let limits = type_bridge_orm::QueryExecutionResourceLimits {

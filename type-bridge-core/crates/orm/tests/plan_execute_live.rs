@@ -8,7 +8,7 @@ mod race;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
-use type_bridge_contract::query_plan::v3::Operation;
+use type_bridge_contract::query_plan::Operation;
 use type_bridge_contract::schema::{DocumentId, OwnsFactId};
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 use type_bridge_orm::session::backend::QueryResult;
@@ -1950,8 +1950,8 @@ fn native_batch_projection() -> InstalledRuntimeProjection {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_batches_keep_key_identity_replace_players_and_collect_without_cartesian_rows() {
     use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-    use type_bridge_contract::query_plan::v3::{
-        DocumentRole, DocumentScalar, Expr, Pattern, PlanSpec, QueryPlanV3, Stage, ThingDocument,
+    use type_bridge_contract::query_plan::{
+        DocumentRole, DocumentScalar, Expr, Pattern, PlanSpec, QueryPlan, Stage, ThingDocument,
     };
     use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
     use type_bridge_orm::{
@@ -2091,7 +2091,7 @@ async fn native_batches_keep_key_identity_replace_players_and_collect_without_ca
         .unwrap(),
     )
     .unwrap();
-    let plan = QueryPlanV3::new(
+    let plan = QueryPlan::new(
         PlanSpec {
             bindings: vec![
                 AssertionBinding::new(root, QueryVariable::new("pair").unwrap()),
@@ -2359,7 +2359,7 @@ async fn negated_given_role_iid_preserves_the_provider_connection() {
     for (negative, optional, expected) in [(false, false, 1), (false, true, 1), (true, false, 0)] {
         let staged = tx.stage_plan(&race::scoped_given_iid(iid, negative, optional));
         if negative
-            && !type_bridge_contract::query_plan::v3::supports_negated_given_iid(
+            && !type_bridge_contract::query_plan::supports_negated_given_iid(
                 db.server_version()
                     .as_ref()
                     .and_then(type_bridge_core_lib::version::semantic_profile_id),

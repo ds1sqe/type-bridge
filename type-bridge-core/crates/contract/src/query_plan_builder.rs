@@ -826,7 +826,7 @@ impl PlanBuilder {
         &self,
         schema: &DeclaredSchema,
         semantics: ManagedSemanticSchemaFingerprint,
-    ) -> Result<QueryPlanV3, Diagnostic> {
+    ) -> Result<QueryPlan, Diagnostic> {
         self.build_selected(schema, semantics, BuildSelection::Recorded)
     }
 
@@ -840,10 +840,10 @@ impl PlanBuilder {
         schema: &DeclaredSchema,
         semantics: ManagedSemanticSchemaFingerprint,
         rows: Vec<InputRow>,
-        result_refs: Vec<crate::query_remote_v3::StagedResultRefV3>,
-    ) -> Result<crate::query_remote_v3::StagedPlanV3, Diagnostic> {
+        result_refs: Vec<crate::query_remote::StagedResultRef>,
+    ) -> Result<crate::query_remote::StagedPlan, Diagnostic> {
         let plan = self.build(schema, semantics)?;
-        crate::query_remote_v3::StagedPlanV3::new_with_result_refs(&plan, rows, result_refs, schema)
+        crate::query_remote::StagedPlan::new_with_result_refs(&plan, rows, result_refs, schema)
     }
 
     /// Build one selected terminal without copying the recording first.
@@ -853,7 +853,7 @@ impl PlanBuilder {
         schema: &DeclaredSchema,
         semantics: ManagedSemanticSchemaFingerprint,
         selection: BuildSelection<'_>,
-    ) -> Result<QueryPlanV3, Diagnostic> {
+    ) -> Result<QueryPlan, Diagnostic> {
         // The plan stage; spans carry no fields, so no user value leaves.
         let _stage = tracing::info_span!("tb.orm.plan").entered();
         if let Some(error) = &self.error {
@@ -960,7 +960,7 @@ impl PlanBuilder {
             });
             pipeline.insert(position, Stage::Fetch(document.clone()));
         }
-        QueryPlanV3::new_with_limits(
+        QueryPlan::new_with_limits(
             PlanSpec {
                 bindings: self.bindings.clone(),
                 inputs: self.inputs.clone(),
@@ -996,7 +996,7 @@ impl PlanBuilder {
         &self,
         schema: &DeclaredSchema,
         semantics: ManagedSemanticSchemaFingerprint,
-    ) -> Result<QueryPlanV3, Diagnostic> {
+    ) -> Result<QueryPlan, Diagnostic> {
         self.build_selected(schema, semantics, BuildSelection::Matched)
     }
 
@@ -1224,11 +1224,11 @@ mod selection_tests {
         let mut without_metadata = selected.clone();
         without_metadata.scalar_types = None;
         assert_eq!(without_metadata.canonical_bytes().unwrap(), bytes);
-        let decoded = super::super::decode_query_plan_v3(&bytes, &schema).unwrap();
+        let decoded = super::super::decode_query_plan(&bytes, &schema).unwrap();
         assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
         assert_eq!(decoded.scalar_value_type(value), Some(ValueTypeTag::Long));
         let counted_bytes = counted.canonical_bytes().unwrap();
-        let decoded = super::super::decode_query_plan_v3(&counted_bytes, &schema).unwrap();
+        let decoded = super::super::decode_query_plan(&counted_bytes, &schema).unwrap();
         assert!(decoded.scalar_types.is_none());
         assert_eq!(decoded.canonical_bytes().unwrap(), counted_bytes);
     }

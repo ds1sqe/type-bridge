@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 /// only with an equal number of template rows. References in one plan must use
 /// the same source; no cross product or data-dependent plan is implied.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct StagedResultRefV3 {
+pub struct StagedResultRef {
     /// Input column whose template cells must be absent.
     pub input: InputColumnId,
     /// Zero-based index of an earlier plan in the same stack.
@@ -26,7 +26,7 @@ pub struct StagedResultRefV3 {
     pub expected_types: Vec<TypeId>,
 }
 
-impl<'de> Deserialize<'de> for StagedResultRefV3 {
+impl<'de> Deserialize<'de> for StagedResultRef {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -81,17 +81,17 @@ fn subtype(parents: &BTreeMap<TypeId, TypeId>, actual: &TypeId, expected: &[Type
     false
 }
 
-impl StagedPlanV3 {
+impl StagedPlan {
     /// Stage a typed IID dependency without substituting its future values.
     ///
     /// The dependency columns contain `None` in every invocation template row.
     /// Reference metadata remains visible to hooks; ordinary invocation values
     /// follow the hook's existing visibility policy. The complete stack must
-    /// pass [`validate_staged_result_refs_v3`] before provider dispatch.
+    /// pass [`validate_staged_result_refs`] before provider dispatch.
     pub fn new_with_result_refs(
-        plan: &QueryPlanV3,
+        plan: &QueryPlan,
         rows: Vec<InputRow>,
-        mut result_refs: Vec<StagedResultRefV3>,
+        mut result_refs: Vec<StagedResultRef>,
         schema: &DeclaredSchema,
     ) -> Result<Self, Diagnostic> {
         result_refs.sort_by_key(|reference| reference.input);
@@ -115,7 +115,7 @@ impl StagedPlanV3 {
     }
 
     /// IID dependencies, in ascending target-column order.
-    pub fn result_refs(&self) -> &[StagedResultRefV3] {
+    pub fn result_refs(&self) -> &[StagedResultRef] {
         &self.wire.result_refs
     }
 
@@ -202,9 +202,9 @@ impl StagedPlanV3 {
     /// transaction. A failure must abort the transaction before this plan runs.
     pub fn bind_results(
         &self,
-        answers: &[StagedAnswerV3],
+        answers: &[StagedAnswer],
         schema: &DeclaredSchema,
-    ) -> Result<QueryPlanV3, Diagnostic> {
+    ) -> Result<QueryPlan, Diagnostic> {
         if self.result_refs().is_empty() {
             return self.bound_plan(schema);
         }
@@ -225,13 +225,13 @@ impl StagedPlanV3 {
     /// carries `source_row`.
     pub fn bind_source_result(
         &self,
-        source: &StagedAnswerV3,
+        source: &StagedAnswer,
         schema: &DeclaredSchema,
-    ) -> Result<QueryPlanV3, Diagnostic> {
+    ) -> Result<QueryPlan, Diagnostic> {
         if self.result_refs().is_empty() {
             return self.bound_plan(schema);
         }
-        let StagedAnswerV3::Rows { rows: source } = source else {
+        let StagedAnswer::Rows { rows: source } = source else {
             return Err(result_failure(
                 "query_stage_result_ref_answer",
                 "result reference requires an earlier row answer",
@@ -316,8 +316,8 @@ impl StagedPlanV3 {
 }
 
 /// Validate the ordered IID dependency graph before any provider dispatch.
-pub fn validate_staged_result_refs_v3(
-    plans: &[StagedPlanV3],
+pub fn validate_staged_result_refs(
+    plans: &[StagedPlan],
     schema: &DeclaredSchema,
 ) -> Result<(), Diagnostic> {
     if plans.iter().all(|entry| entry.result_refs().is_empty()) {

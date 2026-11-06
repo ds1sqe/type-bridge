@@ -143,7 +143,7 @@ impl PlanMeter {
 
     pub(crate) fn accept(
         &mut self,
-        answer: &type_bridge_contract::query_remote_v3::StagedAnswerV3,
+        answer: &type_bridge_contract::query_remote::StagedAnswer,
     ) -> Result<(), OrmError> {
         let codes = [
             "hydrated_thing_limit",
@@ -171,11 +171,11 @@ mod plan_tests {
     use super::*;
     use crate::session::backend::AnswerLimits;
     use serde_json::json;
-    use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+    use type_bridge_contract::query_remote::StagedAnswer;
 
     #[test]
     fn semantic_dimensions_are_aggregate_and_zero_means_no_values() {
-        let answer: StagedAnswerV3 = serde_json::from_value(json!({"kind":"documents", "documents":[{
+        let answer: StagedAnswer = serde_json::from_value(json!({"kind":"documents", "documents":[{
             "_iid":{"kind":"scalar", "value":{"kind":"string", "value":"0x01"}},
             "attributes":{"kind":"document", "fields":{"name":{"kind":"list", "values":[{"kind":"string", "value":"Ada"}, {"kind":"string", "value":"Grace"}]}}},
             "_role_0_iid":{"kind":"scalar", "value":{"kind":"string", "value":"0x02"}},

@@ -39,7 +39,7 @@ def report(binding: str, *, live: bool) -> dict[str, Any]:
         ),
         "explanation": json.loads(
             (
-                ROOT / "tests/contracts/plan_v3/explain/purchase-sdk.typedb-3.13.6-v1.json"
+                ROOT / "tests/contracts/plan/explain/purchase-sdk.typedb-3.13.6-v1.json"
             ).read_text()
         ),
         "results": (

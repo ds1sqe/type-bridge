@@ -115,7 +115,7 @@ impl PyProxyConnection {
         query_limits: Option<PyRef<'_, PyQueryLimits>>,
     ) -> PyResult<Self> {
         let query_limits = query_limits
-            .map(|limits| limits.inner().validate_v3())
+            .map(|limits| limits.inner().validate_plan())
             .transpose()
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         let tls = direct_tls_from_python(tls_mode, tls_root_ca)?;

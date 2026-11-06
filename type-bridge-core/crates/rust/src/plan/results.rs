@@ -90,7 +90,7 @@ macro_rules! tuple_result {
     ($($ty:ident:$index:tt),+) => {
         impl<$($ty: PlanCellResult),+> result_sealed::Sealed for Vec<($($ty,)+)> {}
         impl<$($ty: PlanCellResult),+> PlanResult for Vec<($($ty,)+)> {
-            fn decode(plan: &QueryPlanV3, answer: &PlanAnswer) -> Result<Self> {
+            fn decode(plan: &QueryPlan, answer: &PlanAnswer) -> Result<Self> {
                 answer.scalar_rows(plan).map_err(Error::from_contract_diagnostic)?.iter().map(|row| {
                     if row.len() != [$(stringify!($ty)),+].len() { return Err(result_shape()); }
                     Ok(($($ty::decode_cell(PlanFetchCell::Scalar(row.get($index).ok_or_else(result_shape)?), None)?,)+))

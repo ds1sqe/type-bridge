@@ -5,7 +5,7 @@ use std::sync::Arc;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionRolePlayer, BindingId, ValueComparator};
-use type_bridge_contract::query_plan::v3::{
+use type_bridge_contract::query_plan::{
     AttachItem, DeleteItem, DocumentRole, Expr, InsertThing, Operation, Pattern, Stage,
     ThingDocument, WriteReturns,
 };
@@ -1829,7 +1829,7 @@ pub(crate) enum ManagerRead {
 }
 
 impl ManagerRead {
-    pub(crate) fn plans(&self) -> &[type_bridge_contract::query_plan::v3::QueryPlanV3] {
+    pub(crate) fn plans(&self) -> &[type_bridge_contract::query_plan::QueryPlan] {
         match self {
             Self::Fetch(stack) => stack.plans(),
             Self::Scalar { plan, .. } | Self::Aggregate { plan, .. } => {

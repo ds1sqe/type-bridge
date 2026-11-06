@@ -294,7 +294,7 @@ pub fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
 #[path = "../../tests/support/plan_v3_race.rs"]
 mod race;
 
-use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
+use type_bridge_contract::query_plan::{Operation, QueryPlan};
 use type_bridge_orm::OrmError;
 use type_bridge_orm::session::GivenRowsSpec;
 use type_bridge_orm::session::backend::{
@@ -356,7 +356,7 @@ impl TransactionOps for OneRow {
 pub struct StagedCommit {
     runtime: tokio::runtime::Runtime,
     database: type_bridge_orm::Database,
-    plans: Vec<QueryPlanV3>,
+    plans: Vec<QueryPlan>,
 }
 
 /// The staged program of mixed plans: the one-query purchase (given row),

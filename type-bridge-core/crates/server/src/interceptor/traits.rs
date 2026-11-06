@@ -9,9 +9,9 @@ use type_bridge_contract::failure::Failure;
 
 use type_bridge_contract::id::TypeId;
 
-use type_bridge_contract::query_plan::v3::Operation;
+use type_bridge_contract::query_plan::Operation;
 
-use type_bridge_contract::query_plan::{InputRow, QueryPlanV3};
+use type_bridge_contract::query_plan::{InputRow, QueryPlan};
 
 use type_bridge_orm::session::staged::TransactionKind;
 
@@ -98,16 +98,16 @@ impl<'a> V3PolicyOutcome<'a> {
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct V3PolicyPlan<'a> {
-    plan: &'a QueryPlanV3,
+    plan: &'a QueryPlan,
     types: &'a [TypeId],
     rows_visible: bool,
     capabilities: &'a CapabilitySet,
-    result_refs: &'a [type_bridge_contract::query_remote_v3::StagedResultRefV3],
+    result_refs: &'a [type_bridge_contract::query_remote::StagedResultRef],
     template_rows: Option<&'a [InputRow]>,
 }
 
 impl<'a> V3PolicyPlan<'a> {
-    pub(crate) const fn new(plan: &'a QueryPlanV3, types: &'a [TypeId]) -> Self {
+    pub(crate) const fn new(plan: &'a QueryPlan, types: &'a [TypeId]) -> Self {
         Self {
             plan,
             types,
@@ -120,7 +120,7 @@ impl<'a> V3PolicyPlan<'a> {
 
     pub(crate) const fn with_result_refs(
         mut self,
-        result_refs: &'a [type_bridge_contract::query_remote_v3::StagedResultRefV3],
+        result_refs: &'a [type_bridge_contract::query_remote::StagedResultRef],
         rows: &'a [InputRow],
         capabilities: &'a CapabilitySet,
     ) -> Self {
@@ -132,9 +132,7 @@ impl<'a> V3PolicyPlan<'a> {
 
     /// Symbolic IID dependencies, visible independently of invocation-row policy.
     #[must_use]
-    pub const fn result_refs(
-        &self,
-    ) -> &'a [type_bridge_contract::query_remote_v3::StagedResultRefV3] {
+    pub const fn result_refs(&self) -> &'a [type_bridge_contract::query_remote::StagedResultRef] {
         self.result_refs
     }
 

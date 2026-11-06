@@ -1004,7 +1004,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         program: &crate::plan_builders::manager::ManagerRead,
         answer: crate::query_plan_exec::PlanAnswer,
     ) -> Result<u64, crate::QueryTargetError> {
-        let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } =
+        let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } =
             answer.to_staged_v3(&program.plans()[0]).map_err(|error| {
                 crate::QueryTargetError::Direct(crate::plan_builders::manager::diagnostic(error))
             })?
@@ -2155,10 +2155,10 @@ mod target_tests {
     use type_bridge_contract::limits::QueryLimits;
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
     use type_bridge_contract::query_remote::{
-        RemoteCapabilities, RemoteExecutorBinding, RemoteSigningPublicKey,
+        CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED, StagedRequest,
     };
-    use type_bridge_contract::query_remote_v3::{
-        CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedRequestV3,
+    use type_bridge_contract::query_remote::{
+        RemoteCapabilities, RemoteExecutorBinding, RemoteSigningPublicKey,
     };
     use type_bridge_contract::schema::DocumentId;
 
@@ -2201,21 +2201,18 @@ mod target_tests {
                 profile.as_str(),
             )
             .unwrap()
-            .with_limits(QueryLimits::V3),
+            .with_limits(QueryLimits::PLAN),
         );
         let cached = authority.adapter_authority();
         assert!(Arc::ptr_eq(&cached, &authority.adapter_authority()));
         assert!(Arc::ptr_eq(
             &cached,
             &authority
-                .rebound_with_limits(QueryLimits::V3)
+                .rebound_with_limits(QueryLimits::PLAN)
                 .adapter_authority()
         ));
-        let mut caps = type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
-        for capability in [
-            CAP_QUERY_REMOTE_STAGED_V3,
-            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
-        ] {
+        let mut caps = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
             caps.insert(CapabilityId::new(capability).unwrap());
         }
         let advertisement = RemoteCapabilities::new(
@@ -2223,7 +2220,7 @@ mod target_tests {
             RemoteExecutorBinding::new("filter-target-executor", "epoch-filter-target").unwrap(),
             RemoteSigningPublicKey::from_bytes([7; 32]),
         )
-        .with_query_limits(QueryLimits::V3)
+        .with_query_limits(QueryLimits::PLAN)
         .unwrap();
         let policy = QueryExecutionResourceLimits {
             items: 100,
@@ -2359,7 +2356,7 @@ mod target_tests {
                         )
                         .unwrap();
                     let staged =
-                        StagedRequestV3::decode(pending.request_bytes(), &declared, &advertisement)
+                        StagedRequest::decode(pending.request_bytes(), &declared, &advertisement)
                             .unwrap();
                     assert_eq!(staged.plans().len(), 1);
                     assert_eq!(direct.plans.len(), 1);
@@ -2423,8 +2420,7 @@ mod target_tests {
                 )
                 .unwrap();
             let staged =
-                StagedRequestV3::decode(pending.request_bytes(), &declared, &advertisement)
-                    .unwrap();
+                StagedRequest::decode(pending.request_bytes(), &declared, &advertisement).unwrap();
             assert_eq!(
                 staged.plans()[0].plan().canonical_bytes().unwrap(),
                 direct.plans[0].canonical_bytes().unwrap()

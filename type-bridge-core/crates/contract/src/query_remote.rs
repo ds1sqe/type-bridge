@@ -399,10 +399,8 @@ impl RemoteCapabilities {
     ) -> Self {
         let reply_key_id = RemoteSigningKeyId::for_public_key(reply_key);
         let query_limits = if capabilities.contains(
-            &crate::capability::CapabilityId::new(
-                crate::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
-            )
-            .expect("static staged capability"),
+            &crate::capability::CapabilityId::new(crate::query_remote::CAP_QUERY_REMOTE_STAGED)
+                .expect("static staged capability"),
         ) {
             BTreeMap::from([(
                 "selected_slots".to_owned(),
@@ -529,13 +527,11 @@ impl RemoteCapabilities {
 
     fn validate_format_query_limits(&self, limits: QueryLimits) -> Result<QueryLimits, Diagnostic> {
         if self.capabilities.contains(
-            &crate::capability::CapabilityId::new(
-                crate::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
-            )
-            .expect("static staged capability"),
+            &crate::capability::CapabilityId::new(crate::query_remote::CAP_QUERY_REMOTE_STAGED)
+                .expect("static staged capability"),
         ) {
             limits
-                .validate_v3()
+                .validate_plan()
                 .map_err(|_| advertised_limits_invalid())
         } else if limits.structural.selected_slots > crate::limits::MAX_SELECTED_SLOTS {
             Err(advertised_limits_invalid())
@@ -982,3 +978,7 @@ fn envelope_failure(
         message,
     )
 }
+
+#[path = "query_remote_staged.rs"]
+mod staged;
+pub use staged::*;

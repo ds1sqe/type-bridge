@@ -14,17 +14,17 @@ struct StaticStep {
 }
 
 pub(crate) struct StaticProgram {
-    entries: Vec<type_bridge_contract::query_remote_v3::StagedPlanV3>,
+    entries: Vec<type_bridge_contract::query_remote::StagedPlan>,
     steps: VecDeque<StaticStep>,
-    answers: Vec<StagedAnswerV3>,
+    answers: Vec<StagedAnswer>,
     authority: PlanAuthority,
 }
 impl StaticProgram {
     pub(super) fn new(program: SplitProgram) -> Result<Self, Diagnostic> {
-        use type_bridge_contract::query_plan::v3::QueryPlanV3;
+        use type_bridge_contract::query_plan::QueryPlan;
         use type_bridge_contract::query_plan::{InputColumn, InputColumnId};
-        use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
-        let mut entries: Vec<StagedPlanV3> = Vec::with_capacity(program.steps.len());
+        use type_bridge_contract::query_remote::{StagedPlan, StagedResultRef};
+        let mut entries: Vec<StagedPlan> = Vec::with_capacity(program.steps.len());
         let mut steps = VecDeque::with_capacity(program.steps.len());
         let mut source = None;
         let mut guard_source = None;
@@ -34,7 +34,7 @@ impl StaticProgram {
                     if !step.complete && !step.reference_guard {
                         source = Some((entries.len(), step.ordinal, step.missing_iid_noop));
                     }
-                    let entry = StagedPlanV3::new(
+                    let entry = StagedPlan::new(
                         step.plan.local(),
                         step.plan.local().given_rows().unwrap_or_default().to_vec(),
                         program.authority.declared(),
@@ -89,7 +89,7 @@ impl StaticProgram {
                         cells[column] = None;
                         *row = InputRow::new(cells);
                     }
-                    let unbound = QueryPlanV3::new_with_limits(
+                    let unbound = QueryPlan::new_with_limits(
                         crate::plan_builders::PlanSpec {
                             bindings: plan.bindings().to_vec(),
                             inputs,
@@ -103,10 +103,10 @@ impl StaticProgram {
                         program.authority.declared(),
                         plan.limits(),
                     )?;
-                    let entry = StagedPlanV3::new_with_result_refs(
+                    let entry = StagedPlan::new_with_result_refs(
                         &unbound,
                         rows,
-                        vec![StagedResultRefV3 {
+                        vec![StagedResultRef {
                             input: InputColumnId::new(
                                 u16::try_from(column).map_err(|_| identity_error())?,
                             ),
@@ -137,7 +137,7 @@ impl StaticProgram {
             entries.push(entry);
             steps.push_back(metadata);
         }
-        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+        type_bridge_contract::query_remote::validate_staged_result_refs(
             &entries,
             program.authority.declared(),
         )?;
@@ -155,13 +155,13 @@ impl StaticProgram {
         placeholders: BTreeMap<String, usize>,
     ) -> Result<Self, Diagnostic> {
         use type_bridge_contract::query_plan::InputColumnId;
-        use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
+        use type_bridge_contract::query_remote::{StagedPlan, StagedResultRef};
         let mut program = Self::new(body)?;
         let mut entries = Vec::with_capacity(program.entries.len() + lookups.len());
         let mut sources = BTreeMap::new();
         let mut prefix = VecDeque::new();
         for (lookup, ordinals) in lookups {
-            let mut entry = StagedPlanV3::new(
+            let mut entry = StagedPlan::new(
                 lookup.local(),
                 lookup.local().given_rows().unwrap_or_default().to_vec(),
                 program.authority.declared(),
@@ -233,7 +233,7 @@ impl StaticProgram {
                     let QueryOutput::Rows { columns } = source.output() else {
                         return Err(identity_error());
                     };
-                    refs.push(StagedResultRefV3 {
+                    refs.push(StagedResultRef {
                         input: InputColumnId::new(
                             u16::try_from(column).map_err(|_| identity_error())?,
                         ),
@@ -249,7 +249,7 @@ impl StaticProgram {
                     });
                 }
             }
-            let entry = StagedPlanV3::new_with_result_refs(
+            let entry = StagedPlan::new_with_result_refs(
                 plan,
                 rows.into_iter().map(InputRow::new).collect(),
                 refs,
@@ -269,7 +269,7 @@ impl StaticProgram {
         if seen.len() != placeholders.len() {
             return Err(identity_error());
         }
-        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+        type_bridge_contract::query_remote::validate_staged_result_refs(
             &entries,
             program.authority.declared(),
         )?;
@@ -287,9 +287,9 @@ impl StaticProgram {
         ordinal: usize,
     ) -> Result<Self, Diagnostic> {
         use type_bridge_contract::migration_assertion::QueryVariable;
-        use type_bridge_contract::query_plan::v3::QueryPlanV3;
+        use type_bridge_contract::query_plan::QueryPlan;
         use type_bridge_contract::query_plan::{InputColumn, InputColumnId};
-        use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
+        use type_bridge_contract::query_remote::{StagedPlan, StagedResultRef};
         let mut program = Self::new(miss)?;
         let probe = probes.last().ok_or_else(identity_error)?;
         let QueryOutput::Rows { columns } = probe.local().output() else {
@@ -307,7 +307,7 @@ impl StaticProgram {
         );
         let mut prefix = VecDeque::with_capacity(guards.len() + probes.len());
         for guard in guards {
-            let mut entry = StagedPlanV3::new(
+            let mut entry = StagedPlan::new(
                 guard.plan.local(),
                 guard.plan.local().given_rows().unwrap_or_default().to_vec(),
                 program.authority.declared(),
@@ -325,7 +325,7 @@ impl StaticProgram {
             });
         }
         for (position, probe) in probes.iter().enumerate() {
-            let mut entry = StagedPlanV3::new(
+            let mut entry = StagedPlan::new(
                 probe.local(),
                 probe.local().given_rows().unwrap_or_default().to_vec(),
                 program.authority.declared(),
@@ -380,7 +380,7 @@ impl StaticProgram {
                     }
                     .into(),
                 );
-                refs.push(StagedResultRefV3 {
+                refs.push(StagedResultRef {
                     input,
                     source_plan: u32::try_from(probe_index).map_err(|_| identity_error())?,
                     source_column: 1,
@@ -402,7 +402,7 @@ impl StaticProgram {
                     );
                 }
             }
-            let plan = QueryPlanV3::new_with_limits(
+            let plan = QueryPlan::new_with_limits(
                 crate::plan_builders::PlanSpec {
                     bindings: plan.bindings().to_vec(),
                     inputs,
@@ -416,7 +416,7 @@ impl StaticProgram {
                 program.authority.declared(),
                 plan.limits(),
             )?;
-            entries.push(StagedPlanV3::new_with_result_refs(
+            entries.push(StagedPlan::new_with_result_refs(
                 &plan,
                 rows,
                 refs,
@@ -430,7 +430,7 @@ impl StaticProgram {
         prefix.append(&mut program.steps);
         program.steps = prefix;
         for (index, final_read) in final_reads.iter().enumerate() {
-            let mut entry = StagedPlanV3::new(
+            let mut entry = StagedPlan::new(
                 final_read.local(),
                 final_read.local().given_rows().unwrap_or_default().to_vec(),
                 program.authority.declared(),
@@ -453,7 +453,7 @@ impl StaticProgram {
                 reference_resolution: None,
             });
         }
-        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+        type_bridge_contract::query_remote::validate_staged_result_refs(
             &entries,
             program.authority.declared(),
         )?;
@@ -490,9 +490,9 @@ impl StaticProgram {
         source: &BuiltPlan,
         authority: &PlanAuthority,
     ) -> Result<(), Diagnostic> {
-        use type_bridge_contract::query_remote_v3::StagedPlanV3;
+        use type_bridge_contract::query_remote::StagedPlan;
         let entry = |plan: &BuiltPlan| {
-            StagedPlanV3::new(
+            StagedPlan::new(
                 plan.local(),
                 plan.local().given_rows().unwrap_or_default().to_vec(),
                 authority.declared(),
@@ -501,9 +501,7 @@ impl StaticProgram {
         gate(entry(plan)?, &entry(source)?, 0, authority).map(|_| ())
     }
 
-    pub(super) fn staged_entries(
-        &self,
-    ) -> Vec<type_bridge_contract::query_remote_v3::StagedPlanV3> {
+    pub(super) fn staged_entries(&self) -> Vec<type_bridge_contract::query_remote::StagedPlan> {
         self.entries.clone()
     }
 
@@ -527,7 +525,7 @@ impl StaticProgram {
         if self.records_answers() {
             let answer = answer.to_staged_v3(step.plan.local())?;
             if !step.complete && step.reference_resolution.is_none() {
-                let StagedAnswerV3::Rows { rows } = &answer else {
+                let StagedAnswer::Rows { rows } = &answer else {
                     return Err(identity_error());
                 };
                 if rows.is_empty() && !step.missing_iid_noop {
@@ -605,12 +603,12 @@ impl StaticProgram {
 }
 
 fn root_source(
-    entry: type_bridge_contract::query_remote_v3::StagedPlanV3,
-    source: &type_bridge_contract::query_remote_v3::StagedPlanV3,
+    entry: type_bridge_contract::query_remote::StagedPlan,
+    source: &type_bridge_contract::query_remote::StagedPlan,
     source_index: usize,
     authority: &PlanAuthority,
-) -> Result<type_bridge_contract::query_remote_v3::StagedPlanV3, Diagnostic> {
-    use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
+) -> Result<type_bridge_contract::query_remote::StagedPlan, Diagnostic> {
+    use type_bridge_contract::query_remote::{StagedPlan, StagedResultRef};
     let QueryOutput::Rows { columns } = source.plan().output() else {
         return Err(identity_error());
     };
@@ -622,7 +620,7 @@ fn root_source(
         .ok_or_else(identity_error)?
         .id();
     let mut refs = entry.result_refs().to_vec();
-    refs.push(StagedResultRefV3 {
+    refs.push(StagedResultRef {
         input,
         source_plan: u32::try_from(source_index).map_err(|_| identity_error())?,
         source_column: 1,
@@ -634,7 +632,7 @@ fn root_source(
             .cloned()
             .collect(),
     });
-    StagedPlanV3::new_with_result_refs(
+    StagedPlan::new_with_result_refs(
         entry.plan(),
         entry.rows().to_vec(),
         refs,
@@ -643,14 +641,14 @@ fn root_source(
 }
 
 fn gate(
-    entry: type_bridge_contract::query_remote_v3::StagedPlanV3,
-    source: &type_bridge_contract::query_remote_v3::StagedPlanV3,
+    entry: type_bridge_contract::query_remote::StagedPlan,
+    source: &type_bridge_contract::query_remote::StagedPlan,
     source_index: usize,
     authority: &PlanAuthority,
-) -> Result<type_bridge_contract::query_remote_v3::StagedPlanV3, Diagnostic> {
+) -> Result<type_bridge_contract::query_remote::StagedPlan, Diagnostic> {
     use type_bridge_contract::migration_assertion::QueryVariable;
     use type_bridge_contract::query_plan::InputColumn;
-    use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
+    use type_bridge_contract::query_remote::{StagedPlan, StagedResultRef};
     let QueryOutput::Rows { columns } = source.plan().output() else {
         return Err(identity_error());
     };
@@ -680,7 +678,7 @@ fn gate(
             row.push(None);
         }
         patterns.push(present(&QueryOperand::Input { column: input }).into());
-        refs.push(StagedResultRefV3 {
+        refs.push(StagedResultRef {
             input,
             source_plan: u32::try_from(source_index).map_err(|_| identity_error())?,
             source_column: u16::try_from(index).map_err(|_| identity_error())?,
@@ -699,7 +697,7 @@ fn gate(
             "Guard dependencies exceed the configured binding ceiling",
         ));
     }
-    let plan = type_bridge_contract::query_plan::v3::QueryPlanV3::new_with_limits(
+    let plan = type_bridge_contract::query_plan::QueryPlan::new_with_limits(
         crate::plan_builders::PlanSpec {
             bindings: plan.bindings().to_vec(),
             inputs,
@@ -713,7 +711,7 @@ fn gate(
         authority.declared(),
         plan.limits(),
     )?;
-    StagedPlanV3::new_with_result_refs(
+    StagedPlan::new_with_result_refs(
         &plan,
         rows.into_iter().map(InputRow::new).collect(),
         refs,
@@ -757,7 +755,7 @@ mod static_tests {
             },
         )];
 
-        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
         limits.structural.bindings = 8;
         limits.structural.selected_slots = 8;
         limits.structural.input_rows = 2;
@@ -799,7 +797,7 @@ mod static_tests {
         assert!(program.entries.len() > 1);
         assert_eq!(program.entries[0].rows().len(), 1);
         // A unique player can belong to multiple relation roots.
-        let answer = StagedAnswerV3::Rows {
+        let answer = StagedAnswer::Rows {
             rows: ["0x20", "0x21"]
                 .into_iter()
                 .map(|iid| {
@@ -968,7 +966,7 @@ plays:
             .unwrap(),
         );
         for terms in [256, 8, 3] {
-            let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+            let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
             limits.structural.boolean_terms = terms;
             let authority = authority
                 .clone()
@@ -1023,7 +1021,7 @@ plays:
             "canonical_bytes",
             "collections",
         ] {
-            let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+            let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
             match resource {
                 "input_rows" => limits.structural.input_rows = 2,
                 "predicate_nodes" => limits.structural.predicate_nodes = 128,
@@ -1137,7 +1135,7 @@ plays:
         let selector = AttributeId::new("selector").unwrap();
         for by_iid in [false, true] {
             for terms in [256, 8] {
-                let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+                let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
                 limits.structural.boolean_terms = terms;
                 let authority = authority
                     .clone()
@@ -1220,7 +1218,7 @@ plays:
                         }
                     }
                 }
-                type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+                type_bridge_contract::query_remote::validate_staged_result_refs(
                     &exported,
                     authority.declared(),
                 )
@@ -1325,8 +1323,8 @@ plays:
                 ]
             };
             for source in [
-                StagedAnswerV3::Rows { rows: vec![] },
-                StagedAnswerV3::Rows {
+                StagedAnswer::Rows { rows: vec![] },
+                StagedAnswer::Rows {
                     rows: vec![root("0x10")],
                 },
             ] {
@@ -1334,7 +1332,7 @@ plays:
                     .bind_source_result(&source, authority.declared())
                     .unwrap();
                 let input = usize::from(program.entries[1].result_refs()[0].input.get());
-                let present = matches!(&source, StagedAnswerV3::Rows { rows } if !rows.is_empty());
+                let present = matches!(&source, StagedAnswer::Rows { rows } if !rows.is_empty());
                 assert_eq!(
                     plan.given_rows().unwrap()[0].values()[input].is_some(),
                     present
@@ -1342,7 +1340,7 @@ plays:
             }
             let inherited = program.entries[1]
                 .bind_source_result(
-                    &StagedAnswerV3::Rows {
+                    &StagedAnswer::Rows {
                         rows: vec![root("0x10"), root("0x20")],
                     },
                     authority.declared(),
@@ -1359,7 +1357,7 @@ plays:
                 Some(super::super::iid("0x20").unwrap())
             );
             let absent = program.entries[2]
-                .bind_source_result(&StagedAnswerV3::Rows { rows: vec![] }, authority.declared())
+                .bind_source_result(&StagedAnswer::Rows { rows: vec![] }, authority.declared())
                 .unwrap();
             let input = usize::from(program.entries[2].result_refs()[0].input.get());
             assert!(
@@ -1435,7 +1433,7 @@ plays:
             );
         }
         let count = stack.entries.len();
-        let wire = StagedAnswerV3::Rows {
+        let wire = StagedAnswer::Rows {
             rows: vec![vec![
                 RemoteValue::Value {
                     value: CanonicalValue::Long(0),
@@ -1522,7 +1520,7 @@ plays:
         let mut observed = 0;
         while let Some(step) = program.next().unwrap() {
             let wire = if observed == 0 {
-                StagedAnswerV3::Rows {
+                StagedAnswer::Rows {
                     rows: vec![vec![
                         RemoteValue::Value {
                             value: CanonicalValue::Long(0),
@@ -1547,7 +1545,7 @@ plays:
                         .iter()
                         .all(|row| row.values()[column].is_none())
                 );
-                StagedAnswerV3::Rows { rows: vec![] }
+                StagedAnswer::Rows { rows: vec![] }
             };
             let answer = PlanAnswer::from_staged_v3(&wire, step.plan.local()).unwrap();
             program.record_answer(&step, &answer).unwrap();
@@ -1638,7 +1636,7 @@ plays:
                         .all(|row| row.values()[column] == expected)
                 );
             }
-            let wire = StagedAnswerV3::Rows {
+            let wire = StagedAnswer::Rows {
                 rows: vec![vec![
                     RemoteValue::Value {
                         value: CanonicalValue::Long(0),
@@ -1663,7 +1661,7 @@ plays:
     #[test]
     fn full_match_graph_replays_guarded_and_compact_misses_without_truncating_roots() {
         use type_bridge_contract::query_remote::RemoteValue;
-        use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+        use type_bridge_contract::query_remote::StagedAnswer;
         use type_bridge_contract::value::CanonicalString;
         let authority = PlanAuthority::new(
             crate::query_plan_exec::race::schema(),
@@ -1711,12 +1709,12 @@ plays:
             })
             .collect::<Vec<_>>();
         for input_rows in [
-            type_bridge_contract::limits::QueryLimits::V3
+            type_bridge_contract::limits::QueryLimits::PLAN
                 .structural
                 .input_rows,
             2,
         ] {
-            let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+            let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
             limits.structural.input_rows = input_rows;
             let authority = authority
                 .clone()
@@ -1751,7 +1749,7 @@ plays:
                         .staged_entries(&authority)
                         .unwrap()
                         .expect("a complete fixed graph");
-                    type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+                    type_bridge_contract::query_remote::validate_staged_result_refs(
                         &entries,
                         authority.declared(),
                     )
@@ -1825,7 +1823,7 @@ plays:
                             let witness = step.plan.local().pipeline().iter().any(|stage| {
                                 matches!(
                                     stage,
-                                    type_bridge_contract::query_plan::v3::Stage::Limit { rows: 1 }
+                                    type_bridge_contract::query_plan::Stage::Limit { rows: 1 }
                                 )
                             });
                             if witness {
@@ -1844,14 +1842,14 @@ plays:
                             }
                         };
                         let answer = crate::query_plan_exec::PlanAnswer::from_staged_v3(
-                            &StagedAnswerV3::Rows { rows },
+                            &StagedAnswer::Rows { rows },
                             step.plan.local(),
                         )
                         .unwrap();
                         if step.complete {
                             assert!(!step.plan.local().pipeline().iter().any(|stage| matches!(
                                 stage,
-                                type_bridge_contract::query_plan::v3::Stage::Limit { .. }
+                                type_bridge_contract::query_plan::Stage::Limit { .. }
                             )));
                             completed = step
                                 .reference_iids(&answer)

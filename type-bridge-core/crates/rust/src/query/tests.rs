@@ -541,8 +541,8 @@ impl crate::remote::ProxyExchange for RemoteOriginTransport {
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = crate::Result<Vec<u8>>> + Send + 'a>> {
         use type_bridge_contract::query_remote::RemoteFieldValue;
-        use type_bridge_contract::query_remote_v3::{
-            StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+        use type_bridge_contract::query_remote::{
+            StagedAnswer, StagedOutcome, StagedReply, StagedRequest,
         };
         use type_bridge_contract::value::{CanonicalString, CanonicalValue};
         use type_bridge_orm::plan_authority::QueryAuthority;
@@ -557,7 +557,7 @@ impl crate::remote::ProxyExchange for RemoteOriginTransport {
         )
         .unwrap();
         let request =
-            StagedRequestV3::decode(request, authority.declared(), &self.advertisement_contract)
+            StagedRequest::decode(request, authority.declared(), &self.advertisement_contract)
                 .unwrap();
         assert_eq!(request.plans().len(), 1);
         let scalar = |value| RemoteFieldValue::Scalar { value };
@@ -575,10 +575,10 @@ impl crate::remote::ProxyExchange for RemoteOriginTransport {
                 },
             ),
         ]);
-        let response = StagedReplyV3::new(
+        let response = StagedReply::new(
             &request,
-            StagedOutcomeV3::Committed,
-            vec![StagedAnswerV3::Documents {
+            StagedOutcome::Committed,
+            vec![StagedAnswer::Documents {
                 documents: vec![document],
             }],
         )
@@ -590,16 +590,16 @@ impl crate::remote::ProxyExchange for RemoteOriginTransport {
 }
 
 fn remote_origin_transport() -> (RemoteOriginTransport, Arc<AtomicUsize>) {
-    use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
+    use type_bridge_contract::query_plan::query_plan_capability_vocabulary;
     use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
 
     use type_bridge_orm::remote_signing::RemoteReplySigningKey;
 
     let signer = RemoteReplySigningKey::from_secret_bytes([0x52; 32]);
-    let mut capabilities = query_plan_v3_capability_vocabulary();
+    let mut capabilities = query_plan_capability_vocabulary();
     for capability in [
-        type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
-        type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
+        type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
     ] {
         capabilities
             .insert(type_bridge_contract::capability::CapabilityId::new(capability).unwrap());

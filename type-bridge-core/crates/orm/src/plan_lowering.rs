@@ -188,7 +188,7 @@ pub(crate) fn lower_scoped_patterns_with_values(
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     patterns: &[QueryPattern],
     row: Option<&InputRow>,
-    validated: Option<&type_bridge_contract::query_plan::v3::QueryPlanV3>,
+    validated: Option<&type_bridge_contract::query_plan::QueryPlan>,
     values: Option<&[InputRow]>,
     literal_policy: Option<&crate::query_plan_exec::LiteralComparisonPolicy<'_>>,
 ) -> Result<Vec<tql::Pattern>, Diagnostic> {
@@ -216,7 +216,7 @@ fn lower_scoped_patterns_inner(
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     patterns: &[QueryPattern],
     row: Option<&InputRow>,
-    validated: Option<&type_bridge_contract::query_plan::v3::QueryPlanV3>,
+    validated: Option<&type_bridge_contract::query_plan::QueryPlan>,
     values: Option<&[InputRow]>,
     literal_policy: Option<&crate::query_plan_exec::LiteralComparisonPolicy<'_>>,
     scope: &mut PatternScope,

@@ -338,6 +338,49 @@ All notable changes to TypeBridge will be documented in this file.
 
 <!-- --8<-- [start:breaking-3-0] -->
 
+The active plan and staged-envelope contract uses one unversioned Rust API.
+Wire discriminators, capability strings, canonical bytes and `/v3/*` routes
+retain their existing versions. Update imports and calls as follows:
+
+| Removed API | Replacement |
+| --- | --- |
+| `CAP_QUERY_REMOTE_STAGED_V3` | `CAP_QUERY_REMOTE_STAGED` |
+| `CAP_QUERY_REMOTE_WRITE_V3` | `CAP_QUERY_REMOTE_WRITE` |
+| `DEFAULT_STAGED_READ_STATEMENTS_V3` | `DEFAULT_STAGED_READ_STATEMENTS` |
+| `DEFAULT_STAGED_WRITE_STATEMENTS_V3` | `DEFAULT_STAGED_WRITE_STATEMENTS` |
+| `MAX_STAGED_ITEMS_V3` | `MAX_STAGED_ITEMS` |
+| `MAX_STAGED_PLANS_V3` | `MAX_STAGED_PLANS` |
+| `MAX_STAGED_STATEMENTS_V3` | `MAX_STAGED_STATEMENTS` |
+| `QUERY_PLAN_CANONICALIZATION_V3` | `QUERY_PLAN_CANONICALIZATION` |
+| `QUERY_PLAN_FORMAT_V3` | `QUERY_PLAN_FORMAT` |
+| `QUERY_REMOTE_FAILURE_FORMAT_V3` | `QUERY_REMOTE_FAILURE_FORMAT` |
+| `QUERY_REMOTE_REPLY_FORMAT_V3` | `QUERY_REMOTE_REPLY_FORMAT` |
+| `QUERY_REMOTE_REQUEST_FORMAT_V3` | `QUERY_REMOTE_REQUEST_FORMAT` |
+| `QueryLimits::V3` | `QueryLimits::PLAN` |
+| `QueryLimits::validate_v3` | `QueryLimits::validate_plan` |
+| `QueryPlanV3` | `QueryPlan` |
+| `QueryPlanV3Encoding` | `QueryPlanEncoding` |
+| `STAGED_REMOTE_CODEC_LIMITS_V3` | `STAGED_REMOTE_CODEC_LIMITS` |
+| `SdkDiagnosticProjectionV3` | `SdkDiagnosticProjection` |
+| `StagedAnswerV3` | `StagedAnswer` |
+| `StagedFailureV3` | `StagedFailure` |
+| `StagedKindV3` | `StagedKind` |
+| `StagedLimitsV3` | `StagedLimits` |
+| `StagedOutcomeV3` | `StagedOutcome` |
+| `StagedPlanV3` | `StagedPlan` |
+| `StagedReplyV3` | `StagedReply` |
+| `StagedRequestSpecV3` | `StagedRequestSpec` |
+| `StagedRequestV3` | `StagedRequest` |
+| `StagedResultRefV3` | `StagedResultRef` |
+| `VerifiedStagedReplyV3` | `VerifiedStagedReply` |
+| `_query_plan_v3_round_trip` | `_query_plan_round_trip` |
+| `decode_query_plan_v3` | `decode_query_plan` |
+| `decode_query_plan_v3_with_limits` | `decode_query_plan_with_limits` |
+| `query_plan::v3` | `query_plan` |
+| `query_plan_v3_capability_vocabulary` | `query_plan_capability_vocabulary` |
+| `query_remote_v3` | `query_remote` |
+| `validate_staged_result_refs_v3` | `validate_staged_result_refs` |
+
 Legacy caller-owned query ASTs are removed. Build queries through generated
 models and typed plan builders; raw TypeQL goes through the explicit raw
 transaction API. Rust engine callers retain `QueryCompiler::compile_typed_*`

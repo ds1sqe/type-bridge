@@ -153,8 +153,8 @@ impl ProxyConnectionPolicy {
     /// # Errors
     /// Returns unsupported limits before any connection I/O.
     pub fn query_limits(mut self, limits: QueryLimits) -> Result<Self> {
-        let limits = limits.validate_v3().map_err(query_limits_error)?;
-        self.query_limits = (limits != QueryLimits::V3).then(|| Arc::new(limits));
+        let limits = limits.validate_plan().map_err(query_limits_error)?;
+        self.query_limits = (limits != QueryLimits::PLAN).then(|| Arc::new(limits));
         Ok(self)
     }
 
@@ -770,12 +770,12 @@ mod tests {
     fn proxy_connection_policy_admits_independent_query_limits_before_connecting() {
         let policy = ProxyConnectionPolicy::new(ProxyEndpoint::new("http://127.0.0.1:1"));
         assert!(policy.query_limits.is_none());
-        let mut limits = crate::QueryLimits::V3;
+        let mut limits = crate::QueryLimits::PLAN;
         limits.structural.bindings = 1024;
         limits.structural.boolean_terms = 512;
         let policy = policy.query_limits(limits).unwrap();
         assert_eq!(policy.query_limits.as_deref(), Some(&limits));
-        let policy = policy.query_limits(crate::QueryLimits::V3).unwrap();
+        let policy = policy.query_limits(crate::QueryLimits::PLAN).unwrap();
         assert!(policy.query_limits.is_none());
         limits.structural.bindings = 0;
         assert_eq!(
@@ -801,14 +801,12 @@ mod tests {
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-    use type_bridge_contract::query_plan::v3::{
-        Operation, Stage, query_plan_v3_capability_vocabulary,
-    };
+    use type_bridge_contract::query_plan::{Operation, Stage, query_plan_capability_vocabulary};
     use type_bridge_contract::query_remote::RemoteExecutorBinding;
 
-    use type_bridge_contract::query_remote_v3::{
-        CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedAnswerV3,
-        StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+    use type_bridge_contract::query_remote::{
+        CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED, StagedAnswer, StagedOutcome,
+        StagedReply, StagedRequest,
     };
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
     use type_bridge_orm::OrmError;
@@ -1299,7 +1297,7 @@ mod tests {
             self.exchanges.lock().unwrap().push(request.to_vec());
             let response = (|| {
                 let authority = remote_fixture_authority();
-                let request = StagedRequestV3::decode(
+                let request = StagedRequest::decode(
                     request,
                     authority.declared(),
                     &self.advertisement_contract,
@@ -1307,7 +1305,7 @@ mod tests {
                 .map_err(remote_diagnostic)?;
                 let (outcome, answers) = if let Some(diagnostic) = &self.failure {
                     (
-                        StagedOutcomeV3::Failed {
+                        StagedOutcome::Failed {
                             diagnostic: type_bridge_orm::lower_remote_query_diagnostic(
                                 diagnostic.clone(),
                             ),
@@ -1321,8 +1319,8 @@ mod tests {
                         .any(|entry| entry.plan().fetch_document_shape().is_some());
                     let answers = request.plans().iter().map(|entry| {
                         let plan=entry.plan();
-                        if plan.operation() == Operation::Count { return StagedAnswerV3::Count {value:7}; }
-                        if plan.operation() == Operation::Exists { return StagedAnswerV3::Exists {value:true}; }
+                        if plan.operation() == Operation::Count { return StagedAnswer::Count {value:7}; }
+                        if plan.operation() == Operation::Exists { return StagedAnswer::Exists {value:true}; }
                         if let Some(rows) = plan.standalone_entity_rows() {
                             use type_bridge_contract::query_remote::RemoteFieldValue;
                             use type_bridge_contract::value::{CanonicalString, CanonicalValue};
@@ -1343,18 +1341,18 @@ mod tests {
                                 }
                                 document
                             }).collect();
-                            return StagedAnswerV3::Documents { documents };
+                            return StagedAnswer::Documents { documents };
                         }
-                        if plan.fetch_document_shape().is_some() {return StagedAnswerV3::Documents {documents:vec![]};}
+                        if plan.fetch_document_shape().is_some() {return StagedAnswer::Documents {documents:vec![]};}
                         let rows = if plan.pipeline().iter().any(|stage| matches!(stage, Stage::Reduce {..})) {
                             let type_bridge_contract::query_plan::QueryOutput::Rows {columns} = plan.output() else {panic!("scalar output");};
                             vec![columns.iter().map(|_| type_bridge_contract::query_remote::RemoteValue::Value {value:type_bridge_contract::value::CanonicalValue::Long(if has_fetch {0} else {7})}).collect()]
                         } else {vec![]};
-                        StagedAnswerV3::Rows {rows}
+                        StagedAnswer::Rows {rows}
                     }).collect();
-                    (StagedOutcomeV3::Committed, answers)
+                    (StagedOutcome::Committed, answers)
                 };
-                StagedReplyV3::new(&request, outcome, answers)
+                StagedReply::new(&request, outcome, answers)
                     .and_then(|reply| {
                         reply.encode_signed(&request, &self.advertisement_contract, &self.signer)
                     })
@@ -1669,12 +1667,9 @@ mod tests {
         let (decoder, _) = sdk_queries_transport(0x7b);
         assert_eq!(exchanges.lock().unwrap().len(), 40);
         for (index, bytes) in exchanges.lock().unwrap().iter().enumerate() {
-            let request = StagedRequestV3::decode(
-                bytes,
-                authority.declared(),
-                &decoder.advertisement_contract,
-            )
-            .unwrap();
+            let request =
+                StagedRequest::decode(bytes, authority.declared(), &decoder.advertisement_contract)
+                    .unwrap();
             assert_eq!(request.plans().len(), 1);
             if index % 20 >= 18 {
                 // One plan owns the snapshot and deletion provider statements.
@@ -1956,11 +1951,11 @@ mod tests {
 
     fn sdk_queries_transport(seed: u8) -> (Transport, Arc<Mutex<Vec<Vec<u8>>>>) {
         let signer = RemoteReplySigningKey::from_secret_bytes([seed; 32]);
-        let mut capabilities = query_plan_v3_capability_vocabulary();
+        let mut capabilities = query_plan_capability_vocabulary();
         for capability in [
-            CAP_QUERY_REMOTE_STAGED_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_WRITE_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF,
+            CAP_QUERY_REMOTE_STAGED,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_WRITE,
+            type_bridge_contract::query_remote::CAP_QUERY_STAGE_RESULT_REF,
             CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
         ] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
@@ -2200,11 +2195,8 @@ mod tests {
 
     async fn observe_sdk_queries_remote_structured_diagnostic() -> serde_json::Value {
         let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
-        let mut capabilities = query_plan_v3_capability_vocabulary();
-        for capability in [
-            CAP_QUERY_REMOTE_STAGED_V3,
-            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
-        ] {
+        let mut capabilities = query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
         let advertisement_contract = RemoteCapabilities::new(
@@ -2370,11 +2362,8 @@ mod tests {
     #[tokio::test]
     async fn remote_database_fetches_capabilities_once_and_exchanges_once_per_terminal() {
         let signer = RemoteReplySigningKey::from_secret_bytes([0x31; 32]);
-        let mut capabilities = query_plan_v3_capability_vocabulary();
-        for capability in [
-            CAP_QUERY_REMOTE_STAGED_V3,
-            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
-        ] {
+        let mut capabilities = query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
         let advertisement_contract = RemoteCapabilities::new(
@@ -2513,7 +2502,7 @@ mod tests {
                 .contains("\"format\":\"typebridge.query-remote-request/v3\"")
         );
         let authority = remote_fixture_authority();
-        let request = StagedRequestV3::decode(
+        let request = StagedRequest::decode(
             &requests[6],
             authority.declared(),
             &RemoteCapabilities::decode(
@@ -2547,11 +2536,8 @@ mod tests {
     #[tokio::test]
     async fn generated_remote_query_preserves_complete_authenticated_structured_diagnostic() {
         let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
-        let mut capabilities = query_plan_v3_capability_vocabulary();
-        for capability in [
-            CAP_QUERY_REMOTE_STAGED_V3,
-            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
-        ] {
+        let mut capabilities = query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
         let advertisement_contract = RemoteCapabilities::new(

@@ -124,7 +124,7 @@ pub(crate) struct TransactionContextMutationLease {
 impl TransactionContextMutationLease {
     pub(crate) fn prepare_plan(
         &self,
-        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+        plan: &type_bridge_contract::query_plan::QueryPlan,
     ) -> Result<super::staged::StagedQuery> {
         self.check_plan_provider(plan)?;
         let given = self.server_version.is_some_and(|version| {
@@ -144,7 +144,7 @@ impl TransactionContextMutationLease {
 
     pub(crate) fn check_plan_provider(
         &self,
-        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+        plan: &type_bridge_contract::query_plan::QueryPlan,
     ) -> Result<()> {
         crate::query_plan_exec::check_provider(plan, self.server_version)
             .map_err(crate::query_plan_exec::plan_diagnostic_error)
@@ -159,7 +159,7 @@ impl TransactionContextMutationLease {
         &mut self,
         query: super::staged::StagedQuery,
         limits: AnswerLimits,
-        validation: Option<&type_bridge_contract::query_plan::v3::QueryPlanV3>,
+        validation: Option<&type_bridge_contract::query_plan::QueryPlan>,
     ) -> Result<(QueryResult, BoundedAnswerStats)> {
         if query.writes {
             if self.phase == MutationLeasePhase::Finished {
@@ -180,7 +180,7 @@ impl TransactionContextMutationLease {
     /// Capture a polymorphic model stack under the same deletion snapshot.
     pub(crate) async fn execute_plans(
         &mut self,
-        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        plans: &[type_bridge_contract::query_plan::QueryPlan],
         policy: QueryExecutionResourceLimits,
         cancellation: &super::backend::AnswerCancellation,
         deadline: crate::QueryExecutionDeadline,
@@ -357,7 +357,7 @@ impl TransactionContext {
         self.query_limits
             .as_deref()
             .copied()
-            .unwrap_or(type_bridge_contract::limits::QueryLimits::V3)
+            .unwrap_or(type_bridge_contract::limits::QueryLimits::PLAN)
     }
 
     pub(crate) fn shared_query_limits(
@@ -468,7 +468,7 @@ impl TransactionContext {
     /// without the `given` stage.
     pub(crate) async fn prepare_plan(
         &self,
-        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+        plan: &type_bridge_contract::query_plan::QueryPlan,
     ) -> Result<crate::session::staged::StagedQuery> {
         crate::query_plan_exec::check_provider(plan, self.server_version)
             .map_err(plan_diagnostic_error)?;
@@ -534,7 +534,7 @@ impl TransactionContext {
 
     /// Resolve a dispatched plan answer.
     pub(crate) fn resolve_plan(
-        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+        plan: &type_bridge_contract::query_plan::QueryPlan,
         answer: QueryResult,
     ) -> Result<crate::query_plan_exec::PlanAnswer> {
         crate::query_plan_exec::resolve_plan(plan, answer).map_err(plan_diagnostic_error)
@@ -705,7 +705,7 @@ impl TransactionContext {
     /// The caller retains transaction ownership.
     pub fn execute_plans<'a>(
         &'a self,
-        plans: &'a [type_bridge_contract::query_plan::v3::QueryPlanV3],
+        plans: &'a [type_bridge_contract::query_plan::QueryPlan],
         limits: &'a QueryExecutionResourceLimits,
         cancellation: &'a super::backend::AnswerCancellation,
         deadline: crate::QueryExecutionDeadline,
@@ -724,13 +724,13 @@ impl TransactionContext {
     /// transaction. Any failure after write dispatch leaves the context rollback-only.
     pub async fn execute_staged_plans(
         &self,
-        entries: &[type_bridge_contract::query_remote_v3::StagedPlanV3],
+        entries: &[type_bridge_contract::query_remote::StagedPlan],
         schema: &type_bridge_contract::schema::DeclaredSchema,
         limits: &QueryExecutionResourceLimits,
         cancellation: &super::backend::AnswerCancellation,
         deadline: crate::QueryExecutionDeadline,
     ) -> Result<Vec<crate::session::staged::PlanAnswer>> {
-        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(entries, schema)
+        type_bridge_contract::query_remote::validate_staged_result_refs(entries, schema)
             .map_err(plan_diagnostic_error)?;
         self.execute_plan_stack(
             crate::query_plan_exec::PlanExecutionStack::Staged { entries, schema },
@@ -776,7 +776,7 @@ impl TransactionContext {
         async move {
             let writes = stack
                 .plans()
-                .any(type_bridge_contract::query_plan::v3::QueryPlanV3::writes);
+                .any(type_bridge_contract::query_plan::QueryPlan::writes);
             if self.tx_type == TxType::Read && writes {
                 return Err(crate::match_request::MatchError::new(
                     crate::match_request::MatchErrorCategory::InvalidPlan,
@@ -1270,8 +1270,8 @@ mod tests {
         use type_bridge_contract::migration_assertion::{
             AssertionBinding, BindingId, QueryVariable, ValueComparator,
         };
-        use type_bridge_contract::query_plan::v3::{
-            AttachItem, InsertThing, Operation, Pattern, PlanSpec, QueryPlanV3, Stage, WriteReturns,
+        use type_bridge_contract::query_plan::{
+            AttachItem, InsertThing, Operation, Pattern, PlanSpec, QueryPlan, Stage, WriteReturns,
         };
         use type_bridge_contract::query_plan::{
             InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
@@ -1427,7 +1427,7 @@ mod tests {
                     spec.pipeline.insert(
                         1,
                         Stage::Delete {
-                            items: vec![type_bridge_contract::query_plan::v3::DeleteItem::Thing {
+                            items: vec![type_bridge_contract::query_plan::DeleteItem::Thing {
                                 binding: id(3),
                             }],
                         },
@@ -1453,7 +1453,7 @@ mod tests {
                 let result = async {
                     // Public execution consumes validated plans; constructing an
                     // unsafe plan must fail before it can reach that write seam.
-                    let plan = QueryPlanV3::new(spec, &schema)
+                    let plan = QueryPlan::new(spec, &schema)
                         .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
                     context
                         .execute_plans(
@@ -2108,9 +2108,9 @@ mod tests {
     #[tokio::test]
     async fn staged_reference_graph_is_refused_before_borrowed_provider_io() {
         use type_bridge_contract::id::{TypeId, TypeKind};
-        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::query_plan::PlanBuilder;
         use type_bridge_contract::query_plan::{InputColumnId, InputRow};
-        use type_bridge_contract::query_remote_v3::StagedResultRefV3;
+        use type_bridge_contract::query_remote::StagedResultRef;
         use type_bridge_contract::value::ValueTypeTag;
         let (context, calls) = active_context();
         let schema = crate::query_plan_exec::race::schema();
@@ -2126,7 +2126,7 @@ mod tests {
                     .managed_semantics()
                     .clone(),
                 vec![InputRow::new(vec![None])],
-                vec![StagedResultRefV3 {
+                vec![StagedResultRef {
                     input: InputColumnId::new(0),
                     source_plan: 0,
                     source_column: 0,

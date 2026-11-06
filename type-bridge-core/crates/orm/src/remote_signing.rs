@@ -86,9 +86,9 @@ pub fn encode_unbound_staged_failure(
     signer: &RemoteReplySigningKey,
 ) -> Vec<u8> {
     use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-    use type_bridge_contract::query_remote_v3::StagedFailureV3;
-    let failure = StagedFailureV3::new(nonce, diagnostic).unwrap_or_else(|_| {
-        StagedFailureV3::new(
+    use type_bridge_contract::query_remote::StagedFailure;
+    let failure = StagedFailure::new(nonce, diagnostic).unwrap_or_else(|_| {
+        StagedFailure::new(
             None,
             &Diagnostic::new(
                 DiagnosticCategory::Integrity,

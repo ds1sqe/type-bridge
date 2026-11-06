@@ -1,9 +1,9 @@
 #[allow(dead_code)]
-#[path = "support/plan_v3.rs"]
+#[path = "support/plan.rs"]
 mod support;
 use type_bridge_contract::migration_assertion::ValueComparator;
-use type_bridge_contract::query_plan::v3::{QueryPlanV3, Stage, decode_query_plan_v3};
 use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
+use type_bridge_contract::query_plan::{QueryPlan, Stage, decode_query_plan};
 use type_bridge_contract::temporal::CanonicalDuration;
 use type_bridge_contract::value::CanonicalValue;
 
@@ -39,7 +39,7 @@ fn u64_duration_boundaries_round_trip_through_query_plan_wire() {
             value: CanonicalValue::Duration(duration),
         },
     };
-    let plan = QueryPlanV3::new(
+    let plan = QueryPlan::new(
         support::spec(
             vec![Stage::Match {
                 patterns: vec![
@@ -56,7 +56,7 @@ fn u64_duration_boundaries_round_trip_through_query_plan_wire() {
 
     let bytes = plan.canonical_bytes().expect("canonical query-plan bytes");
     assert_eq!(
-        decode_query_plan_v3(&bytes, &support::schema()).expect("decode query plan"),
+        decode_query_plan(&bytes, &support::schema()).expect("decode query plan"),
         plan
     );
 }

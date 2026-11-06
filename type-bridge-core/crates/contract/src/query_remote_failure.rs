@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Exact discriminator for a pre-request staged failure.
-pub const QUERY_REMOTE_FAILURE_FORMAT_V3: &str = "typebridge.query-remote-failure/v3";
+pub const QUERY_REMOTE_FAILURE_FORMAT: &str = "typebridge.query-remote-failure/v3";
 const FAILURE_FRAMING_ALLOWANCE_BYTES: usize = 1024;
 
 pub(super) fn validate_nonce(nonce: &str) -> Result<(), Diagnostic> {
@@ -46,7 +46,7 @@ fn failure_diagnostic(code: &str, message: &str) -> Diagnostic {
 }
 
 fn encode_minimal_signed_failure(
-    original: &StagedFailureV3,
+    original: &StagedFailure,
     advertisement: &RemoteCapabilitiesFingerprint,
     signer: &impl RemoteReplySigner,
 ) -> Vec<u8> {
@@ -77,7 +77,7 @@ fn append_optional_safe_ascii(encoded: &mut Vec<u8>, value: Option<&str>) {
 /// An authenticated structured refusal before a staged request is admitted.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct StagedFailureV3 {
+pub struct StagedFailure {
     category: DiagnosticCategory,
     code: DiagnosticCode,
     details: BTreeMap<String, RemoteDiagnosticDetail>,
@@ -88,7 +88,7 @@ pub struct StagedFailureV3 {
     request: Option<String>,
 }
 
-impl StagedFailureV3 {
+impl StagedFailure {
     /// Construct an uncorrelated V3 failure for a pre-request transport error.
     pub fn new(nonce: Option<String>, diagnostic: &Diagnostic) -> Result<Self, Diagnostic> {
         let diagnostic = RemoteDiagnostic::new(diagnostic)?;
@@ -99,7 +99,7 @@ impl StagedFailureV3 {
             category: diagnostic.category,
             code: diagnostic.code,
             details: diagnostic.details,
-            format: QUERY_REMOTE_FAILURE_FORMAT_V3.to_owned(),
+            format: QUERY_REMOTE_FAILURE_FORMAT.to_owned(),
             message: diagnostic.message,
             nonce,
             path: diagnostic.path,
@@ -136,9 +136,9 @@ impl StagedFailureV3 {
     }
 
     fn encode_payload(&self) -> Result<Vec<u8>, Diagnostic> {
-        if self.format != QUERY_REMOTE_FAILURE_FORMAT_V3 || self.request.is_some() {
+        if self.format != QUERY_REMOTE_FAILURE_FORMAT || self.request.is_some() {
             return Err(failure_diagnostic(
-                "query_remote_v3_failure_binding",
+                "query_remote_failure_binding",
                 "invalid pre-request failure format or binding",
             ));
         }
@@ -160,7 +160,7 @@ impl StagedFailureV3 {
             ));
         }
         let failure = from_canonical_json_with_limits::<Self>(bytes, REMOTE_ENVELOPE_CODEC_LIMITS)?;
-        if failure.format != QUERY_REMOTE_FAILURE_FORMAT_V3 {
+        if failure.format != QUERY_REMOTE_FAILURE_FORMAT {
             return Err(failure_diagnostic(
                 "query_remote_v3_format",
                 "unsupported staged failure format",
@@ -168,7 +168,7 @@ impl StagedFailureV3 {
         }
         if failure.request.is_some() {
             return Err(failure_diagnostic(
-                "query_remote_v3_failure_unexpected_binding",
+                "query_remote_failure_unexpected_binding",
                 "a pre-request failure must not carry a request fingerprint",
             ));
         }
@@ -179,7 +179,7 @@ impl StagedFailureV3 {
         if failure.encode_payload()? != bytes {
             return Err(diagnostic_failure(
                 DiagnosticCategory::Integrity,
-                "query_remote_v3_failure_wire_mismatch",
+                "query_remote_failure_wire_mismatch",
                 "V3 failure bytes normalize after trusted reconstruction",
             ));
         }
@@ -217,7 +217,7 @@ pub fn decode_signed_staged_failure(
     trusted_key: RemoteSigningPublicKey,
     max_bytes: u64,
     verifier: &impl RemoteReplyVerifier,
-) -> Result<StagedFailureV3, Diagnostic> {
+) -> Result<StagedFailure, Diagnostic> {
     // A failure carries no result data, so it never needs more than the
     // default envelope whatever byte budget the caller raised.
     crate::query_remote::preflight_signed_reply_size(
@@ -230,6 +230,6 @@ pub fn decode_signed_staged_failure(
         trusted_key,
         verifier,
     )?;
-    let failure = StagedFailureV3::decode_payload(payload)?;
+    let failure = StagedFailure::decode_payload(payload)?;
     Ok(failure)
 }

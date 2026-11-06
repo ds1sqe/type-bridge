@@ -6,7 +6,7 @@ use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
-use type_bridge_contract::query_plan::v3::{Operation, Pattern, PlanSpec, QueryPlanV3, Stage};
+use type_bridge_contract::query_plan::{Operation, Pattern, PlanSpec, QueryPlan, Stage};
 use type_bridge_contract::query_plan::{QueryOperand, QueryOutput, QueryPattern};
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
@@ -15,7 +15,7 @@ use type_bridge_schema_compat::{LEGACY_LEDGER_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEM
 
 #[derive(Debug)]
 pub(crate) struct DataQuery {
-    pub(crate) plan: QueryPlanV3,
+    pub(crate) plan: QueryPlan,
     aliases: Vec<String>,
 }
 impl DataQuery {
@@ -162,9 +162,9 @@ impl Builder {
         self,
         operation: Operation,
         columns: Vec<BindingId>,
-    ) -> Result<QueryPlanV3, Diagnostic> {
+    ) -> Result<QueryPlan, Diagnostic> {
         let (schema, semantics) = AUTHORITY.as_ref().map_err(Clone::clone)?;
-        QueryPlanV3::new(
+        QueryPlan::new(
             PlanSpec {
                 bindings: self.bindings,
                 inputs: vec![],

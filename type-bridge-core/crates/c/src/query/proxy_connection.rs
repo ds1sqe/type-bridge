@@ -687,13 +687,11 @@ mod query_policy_tests {
     #[test]
     fn connection_query_limits_intersect_pinned_server_policy_without_io() {
         let package = crate::entity_crud::tests::package("proxyquerypolicy");
-        let mut capabilities =
-            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        let mut capabilities = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
         capabilities.insert(
-            CapabilityId::new(type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3)
-                .unwrap(),
+            CapabilityId::new(type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED).unwrap(),
         );
-        let mut server = QueryLimits::V3;
+        let mut server = QueryLimits::PLAN;
         server.structural.bindings = 768;
         server.structural.boolean_terms = 300;
         let advertisement = RemoteCapabilities::new(

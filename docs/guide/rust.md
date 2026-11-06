@@ -470,7 +470,7 @@ binding and Boolean-term ceilings raised to keep one statement. Leaving a
 needed dimension at its default uses bounded pieces in the same transaction.
 
 ```rust
-let mut limits = type_bridge::QueryLimits::V3;
+let mut limits = type_bridge::QueryLimits::PLAN;
 limits.structural.bindings = 1024;
 limits.structural.boolean_terms = 512;
 let policy = type_bridge::DirectConnectionPolicy::new(

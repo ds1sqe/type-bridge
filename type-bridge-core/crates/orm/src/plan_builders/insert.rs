@@ -3,7 +3,7 @@
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{RoleId, TypeId};
 use type_bridge_contract::query_plan::QueryOutput;
-use type_bridge_contract::query_plan::v3::{
+use type_bridge_contract::query_plan::{
     DocumentRole, InsertThing, Operation, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::schema::OwnsFactId;

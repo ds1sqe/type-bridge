@@ -1217,7 +1217,7 @@ pub(crate) unsafe fn connection_query_limits(
     }
     // SAFETY: the caller fenced every borrowed input range.
     unsafe { query_limits_from_overrides(overrides, count) }
-        .and_then(|limits| limits.validate_v3().ok())
+        .and_then(|limits| limits.validate_plan().ok())
         .map(Some)
         .ok_or_else(|| {
             SdkExecutionDiagnostic::invalid_input(
@@ -6687,13 +6687,11 @@ mod tests {
     use type_bridge_contract::projection::{
         ProjectedTokenKind, TYPE_BRIDGE_PROJECTED_TOKEN_VERSION,
     };
-    use type_bridge_contract::query_plan::v3::{
-        Operation, Stage, query_plan_v3_capability_vocabulary,
-    };
+    use type_bridge_contract::query_plan::{Operation, Stage, query_plan_capability_vocabulary};
     use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
 
-    use type_bridge_contract::query_remote_v3::{
-        StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+    use type_bridge_contract::query_remote::{
+        StagedAnswer, StagedOutcome, StagedReply, StagedRequest,
     };
     use type_bridge_core_lib::ast::{
         TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
@@ -7773,10 +7771,10 @@ mod tests {
 
     fn remote_fixture(seed: u8) -> RemoteFixture {
         let signer = RemoteReplySigningKey::from_secret_bytes([seed; 32]);
-        let mut capabilities = query_plan_v3_capability_vocabulary();
+        let mut capabilities = query_plan_capability_vocabulary();
         for capability in [
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
         ] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
@@ -7803,8 +7801,8 @@ mod tests {
         }
     }
 
-    fn remote_envelope(bytes: &[u8], fixture: &RemoteFixture) -> StagedRequestV3 {
-        StagedRequestV3::decode(bytes, &fixture.schema, &fixture.contract)
+    fn remote_envelope(bytes: &[u8], fixture: &RemoteFixture) -> StagedRequest {
+        StagedRequest::decode(bytes, &fixture.schema, &fixture.contract)
             .expect("native test request")
     }
 
@@ -7852,7 +7850,7 @@ mod tests {
     fn remote_count_reply(bytes: &[u8], fixture: &RemoteFixture, value: u64) -> Vec<u8> {
         let request = remote_envelope(bytes, fixture);
         assert_eq!(request.plans().len(), 1);
-        let answer = StagedAnswerV3::Rows {
+        let answer = StagedAnswer::Rows {
             rows: vec![vec![
                 type_bridge_contract::query_remote::RemoteValue::Value {
                     value: type_bridge_contract::value::CanonicalValue::Long(
@@ -7861,7 +7859,7 @@ mod tests {
                 },
             ]],
         };
-        let reply = StagedReplyV3::new(&request, StagedOutcomeV3::Committed, vec![answer]).unwrap();
+        let reply = StagedReply::new(&request, StagedOutcome::Committed, vec![answer]).unwrap();
         sign_hostile_payload(
             &serde_json::from_slice(&reply.encode_payload().unwrap()).unwrap(),
             fixture,
@@ -7962,10 +7960,10 @@ mod tests {
             .map(|entry| {
                 let plan = entry.plan();
                 if plan.operation() == Operation::Exists {
-                    return StagedAnswerV3::Exists { value: true };
+                    return StagedAnswer::Exists { value: true };
                 }
                 if plan.fetch_document_shape().is_some() {
-                    return StagedAnswerV3::Documents { documents: vec![] };
+                    return StagedAnswer::Documents { documents: vec![] };
                 }
                 let rows = if plan
                     .pipeline()
@@ -7982,10 +7980,10 @@ mod tests {
                 } else {
                     vec![]
                 };
-                StagedAnswerV3::Rows { rows }
+                StagedAnswer::Rows { rows }
             })
             .collect();
-        StagedReplyV3::new(&request, StagedOutcomeV3::Committed, answers)
+        StagedReply::new(&request, StagedOutcome::Committed, answers)
             .unwrap()
             .encode_signed(&request, &fixture.contract, &fixture.signer)
             .unwrap()
@@ -9099,9 +9097,9 @@ mod tests {
         .with_detail("retryable", false)
         .with_detail("subject", "person")
         .with_detail("provider_secret", "must-not-cross");
-        let response = StagedReplyV3::new(
+        let response = StagedReply::new(
             &envelope,
-            StagedOutcomeV3::Failed {
+            StagedOutcome::Failed {
                 diagnostic: type_bridge_orm::lower_remote_query_diagnostic(failure),
             },
             vec![],
@@ -13950,7 +13948,7 @@ mod tests {
             &fixture,
             17,
         );
-        let verified = type_bridge_contract::query_remote_v3::VerifiedStagedReplyV3::decode(
+        let verified = type_bridge_contract::query_remote::VerifiedStagedReply::decode(
             &bytes,
             &request,
             &fixture.contract,
@@ -13959,7 +13957,7 @@ mod tests {
         )
         .unwrap();
         assert!(verified.committed());
-        assert!(matches!(&verified.answers()[0],StagedAnswerV3::Rows {rows} if rows.len()==1));
+        assert!(matches!(&verified.answers()[0],StagedAnswer::Rows {rows} if rows.len()==1));
         assert_eq!(
             unsafe { type_bridge_query_remote_pending_close(&mut pending) },
             TypeBridgeStatus::Ok
@@ -15274,7 +15272,7 @@ mod tests {
                     assert_eq!(request.plans().len(), 1);
                     assert_eq!(
                         request.kind(),
-                        type_bridge_contract::query_remote_v3::StagedKindV3::Read
+                        type_bridge_contract::query_remote::StagedKind::Read
                     );
                     Ok(remote_terminal_reply(bytes, &self.fixture))
                 })
@@ -15412,7 +15410,7 @@ mod tests {
                     assert_eq!(request.plans().len(), 1);
                     assert_eq!(
                         request.kind(),
-                        type_bridge_contract::query_remote_v3::StagedKindV3::Write
+                        type_bridge_contract::query_remote::StagedKind::Write
                     );
                     Ok(remote_terminal_reply(bytes, &self.fixture))
                 })
@@ -15422,11 +15420,11 @@ mod tests {
             crate::entity_crud::tests::fixture(vec![], crate::entity_crud::tests::COMMIT_SUCCESS);
         let package = &fixture.package;
         let mut remote = remote_fixture(0x59);
-        let mut capabilities = query_plan_v3_capability_vocabulary();
+        let mut capabilities = query_plan_capability_vocabulary();
         for capability in [
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_WRITE_V3,
-            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_WRITE,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
         ] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }

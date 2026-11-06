@@ -1,7 +1,7 @@
 //! Every contract `query-plan/v3` fixture decodes through the C ABI and
 //! reproduces its canonical bytes. The fixtures, their manifest and the
 //! declared schema are the contract tests' data files under
-//! `tests/contracts/plan_v3`, shared without Rust code.
+//! `tests/contracts/plan`, shared without Rust code.
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
@@ -39,7 +39,7 @@ unsafe extern "C" {
 
 fn fixture_directory() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../tests/contracts/plan_v3")
+        .join("../../../tests/contracts/plan")
         .canonicalize()
         .expect("the contract plan-v3 fixtures exist")
 }

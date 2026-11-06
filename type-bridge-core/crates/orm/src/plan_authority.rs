@@ -337,7 +337,7 @@ pub async fn verify_managed_query_control_scope(
 
 async fn managed_control_answer(
     transaction: &mut Transaction,
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
     deadline: Option<std::time::Instant>,
     cancellation: &crate::session::backend::AnswerCancellation,
 ) -> Result<crate::session::staged::PlanAnswer, Diagnostic> {
@@ -375,7 +375,7 @@ async fn managed_control_answer(
 
 fn managed_control_documents(
     answer: &crate::session::staged::PlanAnswer,
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
 ) -> Result<Vec<serde_json::Value>, Diagnostic> {
     let invalid = || {
         failure(
@@ -424,10 +424,10 @@ pub(crate) fn deadline_exceeded() -> Diagnostic {
 }
 
 fn managed_control_plans()
--> Result<&'static [type_bridge_contract::query_plan::v3::QueryPlanV3; 2], Diagnostic> {
+-> Result<&'static [type_bridge_contract::query_plan::QueryPlan; 2], Diagnostic> {
     use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
     use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-    use type_bridge_contract::query_plan::v3::{Operation, PlanSpec, QueryPlanV3, Stage};
+    use type_bridge_contract::query_plan::{Operation, PlanSpec, QueryPlan, Stage};
     use type_bridge_contract::query_plan::{OrderDirection, OrderTerm, QueryOutput, QueryPattern};
     use type_bridge_contract::reserved::{
         MANAGED_CONTROL_ENTITY, MANAGED_CONTROL_LEASE_FENCE, MANAGED_CONTROL_LEASE_HOLDER,
@@ -437,7 +437,7 @@ fn managed_control_plans()
     use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
     use type_bridge_schema_compat::MANAGED_FENCE_SCHEMA_TYPEQL;
 
-    static PLANS: LazyLock<Result<[QueryPlanV3; 2], Diagnostic>> = LazyLock::new(|| {
+    static PLANS: LazyLock<Result<[QueryPlan; 2], Diagnostic>> = LazyLock::new(|| {
         let schema = type_bridge_schema_compat::typeql_to_declared(
             DocumentId::new("managed-control-plans.typeql")?,
             MANAGED_FENCE_SCHEMA_TYPEQL,
@@ -490,7 +490,7 @@ fn managed_control_plans()
                 });
                 pipeline.push(Stage::Limit { rows });
             }
-            QueryPlanV3::new(
+            QueryPlan::new(
                 PlanSpec {
                     bindings,
                     inputs: vec![],

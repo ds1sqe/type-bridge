@@ -19,11 +19,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use type_bridge_contract::query_plan::InputRow;
-use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
+use type_bridge_contract::query_plan::{Operation, QueryPlan};
 use type_bridge_contract::query_remote::RemoteCapabilities;
-use type_bridge_contract::query_remote_v3::{
-    StagedAnswerV3, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3,
-    VerifiedStagedReplyV3,
+use type_bridge_contract::query_remote::{
+    StagedAnswer, StagedLimits, StagedPlan, StagedRequest, StagedRequestSpec, VerifiedStagedReply,
 };
 use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
@@ -43,25 +42,25 @@ fn text(value: &str) -> Option<CanonicalValue> {
 }
 
 /// A staged entry: the purchase template bound to one order, or a plan as is.
-fn purchase_entry(proxy: &Proxy, order: &str, item: &str, account: &str) -> StagedPlanV3 {
+fn purchase_entry(proxy: &Proxy, order: &str, item: &str, account: &str) -> StagedPlan {
     let row = InputRow::new(vec![text(order), text(item), text(account)]);
-    StagedPlanV3::new(&race::purchase_template(), vec![row], &proxy.declared).expect("entry")
+    StagedPlan::new(&race::purchase_template(), vec![row], &proxy.declared).expect("entry")
 }
 
-fn plain_entry(proxy: &Proxy, plan: &QueryPlanV3) -> StagedPlanV3 {
-    StagedPlanV3::new(plan, vec![], &proxy.declared).expect("entry")
+fn plain_entry(proxy: &Proxy, plan: &QueryPlan) -> StagedPlan {
+    StagedPlan::new(plan, vec![], &proxy.declared).expect("entry")
 }
 
-fn request(proxy: &Proxy, plans: Vec<StagedPlanV3>) -> StagedRequestV3 {
+fn request(proxy: &Proxy, plans: Vec<StagedPlan>) -> StagedRequest {
     let nonce = format!(
         "tb-live-staged-nonce-{}-{:06}",
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
-    let spec = StagedRequestSpecV3 {
+    let spec = StagedRequestSpec {
         nonce,
         kind: None,
-        limits: StagedLimitsV3::default(),
+        limits: StagedLimits::default(),
         plans,
         prepared_at_unix_ms: u64::try_from(
             std::time::SystemTime::now()
@@ -71,16 +70,16 @@ fn request(proxy: &Proxy, plans: Vec<StagedPlanV3>) -> StagedRequestV3 {
         )
         .expect("millis"),
     };
-    StagedRequestV3::new(spec, &proxy.declared, &proxy.advertisement).expect("staged request")
+    StagedRequest::new(spec, &proxy.declared, &proxy.advertisement).expect("staged request")
 }
 
-async fn post(proxy: &Proxy, request: &StagedRequestV3) -> Vec<u8> {
+async fn post(proxy: &Proxy, request: &StagedRequest) -> Vec<u8> {
     let body = request.encode().expect("request bytes");
     call(&proxy.router, "POST", "/v3/staged", body).await
 }
 
-fn verify(proxy: &Proxy, request: &StagedRequestV3, reply: &[u8]) -> VerifiedStagedReplyV3 {
-    VerifiedStagedReplyV3::decode(
+fn verify(proxy: &Proxy, request: &StagedRequest, reply: &[u8]) -> VerifiedStagedReply {
+    VerifiedStagedReply::decode(
         reply,
         request,
         &proxy.advertisement,
@@ -90,7 +89,7 @@ fn verify(proxy: &Proxy, request: &StagedRequestV3, reply: &[u8]) -> VerifiedSta
     .expect("signed staged reply verifies")
 }
 
-fn failure_code(reply: &VerifiedStagedReplyV3) -> String {
+fn failure_code(reply: &VerifiedStagedReply) -> String {
     reply.diagnostic().expect("failed reply").code().to_owned()
 }
 
@@ -98,7 +97,7 @@ fn failure_code(reply: &VerifiedStagedReplyV3) -> String {
 async fn mismatching_bulk_documents_roll_back_direct_and_signed_proxy_writes() {
     use std::sync::Mutex;
     use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
-    use type_bridge_contract::query_plan::v3::PlanBuilder;
+    use type_bridge_contract::query_plan::PlanBuilder;
     use type_bridge_contract::schema::OwnsFactId;
     use type_bridge_orm::OrmError;
     use type_bridge_orm::session::backend::{
@@ -219,9 +218,8 @@ async fn mismatching_bulk_documents_roll_back_direct_and_signed_proxy_writes() {
                 database,
             )
             .await;
-            let entry =
-                StagedPlanV3::new(plan, plan.given_rows().unwrap().to_vec(), &proxy.declared)
-                    .unwrap();
+            let entry = StagedPlan::new(plan, plan.given_rows().unwrap().to_vec(), &proxy.declared)
+                .unwrap();
             let request = request(&proxy, vec![entry]);
             let reply = verify(&proxy, &request, &post(&proxy, &request).await);
             assert!(!reply.committed());
@@ -307,7 +305,7 @@ async fn staged_purchase_matches_direct_transaction_answers_and_state() {
         );
     }
 
-    let mut proxy_answers: Vec<StagedAnswerV3> = Vec::new();
+    let mut proxy_answers: Vec<StagedAnswer> = Vec::new();
     let first_request = request(&proxy, vec![purchase_entry(&proxy, "O1", "I1", "A1")]);
     let reply = verify(&proxy, &first_request, &post(&proxy, &first_request).await);
     assert!(reply.committed(), "{:?}", reply.diagnostic());
@@ -326,11 +324,11 @@ async fn staged_purchase_matches_direct_transaction_answers_and_state() {
     assert_eq!(
         direct_answers,
         [
-            StagedAnswerV3::Matched { value: 1 },
-            StagedAnswerV3::Matched { value: 0 },
-            StagedAnswerV3::Count { value: 1 },
-            StagedAnswerV3::Exists { value: true },
-            StagedAnswerV3::Matched { value: 1 },
+            StagedAnswer::Matched { value: 1 },
+            StagedAnswer::Matched { value: 0 },
+            StagedAnswer::Count { value: 1 },
+            StagedAnswer::Exists { value: true },
+            StagedAnswer::Matched { value: 1 },
         ]
     );
     assert_eq!(proxy_answers, direct_answers);
@@ -389,9 +387,9 @@ async fn library_entry_purchase_matches_the_router() {
     assert_eq!(
         entered_reply.answers(),
         [
-            StagedAnswerV3::Matched { value: 1 },
-            StagedAnswerV3::Count { value: 1 },
-            StagedAnswerV3::Exists { value: true },
+            StagedAnswer::Matched { value: 1 },
+            StagedAnswer::Count { value: 1 },
+            StagedAnswer::Exists { value: true },
         ]
     );
     assert_eq!(state(&entered).await, state(&routed).await);
@@ -1108,7 +1106,7 @@ async fn sdk_staged_fixture_serves_until_stopped() {
     }
     let profile = semantic_profile_id(&direct.server_version().expect("server version"))
         .expect("supported profile");
-    let plan = |plan: QueryPlanV3| hex(&plan.canonical_bytes().expect("plan bytes"));
+    let plan = |plan: QueryPlan| hex(&plan.canonical_bytes().expect("plan bytes"));
     let fixture = serde_json::json!({
         "direct_database": direct_name,
         "profile": profile,
@@ -1176,7 +1174,7 @@ async fn staged_fetch_documents_equal_direct_answers_with_role_evidence() {
         inserted_reply.diagnostic()
     );
     assert!(
-        matches!(&inserted_reply.answers()[0], StagedAnswerV3::Documents { documents } if documents.len() == 1)
+        matches!(&inserted_reply.answers()[0], StagedAnswer::Documents { documents } if documents.len() == 1)
     );
     // Reading the same persisted things preserves their exact identities.
     for plan in [race::touch_fetch(), race::purchase_fetch()] {
@@ -1184,7 +1182,7 @@ async fn staged_fetch_documents_equal_direct_answers_with_role_evidence() {
         tx.commit().await.unwrap();
         let expected = pending.get().unwrap().to_staged_v3(&plan).unwrap();
         assert!(
-            matches!(&expected, StagedAnswerV3::Documents { documents } if !documents.is_empty())
+            matches!(&expected, StagedAnswer::Documents { documents } if !documents.is_empty())
         );
         let request = request(&proxy, vec![plain_entry(&proxy, &plan)]);
         let reply = verify(&proxy, &request, &post(&proxy, &request).await);
@@ -1233,7 +1231,7 @@ async fn staged_fetch_documents_equal_direct_answers_with_role_evidence() {
     wire["limits"]["max_bytes"] = 4096.into();
     bounded_spec = type_bridge_contract::codec::to_canonical_json(&wire).unwrap();
     let bounded_request =
-        StagedRequestV3::decode(&bounded_spec, &proxy.declared, &proxy.advertisement).unwrap();
+        StagedRequest::decode(&bounded_spec, &proxy.declared, &proxy.advertisement).unwrap();
     let reply = verify(
         &proxy,
         &bounded_request,
@@ -1262,7 +1260,7 @@ async fn staged_deletion_snapshots_equal_direct_pre_images() {
     let pending = direct.stage_plan(&plan).unwrap();
     direct.commit().await.unwrap();
     let expected = pending.get().unwrap().to_staged_v3(&plan).unwrap();
-    assert!(matches!(&expected, StagedAnswerV3::Documents { documents } if !documents.is_empty()));
+    assert!(matches!(&expected, StagedAnswer::Documents { documents } if !documents.is_empty()));
     let deletion = request(&proxy, vec![plain_entry(&proxy, &plan)]);
     let reply = verify(&proxy, &deletion, &post(&proxy, &deletion).await);
     assert!(reply.committed(), "{:?}", reply.diagnostic());
@@ -1271,7 +1269,7 @@ async fn staged_deletion_snapshots_equal_direct_pre_images() {
     let reply = verify(&proxy, &empty, &post(&proxy, &empty).await);
     assert!(reply.committed());
     assert!(
-        matches!(&reply.answers()[0], StagedAnswerV3::Documents { documents } if documents.is_empty())
+        matches!(&reply.answers()[0], StagedAnswer::Documents { documents } if documents.is_empty())
     );
     drop_database(db).await;
 }
@@ -1323,8 +1321,8 @@ async fn deletion_snapshot_cost_direct_and_staged() {
                     (started.elapsed().as_secs_f64(), reply.answers()[0].clone())
                 };
                 match answer {
-                    StagedAnswerV3::Documents { documents } => assert_eq!(documents.len(), 5000),
-                    StagedAnswerV3::Matched { value } => assert_eq!(value, 5000),
+                    StagedAnswer::Documents { documents } => assert_eq!(documents.len(), 5000),
+                    StagedAnswer::Matched { value } => assert_eq!(value, 5000),
                     _ => panic!("unexpected deletion answer"),
                 }
                 let remaining = db
@@ -1404,7 +1402,7 @@ async fn deletion_snapshots_preserve_subtypes_and_players_across_routes() {
         .zip(&plans)
         .map(|(pending, plan)| pending.get().unwrap().to_staged_v3(plan).unwrap())
         .collect::<Vec<_>>();
-    let StagedAnswerV3::Documents { documents } = &expected[0] else {
+    let StagedAnswer::Documents { documents } = &expected[0] else {
         panic!("expected subtype snapshots")
     };
     let mut labels = documents
@@ -1421,7 +1419,7 @@ async fn deletion_snapshots_preserve_subtypes_and_players_across_routes() {
         .collect::<Vec<_>>();
     labels.sort();
     assert_eq!(labels, ["doctor-memo", "doctor-report"]);
-    let StagedAnswerV3::Documents { documents } = &expected[1] else {
+    let StagedAnswer::Documents { documents } = &expected[1] else {
         panic!("expected relation snapshot")
     };
     assert_eq!(documents.len(), 1);
@@ -1482,7 +1480,7 @@ async fn deletion_snapshots_preserve_subtypes_and_players_across_routes() {
     // This plan has no ordering stage; compare the complete document sets.
     for answers in [&mut expected, &mut actual] {
         for answer in answers {
-            if let StagedAnswerV3::Documents { documents } = answer {
+            if let StagedAnswer::Documents { documents } = answer {
                 documents.sort_by_cached_key(|document| serde_json::to_string(document).unwrap());
             }
         }
@@ -1495,7 +1493,7 @@ async fn deletion_snapshots_preserve_subtypes_and_players_across_routes() {
     let reply = verify(&proxy, &absent, &post(&proxy, &absent).await);
     assert!(reply.committed());
     assert!(reply.answers().iter().all(
-        |answer| matches!(answer, StagedAnswerV3::Documents { documents } if documents.is_empty())
+        |answer| matches!(answer, StagedAnswer::Documents { documents } if documents.is_empty())
     ));
     for label in ["account", "item"] {
         let answer = db
@@ -1573,7 +1571,7 @@ async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
         );
         let direct = pending.get().unwrap().to_staged_v3(&plan).unwrap();
         let entry =
-            StagedPlanV3::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap();
+            StagedPlan::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap();
         let staged = request(&proxy, vec![entry]);
         let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
         assert_eq!(reply.answers(), &[direct]);
@@ -1599,9 +1597,9 @@ async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
         let pending = tx.stage_plan(&plan).unwrap();
         tx.commit().await.unwrap();
         let direct = pending.get().unwrap().to_staged_v3(&plan).unwrap();
-        assert!(matches!(&direct, StagedAnswerV3::Documents { documents } if documents.len() == 1));
+        assert!(matches!(&direct, StagedAnswer::Documents { documents } if documents.len() == 1));
         let entry =
-            StagedPlanV3::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap();
+            StagedPlan::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap();
         let staged = request(&proxy, vec![entry]);
         let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
         assert_eq!(reply.answers(), &[direct]);
@@ -1611,8 +1609,8 @@ async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
     let pending = tx.stage_plan(&plan).unwrap();
     tx.commit().await.unwrap();
     let direct = pending.get().unwrap().to_staged_v3(&plan).unwrap();
-    assert!(matches!(&direct, StagedAnswerV3::Documents { documents } if documents.len() == 1));
-    let entry = StagedPlanV3::new(&plan, vec![], &proxy.declared).unwrap();
+    assert!(matches!(&direct, StagedAnswer::Documents { documents } if documents.len() == 1));
+    let entry = StagedPlan::new(&plan, vec![], &proxy.declared).unwrap();
     let staged = request(&proxy, vec![entry]);
     let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
     assert_eq!(reply.answers(), &[direct]);
@@ -1630,17 +1628,17 @@ async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
         "hydrated_attribute_value_limit"
     );
     let entry =
-        StagedPlanV3::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap();
-    let staged = StagedRequestV3::new(
-        StagedRequestSpecV3 {
+        StagedPlan::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap();
+    let staged = StagedRequest::new(
+        StagedRequestSpec {
             nonce: format!(
                 "tb270-04a-limits-{}",
                 SEQUENCE.fetch_add(1, Ordering::Relaxed)
             ),
             kind: None,
-            limits: StagedLimitsV3 {
+            limits: StagedLimits {
                 max_attribute_values: Some(0),
-                ..StagedLimitsV3::default()
+                ..StagedLimits::default()
             },
             plans: vec![entry],
             prepared_at_unix_ms: std::time::SystemTime::now()
@@ -1719,7 +1717,7 @@ async fn one_shot_read_stack_matches_borrowed_and_staged_answers() {
         plans
             .iter()
             .map(|plan| {
-                StagedPlanV3::new(
+                StagedPlan::new(
                     plan,
                     plan.given_rows().unwrap_or(&[]).to_vec(),
                     &proxy.declared,
@@ -1783,20 +1781,20 @@ async fn explicitly_raised_string_limits_round_trip_large_values_direct_and_stag
     direct_tx.commit().await.unwrap();
     let direct = pending.get().unwrap();
     assert!(matches!(&*direct, PlanAnswer::Documents(documents) if documents.len() == 1));
-    let request_spec = || StagedRequestSpecV3 {
+    let request_spec = || StagedRequestSpec {
         nonce: format!("tb270-04a-wide-request-{}", std::process::id()),
         kind: None,
-        limits: StagedLimitsV3::default(),
+        limits: StagedLimits::default(),
         plans: vec![
-            StagedPlanV3::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap(),
+            StagedPlan::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap(),
         ],
         prepared_at_unix_ms: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64,
     };
-    assert!(StagedRequestV3::new(request_spec(), &proxy.declared, &proxy.advertisement).is_err());
-    let staged = StagedRequestV3::new_with_limits(
+    assert!(StagedRequest::new(request_spec(), &proxy.declared, &proxy.advertisement).is_err());
+    let staged = StagedRequest::new_with_limits(
         request_spec(),
         &proxy.declared,
         &proxy.advertisement,
@@ -1818,7 +1816,7 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
     use type_bridge_contract::projection::{
         BindingTarget, ProjectedTokenIdentity, ProjectionConfig, ProjectionHandler,
     };
-    use type_bridge_contract::query_remote_v3::StagedKindV3;
+    use type_bridge_contract::query_remote::StagedKind;
     use type_bridge_contract::schema::{DocumentId, OwnsFactId};
     use type_bridge_orm::plan_authority::QueryAuthority;
     use type_bridge_orm::projected_crud::ProjectedCrudInvocationControl;
@@ -2084,8 +2082,8 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
         let captured = requests.lock().unwrap();
         assert_eq!(captured.len(), 11);
         for bytes in captured.iter() {
-            let request = StagedRequestV3::decode(bytes, &declared, &proxy.advertisement).unwrap();
-            assert_eq!(request.kind(), StagedKindV3::Read);
+            let request = StagedRequest::decode(bytes, &declared, &proxy.advertisement).unwrap();
+            assert_eq!(request.kind(), StagedKind::Read);
             assert_eq!(request.plans().len(), 1);
         }
     }
@@ -2122,7 +2120,7 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
         let captured = requests.lock().unwrap();
         assert_eq!(captured.len(), 12);
         let request =
-            StagedRequestV3::decode(captured.last().unwrap(), &declared, &proxy.advertisement)
+            StagedRequest::decode(captured.last().unwrap(), &declared, &proxy.advertisement)
                 .unwrap();
         assert_eq!(request.limits().max_items, 65_536);
         assert!(
@@ -2132,7 +2130,7 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
                 .iter()
                 .any(|stage| matches!(
                     stage,
-                    type_bridge_contract::query_plan::v3::Stage::Limit { rows: 100_001 }
+                    type_bridge_contract::query_plan::Stage::Limit { rows: 100_001 }
                 ))
         );
     }
@@ -2170,8 +2168,8 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
         let captured = requests.lock().unwrap();
         assert_eq!(captured.len(), 14);
         for bytes in &captured[12..] {
-            let request = StagedRequestV3::decode(bytes, &declared, &proxy.advertisement).unwrap();
-            assert_eq!(request.kind(), StagedKindV3::Read);
+            let request = StagedRequest::decode(bytes, &declared, &proxy.advertisement).unwrap();
+            assert_eq!(request.kind(), StagedKind::Read);
             assert_eq!(request.plans().len(), 1);
             assert_eq!(request.limits().max_items, 65_536);
         }
@@ -2213,7 +2211,7 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
         let captured = bounded_requests.lock().unwrap();
         assert_eq!(captured.len(), 1);
         let request =
-            StagedRequestV3::decode(&captured[0], &declared, &bounded.advertisement).unwrap();
+            StagedRequest::decode(&captured[0], &declared, &bounded.advertisement).unwrap();
         assert_eq!(request.limits().max_items, 1);
         assert!(
             request.plans()[0]
@@ -2222,7 +2220,7 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
                 .iter()
                 .any(|stage| matches!(
                     stage,
-                    type_bridge_contract::query_plan::v3::Stage::Limit { rows: 101 }
+                    type_bridge_contract::query_plan::Stage::Limit { rows: 101 }
                 ))
         );
     }

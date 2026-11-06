@@ -1324,7 +1324,7 @@ pub(crate) struct AuthoredPlanProjection {
 impl AuthoredPlanProjection {
     pub(crate) fn with_plans(
         &self,
-        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        plans: type_bridge_contract::query_plan::BuiltPlans,
     ) -> PyResult<Self> {
         Self::prepare(
             Arc::clone(&self.package),
@@ -1338,7 +1338,7 @@ impl AuthoredPlanProjection {
     fn prepare(
         package: Arc<InstalledPackage>,
         registry: Arc<DescriptorRegistry>,
-        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        plans: type_bridge_contract::query_plan::BuiltPlans,
         binding: type_bridge_contract::migration_assertion::BindingId,
         declared: TypeId,
         tuple: Option<Vec<(type_bridge_contract::migration_assertion::BindingId, TypeId)>>,
@@ -1491,7 +1491,7 @@ impl AuthoredPlanProjection {
 impl PyRuntimeProjection {
     pub(crate) fn prepare_authored_plan(
         &self,
-        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        plans: type_bridge_contract::query_plan::BuiltPlans,
         binding: type_bridge_contract::migration_assertion::BindingId,
         declared: &str,
     ) -> PyResult<AuthoredPlanProjection> {
@@ -1515,7 +1515,7 @@ impl PyRuntimeProjection {
 
     pub(crate) fn prepare_authored_tuple(
         &self,
-        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        plans: type_bridge_contract::query_plan::BuiltPlans,
         slots: Vec<(u32, String)>,
     ) -> PyResult<AuthoredPlanProjection> {
         let slots = slots
@@ -10231,7 +10231,7 @@ class StructBase:
             QueryAuthority::from_declared_bytes(&declared, "python-native", "typedb-3.12.1/v1")
                 .unwrap();
         let advertisement = RemoteCapabilities::new(
-            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary(),
+            type_bridge_contract::query_plan::query_plan_capability_vocabulary(),
             RemoteExecutorBinding::new("batch-target-selector", "epoch-00000000001").unwrap(),
             RemoteReplySigningKey::from_secret_bytes([0x5c; 32]).public_key(),
         )
@@ -12759,7 +12759,7 @@ class StructBase:
                 .unwrap()
                 .clone();
             let compiled = authority(ORDERED_SCHEMA, "python-ordered-native.yaml");
-            let mut builder = type_bridge_contract::query_plan::v3::PlanBuilder::new();
+            let mut builder = type_bridge_contract::query_plan::PlanBuilder::new();
             let person = builder.exact(person_id.clone());
             let tag = builder.field(
                 person,
@@ -12811,7 +12811,7 @@ class StructBase:
             };
             let model = projection
                 .prepare_authored_tuple(
-                    type_bridge_contract::query_plan::v3::BuiltPlans::single(plan),
+                    type_bridge_contract::query_plan::BuiltPlans::single(plan),
                     vec![(
                         u32::from(person.get()),
                         String::from_utf8(to_canonical_json(&person_id).unwrap()).unwrap(),
@@ -12999,7 +12999,7 @@ def decode(proof):
                     .clone();
                 let registry = Arc::new(package.projection.match_registry().unwrap());
                 let authority = authority(ORDERED_SCHEMA, "python-ordered-native.yaml");
-                let mut builder = type_bridge_contract::query_plan::v3::PlanBuilder::new();
+                let mut builder = type_bridge_contract::query_plan::PlanBuilder::new();
                 let person = builder.exact(person_id.clone());
                 builder.fetch_held(person, vec![]);
                 if deleted {
@@ -13014,7 +13014,7 @@ def decode(proof):
                 let model = AuthoredPlanProjection::prepare(
                     Arc::clone(&package),
                     Arc::clone(&registry),
-                    type_bridge_contract::query_plan::v3::BuiltPlans::single(plan),
+                    type_bridge_contract::query_plan::BuiltPlans::single(plan),
                     person,
                     person_id.clone(),
                     None,

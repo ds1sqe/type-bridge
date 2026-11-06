@@ -1,8 +1,6 @@
 //! Borrowed terminals over one recording; only staged terminals are compiled.
 use super::*;
-use type_bridge_contract::query_plan::v3::{
-    BuildSelection, BuiltPlans, QueryPlanV3, ThingDocument,
-};
+use type_bridge_contract::query_plan::{BuildSelection, BuiltPlans, QueryPlan, ThingDocument};
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::match_request::{
     DescriptorId, PlanFetchStack, build_bulk_plan_fetch_stack, build_plan_fetch_stack,
@@ -39,8 +37,8 @@ pub(crate) struct CompiledSelection {
     pub(crate) model_slots: Vec<(BindingId, TypeId)>,
     pub(crate) rows: bool,
 }
-impl AsRef<[QueryPlanV3]> for CompiledSelection {
-    fn as_ref(&self) -> &[QueryPlanV3] {
+impl AsRef<[QueryPlan]> for CompiledSelection {
+    fn as_ref(&self) -> &[QueryPlan] {
         match &self.program {
             SelectionProgram::Raw(plans) => plans.plans(),
             SelectionProgram::Models(stack) => stack.plans(),
@@ -317,7 +315,7 @@ impl AuthoredPending {
             merged: std::sync::OnceLock::new(),
         }
     }
-    pub(crate) fn selection_plan(&self) -> &QueryPlanV3 {
+    pub(crate) fn selection_plan(&self) -> &QueryPlan {
         match &self.source.program {
             SelectionProgram::Raw(plans) => plans.projection_plan(),
             SelectionProgram::Models(stack) => stack.selection_plan(),
@@ -396,19 +394,19 @@ mod tests {
             &recording.finish_selection(count).unwrap()
         ));
         assert!(recording.error.is_none());
-        let bytes = AsRef::<[QueryPlanV3]>::as_ref(count_first.as_ref())[0]
+        let bytes = AsRef::<[QueryPlan]>::as_ref(count_first.as_ref())[0]
             .canonical_bytes()
             .unwrap();
         drop(recording);
         assert_eq!(
             bytes,
-            AsRef::<[QueryPlanV3]>::as_ref(count_first.as_ref())[0]
+            AsRef::<[QueryPlan]>::as_ref(count_first.as_ref())[0]
                 .canonical_bytes()
                 .unwrap()
         );
         assert_eq!(
-            AsRef::<[QueryPlanV3]>::as_ref(exists_first.as_ref())[0].operation(),
-            type_bridge_contract::query_plan::v3::Operation::Exists
+            AsRef::<[QueryPlan]>::as_ref(exists_first.as_ref())[0].operation(),
+            type_bridge_contract::query_plan::Operation::Exists
         );
     }
     #[test]

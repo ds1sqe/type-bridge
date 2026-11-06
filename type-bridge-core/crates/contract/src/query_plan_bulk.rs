@@ -72,15 +72,15 @@ pub struct BulkRowSlice<'a> {
 /// Stage every plan in the same transaction before resolving its result.
 #[derive(Clone, Debug)]
 pub struct BuiltPlans {
-    plans: Vec<QueryPlanV3>,
+    plans: Vec<QueryPlan>,
     bulk: Option<Arc<Vec<BulkRows>>>,
     chunks: Vec<BulkChunk>,
     documents: bool,
-    projection: Option<QueryPlanV3>,
+    projection: Option<QueryPlan>,
 }
 
-impl AsRef<[QueryPlanV3]> for BuiltPlans {
-    fn as_ref(&self) -> &[QueryPlanV3] {
+impl AsRef<[QueryPlan]> for BuiltPlans {
+    fn as_ref(&self) -> &[QueryPlan] {
         self.plans()
     }
 }
@@ -88,7 +88,7 @@ impl AsRef<[QueryPlanV3]> for BuiltPlans {
 impl BuiltPlans {
     /// A plain, already validated plan without bulk correlation evidence.
     #[must_use]
-    pub fn single(plan: QueryPlanV3) -> Self {
+    pub fn single(plan: QueryPlan) -> Self {
         let documents = plan.fetch_document_shape().is_some();
         Self {
             plans: vec![plan],
@@ -100,10 +100,10 @@ impl BuiltPlans {
     }
 
     pub(super) fn bulk(
-        plans: Vec<QueryPlanV3>,
+        plans: Vec<QueryPlan>,
         rows: Arc<Vec<BulkRows>>,
         chunks: Vec<BulkChunk>,
-        projection: QueryPlanV3,
+        projection: QueryPlan,
     ) -> Self {
         Self {
             plans,
@@ -116,13 +116,13 @@ impl BuiltPlans {
 
     /// Plans in first-seen shape and then chunk order; empty bulk has none.
     #[must_use]
-    pub fn plans(&self) -> &[QueryPlanV3] {
+    pub fn plans(&self) -> &[QueryPlan] {
         &self.plans
     }
 
     /// Executed fetch evidence, or the validated schema-only skeleton of empty bulk.
     #[must_use]
-    pub fn projection_plan(&self) -> &QueryPlanV3 {
+    pub fn projection_plan(&self) -> &QueryPlan {
         self.plans
             .first()
             .or(self.projection.as_ref())
@@ -177,11 +177,11 @@ impl BuiltPlans {
     /// Whether the authored call is a write; an empty bulk remains a write.
     #[must_use]
     pub fn writes(&self) -> bool {
-        self.bulk.is_some() || self.plans.iter().any(QueryPlanV3::writes)
+        self.bulk.is_some() || self.plans.iter().any(QueryPlan::writes)
     }
 }
 
-impl QueryPlanV3 {
+impl QueryPlan {
     /// Check that the terminal fetch supports a complete generated model result.
     pub fn validate_model_projection(&self) -> Result<(), Diagnostic> {
         let shape = self.fetch_document_shape().ok_or_else(|| {
@@ -248,7 +248,7 @@ pub(super) fn standalone_scalar_entity(spec: &PlanSpec, schema: &DeclaredSchema)
     })
 }
 
-impl QueryPlanV3 {
+impl QueryPlan {
     /// Expected present-field multiset derived from a standalone scalar entity write.
     /// The evidence is rebuilt from canonical inputs, including on the proxy server.
     #[must_use]

@@ -87,7 +87,7 @@ impl ExecutionTimeline {
             anchor_unix_milliseconds,
             stamps,
         };
-        value.validate(crate::limits::MAX_STAGED_STATEMENTS_V3.saturating_mul(2))?;
+        value.validate(crate::limits::MAX_STAGED_STATEMENTS.saturating_mul(2))?;
         Ok(value)
     }
 

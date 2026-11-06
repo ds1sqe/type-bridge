@@ -1,15 +1,15 @@
 //! The plan builder gives the same canonical bytes as the plan built by
 //! hand under its identity and naming rules.
 
-#[path = "support/plan_v3.rs"]
+#[path = "support/plan.rs"]
 #[allow(dead_code)]
 mod support;
 
 use support::*;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, QueryVariable, ValueComparator};
-use type_bridge_contract::query_plan::v3::{
-    ArithOp, DeleteItem, Expr, InsertThing, Operation, Pattern, PlanBuilder, PlanSpec, QueryPlanV3,
+use type_bridge_contract::query_plan::{
+    ArithOp, DeleteItem, Expr, InsertThing, Operation, Pattern, PlanBuilder, PlanSpec, QueryPlan,
     Set, Site, Stage, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
@@ -81,7 +81,7 @@ fn column(n: u16, name: &str) -> InputColumn {
 }
 
 /// The one-query purchase, written with the builder.
-fn built_purchase() -> QueryPlanV3 {
+fn built_purchase() -> QueryPlan {
     let mut plan = PlanBuilder::new();
     let item = plan.exact(entity("item"));
     let buyer = plan.exact(entity("account"));
@@ -139,7 +139,7 @@ fn built_purchase() -> QueryPlanV3 {
 
 /// The same purchase built by hand: bindings in creation order, the match
 /// in call order, the two updates sharing one stage.
-fn hand_built_purchase() -> QueryPlanV3 {
+fn hand_built_purchase() -> QueryPlan {
     let spec = PlanSpec {
         bindings: bindings(&[
             "item",
@@ -224,7 +224,7 @@ fn hand_built_purchase() -> QueryPlanV3 {
         managed_semantics: semantics(),
         functions: vec![],
     };
-    QueryPlanV3::new(spec, &schema()).unwrap()
+    QueryPlan::new(spec, &schema()).unwrap()
 }
 
 #[test]
@@ -240,7 +240,7 @@ fn builder_purchase_bytes_equal_the_hand_built_plan() {
 
 #[test]
 fn implicit_purchase_equals_explicit_inputs_with_derived_names() {
-    fn purchase(implicit: bool) -> QueryPlanV3 {
+    fn purchase(implicit: bool) -> QueryPlan {
         let mut plan = PlanBuilder::new();
         let item = plan.exact(entity("item"));
         let buyer = plan.exact(entity("account"));
@@ -559,7 +559,7 @@ fn recording_query_policy_reaches_plan_validation_without_entering_wire_bytes() 
 
 #[test]
 fn ordered_and_unordered_roles_allow_complete_authored_write_model_fetches() {
-    use type_bridge_contract::query_plan::v3::DocumentRole;
+    use type_bridge_contract::query_plan::DocumentRole;
     for schema in [schema(), schema_with_ordered_role()] {
         let mut read = PlanBuilder::new();
         let membership = read.exact(relation());
@@ -600,7 +600,7 @@ fn ordered_and_unordered_roles_allow_complete_authored_write_model_fetches() {
 
 #[test]
 fn authored_write_model_fetch_checks_ordinary_roles_after_an_ordered_role() {
-    use type_bridge_contract::query_plan::v3::DocumentRole;
+    use type_bridge_contract::query_plan::DocumentRole;
     let schema = schema_with_ordered_and_unordered_roles();
     for complete in [false, true] {
         let mut write = PlanBuilder::new();
@@ -634,7 +634,7 @@ fn authored_write_model_fetch_checks_ordinary_roles_after_an_ordered_role() {
 
 #[test]
 fn model_writes_refuse_missing_subtype_roles_before_staging() {
-    use type_bridge_contract::query_plan::v3::DocumentRole;
+    use type_bridge_contract::query_plan::DocumentRole;
     let schema = schema_with_subtype_role();
     let mut plan = PlanBuilder::new();
     let membership = plan.subtypes(relation());
@@ -679,7 +679,7 @@ fn generated_link_attaches_instead_of_replacing_existing_players() {
     let built = plan.build(&schema(), semantics()).unwrap();
     assert!(matches!(
         &built.pipeline()[1],
-        Stage::Attach { items } if matches!(&items[..], [type_bridge_contract::query_plan::v3::AttachItem::Links { relation, player, .. }] if *relation == membership && *player == account)
+        Stage::Attach { items } if matches!(&items[..], [type_bridge_contract::query_plan::AttachItem::Links { relation, player, .. }] if *relation == membership && *player == account)
     ));
 }
 
@@ -706,7 +706,7 @@ fn builder_refuses_typedb_3_14_query_rules_on_every_profile() {
 
 #[test]
 fn builder_fetch_matches_validated_document_plans() {
-    use type_bridge_contract::query_plan::v3::{DocumentRole, ThingDocument};
+    use type_bridge_contract::query_plan::{DocumentRole, ThingDocument};
     for inserted in [false, true] {
         let mut plan = PlanBuilder::new();
         let account = if inserted {
@@ -751,7 +751,7 @@ fn builder_fetch_matches_validated_document_plans() {
             .push(Stage::Fetch(ThingDocument::new(account, vec![])));
         assert_eq!(
             built.canonical_bytes().unwrap(),
-            QueryPlanV3::new(spec, &schema())
+            QueryPlan::new(spec, &schema())
                 .unwrap()
                 .canonical_bytes()
                 .unwrap()
@@ -878,7 +878,7 @@ fn builder_fetch_remains_terminal_when_configured_before_a_write() {
 
 #[test]
 fn bulk_inputs_equal_explicit_rows_and_preserve_row_order() {
-    fn bulk(implicit: bool, rows: Vec<Vec<CanonicalValue>>) -> QueryPlanV3 {
+    fn bulk(implicit: bool, rows: Vec<Vec<CanonicalValue>>) -> QueryPlan {
         let mut plan = PlanBuilder::new();
         let account = plan.insert(entity("account"));
         let operands = if implicit {
@@ -1214,10 +1214,8 @@ fn model_bulk_split_honours_the_recordings_selected_query_limits() {
 #[test]
 fn configured_binding_policy_owns_wide_authoring_and_wire_revalidation() {
     use type_bridge_contract::limits::QueryLimits;
-    use type_bridge_contract::query_plan::v3::{
-        decode_query_plan_v3, decode_query_plan_v3_with_limits,
-    };
-    let mut limits = QueryLimits::V3;
+    use type_bridge_contract::query_plan::{decode_query_plan, decode_query_plan_with_limits};
+    let mut limits = QueryLimits::PLAN;
     limits.structural.bindings = 512;
     limits.structural.boolean_terms = 512;
     let mut builder = PlanBuilder::with_limits(limits);
@@ -1229,14 +1227,14 @@ fn configured_binding_policy_owns_wide_authoring_and_wire_revalidation() {
     assert_eq!(wide.bindings().len(), 300);
     let bytes = wide.canonical_bytes().unwrap();
     assert_eq!(
-        decode_query_plan_v3_with_limits(&bytes, &schema(), limits)
+        decode_query_plan_with_limits(&bytes, &schema(), limits)
             .unwrap()
             .canonical_bytes()
             .unwrap(),
         bytes
     );
     assert_eq!(
-        decode_query_plan_v3(&bytes, &schema())
+        decode_query_plan(&bytes, &schema())
             .unwrap_err()
             .code()
             .as_str(),

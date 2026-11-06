@@ -520,7 +520,7 @@ pub(crate) fn validated_match_result_from_outcome(
 /// not construct a synthetic match request themselves.
 pub fn validated_match_result_from_plan(
     registry: &DescriptorRegistry,
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
     documents: &[serde_json::Value],
     declared: &DescriptorId,
     limits: crate::QueryExecutionResourceLimits,
@@ -540,13 +540,13 @@ pub fn validated_match_result_from_plan(
 
 pub(crate) fn validated_match_result_from_verified_plan(
     registry: &DescriptorRegistry,
-    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    plan: &type_bridge_contract::query_plan::QueryPlan,
     documents: &[serde_json::Value],
     declared: &DescriptorId,
     limits: crate::QueryExecutionResourceLimits,
 ) -> Result<(ValidatedMatchRequest, ValidatedMatchResult), MatchError> {
     use super::descriptor_plan::{MatchRequestAdapterAuthority, descriptor_id_type};
-    use type_bridge_contract::query_plan::v3::Stage;
+    use type_bridge_contract::query_plan::Stage;
     let authority = MatchRequestAdapterAuthority::from_registry(registry)
         .map_err(|error| super::selected_result_executor::released_plan_execution_error(&error))?;
     if plan.managed_semantics()
@@ -2145,17 +2145,14 @@ mod tests {
         registry: &DescriptorRegistry,
         label: &str,
         deleted: bool,
-    ) -> type_bridge_contract::query_plan::v3::QueryPlanV3 {
+    ) -> type_bridge_contract::query_plan::QueryPlan {
         use super::super::descriptor_plan::MatchRequestAdapterAuthority;
         use type_bridge_contract::migration_assertion::{
             AssertionBinding, BindingId as PlanBinding, QueryVariable,
         };
         use type_bridge_contract::query_plan::{
-            QueryOutput, QueryPattern,
-            v3::{
-                DeleteItem, DocumentRole, Operation, Pattern, PlanSpec, QueryPlanV3, Stage,
-                ThingDocument, WriteReturns,
-            },
+            DeleteItem, DocumentRole, Operation, Pattern, PlanSpec, QueryOutput, QueryPattern,
+            QueryPlan, Stage, ThingDocument, WriteReturns,
         };
         let authority = MatchRequestAdapterAuthority::from_registry(registry).unwrap();
         let kind = if label == "employment" {
@@ -2196,7 +2193,7 @@ mod tests {
                 }],
             });
         }
-        QueryPlanV3::new(
+        QueryPlan::new(
             PlanSpec {
                 bindings: vec![AssertionBinding::new(
                     PlanBinding::new(0).unwrap(),
@@ -2283,15 +2280,15 @@ mod tests {
 
     #[test]
     fn model_fetch_refuses_write_projection_that_requires_another_query() {
-        use type_bridge_contract::query_plan::v3::{
-            Operation, PlanSpec, QueryPlanV3, Stage, WriteReturns,
+        use type_bridge_contract::query_plan::{
+            Operation, PlanSpec, QueryPlan, Stage, WriteReturns,
         };
         let registry = model_fetch_registry(true);
         let source = fetched_model_plan(&registry, "person", true);
         let authority =
             super::super::descriptor_plan::MatchRequestAdapterAuthority::from_registry(&registry)
                 .unwrap();
-        let plan = QueryPlanV3::new(
+        let plan = QueryPlan::new(
             PlanSpec {
                 bindings: source.bindings().to_vec(),
                 inputs: vec![],

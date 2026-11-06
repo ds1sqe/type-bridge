@@ -3,7 +3,7 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, Label, TypeId, TypeKind};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-use type_bridge_contract::query_plan::v3::{Operation, PlanSpec, QueryPlanV3, Stage};
+use type_bridge_contract::query_plan::{Operation, PlanSpec, QueryPlan, Stage};
 use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_orm::plan_explain::explain;
@@ -171,7 +171,7 @@ entities:
     let thing = BindingId::new(0).expect("binding ID");
     let middle_dot_value = BindingId::new(1).expect("binding ID");
     let combining_value = BindingId::new(2).expect("binding ID");
-    let plan = QueryPlanV3::new(
+    let plan = QueryPlan::new(
         PlanSpec {
             bindings: vec![
                 binding(0, "thing"),

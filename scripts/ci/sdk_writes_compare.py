@@ -82,7 +82,7 @@ def _validate(report: LoadedJson, expected: Any, *, live: bool, root: Path = ROO
     )
     if expected["program"] == "purchase":
         profile = value["semantic_profile"].replace("/", "-")
-        fixture = root / f"tests/contracts/plan_v3/explain/purchase-sdk.{profile}.json"
+        fixture = root / f"tests/contracts/plan/explain/purchase-sdk.{profile}.json"
         explanation = _load_json(fixture, "purchase explanation").value
         _compare(
             f"{binding} explanation", value["explanation"], explanation, "explanation_mismatch"

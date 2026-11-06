@@ -8,7 +8,7 @@ use crate::plan_builder::bulk::purchase_package;
 use crate::plan_builder::{columns::*, context::*, idioms::*, terminals::TypeBridgeHeldPlan, *};
 use crate::staged::*;
 use type_bridge_contract::id::{AttributeId, TypeKind};
-use type_bridge_contract::query_plan::v3::{PlanBuilder, QueryPlanV3};
+use type_bridge_contract::query_plan::{PlanBuilder, QueryPlan};
 use type_bridge_orm::session::backend::QueryResult;
 
 fn bytes(value: &[u8]) -> TypeBridgeByteView {
@@ -50,7 +50,7 @@ fn package(fixture: &purchase_package::PurchasePackage) -> TypeBridgeSchemaPacka
     })
     .unwrap()
 }
-fn response(plan: &QueryPlanV3, occurrences: usize) -> Response {
+fn response(plan: &QueryPlan, occurrences: usize) -> Response {
     if plan.fetch_document_shape().is_some() {
         return Response::Result(QueryResult::Documents(if occurrences == 0 {
             vec![]
@@ -207,7 +207,7 @@ fn model_scalar_rows_share_core_bytes_ordinals_and_owner_with_checked_getters() 
             )
             .unwrap();
             assert_eq!(
-                AsRef::<[QueryPlanV3]>::as_ref(mixed_source.as_ref())
+                AsRef::<[QueryPlan]>::as_ref(mixed_source.as_ref())
                     .iter()
                     .map(|plan| String::from_utf8(plan.canonical_bytes().unwrap()).unwrap())
                     .collect::<Vec<_>>(),
@@ -217,7 +217,7 @@ fn model_scalar_rows_share_core_bytes_ordinals_and_owner_with_checked_getters() 
                     .map(|plan| String::from_utf8(plan.canonical_bytes().unwrap()).unwrap())
                     .collect::<Vec<_>>(),
             );
-            let responses = AsRef::<[QueryPlanV3]>::as_ref(mixed_source.as_ref())
+            let responses = AsRef::<[QueryPlan]>::as_ref(mixed_source.as_ref())
                 .iter()
                 .enumerate()
                 .map(|(index, plan)| {
@@ -233,7 +233,7 @@ fn model_scalar_rows_share_core_bytes_ordinals_and_owner_with_checked_getters() 
                     )
                 })
                 .chain(
-                    AsRef::<[QueryPlanV3]>::as_ref(scalar_source.as_ref())
+                    AsRef::<[QueryPlan]>::as_ref(scalar_source.as_ref())
                         .iter()
                         .map(|plan| response(plan, if empty { 0 } else { 2 })),
                 )
@@ -610,7 +610,7 @@ fn repeated_model_rows_use_proof_ordinals_after_materialization() {
             (&mut *builder).finish_selection(single).unwrap(),
         ];
     }
-    let responses = sources.iter().enumerate().flat_map(|(selection, source)| AsRef::<[QueryPlanV3]>::as_ref(source.as_ref()).iter().map(move |plan| (selection, plan))).map(|(selection, plan)| {
+    let responses = sources.iter().enumerate().flat_map(|(selection, source)| AsRef::<[QueryPlan]>::as_ref(source.as_ref()).iter().map(move |plan| (selection, plan))).map(|(selection, plan)| {
         if plan.fetch_document_shape().is_some() {
             let documents = vec![
                 serde_json::json!({"_iid":"0x01", "_type":"item", "attributes":{"item-id":"I1", "stock":10, "price":3}}),

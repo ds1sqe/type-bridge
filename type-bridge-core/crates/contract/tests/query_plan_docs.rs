@@ -1,15 +1,15 @@
 //! Keep the public worked examples executable against the shared codec.
 use std::path::Path;
-use type_bridge_contract::query_plan::v3::decode_query_plan_v3;
+use type_bridge_contract::query_plan::decode_query_plan;
 use type_bridge_contract::schema::decode_declared_schema;
 
 #[test]
 fn documented_plan_v3_bytes_and_fingerprints() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    let fixtures = root.join("tests/contracts/plan_v3");
+    let fixtures = root.join("tests/contracts/plan");
     let schema =
         decode_declared_schema(&std::fs::read(fixtures.join("schema.json")).unwrap()).unwrap();
-    let document = std::fs::read_to_string(root.join("docs/reference/query-plan-v3.md")).unwrap();
+    let document = std::fs::read_to_string(root.join("docs/reference/query-plan.md")).unwrap();
     let mut names = Vec::new();
     for example in document.split("<!-- plan-v3-example: ").skip(1) {
         let (filename, rest) = example.split_once(" -->").unwrap();
@@ -21,7 +21,7 @@ fn documented_plan_v3_bytes_and_fingerprints() {
             bytes.as_bytes(),
             std::fs::read(fixtures.join(filename)).unwrap()
         );
-        let plan = decode_query_plan_v3(bytes.as_bytes(), &schema).unwrap();
+        let plan = decode_query_plan(bytes.as_bytes(), &schema).unwrap();
         assert_eq!(plan.canonical_bytes().unwrap(), bytes.as_bytes());
         assert_eq!(
             plan.fingerprint()

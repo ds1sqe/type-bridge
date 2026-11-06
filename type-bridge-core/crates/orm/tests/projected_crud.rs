@@ -2993,7 +2993,7 @@ async fn default_manager_read_does_not_allocate_an_authored_bulk_payload() {
         let person = type_id(TypeKind::Entity, "person");
         // BuiltPlans now shares a layout size with unrelated allocations. Count
         // only allocations originating in its boxed bulk-stack constructor.
-        let bytes = std::mem::size_of::<type_bridge_contract::query_plan::v3::BuiltPlans>();
+        let bytes = std::mem::size_of::<type_bridge_contract::query_plan::BuiltPlans>();
         let count = if target_route {
             let (result, count) = allocations::count_from(
                 bytes,

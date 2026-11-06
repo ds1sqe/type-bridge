@@ -15,12 +15,12 @@ use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId};
 use type_bridge_contract::migration_assertion::BindingId;
-use type_bridge_contract::query_plan::v3::{
-    ArithOp, BuildSelection, BuiltPlans, Builtin, DocumentRole, Expr, PlanBuilder, QueryPlanV3,
-    Site, ThingDocument,
+use type_bridge_contract::query_plan::{
+    ArithOp, BuildSelection, BuiltPlans, Builtin, DocumentRole, Expr, PlanBuilder, QueryPlan, Site,
+    ThingDocument,
 };
 use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, QueryOperand};
-use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
+use type_bridge_contract::query_remote::{StagedPlan, StagedResultRef};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_orm::plan_scalar::plan_value_type;
@@ -70,7 +70,7 @@ fn invocation_rows(
 /// One immutable invocation template authored by the shared builder.
 #[napi]
 pub struct NodeStagedPlan {
-    pub(crate) entry: StagedPlanV3,
+    pub(crate) entry: StagedPlan,
     pub(crate) authority: Arc<type_bridge_orm::plan_authority::QueryAuthority>,
 }
 
@@ -815,7 +815,7 @@ impl NodePlanBuilder {
         }
         let authority = authority.authority();
         let rows = invocation_rows(&env, self.core.input_columns(), columns, rows)?;
-        let refs: Vec<StagedResultRefV3> = serde_json::from_str(&references).map_err(|_| {
+        let refs: Vec<StagedResultRef> = serde_json::from_str(&references).map_err(|_| {
             napi_error(&invalid(
                 "query_stage_result_ref_input",
                 "result references are malformed",
@@ -945,7 +945,7 @@ pub(crate) enum NodePlanProgram {
     Models(Box<crate::runtime_projection::AuthoredPlanProjection>),
 }
 impl NodePlanProgram {
-    pub(crate) fn plans(&self) -> &[QueryPlanV3] {
+    pub(crate) fn plans(&self) -> &[QueryPlan] {
         match self {
             Self::Raw(plans) => plans.plans(),
             Self::Models(model) => model.stack.plans(),
@@ -970,8 +970,8 @@ impl NodePlanProgram {
         }
     }
 }
-impl AsRef<[QueryPlanV3]> for NodePlanProgram {
-    fn as_ref(&self) -> &[QueryPlanV3] {
+impl AsRef<[QueryPlan]> for NodePlanProgram {
+    fn as_ref(&self) -> &[QueryPlan] {
         self.plans()
     }
 }
@@ -991,7 +991,7 @@ pub struct NodePlan {
 }
 
 impl NodePlan {
-    fn inner(&self) -> napi::Result<&QueryPlanV3> {
+    fn inner(&self) -> napi::Result<&QueryPlan> {
         match self.plans.plans() {
             [plan] => Ok(plan),
             _ => Err(napi_error(&invalid(

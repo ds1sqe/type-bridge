@@ -687,7 +687,7 @@ pub(crate) fn rebuild_output(value: Value) -> Result<QueryOutput, Diagnostic> {
         .rebuild()
 }
 
-pub(crate) fn rebuild_pattern_v3(
+pub(crate) fn rebuild_pattern(
     value: Value,
     limits: crate::limits::CodecLimits,
 ) -> Result<QueryPattern, Diagnostic> {
@@ -735,7 +735,7 @@ pub(crate) fn rebuild_pattern_v3(
                     .map(|branch| {
                         branch
                             .into_iter()
-                            .map(|value| rebuild_pattern_v3(value, limits))
+                            .map(|value| rebuild_pattern(value, limits))
                             .collect()
                     })
                     .collect::<Result<_, Diagnostic>>()?,
@@ -758,7 +758,7 @@ pub(crate) fn rebuild_pattern_v3(
             let patterns = wire
                 .patterns
                 .into_iter()
-                .map(|value| rebuild_pattern_v3(value, limits))
+                .map(|value| rebuild_pattern(value, limits))
                 .collect::<Result<_, _>>()?;
             return Ok(if wire.kind == "not" {
                 QueryPattern::Not { patterns }

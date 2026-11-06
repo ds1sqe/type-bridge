@@ -4,8 +4,8 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
-use type_bridge_contract::query_plan::v3::{
-    AttachItem, DeleteItem, Operation, Pattern, PlanSpec, QueryPlanV3, Stage, WriteReturns,
+use type_bridge_contract::query_plan::{
+    AttachItem, DeleteItem, Operation, Pattern, PlanSpec, QueryPlan, Stage, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     OrderDirection, OrderTerm, QueryOperand, QueryOutput, QueryPattern, TypeMatchMode,
@@ -14,9 +14,9 @@ use type_bridge_contract::schema::{DeclaredSchema, SchemaFactId};
 use type_bridge_schema_migration::BackfillExecutionDirection;
 
 pub(crate) struct NativeBackfill {
-    pub(crate) conflict: Option<QueryPlanV3>,
-    pub(crate) incomplete: QueryPlanV3,
-    pub(crate) mutation: QueryPlanV3,
+    pub(crate) conflict: Option<QueryPlan>,
+    pub(crate) incomplete: QueryPlan,
+    pub(crate) mutation: QueryPlan,
 }
 fn id(value: u16) -> BindingId {
     BindingId::new(value).expect("bounded backfill binding")
@@ -89,7 +89,7 @@ impl NativeBackfill {
                 patterns: patterns.into_iter().map(Pattern::from).collect(),
             }];
             pipeline.append(&mut tail);
-            QueryPlanV3::new(
+            QueryPlan::new(
                 PlanSpec {
                     bindings: bindings.clone(),
                     inputs: vec![],

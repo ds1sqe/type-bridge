@@ -20,8 +20,8 @@ use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
-use type_bridge_contract::query_plan::v3::{
-    ArithOp, Expr, InsertThing, Operation, Pattern, PlanSpec, QueryPlanV3, Set, Stage, WriteReturns,
+use type_bridge_contract::query_plan::{
+    ArithOp, Expr, InsertThing, Operation, Pattern, PlanSpec, QueryPlan, Set, Stage, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
@@ -127,9 +127,9 @@ impl Plan {
         }
     }
 
-    fn build(self, schema: &DeclaredSchema) -> QueryPlanV3 {
+    fn build(self, schema: &DeclaredSchema) -> QueryPlan {
         let given_rows = (!self.inputs.is_empty()).then(|| vec![InputRow::new(self.row)]);
-        QueryPlanV3::new(
+        QueryPlan::new(
             PlanSpec {
                 bindings: self
                     .names
@@ -197,7 +197,7 @@ fn sub(left: QueryOperand, right: QueryOperand) -> Expr {
 
 /// The guide's "purchase": check stock and balance, take one item and the
 /// price, and record the purchase in one pipeline.
-fn purchase(schema: &DeclaredSchema, purchase_id: &str) -> QueryPlanV3 {
+fn purchase(schema: &DeclaredSchema, purchase_id: &str) -> QueryPlan {
     let mut plan = Plan::new(&[
         "item",
         "account",
@@ -265,7 +265,7 @@ fn purchase(schema: &DeclaredSchema, purchase_id: &str) -> QueryPlanV3 {
 }
 
 /// The guide's "keyed-purchase": record a purchase under one key.
-fn keyed_purchase(schema: &DeclaredSchema, purchase_id: &str) -> QueryPlanV3 {
+fn keyed_purchase(schema: &DeclaredSchema, purchase_id: &str) -> QueryPlan {
     let mut plan = Plan::new(&["item", "account", "item_key", "account_key", "purchase"]);
     let id = plan.input("purchase_id", purchase_id);
     let item_id = plan.input("item_id", "item-1");
@@ -300,7 +300,7 @@ fn keyed_purchase(schema: &DeclaredSchema, purchase_id: &str) -> QueryPlanV3 {
 }
 
 /// The guide's "doctor-a-off" / "doctor-b-off".
-fn doctor_off(schema: &DeclaredSchema, name: &str) -> QueryPlanV3 {
+fn doctor_off(schema: &DeclaredSchema, name: &str) -> QueryPlan {
     let mut plan = Plan::new(&["doctor", "name"]);
     let doctor = plan.input("doctor_name", name);
     let patterns = vec![
@@ -321,7 +321,7 @@ fn doctor_off(schema: &DeclaredSchema, name: &str) -> QueryPlanV3 {
 }
 
 /// The guide's "touch-on-call": rewrite every on-call value with itself.
-fn touch(schema: &DeclaredSchema) -> QueryPlanV3 {
+fn touch(schema: &DeclaredSchema) -> QueryPlan {
     let mut plan = Plan::new(&["doctor", "value"]);
     plan.stages = vec![
         Stage::Match {
@@ -338,7 +338,7 @@ fn touch(schema: &DeclaredSchema) -> QueryPlanV3 {
 }
 
 /// The guide's "assign-first-shift" / "assign-second-shift".
-fn assign(schema: &DeclaredSchema, shift_id: &str) -> QueryPlanV3 {
+fn assign(schema: &DeclaredSchema, shift_id: &str) -> QueryPlan {
     let mut plan = Plan::new(&["doctor", "name", "shift", "shift_key", "assignment"]);
     let doctor = plan.input("doctor_name", "doctor-a");
     let shift = plan.input("shift_id", shift_id);
@@ -415,7 +415,7 @@ impl Live {
 }
 
 /// Stage `plans` in one transaction and commit it.
-async fn run(database: &Database, plans: &[QueryPlanV3]) -> Outcome {
+async fn run(database: &Database, plans: &[QueryPlan]) -> Outcome {
     let mut transaction = database.transaction(TransactionOptions::default());
     let answers = plans
         .iter()
@@ -432,8 +432,8 @@ async fn run(database: &Database, plans: &[QueryPlanV3]) -> Outcome {
 async fn race(
     gated: &Database,
     gate: &CommitGate,
-    a: &[QueryPlanV3],
-    b: &[QueryPlanV3],
+    a: &[QueryPlan],
+    b: &[QueryPlan],
 ) -> [Outcome; 2] {
     gate.arm(2);
     let (a, b) = tokio::time::timeout(Duration::from_secs(120), async {

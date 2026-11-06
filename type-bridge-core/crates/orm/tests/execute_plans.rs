@@ -6,7 +6,7 @@ use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use type_bridge_contract::migration_assertion::ValueComparator;
-use type_bridge_contract::query_plan::v3::Operation;
+use type_bridge_contract::query_plan::Operation;
 use type_bridge_orm::session::backend::{
     AnswerCancellation, BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TransactionOps,
     TxType,

@@ -47,13 +47,13 @@ use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId};
 use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
-use type_bridge_contract::query_plan::v3::{
+use type_bridge_contract::query_plan::{
     ArithOp, BuiltPlans, Builtin, DocumentRole, Expr as CoreExpr, PlanBuilder as CoreBuilder,
-    QueryPlanV3, Site,
+    QueryPlan, Site,
 };
 use type_bridge_contract::query_plan::{InputColumnId, InputRow, QueryOperand};
-use type_bridge_contract::query_remote_v3::StagedPlanV3;
-pub use type_bridge_contract::query_remote_v3::StagedResultRefV3 as StagedResultRef;
+use type_bridge_contract::query_remote::StagedPlan as WireStagedPlan;
+pub use type_bridge_contract::query_remote::StagedResultRef;
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
@@ -450,7 +450,7 @@ struct PlanInner {
 }
 
 enum PlanProgram {
-    Single(QueryPlanV3),
+    Single(QueryPlan),
     Bulk(BuiltPlans),
     Models {
         stack: Box<PlanFetchStack>,
@@ -459,7 +459,7 @@ enum PlanProgram {
     },
 }
 impl PlanInner {
-    fn projection(&self) -> &QueryPlanV3 {
+    fn projection(&self) -> &QueryPlan {
         match &self.program {
             PlanProgram::Single(plan) => plan,
             PlanProgram::Bulk(plans) => plans.projection_plan(),
@@ -474,8 +474,8 @@ impl PlanInner {
         }
     }
 }
-impl AsRef<[QueryPlanV3]> for PlanInner {
-    fn as_ref(&self) -> &[QueryPlanV3] {
+impl AsRef<[QueryPlan]> for PlanInner {
+    fn as_ref(&self) -> &[QueryPlan] {
         match &self.program {
             PlanProgram::Single(plan) => std::slice::from_ref(plan),
             PlanProgram::Bulk(plans) => plans.plans(),
@@ -513,7 +513,7 @@ mod result_sealed {
 pub trait PlanResult: result_sealed::Sealed + Sized {
     /// Decode an already validated committed answer.
     #[doc(hidden)]
-    fn decode(plan: &QueryPlanV3, answer: &PlanAnswer) -> Result<Self>;
+    fn decode(plan: &QueryPlan, answer: &PlanAnswer) -> Result<Self>;
     /// Decode only the core's published model proof and projected companion.
     #[doc(hidden)]
     fn decode_models(
@@ -544,13 +544,13 @@ fn result_shape() -> Error {
 
 impl result_sealed::Sealed for PlanAnswer {}
 impl PlanResult for PlanAnswer {
-    fn decode(_plan: &QueryPlanV3, answer: &PlanAnswer) -> Result<Self> {
+    fn decode(_plan: &QueryPlan, answer: &PlanAnswer) -> Result<Self> {
         Ok(answer.clone())
     }
 }
 impl result_sealed::Sealed for Matched {}
 impl PlanResult for Matched {
-    fn decode(_plan: &QueryPlanV3, answer: &PlanAnswer) -> Result<Self> {
+    fn decode(_plan: &QueryPlan, answer: &PlanAnswer) -> Result<Self> {
         match answer {
             PlanAnswer::Matched(count) | PlanAnswer::Count(count) => Ok(Self { count: *count }),
             _ => Err(result_shape()),
@@ -559,7 +559,7 @@ impl PlanResult for Matched {
 }
 impl result_sealed::Sealed for i64 {}
 impl PlanResult for i64 {
-    fn decode(_plan: &QueryPlanV3, answer: &PlanAnswer) -> Result<Self> {
+    fn decode(_plan: &QueryPlan, answer: &PlanAnswer) -> Result<Self> {
         match answer {
             PlanAnswer::Count(count) => i64::try_from(*count).map_err(|_| result_shape()),
             _ => Err(result_shape()),
@@ -568,7 +568,7 @@ impl PlanResult for i64 {
 }
 impl result_sealed::Sealed for bool {}
 impl PlanResult for bool {
-    fn decode(_plan: &QueryPlanV3, answer: &PlanAnswer) -> Result<Self> {
+    fn decode(_plan: &QueryPlan, answer: &PlanAnswer) -> Result<Self> {
         match answer {
             PlanAnswer::Exists(value) => Ok(*value),
             _ => Err(result_shape()),
@@ -578,7 +578,7 @@ impl PlanResult for bool {
 
 impl<M: crate::__codegen::MaterializeModel> result_sealed::Sealed for Vec<M> {}
 impl<M: crate::__codegen::MaterializeModel> PlanResult for Vec<M> {
-    fn decode(_plan: &QueryPlanV3, _answer: &PlanAnswer) -> Result<Self> {
+    fn decode(_plan: &QueryPlan, _answer: &PlanAnswer) -> Result<Self> {
         Err(result_shape())
     }
     fn decode_models(
@@ -817,7 +817,7 @@ impl<R, S: Schema> Plan<R, S> {
         recording::PlanAuthoring::new(limits)
     }
 
-    fn from_core(plan: QueryPlanV3) -> Self {
+    fn from_core(plan: QueryPlan) -> Self {
         Self {
             inner: PlanState::Built(Arc::new(PlanInner {
                 program: PlanProgram::Single(plan),
@@ -836,7 +836,7 @@ impl<R, S: Schema> Plan<R, S> {
     }
 
     fn from_tuple_plan<B: PlanSchema>(
-        plan: QueryPlanV3,
+        plan: QueryPlan,
         models: &[(BindingId, &'static str)],
     ) -> Result<Self> {
         let installed = B::package().verify_and_install()?;
@@ -990,8 +990,8 @@ impl<R, S: Schema> Plan<R, S> {
         }
     }
 
-    fn single_wire_plan(&self) -> Result<&QueryPlanV3> {
-        match <PlanInner as AsRef<[QueryPlanV3]>>::as_ref(self.shared_inner()?.as_ref()) {
+    fn single_wire_plan(&self) -> Result<&QueryPlan> {
+        match <PlanInner as AsRef<[QueryPlan]>>::as_ref(self.shared_inner()?.as_ref()) {
             [plan] => Ok(plan),
             _ => Err(Error::model_validation(
                 ModelValidationPhase::Input,
@@ -1003,7 +1003,7 @@ impl<R, S: Schema> Plan<R, S> {
         }
     }
 
-    pub(crate) fn inner(&self) -> Result<&QueryPlanV3> {
+    pub(crate) fn inner(&self) -> Result<&QueryPlan> {
         Ok(self.shared_inner()?.projection())
     }
 
@@ -1053,7 +1053,7 @@ impl<R, S: Schema> Plan<R, S> {
 /// One authored staged invocation, including its future IID references.
 /// Queue the complete block with [`crate::staged::Transaction::stage_stack`].
 pub struct StagedPlan<S: Schema> {
-    entry: StagedPlanV3,
+    entry: WireStagedPlan,
     authority: Arc<type_bridge_schema::VerifiedSchemaAuthority>,
     plan: Plan<PlanAnswer, S>,
 }

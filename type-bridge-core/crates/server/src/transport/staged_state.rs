@@ -374,7 +374,7 @@ impl StagedQueryState {
         mut self,
         limits: type_bridge_contract::limits::QueryLimits,
     ) -> Result<Self, Diagnostic> {
-        let limits = limits.validate_v3().map_err(|_| {
+        let limits = limits.validate_plan().map_err(|_| {
             diagnostic(
                 DiagnosticCategory::ResourceLimit,
                 "query_remote_v3_query_limits",
@@ -817,7 +817,7 @@ mod tests {
     use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
     use type_bridge_contract::query_plan::QueryOutput;
     use type_bridge_contract::query_plan::QueryPattern;
-    use type_bridge_contract::query_remote_v3::decode_signed_staged_failure;
+    use type_bridge_contract::query_remote::decode_signed_staged_failure;
     use type_bridge_contract::schema::{
         OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact,
         ValueFactId,

@@ -1,11 +1,11 @@
 use std::path::PathBuf;
-use type_bridge_contract::query_plan::v3::decode_query_plan_v3;
+use type_bridge_contract::query_plan::decode_query_plan;
 use type_bridge_contract::schema::decode_declared_schema;
 use type_bridge_orm::plan_explain::explain;
 
 #[test]
 fn fixtures_explain_with_one_common_canonical_shape() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../tests/contracts/plan_v3");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../tests/contracts/plan");
     let schema = decode_declared_schema(&std::fs::read(root.join("schema.json")).unwrap()).unwrap();
     let mut explained = 0;
     for entry in std::fs::read_dir(&root).unwrap() {
@@ -18,7 +18,7 @@ fn fixtures_explain_with_one_common_canonical_shape() {
         {
             continue;
         }
-        let plan = decode_query_plan_v3(&std::fs::read(&path).unwrap(), &schema).unwrap();
+        let plan = decode_query_plan(&std::fs::read(&path).unwrap(), &schema).unwrap();
         let explanation =
             explain(&plan).unwrap_or_else(|error| panic!("{}: {error:?}", path.display()));
         assert_eq!(
@@ -63,7 +63,7 @@ fn sdk_purchase_explanation_matches_committed_fixture() {
     };
     let schema =
         decode_declared_schema(&decode_hex(authority["declared_hex"].as_str().unwrap())).unwrap();
-    let plan = decode_query_plan_v3(
+    let plan = decode_query_plan(
         &decode_hex(expected["plans"]["purchase"].as_str().unwrap()),
         &schema,
     )
@@ -73,7 +73,7 @@ fn sdk_purchase_explanation_matches_committed_fixture() {
         .unwrap()
         .replace('/', "-");
     let fixture = root.join(format!(
-        "tests/contracts/plan_v3/explain/purchase-sdk.{profile}.json"
+        "tests/contracts/plan/explain/purchase-sdk.{profile}.json"
     ));
     let bytes = explain(&plan).unwrap().canonical_bytes().unwrap();
     if std::env::var_os("UPDATE_EXPECT").is_some() {

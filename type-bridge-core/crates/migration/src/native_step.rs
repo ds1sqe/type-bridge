@@ -3,7 +3,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::query_plan::v3::{QueryPlanV3, decode_query_plan_v3};
+use type_bridge_contract::query_plan::{QueryPlan, decode_query_plan};
 use type_bridge_contract::schema::{DeclaredSchema, decode_declared_schema};
 use type_bridge_orm::session::TransactionContext;
 use type_bridge_orm::{
@@ -19,10 +19,10 @@ use crate::plan::{ExecutionStep, MigrationAction, OperationKind};
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeDataStep {
     schema: DeclaredSchema,
-    forward: QueryPlanV3,
-    reverse: Option<QueryPlanV3>,
+    forward: QueryPlan,
+    reverse: Option<QueryPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    counts: Option<[QueryPlanV3; 2]>,
+    counts: Option<[QueryPlan; 2]>,
 }
 
 impl NativeDataStep {
@@ -32,7 +32,7 @@ impl NativeDataStep {
         forward: &serde_json::Value,
         reverse: Option<&serde_json::Value>,
     ) -> Result<Self, Diagnostic> {
-        let decode = |value| decode_query_plan_v3(&to_canonical_json(value)?, schema);
+        let decode = |value| decode_query_plan(&to_canonical_json(value)?, schema);
         Ok(Self {
             schema: schema.clone(),
             forward: decode(forward)?,
@@ -43,9 +43,9 @@ impl NativeDataStep {
 
     pub(crate) fn from_copy_plans(
         schema: &DeclaredSchema,
-        forward: QueryPlanV3,
-        reverse: Option<QueryPlanV3>,
-        counts: [QueryPlanV3; 2],
+        forward: QueryPlan,
+        reverse: Option<QueryPlan>,
+        counts: [QueryPlan; 2],
     ) -> Self {
         Self {
             schema: schema.clone(),
@@ -55,12 +55,12 @@ impl NativeDataStep {
         }
     }
 
-    pub(crate) fn counts(&self) -> Option<&[QueryPlanV3; 2]> {
+    pub(crate) fn counts(&self) -> Option<&[QueryPlan; 2]> {
         self.counts.as_ref()
     }
 
     /// Select a validated program without changing the transaction or authority.
-    pub fn program(&self, action: MigrationAction) -> Option<&QueryPlanV3> {
+    pub fn program(&self, action: MigrationAction) -> Option<&QueryPlan> {
         match action {
             MigrationAction::Apply => Some(&self.forward),
             MigrationAction::Rollback => self.reverse.as_ref(),
@@ -86,7 +86,7 @@ impl<'de> Deserialize<'de> for NativeDataStep {
             .map_err(serde::de::Error::custom)?;
         if let Some(counts) = wire.counts {
             let decode_count = |value: &serde_json::Value| {
-                let plan = decode_query_plan_v3(&to_canonical_json(value)?, &schema)?;
+                let plan = decode_query_plan(&to_canonical_json(value)?, &schema)?;
                 crate::copy_plan::validate_count(&plan)?;
                 Ok::<_, Diagnostic>(plan)
             };
@@ -165,15 +165,15 @@ pub(crate) mod tests {
 
     pub(crate) fn fixture() -> (DeclaredSchema, MigrationGraph) {
         let schema = decode_declared_schema(include_bytes!(
-            "../../../../tests/contracts/plan_v3/schema.json"
+            "../../../../tests/contracts/plan/schema.json"
         ))
         .unwrap();
         let forward = serde_json::from_slice(include_bytes!(
-            "../../../../tests/contracts/plan_v3/insert_first.json"
+            "../../../../tests/contracts/plan/insert_first.json"
         ))
         .unwrap();
         let reverse = serde_json::from_slice(include_bytes!(
-            "../../../../tests/contracts/plan_v3/update.json"
+            "../../../../tests/contracts/plan/update.json"
         ))
         .unwrap();
         (

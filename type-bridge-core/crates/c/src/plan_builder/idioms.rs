@@ -1,7 +1,7 @@
 //! Typed C values over the existing core recorder.
 use super::*;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use type_bridge_contract::query_plan::v3::Site;
+use type_bridge_contract::query_plan::Site;
 
 const NULL: u32 = 0;
 const LITERAL: u32 = 1;

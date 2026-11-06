@@ -142,7 +142,7 @@ async fn empty_bulk_keeps_the_commit_barrier_without_provider_io() {
         Plan::build(|p| p.bulk::<Item>(false, &[], vec![]).models(p, &[])).unwrap();
     assert!(built.writes());
     assert!(
-        <super::PlanInner as AsRef<[type_bridge_contract::query_plan::v3::QueryPlanV3]>>::as_ref(
+        <super::PlanInner as AsRef<[type_bridge_contract::query_plan::QueryPlan]>>::as_ref(
             built.shared_inner().unwrap().as_ref()
         )
         .is_empty()
@@ -649,7 +649,7 @@ fn unbranded_staging_has_no_schema_preflight_and_validation_is_explicit() {
             b"another-scope",
         )
         .unwrap();
-    let mut core = type_bridge_contract::query_plan::v3::PlanBuilder::new();
+    let mut core = type_bridge_contract::query_plan::PlanBuilder::new();
     core.exact(super::type_id::<Item>().unwrap());
     core.count();
     let plan: Plan = Plan::from_core(core.build(&declared, foreign).unwrap());
@@ -773,7 +773,7 @@ fn fetch_bytes_equal_the_core_builder_and_conflicts_surface() {
 fn bulk_introspection_uses_one_real_chunk_and_refuses_ambiguous_programs() {
     use super::{PlanInner, PlanProgram, PlanState};
     use type_bridge_contract::id::{TypeId, TypeKind};
-    use type_bridge_contract::query_plan::v3::PlanBuilder as CoreBuilder;
+    use type_bridge_contract::query_plan::PlanBuilder as CoreBuilder;
     let authority = package().plan_authority().unwrap();
     for count in [0, 1, 2] {
         let mut core = CoreBuilder::new();

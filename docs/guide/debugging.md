@@ -78,7 +78,7 @@ fingerprint still includes those values and is used only for invocation identity
 and verification; it is not logged. Bindings list each variable's schema-derived
 possible types, including admitted subtypes; scalar bindings have an empty
 list. `required_capabilities` lists what the receiving executor must advertise.
-See the [complete explanation shape](../reference/query-plan-v3.md#explaining-a-plan).
+See the [complete explanation shape](../reference/query-plan.md#explaining-a-plan).
 
 ## Send traces to the host logger
 

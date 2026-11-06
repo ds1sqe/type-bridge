@@ -523,7 +523,7 @@ impl ReferenceProgram {
     pub(super) fn staged_entries(
         &self,
         authority: &PlanAuthority,
-    ) -> Result<Option<Vec<type_bridge_contract::query_remote_v3::StagedPlanV3>>, Diagnostic> {
+    ) -> Result<Option<Vec<type_bridge_contract::query_remote::StagedPlan>>, Diagnostic> {
         if self.frozen {
             self.body
                 .as_ref()
@@ -1093,7 +1093,7 @@ mod tests {
             owner.rows.push(second);
             owner.locations = vec![(0, 0), (1, 0), (1, 1)];
             owner.resolved = vec![None; 3];
-            let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+            let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
             limits.structural.selected_slots = 4;
             owner.authority = owner
                 .authority
@@ -1130,7 +1130,7 @@ mod tests {
         let WriteProgram::References(mut owner) = program(false) else {
             panic!("references")
         };
-        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
         limits.structural.input_rows = 2;
         owner.authority = owner
             .authority
@@ -1163,7 +1163,7 @@ mod tests {
         let WriteProgram::References(mut owner) = program(false) else {
             panic!("references")
         };
-        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
         limits.structural.selected_slots = 4;
         owner.authority = owner
             .authority
@@ -1249,7 +1249,7 @@ mod tests {
                 answers.push((ordinal, iid));
             }
             let answer = PlanAnswer::from_staged_v3(
-                &StagedAnswerV3::Rows { rows: vec![cells] },
+                &StagedAnswer::Rows { rows: vec![cells] },
                 step.plan.local(),
             )
             .unwrap();
@@ -1292,7 +1292,7 @@ mod tests {
         let lookup = program.next().unwrap().unwrap();
         let model = TypeId::new(TypeKind::Relation, "r").unwrap();
         let answer = PlanAnswer::from_staged_v3(
-            &StagedAnswerV3::Rows {
+            &StagedAnswer::Rows {
                 rows: vec![vec![
                     RemoteValue::Value {
                         value: CanonicalValue::Long(0),
@@ -1322,7 +1322,7 @@ mod tests {
             vec!["0x02".to_owned()]
         );
         let answer = PlanAnswer::from_staged_v3(
-            &StagedAnswerV3::Rows {
+            &StagedAnswer::Rows {
                 rows: vec![vec![
                     RemoteValue::Value {
                         value: CanonicalValue::Long(0),

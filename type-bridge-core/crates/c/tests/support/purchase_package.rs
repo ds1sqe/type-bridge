@@ -7,7 +7,7 @@ use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projection::{BindingTarget, CSymbolPrefix, ProjectionConfig};
-use type_bridge_contract::query_plan::v3::QueryPlanV3;
+use type_bridge_contract::query_plan::QueryPlan;
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet, VerifiedSchemaAuthority,
@@ -83,7 +83,7 @@ pub fn package_from_source(source: &str, prefix: &str) -> PurchasePackage {
 
 impl PurchasePackage {
     /// The hand-built purchase under this package's authority.
-    pub fn hand_built(&self, order: &str, item: &str, account: &str) -> QueryPlanV3 {
+    pub fn hand_built(&self, order: &str, item: &str, account: &str) -> QueryPlan {
         purchase_plan::hand_built_purchase(
             self.authority.declared_schema(),
             self.authority
@@ -97,7 +97,7 @@ impl PurchasePackage {
     }
 
     /// The core-builder read-back under this package's authority.
-    pub fn read_back(&self, required: bool) -> QueryPlanV3 {
+    pub fn read_back(&self, required: bool) -> QueryPlan {
         purchase_plan::read_back(
             self.authority.declared_schema(),
             self.authority

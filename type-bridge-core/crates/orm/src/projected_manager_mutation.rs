@@ -25,10 +25,10 @@ impl ProjectedManagerFilter {
         &self,
         draft: &mut crate::plan_builders::PlanDraft,
         root: type_bridge_contract::migration_assertion::BindingId,
-        patterns: &mut Vec<type_bridge_contract::query_plan::v3::Pattern>,
+        patterns: &mut Vec<type_bridge_contract::query_plan::Pattern>,
     ) -> Result<(), type_bridge_contract::diagnostic::Diagnostic> {
         use type_bridge_contract::migration_assertion::ValueComparator;
-        use type_bridge_contract::query_plan::v3::Pattern;
+        use type_bridge_contract::query_plan::Pattern;
         use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
         for predicate in self.predicates.iter() {
             match predicate {
@@ -397,7 +397,7 @@ impl ProjectedManagerFilterExecutor<'_> {
                     .installed
                     .plan_authority()
                     .map_err(crate::plan_builders::manager::diagnostic)?;
-                let entry = type_bridge_contract::query_remote_v3::StagedPlanV3::new(
+                let entry = type_bridge_contract::query_remote::StagedPlan::new(
                     plan.local(),
                     plan.local().given_rows().unwrap_or_default().to_vec(),
                     authority.declared(),
