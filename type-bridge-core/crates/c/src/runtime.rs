@@ -2360,9 +2360,8 @@ entities:
         let root = sdk_models_repository_root();
         let sources = [
             "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-            "type-bridge-core/crates/c/src/entity_crud.rs",
+            "type-bridge-core/crates/c/src/crud_v2.rs",
             "type-bridge-core/crates/c/src/projected_model.rs",
-            "type-bridge-core/crates/c/src/relation_crud.rs",
             "type-bridge-core/crates/c/src/runtime.rs",
             "type-bridge-core/crates/contract/src/sdk_diagnostic.rs",
             "type-bridge-core/crates/orm/src/execution_diagnostic.rs",
