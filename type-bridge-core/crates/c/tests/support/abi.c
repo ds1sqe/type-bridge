@@ -392,9 +392,14 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *proxy_batch_execute_fn)(
     const type_bridge_proxy_connection_t *, const type_bridge_projected_batch_t *,
     const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
     type_bridge_projected_batch_result_t **, type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *manager_filter_validate_fn)(
+    const type_bridge_manager_filter_t *, const type_bridge_manager_filter_t *,
+    const type_bridge_projected_token_v1_t *,
+    type_bridge_execution_diagnostics_t **);
 #define TAKE(type, symbol) do { type value = &symbol; (void)value; } while (0)
 
 void type_bridge_abi_probe(void) {
+  TAKE(manager_filter_validate_fn, type_bridge_manager_filter_validate_model);
   TAKE(proxy_batch_execute_fn, type_bridge_proxy_connection_projected_batch_execute);
   TAKE(proxy_batch_execute_fn, type_bridge_proxy_connection_projected_batch_delete_returning);
   TAKE(database_manager_create_fn, type_bridge_database_manager_insert);

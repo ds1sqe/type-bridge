@@ -14,6 +14,8 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C manager filters expose exact-model validation against a manager root and
+  generated token, rejecting foreign package brands before dispatch.
 - C proxy connections execute projected batches and returning delete batches
   through the shared staged path, preserving remote commit diagnostics.
 - C canonical manager `insert` and `put` terminals accept database, borrowed

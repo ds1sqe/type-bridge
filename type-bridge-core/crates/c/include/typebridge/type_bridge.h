@@ -3646,6 +3646,13 @@ type_bridge_manager_filter_compare(
     type_bridge_manager_filter_t **out_filter,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_manager_filter_validate_model(
+    const type_bridge_manager_filter_t *filter,
+    const type_bridge_manager_filter_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_execution_diagnostics_t **diagnostics);
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_manager_filter_close(type_bridge_manager_filter_t **filter);
 
 /* Canonical manager reads share the same plan compiler on every target.

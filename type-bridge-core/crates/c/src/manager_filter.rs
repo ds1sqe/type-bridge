@@ -99,6 +99,55 @@ unsafe fn publish(
     TypeBridgeStatus::Ok
 }
 
+/// Validate a generated manager's exact model before dispatching a terminal.
+#[unsafe(export_name = "type_bridge_manager_filter_validate_model")]
+pub(crate) unsafe extern "C" fn filter_validate_model(
+    filter: *const TypeBridgeManagerFilter,
+    owner: *const TypeBridgeManagerFilter,
+    model: *const TypeBridgeProjectedTokenV1,
+    diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        let outputs = match direct_output_preflight(&[(
+            diagnostics.cast(),
+            size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+        )]) {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        // SAFETY: caller retains the complete filter and token owners.
+        if let Err(status) = unsafe { check_filter(&outputs, filter) }
+            .and_then(|()| unsafe { check_filter(&outputs, owner) })
+            .and_then(|()| outputs.check_object_kind(GENERATED_INPUT_PROJECTED_TOKEN, model.cast()))
+        {
+            return status;
+        }
+        if diagnostics.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: writable diagnostic slot is disjoint from every input.
+        unsafe { diagnostics.write_unaligned(std::ptr::null_mut()) };
+        if filter.is_null() || owner.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        let filter = unsafe { &*filter };
+        let owner = unsafe { &*owner };
+        if !same_package_brand(&filter.package, &owner.package) {
+            return return_execution_error(invalid_brand_diagnostic(), diagnostics);
+        }
+        match unsafe { resolve_model_token(&filter.package, model) } {
+            Ok(model) if &model == filter.value.model() && &model == owner.value.model() => {
+                TypeBridgeStatus::Ok
+            }
+            Ok(_) => return_execution_error(
+                invalid("The filter does not belong to this exact manager model"),
+                diagnostics,
+            ),
+            Err(error) => return_execution_error(error, diagnostics),
+        }
+    })
+}
+
 /// Start an explicit all-matches filter for one exact generated model.
 #[unsafe(export_name = "type_bridge_manager_filter_open")]
 pub(crate) unsafe extern "C" fn filter_open(
@@ -359,6 +408,76 @@ mod tests {
         );
         assert!(diagnostics.is_null());
         result
+    }
+
+    #[test]
+    fn manager_model_validation_rejects_wrong_model_and_output_alias() {
+        let fixture = fixture(vec![], COMMIT_SUCCESS);
+        let mut filter = open(&fixture);
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe { filter_validate_model(filter, filter, &fixture.token, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        let other = crate::entity_crud::tests::model_token(
+            &fixture.package,
+            type_bridge_contract::id::TypeId::new(
+                type_bridge_contract::id::TypeKind::Relation,
+                "membership",
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            unsafe { filter_validate_model(filter, filter, &other, &mut diagnostics) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        close_diagnostics(&mut diagnostics);
+        assert_eq!(
+            unsafe { filter_validate_model(filter, filter, &fixture.token, filter.cast()) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(
+            unsafe { filter_validate_model(filter, filter, &fixture.token, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        let foreign = crate::entity_crud::tests::package("foreignfilter");
+        let foreign_model = crate::entity_crud::tests::model_token(
+            &foreign,
+            type_bridge_contract::id::TypeId::new(
+                type_bridge_contract::id::TypeKind::Entity,
+                "person",
+            )
+            .unwrap(),
+        );
+        let mut foreign_filter = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                filter_open(
+                    &foreign,
+                    &foreign_model,
+                    &mut foreign_filter,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                filter_validate_model(filter, foreign_filter, &fixture.token, &mut diagnostics)
+            },
+            TypeBridgeStatus::ExecutionFailed
+        );
+        assert_eq!(
+            diagnostic(diagnostics).1,
+            "generated_token_package_mismatch"
+        );
+        close_diagnostics(&mut diagnostics);
+        assert_eq!(
+            unsafe { filter_close(&mut foreign_filter) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(unsafe { filter_close(&mut filter) }, TypeBridgeStatus::Ok);
+        assert_eq!(fixture.state.query_count(), 0);
     }
 
     #[test]
