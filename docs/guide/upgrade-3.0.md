@@ -434,3 +434,19 @@ The backend hook `DriverBackend::open_schema_fenced_read_transaction` and its
 commits and enforce the deadline while opening and throughout their lifetime.
 The existing database fenced-read entry point exports the schema while holding
 that transaction, closes it on export failure, and never commits it.
+
+
+The generated Python and TypeScript compatibility query aliases are removed:
+
+| Removed generated API | Replacement |
+| --- | --- |
+| `RemoteQuery` | `Query` |
+| `RemoteGroupedQuery` | `GroupedQuery` |
+| `RemoteQueryLimits` | `QueryExecutionResourceLimits` |
+| `RemoteQuerySession` | `QuerySession` with an `ExchangeConnection` |
+| TypeScript `RemoteQueryExchange` | The exchange callback accepted by `ExchangeConnection` |
+
+Pass limits through `resources` when constructing `QuerySession`. Rename the
+legacy limit fields to the current resource names, including `deadline_ms` to
+`timeout_milliseconds` in Python and `deadlineMs` to `timeoutMilliseconds` in
+TypeScript.

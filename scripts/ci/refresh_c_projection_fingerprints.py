@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Re-pin C projection evidence after a deliberate generated C ABI change.
+"""Re-pin projection evidence after a deliberate generated runtime change.
 
-Runs the native emitter, refuses semantic changes, and updates only C digests
-and their catalog SHA pins. Other binding fingerprints and plan fixtures stay
+Runs native emitters, refuses semantic changes, and updates selected digests
+and their catalog SHA pins (C by default). Other fingerprints and plan fixtures stay
 untouched. Run with TMPDIR on disk and the normal shared CARGO_TARGET_DIR.
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -26,6 +27,16 @@ def replace_once(body: str, old: str, new: str) -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bindings", nargs="+", choices=("c", "python", "node"), default=["c"])
+    bindings = parser.parse_args().bindings
+    if len(set(bindings)) != len(bindings) or ("c" in bindings and len(bindings) != 1):
+        parser.error("select C alone or Python/Node")
+    native_test, producer = (
+        ("c_projection_live", "produce_c_projection_fingerprints")
+        if bindings == ["c"]
+        else ("projection_fingerprints", "produce_python_node_projection_fingerprints")
+    )
     with tempfile.TemporaryDirectory(prefix="typebridge-c-fingerprints-") as directory:
         output = Path(directory) / "fingerprints.json"
         subprocess.run(
@@ -38,8 +49,8 @@ def main() -> None:
                 "-p",
                 "type-bridge-schema-codegen",
                 "--test",
-                "c_projection_live",
-                "produce_c_projection_fingerprints",
+                native_test,
+                producer,
                 "--",
                 "--ignored",
                 "--exact",
@@ -67,17 +78,19 @@ def main() -> None:
             produced = evidence[profile][suite]
             if expected["semantic"] != produced["semantic"]:
                 raise ValueError(f"refusing semantic fingerprint change: {suite} {profile}")
-            old, new = expected["projections"]["c"]["digest"], produced["c"]["digest"]
-            if {**expected["projections"]["c"], "digest": new} != produced["c"]:
-                raise ValueError(f"refusing fingerprint metadata change: {suite} {profile}")
-            matrix_body = replace_once(matrix_body, old, new)
-            if profile == catalog["fixture"]["semantic_profile"]:
-                if catalog["expected_fingerprints"] != expected:
-                    raise ValueError("catalog and profile matrix disagree before refresh")
-                catalog_body = replace_once(catalog_body, old, new)
-                if suite == "models":
-                    probe = replace_once(probe, old, new)
-            print(f"{suite} {profile}: {old} -> {new}")
+            for binding in bindings:
+                old = expected["projections"][binding]["digest"]
+                new = produced[binding]["digest"]
+                if {**expected["projections"][binding], "digest": new} != produced[binding]:
+                    raise ValueError(f"refusing fingerprint metadata change: {suite} {profile}")
+                matrix_body = replace_once(matrix_body, old, new)
+                if profile == catalog["fixture"]["semantic_profile"]:
+                    if catalog["expected_fingerprints"] != expected:
+                        raise ValueError("catalog and profile matrix disagree before refresh")
+                    catalog_body = replace_once(catalog_body, old, new)
+                    if suite == "models":
+                        probe = replace_once(probe, old, new)
+                print(f"{suite} {profile} {binding}: {old} -> {new}")
         old_sha = hashlib.sha256(original_catalog.encode()).hexdigest()
         new_sha = hashlib.sha256(catalog_body.encode()).hexdigest()
         ledger = replace_once(ledger, old_sha, new_sha)

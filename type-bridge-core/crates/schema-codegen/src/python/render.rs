@@ -56,10 +56,6 @@ const PUBLIC_QUERY_NAMES: &[&str] = &[
     "QueryLimits",
     "QueryOrder",
     "QuerySession",
-    "RemoteGroupedQuery",
-    "RemoteQuery",
-    "RemoteQueryLimits",
-    "RemoteQuerySession",
     "SubtypeBoundVar",
     "aggregate",
     "connect_proxy",
@@ -214,10 +210,6 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
          from ._query import QueryLimits as QueryLimits\n\
          from ._query import QueryOrder as QueryOrder\n\
          from ._query import QuerySession as QuerySession\n\
-         from ._query import RemoteGroupedQuery as RemoteGroupedQuery\n\
-         from ._query import RemoteQuery as RemoteQuery\n\
-         from ._query import RemoteQueryLimits as RemoteQueryLimits\n\
-         from ._query import RemoteQuerySession as RemoteQuerySession\n\
          from ._query import SubtypeBoundVar as SubtypeBoundVar\n\
          from ._query import aggregate as aggregate\n\
          from ._query import connect_proxy as connect_proxy\n";
