@@ -165,10 +165,10 @@ void query_abi_probe(void) {
 
   QUERY_TAKE(type_bridge_query_field_compare_field);
   QUERY_TAKE(type_bridge_query_field_compare_function);
-  QUERY_TAKE(type_bridge_query_role_connects);
+  QUERY_TAKE(type_bridge_query_role_links);
   QUERY_TAKE(type_bridge_query_session_reachable);
   QUERY_TAKE(type_bridge_query_predicate_combine);
-  QUERY_TAKE(type_bridge_query_add_hidden);
+  QUERY_TAKE(type_bridge_query_match);
   QUERY_TAKE(type_bridge_query_where);
   QUERY_TAKE(type_bridge_query_allow_cross_join);
   QUERY_TAKE(type_bridge_read_transaction_query_execute);

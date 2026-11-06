@@ -3296,7 +3296,7 @@ int main(void) {
         acme_membership_query_reachable_endpoint_v1_t_from_member(player);
     acme_membership_query_reachable_endpoint_v1_t target =
         acme_membership_query_reachable_endpoint_v1_t_from_member(other);
-    (void)acme_membership_member_query_role_connects(
+    (void)acme_membership_member_query_role_links(
         member_role, player, &role_predicate, &diagnostics);
     (void)acme_membership_query_reachable(
         session, source, target, 1u, 4u, &reachable, &diagnostics);
@@ -3334,7 +3334,7 @@ int main(void) {
       actor_output_name, acme_actor_query_subtypes_collect_selection_ref(actor_many),
       &named_query, &diagnostics);
   (void)acme_query_where(named_query, combined, &filtered, &diagnostics);
-  (void)acme_query_add_hidden(
+  (void)acme_query_match(
       filtered, acme_dualzhkeyzhrecord_query_exact_binding_ref(dual),
       &hidden, &diagnostics);
   (void)acme_query_allow_cross_join(
@@ -3699,7 +3699,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_role_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_role_connects(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_role_links(
     const type_bridge_query_role_t *role,
     const type_bridge_projected_token_v1_t *expected_role,
     const type_bridge_query_binding_t *player,
@@ -3995,7 +3995,7 @@ int main(void) {
         acme_membership_query_reachable_endpoint_v1_t_from_member(player);
     acme_membership_query_reachable_endpoint_v1_t target =
         acme_membership_query_reachable_endpoint_v1_t_from_member(target_player);
-    status |= acme_membership_member_query_role_connects(
+    status |= acme_membership_member_query_role_links(
         role, player, &predicate, &diagnostics);
     status |= acme_membership_query_reachable(
         session, source, target, 1u, 4u, &reachable, &diagnostics);

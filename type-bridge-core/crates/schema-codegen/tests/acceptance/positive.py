@@ -283,9 +283,9 @@ async def check_direct() -> None:
         tuple[tuple[tuple[ValBool, Score], tuple[int]], ...],
     )
 
-    employee = employment_var.role(Employment.employee).connects(person_var)
-    membership_member = membership_var.role(Membership.member).connects(person_var)
-    interaction_actor = interaction_var.role(Interaction.actor).connects(actor_var)
+    employee = employment_var.role(Employment.employee).links(person_var)
+    membership_member = membership_var.role(Membership.member).links(person_var)
+    interaction_actor = interaction_var.role(Interaction.actor).links(actor_var)
     assert_type(
         query_session.query(interaction_var).match(actor_var).where(interaction_actor),
         Query[Interaction],
@@ -394,7 +394,7 @@ async def check_proxy(session: QuerySession) -> None:
     assert_type(remote_qualifying_call, IntegerCall)
     remote_nested_call = qualifying_score(session, remote_person, remote_qualifying_call)
     assert_type(remote_nested_call, IntegerCall)
-    remote_employee = remote_employment.role(Employment.employee).connects(remote_person)
+    remote_employee = remote_employment.role(Employment.employee).links(remote_person)
     remote = session.query(remote_person, remote_employment).where(
         remote_employee,
         remote_qualifying_call.ge_call(remote_nested_call),

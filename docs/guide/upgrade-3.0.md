@@ -701,3 +701,12 @@ and `sort:`. Collected selections use `.sort(order)` in all three SDKs;
 Rust row/page option builders also use `.sort(order)`. In C descriptors,
 rename `orders` and `order_count` to `sorts` and `sort_count`. Their order
 and binary layout are unchanged; only the source spelling changes.
+
+## Matching and role edges
+
+Replace role `.connects(player)` calls with `.links(player)`. Python `.is_`
+and TypeScript `.is` aliases are removed; use `.links` for those calls too.
+Rust queries add additional bindings through `.matching(binding)`, replacing
+`.match_(binding)`. C uses `*_query_match` instead of `*_query_add_hidden`;
+this adds a binding to match without projecting it in the selected output.
+Generated C role predicates end in `_query_role_links`.

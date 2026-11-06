@@ -2507,7 +2507,7 @@ pub unsafe extern "C" fn type_bridge_query_field_presence(
 
 /// Construct one exact generated role-player edge predicate.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_role_connects(
+pub unsafe extern "C" fn type_bridge_query_role_links(
     role: *const TypeBridgeQueryRole,
     expected_role: *const TypeBridgeProjectedTokenV1,
     player: *const TypeBridgeQueryBinding,
@@ -3329,7 +3329,7 @@ unsafe fn preflight_query_transition<T>(
 
 /// Add one generated-model-fenced hidden binding to an immutable query lineage.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_add_hidden(
+pub unsafe extern "C" fn type_bridge_query_match(
     query: *const TypeBridgeQuery,
     binding: *const TypeBridgeQueryBinding,
     expected_model: *const TypeBridgeProjectedTokenV1,
@@ -10959,7 +10959,7 @@ mod tests {
         let mut predicate = std::ptr::NonNull::<TypeBridgeQueryPredicate>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_role_connects(
+                type_bridge_query_role_links(
                     role,
                     &event,
                     built.binding,
@@ -10979,7 +10979,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_role_connects(
+                type_bridge_query_role_links(
                     role,
                     &member,
                     built.binding,
@@ -12563,7 +12563,7 @@ mod tests {
         let mut query = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_add_hidden(
+                type_bridge_query_match(
                     built.query,
                     organization,
                     &organization_model,

@@ -151,11 +151,11 @@ fn polymorphic_role_binding_modes_compile(
     let mut session = database.query()?;
     let actor = session.subtypes::<Actor>()?;
     let interaction = session.exact::<Interaction>()?;
-    let predicate = interaction.role(InteractionType::actor).connects(actor)
+    let predicate = interaction.role(InteractionType::actor).links(actor)
         & actor.field(ActorType::nickname).is_present();
     let _ = session
         .query(interaction)?
-        .match_(actor)?
+        .matching(actor)?
         .where_(predicate)?;
     Ok(())
 }

@@ -34,7 +34,7 @@ used for hydration.
 
 ```python
 adult = person.field(Person.age).ge(Age(18))
-employee = employment.role(Employment.employee).connects(person)
+employee = employment.role(Employment.employee).links(person)
 
 query = session.query(person, employment).where(adult, employee)
 ```

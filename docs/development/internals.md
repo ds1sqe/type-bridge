@@ -101,7 +101,7 @@ result shapes use a package-owned query session:
 session = Person.query(db)
 person = session.exact(Person)
 employment = session.exact(Employment)
-employee = employment.role(Employment.employee).connects(person)
+employee = employment.role(Employment.employee).links(person)
 rows = session.query(person, employment).where(employee).rows(limit=100)
 ```
 

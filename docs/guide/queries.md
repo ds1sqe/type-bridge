@@ -70,7 +70,7 @@ when operator syntax is inconvenient.
 
 ```python
 employment = session.exact(Employment)
-employee = employment.role(Employment.employee).connects(person)
+employee = employment.role(Employment.employee).links(person)
 
 rows = await session.query(person, employment).where(employee).rows(limit=100)
 ```

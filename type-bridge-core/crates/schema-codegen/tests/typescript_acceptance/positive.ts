@@ -147,8 +147,8 @@ const presentPredicate: Predicate = personVar.field(Person.score).isPresent();
 const missingPredicate: Predicate = personVar.field(Person.score).isMissing();
 const iidPredicate: Predicate = personVar.iid(new Iid("0x1"));
 const iidSetPredicate: Predicate = personVar.iidIn([new Iid("0x1"), new Iid("0x2")]);
-const employeePredicate = employmentVar.role(Employment.employee).connects(personVar);
-const actorPredicate = interactionVar.role(Interaction.actor).connects(actorVar);
+const employeePredicate = employmentVar.role(Employment.employee).links(personVar);
+const actorPredicate = interactionVar.role(Interaction.actor).links(actorVar);
 const actorInteractionQuery: Query<Interaction> = querySession
   .query(interactionVar)
   .match(actorVar)

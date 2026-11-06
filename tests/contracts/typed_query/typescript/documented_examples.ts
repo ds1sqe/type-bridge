@@ -21,9 +21,9 @@ const event = session.exact(Event);
 const container = session.exact(Container);
 const employment = session.exact(Employment);
 
-const employee = employment.role(Employment.employee).connects(person);
-const subject = event.role(Event.subject).connects(person);
-const contained = container.role(Container.item).connects(event);
+const employee = employment.role(Employment.employee).links(person);
+const subject = event.role(Event.subject).links(person);
+const contained = container.role(Container.item).links(event);
 
 const onePerson: Query<Person> = session.query(person);
 const scalar: Person = await onePerson.one();
@@ -45,8 +45,8 @@ const fiveSlots: Query<
   .where(
     subject,
     contained,
-    otherEvent.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(otherEvent),
+    otherEvent.role(Event.subject).links(colleague),
+    container.role(Container.item).links(otherEvent),
   );
 
 const personPair: Query<readonly [Person, Person]> = session
@@ -55,8 +55,8 @@ const personPair: Query<readonly [Person, Person]> = session
   .where(
     subject,
     contained,
-    otherEvent.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(otherEvent),
+    otherEvent.role(Event.subject).links(colleague),
+    container.role(Container.item).links(otherEvent),
   );
 
 void scalar;

@@ -1805,11 +1805,7 @@ export interface BoundRole<
     player: Player,
     subtypeRoot: SubtypeRoot,
   ) => readonly [Player, SubtypeRoot];
-  connects<Actual extends object, Mode extends QueryMatchMode>(
-    player: BoundVar<Actual, Mode> &
-      RoleBindingCompatibility<Actual, Mode, Player, SubtypeRoot>,
-  ): Predicate;
-  is<Actual extends object, Mode extends QueryMatchMode>(
+  links<Actual extends object, Mode extends QueryMatchMode>(
     player: BoundVar<Actual, Mode> &
       RoleBindingCompatibility<Actual, Mode, Player, SubtypeRoot>,
   ): Predicate;
@@ -2578,7 +2574,7 @@ class BoundRoleValue<
     Object.freeze(this);
   }
 
-  connects<Actual extends object, Mode extends QueryMatchMode>(
+  links<Actual extends object, Mode extends QueryMatchMode>(
     player: BoundVar<Actual, Mode> &
       RoleBindingCompatibility<Actual, Mode, Player, SubtypeRoot>,
   ): Predicate {
@@ -2600,12 +2596,6 @@ class BoundRoleValue<
     );
   }
 
-  is<Actual extends object, Mode extends QueryMatchMode>(
-    player: BoundVar<Actual, Mode> &
-      RoleBindingCompatibility<Actual, Mode, Player, SubtypeRoot>,
-  ): Predicate {
-    return this.connects(player);
-  }
 }
 
 class BoundVarValue<

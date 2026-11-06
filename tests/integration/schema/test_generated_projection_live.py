@@ -224,7 +224,7 @@ async def _one_program(generated: ModuleType, connection: object) -> dict[str, o
     employment = session.exact(generated.Employment)
     pair_person, pair_employment = await (
         session.query(person, employment)
-        .where(employment.role(generated.Employment.employee).connects(person))
+        .where(employment.role(generated.Employment.employee).links(person))
         .one()
     )
     session.close()
@@ -1205,7 +1205,7 @@ def _run_sdk_queries_journey(
             .match(direct_member)
             .where(
                 direct_membership_var.iid(membership_iid),
-                direct_membership_var.role(generated.Membership.member).connects(direct_member),
+                direct_membership_var.role(generated.Membership.member).links(direct_member),
                 direct_member.field(generated.Person.identifier).eq(
                     generated.Identifier("query-ada")
                 ),
@@ -1220,8 +1220,8 @@ def _run_sdk_queries_journey(
             .match(direct_origin, direct_destination)
             .where(
                 direct_network_var.iid(network_iid),
-                direct_network_var.role(generated.NetworkLink.origin).connects(direct_origin),
-                direct_network_var.role(generated.NetworkLink.destination).connects(
+                direct_network_var.role(generated.NetworkLink.origin).links(direct_origin),
+                direct_network_var.role(generated.NetworkLink.destination).links(
                     direct_destination
                 ),
                 direct_origin.field(generated.Person.identifier).eq(
@@ -1351,8 +1351,8 @@ def _run_sdk_queries_journey(
         selection_participant = direct_session.exact(generated.Person)
         selection_predicates = (
             selection_link.iid(network_iid),
-            selection_link.role(generated.NetworkLink.origin).connects(selection_origin),
-            selection_link.role(generated.NetworkLink.participant).connects(selection_participant),
+            selection_link.role(generated.NetworkLink.origin).links(selection_origin),
+            selection_link.role(generated.NetworkLink.participant).links(selection_participant),
         )
         direct_positional_page = (
             direct_session.query(
@@ -1515,7 +1515,7 @@ def _run_sdk_queries_journey(
             .match(remote_member)
             .where(
                 remote_membership_var.iid(membership_iid),
-                remote_membership_var.role(generated.Membership.member).connects(remote_member),
+                remote_membership_var.role(generated.Membership.member).links(remote_member),
                 remote_member.field(generated.Person.identifier).eq(
                     generated.Identifier("query-ada")
                 ),
@@ -1531,8 +1531,8 @@ def _run_sdk_queries_journey(
             .match(remote_origin, remote_destination)
             .where(
                 remote_network_var.iid(network_iid),
-                remote_network_var.role(generated.NetworkLink.origin).connects(remote_origin),
-                remote_network_var.role(generated.NetworkLink.destination).connects(
+                remote_network_var.role(generated.NetworkLink.origin).links(remote_origin),
+                remote_network_var.role(generated.NetworkLink.destination).links(
                     remote_destination
                 ),
                 remote_origin.field(generated.Person.identifier).eq(
@@ -1688,10 +1688,10 @@ def _run_sdk_queries_journey(
         remote_selection_participant = remote_session.exact(generated.Person)
         remote_selection_predicates = (
             remote_selection_link.iid(network_iid),
-            remote_selection_link.role(generated.NetworkLink.origin).connects(
+            remote_selection_link.role(generated.NetworkLink.origin).links(
                 remote_selection_origin
             ),
-            remote_selection_link.role(generated.NetworkLink.participant).connects(
+            remote_selection_link.role(generated.NetworkLink.participant).links(
                 remote_selection_participant
             ),
         )
@@ -3062,7 +3062,7 @@ def test_sdk_serialization_live(
     direct_employment, direct_person = (
         direct_session.query(direct_employment_var, direct_person_var)
         .where(
-            direct_employment_var.role(generated.Employment.employee).connects(direct_person_var),
+            direct_employment_var.role(generated.Employment.employee).links(direct_person_var),
             direct_person_var.field(generated.Person.identifier).eq(
                 generated.Identifier("v5-live-person")
             ),
@@ -3134,7 +3134,7 @@ def test_sdk_serialization_live(
         remote_employment, remote_person = asyncio.run(
             remote_session.query(remote_employment_var, remote_person_var)
             .where(
-                remote_employment_var.role(generated.Employment.employee).connects(
+                remote_employment_var.role(generated.Employment.employee).links(
                     remote_person_var
                 ),
                 remote_person_var.field(generated.Person.identifier).eq(
@@ -4322,7 +4322,7 @@ def test_generated_projection_round_trips_live_models(
     queried_plain_activity, queried_plain_participant = (
         query_session.query(plain_activity_var, plain_participant_var)
         .where(
-            plain_activity_var.role(generated.PlainActivity.participant).connects(
+            plain_activity_var.role(generated.PlainActivity.participant).links(
                 plain_participant_var
             ),
             plain_participant_var.field(generated.Person.identifier).eq(
@@ -4687,7 +4687,7 @@ def test_generated_projection_round_trips_live_models(
         query_session.query(interaction_var)
         .match(actor_var)
         .where(
-            interaction_var.role(generated.Interaction.actor).connects(actor_var),
+            interaction_var.role(generated.Interaction.actor).links(actor_var),
             actor_var.field(generated.Actor.nickname).contains(generated.Nickname("a")),
         )
         .rows(
@@ -4709,8 +4709,8 @@ def test_generated_projection_round_trips_live_models(
     queried_robot_interaction, queried_robot, queried_target = (
         query_session.query(interaction_var, robot_var, target_var)
         .where(
-            interaction_var.role(generated.Interaction.actor).connects(robot_var),
-            interaction_var.role(generated.Interaction.target).connects(target_var),
+            interaction_var.role(generated.Interaction.actor).links(robot_var),
+            interaction_var.role(generated.Interaction.target).links(target_var),
             interaction_var.field(generated.Interaction.nickname).eq(generated.Nickname("assist")),
             robot_var.field(generated.Robot.robot_id).eq(generated.RobotId(-42)),
             robot_var.field(generated.Robot.val_constrained).lt(generated.ValConstrained(10)),
@@ -4727,7 +4727,7 @@ def test_generated_projection_round_trips_live_models(
     queried_person_interaction, queried_person_actor = (
         query_session.query(interaction_var, person_actor_var)
         .where(
-            interaction_var.role(generated.Interaction.actor).connects(person_actor_var),
+            interaction_var.role(generated.Interaction.actor).links(person_actor_var),
             interaction_var.field(generated.Interaction.nickname).eq(generated.Nickname("read")),
             person_actor_var.field(generated.Person.score).ge(generated.Score(3)),
         )
@@ -4792,7 +4792,7 @@ def test_generated_projection_round_trips_live_models(
     aggregate_employment_var = query_session.exact(generated.Employment)
     direct_grouped_aggregate = (
         query_session.query(person_var, aggregate_employment_var)
-        .where(aggregate_employment_var.role(generated.Employment.employee).connects(person_var))
+        .where(aggregate_employment_var.role(generated.Employment.employee).links(person_var))
         .group_by(person_var, aggregate_employment_var)
         .aggregate(
             generated.aggregate.count(),
@@ -4892,7 +4892,7 @@ def test_generated_projection_round_trips_live_models(
     assert type(queried_network) is generated.NetworkLink
     assert queried_network.iid == network_iid
     participant_var = network_session.exact(generated.Person)
-    participant = network_var.role(generated.NetworkLink.participant).connects(participant_var)
+    participant = network_var.role(generated.NetworkLink.participant).links(participant_var)
     network_rows = network_session.query(network_var).rows(
         limit=10,
         sort=(network_var.field(generated.NetworkLink.identifier).asc(),),
@@ -5241,7 +5241,7 @@ def test_generated_projection_round_trips_live_models(
         remote_person_employment = remote_session.query(
             remote_person,
             remote_employment,
-        ).where(remote_employment.role(generated.Employment.employee).connects(remote_person))
+        ).where(remote_employment.role(generated.Employment.employee).links(remote_person))
         remote_person_value, remote_employment_value = asyncio.run(remote_person_employment.one())
         assert type(remote_person_value) is generated.Person
         assert remote_person_value.iid == person.iid
@@ -5272,7 +5272,7 @@ def test_generated_projection_round_trips_live_models(
                 .sort(remote_participant.field(generated.Person.identifier).asc()),
             )
             .where(
-                remote_network.role(generated.NetworkLink.participant).connects(remote_participant)
+                remote_network.role(generated.NetworkLink.participant).links(remote_participant)
             )
             .page_by(
                 remote_network,

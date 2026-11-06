@@ -22,9 +22,9 @@ event = session.exact(Event)
 container = session.exact(Container)
 employment = session.exact(Employment)
 
-employee = employment.role(Employment.employee).connects(person)
-subject = event.role(Event.subject).connects(person)
-contained = container.role(Container.item).connects(event)
+employee = employment.role(Employment.employee).links(person)
+subject = event.role(Event.subject).links(person)
+contained = container.role(Container.item).links(event)
 
 one_person: Query[Person] = session.query(person)
 two_slots: Query[Person, Event] = session.query(person, event).where(subject)
@@ -40,8 +40,8 @@ five_slots: Query[Person, Event, Container, Event, Person] = session.query(
 ).where(
     subject,
     contained,
-    other_event.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(other_event),
+    other_event.role(Event.subject).links(colleague),
+    container.role(Container.item).links(other_event),
 )
 
 person_pair: Query[Person, Person] = (
@@ -50,8 +50,8 @@ person_pair: Query[Person, Person] = (
     .where(
         subject,
         contained,
-        other_event.role(Event.subject).connects(colleague),
-        container.role(Container.item).connects(other_event),
+        other_event.role(Event.subject).links(colleague),
+        container.role(Container.item).links(other_event),
     )
 )
 

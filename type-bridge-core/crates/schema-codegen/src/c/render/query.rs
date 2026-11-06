@@ -369,7 +369,7 @@ pub(super) fn function_names(
         "query_predicate_close",
         "query_order_close",
         "query_where",
-        "query_add_hidden",
+        "query_match",
         "query_allow_cross_join",
         "query_close",
         "query_one",
@@ -489,7 +489,7 @@ pub(super) fn function_names(
                 names.insert(generated_symbol(&base, suffix)?);
             }
             if !role.accepted_players().is_empty() {
-                names.insert(generated_symbol(&base, "connects")?);
+                names.insert(generated_symbol(&base, "links")?);
             }
             for player in role.accepted_players() {
                 let player_model = projection
@@ -862,10 +862,10 @@ fn render_model_declarations(
             }
         }
         if !role.accepted_players().is_empty() {
-            let connects = generated_symbol(&base, "connects")?;
+            let links = generated_symbol(&base, "links")?;
             let _ = write!(
                 output,
-                "type_bridge_status_t TYPE_BRIDGE_CALL {connects}(\n\
+                "type_bridge_status_t TYPE_BRIDGE_CALL {links}(\n\
                    const {base} *role, {player_witness} player,\n\
                    {predicate} **out_predicate,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics);\n",
@@ -1051,7 +1051,7 @@ fn render_package_query_declarations(
            const {query} *query, const {predicate} *predicate,\n\
            {query} **out_query,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
-         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_add_hidden(\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_match(\n\
            const {query} *query, {binding_ref} binding, {query} **out_query,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_allow_cross_join(\n\
@@ -1468,10 +1468,10 @@ fn render_package_definitions(
                (const type_bridge_query_predicate_t *)predicate,\n\
                (type_bridge_query_t **)out_query, out_diagnostics);\n\
          }}\n\n\
-         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_add_hidden(\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_match(\n\
            const {query} *query, {binding_ref} binding, {query} **out_query,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-           return type_bridge_query_add_hidden(\n\
+           return type_bridge_query_match(\n\
                (const type_bridge_query_t *)query, binding.handle,\n\
                binding.expected_model, binding.expected_mode,\n\
                (type_bridge_query_t **)out_query, out_diagnostics);\n\
@@ -2073,14 +2073,14 @@ fn render_model_definitions(
             }
         }
         if !role.accepted_players().is_empty() {
-            let connects = generated_symbol(&base, "connects")?;
+            let links = generated_symbol(&base, "links")?;
             let _ = write!(
                 output,
-                "type_bridge_status_t TYPE_BRIDGE_CALL {connects}(\n\
+                "type_bridge_status_t TYPE_BRIDGE_CALL {links}(\n\
                    const {base} *role, {player_witness} player,\n\
                    {predicate} **out_predicate,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-                   return type_bridge_query_role_connects(\n\
+                   return type_bridge_query_role_links(\n\
                        (const type_bridge_query_role_t *)role, &{token},\n\
                        player.handle, player.expected_model, player.expected_mode,\n\
                        (type_bridge_query_predicate_t **)out_predicate,\n\

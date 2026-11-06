@@ -985,7 +985,7 @@ fn check(db: &Database<AppSchema>) {
     let mut session = db.query().unwrap();
     let event = session.exact::<Event>().unwrap();
     let robot = session.exact::<Robot>().unwrap();
-    let _ = event.role(EventType::subject).connects(robot);
+    let _ = event.role(EventType::subject).links(robot);
 }
 fn main() {}"#,
         ),
@@ -997,7 +997,7 @@ fn check(db: &Database<AppSchema>) {
     let mut session = db.query().unwrap();
     let event = session.exact::<Event>().unwrap();
     let robots = session.subtypes::<Robot>().unwrap();
-    let _ = event.role(EventType::subject).connects(robots);
+    let _ = event.role(EventType::subject).links(robots);
 }
 fn main() {}"#,
         ),
@@ -1309,8 +1309,8 @@ fn query_positive(db: &Database<AppSchema>) {
         & party_name.starts_with(Text::new("Al").unwrap())
         & person_only.eq(Text::new("x").unwrap())
         & person_name.eq_field(party_name)
-        & placement_employee.connects(helper)
-        & contract_contractor.connects(helper);
+        & placement_employee.links(helper)
+        & contract_contractor.links(helper);
     let _ = predicate;
     let _party_query = session.query(party).unwrap();
     let _person_query = session.query(person).unwrap();
@@ -1526,7 +1526,7 @@ plays:
         ),
         (
             "query-role-rejects-non-player",
-            "use generated::{AppSchema, Contract, ContractType, Person}; use type_bridge::Database; fn f(db: &Database<AppSchema>) { let mut session = db.query().unwrap(); let contract = session.exact::<Contract>().unwrap(); let person = session.exact::<Person>().unwrap(); let _ = contract.role(ContractType::contractor).connects(person); } fn main() {}",
+            "use generated::{AppSchema, Contract, ContractType, Person}; use type_bridge::Database; fn f(db: &Database<AppSchema>) { let mut session = db.query().unwrap(); let contract = session.exact::<Contract>().unwrap(); let person = session.exact::<Person>().unwrap(); let _ = contract.role(ContractType::contractor).links(person); } fn main() {}",
             "RolePlayerBinding",
         ),
         (

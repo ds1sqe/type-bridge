@@ -2116,7 +2116,7 @@ impl<S: Schema, Owner: Model<Schema = S>, Players> BoundRole<S, Owner, Players> 
     /// Require this relation role to connect an admitted generated player
     /// binding.
     #[must_use]
-    pub fn connects<MP: ThingModel<Schema = S>, ModeP: SelectionMode>(
+    pub fn links<MP: ThingModel<Schema = S>, ModeP: SelectionMode>(
         self,
         player: Binding<S, MP, ModeP>,
     ) -> Predicate<S>
@@ -3229,7 +3229,7 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>, Target: QueryTarget>
     }
 
     /// Attach one generated binding for predicates without selecting it.
-    pub fn match_<M: ThingModel<Schema = S>, Mode: SelectionMode>(
+    pub fn matching<M: ThingModel<Schema = S>, Mode: SelectionMode>(
         &self,
         binding: Binding<S, M, Mode>,
     ) -> Result<Self> {

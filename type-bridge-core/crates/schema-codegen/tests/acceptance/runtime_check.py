@@ -722,7 +722,7 @@ other_actor_var = query_session.subtypes(Actor)
 adult = person_var.field(Person.score).ge(Score(18))
 query = query_session.query(person_var).where(adult).match(party_var)
 assert query is not None
-employee = employment_var.role(Employment.employee).connects(person_var)
+employee = employment_var.role(Employment.employee).links(person_var)
 named = query_session.query_as(
     EmploymentRow,
     person=person_var,
@@ -794,7 +794,7 @@ for rejected_same_package_query in (
     lambda: (
         query_session.exact(Employment)
         .role(Employment.employee)
-        .connects(query_session.exact(Event))
+        .links(query_session.exact(Event))
     ),
     lambda: query_session.query_as(MutableRow, person=person_var),
     lambda: query_session.query_as(

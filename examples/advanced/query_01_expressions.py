@@ -13,7 +13,7 @@ async def main() -> None:
     session = Person.query(db)
     person = session.exact(Person)
     employment = session.exact(Employment)
-    employee = employment.role(Employment.employee).connects(person)
+    employee = employment.role(Employment.employee).links(person)
     adults = person.field(Person.age).ge(Age(18))
     rows = await session.query(person, employment).where(employee, adults).rows(limit=100)
     for employee_model, employment_model in rows:

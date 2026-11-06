@@ -1250,7 +1250,7 @@ async function sdkQueriesQueryLane(
     .match(member)
     .where(
       membershipVar.iid(membershipIid),
-      membershipVar.role(Membership.member).connects(member),
+      membershipVar.role(Membership.member).links(member),
       member.field(Person.identifier).eq(Identifier.create("query-ada")),
     )
     .one();
@@ -1263,8 +1263,8 @@ async function sdkQueriesQueryLane(
     .match(origin, destination)
     .where(
       networkVar.iid(networkIid),
-      networkVar.role(NetworkLink.origin).connects(origin),
-      networkVar.role(NetworkLink.destination).connects(destination),
+      networkVar.role(NetworkLink.origin).links(origin),
+      networkVar.role(NetworkLink.destination).links(destination),
       origin.field(Person.identifier).eq(Identifier.create("query-ada")),
       destination.field(Person.identifier).eq(Identifier.create("query-dana")),
     )
@@ -1393,8 +1393,8 @@ async function sdkQueriesQueryLane(
   const selectionParticipant = session.exact(Person);
   const selectionPredicates = [
     selectionLink.iid(networkIid),
-    selectionLink.role(NetworkLink.origin).connects(selectionOrigin),
-    selectionLink.role(NetworkLink.participant).connects(selectionParticipant),
+    selectionLink.role(NetworkLink.origin).links(selectionOrigin),
+    selectionLink.role(NetworkLink.participant).links(selectionParticipant),
   ] as const;
   const selectionParticipants = selectionParticipant
     .collect()
@@ -2773,7 +2773,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     const [queriedPlainActivity, queriedPlainParticipant] = await querySession
       .query(plainActivityVariable, plainParticipantVariable)
       .where(
-        plainActivityVariable.role(PlainActivity.participant).connects(plainParticipantVariable),
+        plainActivityVariable.role(PlainActivity.participant).links(plainParticipantVariable),
         plainParticipantVariable
           .field(Person.identifier)
           .eq(Identifier.create("person-1")),
@@ -2847,7 +2847,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       .query(interactionVariable)
       .match(actorVariable)
       .where(
-        interactionVariable.role(Interaction.actor).connects(actorVariable),
+        interactionVariable.role(Interaction.actor).links(actorVariable),
         actorVariable.field(Actor.nickname).contains(Nickname.create("a")),
       )
       .rows({
@@ -2868,8 +2868,8 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     const [queriedRobotInteraction, queriedRobot, queriedTarget] = await querySession
       .query(interactionVariable, robotVariable, targetVariable)
       .where(
-        interactionVariable.role(Interaction.actor).connects(robotVariable),
-        interactionVariable.role(Interaction.target).connects(targetVariable),
+        interactionVariable.role(Interaction.actor).links(robotVariable),
+        interactionVariable.role(Interaction.target).links(targetVariable),
         interactionVariable.field(Interaction.nickname).eq(Nickname.create("assist")),
         robotVariable.field(Robot.robotId).eq(RobotId.create(-42n)),
         robotVariable.field(Robot.valConstrained).lt(ValConstrained.create(10n)),
@@ -2885,7 +2885,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     const [queriedPersonInteraction, queriedPersonActor] = await querySession
       .query(interactionVariable, personActorVariable)
       .where(
-        interactionVariable.role(Interaction.actor).connects(personActorVariable),
+        interactionVariable.role(Interaction.actor).links(personActorVariable),
         interactionVariable.field(Interaction.nickname).eq(Nickname.create("read")),
         personActorVariable.field(Person.score).ge(Score.create(3n)),
       )
@@ -2927,7 +2927,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       const personPredicate = personVariable
         .field(Person.identifier)
         .eq(Identifier.create("person-1"));
-      const eventPredicate = eventVariable.role(Event.subject).connects(personVariable);
+      const eventPredicate = eventVariable.role(Event.subject).links(personVariable);
       const sameIdentifierPredicate = collectedPersonVariable
         .field(Person.identifier)
         .eqField(personVariable.field(Person.identifier));
@@ -4050,7 +4050,7 @@ test(
           return await session
             .query(employmentVar, personVar)
             .where(
-              employmentVar.role(Employment.employee).connects(personVar),
+              employmentVar.role(Employment.employee).links(personVar),
               personVar.field(Person.identifier).eq(Identifier.create("v5-live-person")),
             )
             .one();

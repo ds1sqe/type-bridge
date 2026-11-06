@@ -87,9 +87,9 @@ event = session.exact(Event)
 container = session.exact(Container)
 employment = session.exact(Employment)
 
-employee = employment.role(Employment.employee).connects(person)
-subject = event.role(Event.subject).connects(person)
-contained = container.role(Container.item).connects(event)
+employee = employment.role(Employment.employee).links(person)
+subject = event.role(Event.subject).links(person)
+contained = container.role(Container.item).links(event)
 ```
 
 `generated_v2` is the checked fixture package in this repository. Applications
@@ -117,8 +117,8 @@ five_slots: Query[Person, Event, Container, Event, Person] = session.query(
 ).where(
     subject,
     contained,
-    other_event.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(other_event),
+    other_event.role(Event.subject).links(colleague),
+    container.role(Container.item).links(other_event),
 )
 
 person_pair: Query[Person, Person] = (
@@ -127,8 +127,8 @@ person_pair: Query[Person, Person] = (
     .where(
         subject,
         contained,
-        other_event.role(Event.subject).connects(colleague),
-        container.role(Container.item).connects(other_event),
+        other_event.role(Event.subject).links(colleague),
+        container.role(Container.item).links(other_event),
     )
 )
 
@@ -265,9 +265,9 @@ const event = session.exact(Event);
 const container = session.exact(Container);
 const employment = session.exact(Employment);
 
-const employee = employment.role(Employment.employee).connects(person);
-const subject = event.role(Event.subject).connects(person);
-const contained = container.role(Container.item).connects(event);
+const employee = employment.role(Employment.employee).links(person);
+const subject = event.role(Event.subject).links(person);
+const contained = container.role(Container.item).links(event);
 ```
 
 TypeScript scalarizes a one-slot generated query and preserves a readonly tuple
@@ -295,8 +295,8 @@ const fiveSlots: Query<
   .where(
     subject,
     contained,
-    otherEvent.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(otherEvent),
+    otherEvent.role(Event.subject).links(colleague),
+    container.role(Container.item).links(otherEvent),
   );
 
 const personPair: Query<readonly [Person, Person]> = session
@@ -305,8 +305,8 @@ const personPair: Query<readonly [Person, Person]> = session
   .where(
     subject,
     contained,
-    otherEvent.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(otherEvent),
+    otherEvent.role(Event.subject).links(colleague),
+    container.role(Container.item).links(otherEvent),
   );
 
 void scalar;

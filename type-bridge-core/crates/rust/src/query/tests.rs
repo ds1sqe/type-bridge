@@ -1641,7 +1641,7 @@ fn predicates_lower_operators_and_compose_by_domain() {
             return;
         }
     };
-    let connects = assignment.role(WORKER).connects(record);
+    let connects = assignment.role(WORKER).links(record);
     assert!(matches!(connects.expr, PredicateExpr::Connects { .. }));
 }
 

@@ -2245,7 +2245,7 @@ type_bridge_query_field_presence(const type_bridge_query_field_t *field,
     type_bridge_query_predicate_t **out_predicate,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_role_connects(const type_bridge_query_role_t *role,
+type_bridge_query_role_links(const type_bridge_query_role_t *role,
     const type_bridge_projected_token_v1_t *expected_role,
     const type_bridge_query_binding_t *player,
     const type_bridge_projected_token_v1_t *expected_player_model,
@@ -2292,8 +2292,9 @@ type_bridge_query_open(const type_bridge_query_session_t *session,
     const type_bridge_query_descriptor_v1_t *descriptor,
     type_bridge_query_t **out_query,
     type_bridge_execution_diagnostics_t **out_diagnostics);
+/* Match an additional binding without adding it to the selected output. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_add_hidden(const type_bridge_query_t *query,
+type_bridge_query_match(const type_bridge_query_t *query,
     const type_bridge_query_binding_t *binding,
     const type_bridge_projected_token_v1_t *expected_model,
     type_bridge_query_match_mode_t expected_mode, type_bridge_query_t **out_query,

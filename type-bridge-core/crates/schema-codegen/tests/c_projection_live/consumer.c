@@ -4082,7 +4082,7 @@ static int run_typed_query_function_and_remote(
                   group_identifier_field),
               &group_equal_predicate, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_add_hidden(
+    CHECK(fixture_query_match(
               sdk_query,
               fixture_person_query_exact_binding_ref(group_binding),
               &group_hidden, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -4244,7 +4244,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_membership_member_query_role_from_exact(
               relation, &member_role, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_membership_member_query_role_connects(
+    CHECK(fixture_membership_member_query_role_links(
               member_role,
               fixture_membership_member_query_role_player_person_exact(member),
               &role_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -4265,7 +4265,7 @@ static int run_typed_query_function_and_remote(
               member, &member_selection, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_positional_1(session, fixture_membership_query_exact_one_selection_ref(relation_selection), &role_query, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_add_hidden(role_query, fixture_person_query_exact_binding_ref(member), &role_hidden, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_match(role_query, fixture_person_query_exact_binding_ref(member), &role_hidden, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_where(role_hidden, all_predicates,
                               &filtered_role_query, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
@@ -4511,10 +4511,10 @@ static int run_typed_query_function_and_remote(
     target_destination =
         fixture_networkzhlink_destination_query_role_player_person_exact(
             target);
-    CHECK(fixture_networkzhlink_origin_query_role_connects(
+    CHECK(fixture_networkzhlink_origin_query_role_links(
               origin_role, source_origin, &origin_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_networkzhlink_destination_query_role_connects(
+    CHECK(fixture_networkzhlink_destination_query_role_links(
               destination_role, target_destination, &destination_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_networkzhlink_query_exact_binding_iid(
@@ -4547,8 +4547,8 @@ static int run_typed_query_function_and_remote(
               target, &target_selection, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_positional_1(session, fixture_networkzhlink_query_exact_one_selection_ref(relation_selection), &topology_shape, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_add_hidden(topology_shape, fixture_person_query_exact_binding_ref(source), &topology_hidden_1, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_add_hidden(topology_hidden_1, fixture_person_query_exact_binding_ref(target), &topology_hidden_2, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_match(topology_shape, fixture_person_query_exact_binding_ref(source), &topology_hidden_1, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_match(topology_hidden_1, fixture_person_query_exact_binding_ref(target), &topology_hidden_2, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_where(topology_hidden_2, topology_predicate,
                               &topology_query, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
@@ -5026,13 +5026,13 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_networkzhlink_participant_query_role_from_exact(
               relation, &participant_role, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_networkzhlink_origin_query_role_connects(
+    CHECK(fixture_networkzhlink_origin_query_role_links(
               origin_role,
               fixture_networkzhlink_origin_query_role_player_person_exact(
                   origin),
               &origin_role_predicate, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_networkzhlink_participant_query_role_connects(
+    CHECK(fixture_networkzhlink_participant_query_role_links(
               participant_role,
               fixture_networkzhlink_participant_query_role_player_person_exact(
                   participant),
@@ -5079,7 +5079,7 @@ static int run_typed_query_function_and_remote(
               fixture_person_query_exact_collect_selection_ref(
                   participant_selection),
               &named_shape, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_add_hidden(
+    CHECK(fixture_query_match(
               named_shape,
               fixture_networkzhlink_query_exact_binding_ref(relation),
               &named_hidden, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -5127,7 +5127,7 @@ static int run_typed_query_function_and_remote(
               fixture_person_query_exact_collect_selection_ref(
                   participant_selection),
               &positional_shape, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_add_hidden(
+    CHECK(fixture_query_match(
               positional_shape,
               fixture_networkzhlink_query_exact_binding_ref(relation),
               &positional_hidden, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -5434,7 +5434,7 @@ static int run_sdk_serialization_live_codec(
   CHECK(fixture_employment_employee_query_role_from_exact(
             employment_binding, &employee_role, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_employment_employee_query_role_connects(
+  CHECK(fixture_employment_employee_query_role_links(
             employee_role,
             fixture_employment_employee_query_role_player_person_exact(
                 person_binding),

@@ -201,7 +201,7 @@ const person = session.exact(Person);
 const employmentVar = session.exact(Employment);
 
 const adult = person.field(Person.age).ge(Age.create(18n));
-const employee = employmentVar.role(Employment.employee).connects(person);
+const employee = employmentVar.role(Employment.employee).links(person);
 
 const rows = await session
   .query(person, employmentVar)

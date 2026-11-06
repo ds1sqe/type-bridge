@@ -88,13 +88,13 @@ personVar.field(Person.identifier).eq(Score.create(3n));
 // @ts-expect-error prior function calls retain their exact scalar domain
 qualifyingScore(querySession, personVar, booleanCall);
 // @ts-expect-error generated relation roles retain their accepted player union
-employmentVar.role(Employment.employee).connects(eventVar);
+employmentVar.role(Employment.employee).links(eventVar);
 // @ts-expect-error an exact abstract ancestor is not itself an accepted player
-eventVar.role(Event.subject).connects(exactActorVar);
+eventVar.role(Event.subject).links(exactActorVar);
 // @ts-expect-error an unrelated concrete subtype remains rejected
-eventVar.role(Event.subject).connects(exactRobotVar);
+eventVar.role(Event.subject).links(exactRobotVar);
 // @ts-expect-error a subtype root whose closure has no accepted player remains rejected
-eventVar.role(Event.subject).connects(subtypeRobotVar);
+eventVar.role(Event.subject).links(subtypeRobotVar);
 // @ts-expect-error generated queries require at least one selection
 querySession.query();
 // @ts-expect-error generated named queries require at least one selection

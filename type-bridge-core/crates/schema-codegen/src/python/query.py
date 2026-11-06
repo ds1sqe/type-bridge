@@ -576,14 +576,11 @@ class BoundRole(_Frozen):
         object.__setattr__(self, "_BoundRole__handle", handle)
         object.__setattr__(self, "_BoundRole__projection", projection)
 
-    def connects(self, player: BoundVar) -> Predicate:
+    def links(self, player: BoundVar) -> Predicate:
         _require_projection(player.projection_identity(), self.__projection, "role player")
         if self.__accepted.isdisjoint(player.model_domain_labels()):
             raise TypeError("generated role does not accept this projected player type")
         return Predicate(self.__handle.connects(player.native_handle()), self.__projection)
-
-    def is_(self, player: BoundVar) -> Predicate:
-        return self.connects(player)
 
 
 class BoundVar(_Frozen):

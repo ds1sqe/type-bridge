@@ -338,6 +338,19 @@ All notable changes to TypeBridge will be documented in this file.
 
 <!-- --8<-- [start:breaking-3-0] -->
 
+Role-edge predicates use `links`, matching the TypeQL pattern they lower to.
+Additional query bindings use `match` (Rust `matching`) and are not added to
+the selected output.
+
+| Removed query API | Replacement |
+| --- | --- |
+| Python `BoundRole.connects` / `BoundRole.is_` | `BoundRole.links` |
+| TypeScript `BoundRole.connects` / `BoundRole.is` | `BoundRole.links` |
+| Rust query role `connects` | `links` |
+| Rust `Query::match_` | `Query::matching` |
+| C `type_bridge_query_role_connects` and generated `*_query_role_connects` | `type_bridge_query_role_links` / `*_query_role_links` |
+| C `type_bridge_query_add_hidden` and generated `*_query_add_hidden` | `type_bridge_query_match` / `*_query_match` |
+
 Typed query sorting uses `sort` in every SDK. Regenerate projections and
 update source calls and option names; ordering behavior and plan bytes are
 unchanged.

@@ -1721,13 +1721,13 @@ async fn sdk_queries_query_observations(
     let hydrated_membership = session
         .query(membership)
         .expect("queries membership selection")
-        .match_(membership_person)
+        .matching(membership_person)
         .expect("queries membership member match")
         .where_(
             membership.iid(&type_bridge::Iid::new(membership_iid).unwrap())
                 & membership
                     .role(MembershipType::member)
-                    .connects(membership_person)
+                    .links(membership_person)
                 & membership_person_identifier
                     .eq(Identifier::new(ada_key.clone()).expect("queries Ada key")),
         )
@@ -1749,18 +1749,18 @@ async fn sdk_queries_query_observations(
     let hydrated_network = session
         .query(network)
         .expect("queries network query")
-        .match_(network_origin)
+        .matching(network_origin)
         .expect("queries attach network origin")
-        .match_(network_destination)
+        .matching(network_destination)
         .expect("queries attach network destination")
         .where_(
             network.iid(&type_bridge::Iid::new(network_iid).unwrap())
                 & network
                     .role(NetworkLinkType::origin)
-                    .connects(network_origin)
+                    .links(network_origin)
                 & network
                     .role(NetworkLinkType::destination)
-                    .connects(network_destination)
+                    .links(network_destination)
                 & network_origin
                     .field(PersonType::identifier)
                     .eq(Identifier::new(ada_key.clone()).expect("queries Ada key"))
@@ -1888,15 +1888,15 @@ async fn sdk_queries_query_observations(
     let shape_predicate = shape_link.iid(&type_bridge::Iid::new(network_iid).unwrap())
         & shape_link
             .role(NetworkLinkType::origin)
-            .connects(shape_origin)
+            .links(shape_origin)
         & shape_link
             .role(NetworkLinkType::participant)
-            .connects(shape_participant);
+            .links(shape_participant);
     witness_mark("selection_shapes.positional", exchange_count.is_some());
     let positional_page = session
         .query((shape_origin, collected.clone()))
         .expect("queries positional selection")
-        .match_(shape_link)
+        .matching(shape_link)
         .expect("queries positional network match")
         .where_(shape_predicate.clone())
         .expect("queries positional predicates")
@@ -1927,7 +1927,7 @@ async fn sdk_queries_query_observations(
     let named_page = session
         .query(named_shape)
         .expect("queries named selection")
-        .match_(shape_link)
+        .matching(shape_link)
         .expect("queries named network match")
         .where_(shape_predicate)
         .expect("queries named predicates")
@@ -2048,7 +2048,7 @@ async fn sdk_queries_query_observations(
         .expect("queries reductions");
     witness_mark("grouped_reducer.binding", exchange_count.is_some());
     let mut binding_groups = people_query
-        .match_(grouped_person)
+        .matching(grouped_person)
         .expect("queries grouped person match")
         .where_(identifier.eq_field(grouped_identifier))
         .expect("queries grouped person identity join")
@@ -2384,10 +2384,10 @@ async fn sdk_queries_enforced_role_player_limit(
     let result = session
         .query(membership)
         .expect("queries limited membership query")
-        .match_(person)
+        .matching(person)
         .expect("queries limited member match")
         .where_(
-            membership.role(MembershipType::member).connects(person)
+            membership.role(MembershipType::member).links(person)
                 & person
                     .field(PersonType::identifier)
                     .eq(Identifier::new(ada_key.to_owned()).expect("queries limited Ada key")),
@@ -4708,7 +4708,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         let grouped = session
             .query(employment_binding)
             .expect("employment query")
-            .where_(employee_role.connects(person_binding) & worker_predicate)
+            .where_(employee_role.links(person_binding) & worker_predicate)
             .expect("employment role predicate")
             .group_by(person_binding)
             .expect("employment group")
@@ -4943,7 +4943,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
     let remote_binding_grouped = session
         .query(remote_employment)
         .expect("F4 remote employment aggregate query")
-        .where_(remote_employee_role.connects(person_binding) & remote_worker_predicate)
+        .where_(remote_employee_role.links(person_binding) & remote_worker_predicate)
         .expect("F4 remote employment aggregate predicate")
         .group_by(person_binding)
         .expect("F4 remote binding group")
@@ -5246,10 +5246,10 @@ async fn one_program(connection: &Connection<AppSchema>) -> Value {
     let employed = session
         .query(employment)
         .expect("one-program employment query")
-        .match_(member)
+        .matching(member)
         .expect("one-program employee match")
         .where_(
-            employment.role(EmploymentType::employee).connects(member)
+            employment.role(EmploymentType::employee).links(member)
                 & member
                     .field(PersonType::identifier)
                     .eq(Identifier::new("p-600").expect("one-program employee key")),
@@ -5822,10 +5822,10 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
         let identifiers = session
             .query(interaction)
             .expect("relation-only selection")
-            .match_(actor)
+            .matching(actor)
             .expect("hidden actor match")
             .where_(
-                interaction.role(InteractionType::actor).connects(actor)
+                interaction.role(InteractionType::actor).links(actor)
                     & actor
                         .field(ActorType::nickname)
                         .contains(Text::new("parity-actor").expect("shared actor nickname")),
@@ -5854,8 +5854,8 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
             .query((interaction, robot, person))
             .expect("combined role selection")
             .where_(
-                interaction.role(InteractionType::actor).connects(robot)
-                    & interaction.role(InteractionType::target).connects(person)
+                interaction.role(InteractionType::actor).links(robot)
+                    & interaction.role(InteractionType::target).links(person)
                     & interaction
                         .field(InteractionType::nickname)
                         .contains(Text::new("keep").expect("relation nickname predicate"))
@@ -6010,7 +6010,7 @@ async fn generated_plain_inherited_abstract_role_parity() {
             .where_(
                 activity_binding
                     .role(PlainActivityType::participant)
-                    .connects(participant)
+                    .links(participant)
                     & participant
                         .field(PersonType::identifier)
                         .eq(Identifier::new("plain-activity-person")
@@ -6506,7 +6506,7 @@ async fn sdk_serialization_live() {
             .where_(
                 relation
                     .role(EmploymentType::employee)
-                    .connects(person_binding)
+                    .links(person_binding)
                     & person_binding
                         .field(PersonType::identifier)
                         .eq(Identifier::new("v5-live-person").expect("Serialization direct key")),
@@ -6549,7 +6549,7 @@ async fn sdk_serialization_live() {
             .where_(
                 relation
                     .role(EmploymentType::employee)
-                    .connects(person_binding)
+                    .links(person_binding)
                     & person_binding
                         .field(PersonType::identifier)
                         .eq(Identifier::new("v5-live-person").expect("Serialization remote key")),
