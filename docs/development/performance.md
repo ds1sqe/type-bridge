@@ -164,7 +164,7 @@ header of `perf/drivers/node/pipelines.cjs`.
 
 The C driver compiles against the C schema package that `create` generates
 into `DIR/workspace/generated/c`, links a `type-bridge-c` built with
-`--features perf-stages`, and stages each iteration's plans on one ABI 1.7
+`--features perf-stages`, and stages each iteration's plans on one ABI 2.0
 staged transaction:
 
 ```bash
@@ -402,7 +402,7 @@ reports `size.wheel.bytes`, `size.npm.bytes`, `size.cli_unstripped.bytes`,
 release; the unstripped CLI provides a separate baseline. Available Python, Node and C
 compiler versions are recorded for the wheel, npm and C measurements.
 
-The C metric is a perf-only archive of the current CMake install tree: ABI 1.7
+The C metric is a perf-only archive of the current CMake install tree: ABI 2.0
 and release package metadata are reconciled separately in 2.3.0 release prep.
 It uses the release Cargo flags and normalized tar metadata; it is not a
 published C release candidate. Release helpers and policy are unchanged.

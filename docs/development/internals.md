@@ -1,6 +1,6 @@
 # TypeBridge internals
 
-TypeBridge 2.1 has one active authoring path and one semantic engine:
+TypeBridge 3.0 has one active authoring path and one semantic engine:
 
 ```text
 Split-YAML workspace
@@ -45,9 +45,9 @@ through Rust constructors, then compares it with a schema-fenced live TypeDB
 view. Generated Python and TypeScript remote sessions instead reconstruct their
 authority from private package evidence and accept no authority-file argument.
 
-Generated integration uses a projection-owned nominal contract. It does not
-route values through the retained V1 `TypeDBType` nominal boundary, and that
-boundary must never be widened to `object`, `Any`, or structural detection.
+Generated integration uses exact, projection-owned nominal classes. Package
+registration, model ownership and role tokens retain that identity through
+validation and hydration.
 
 ## Rust ownership
 
@@ -57,12 +57,12 @@ The principal layers are:
 | --- | --- |
 | `contract` | Stable schema/query/runtime wire identities and limits |
 | `schema` | Split-YAML resolution and projection facts |
-| `schema-codegen` | Deterministic Python, TypeScript, and Rust emitters |
+| `schema-codegen` | Deterministic Python, TypeScript, Rust and C emitters |
 | `query` | Immutable query authority, validation, and lowering |
 | `migration` / `schema-migration` | Canonical V2 planning and state |
 | `orm` | Generated projection CRUD, query, hydration, and transactions |
 | `typedb-runtime` | Retained TypeDB provider routing and lifecycle |
-| `python` / `node` / `rust` | Language boundaries over the shared engine |
+| `python` / `node` / `rust` / `c` | Language boundaries over the shared engine |
 
 Bindings validate target-language types and snapshot hostile byte inputs before
 crossing FFI. They do not reimplement schema meaning, query semantics, limits,
@@ -143,7 +143,7 @@ TOML conversion requires 2.3.x before upgrading; 3.0 uses Split-YAML.
 
 The release graph is closed:
 
-- TypeBridge product crates share the exact 2.1 version.
+- TypeBridge product crates share the exact product version.
 - TypeDB bands 8 and 9 are the only active providers.
 - Python, npm, and Cargo archive validators inspect exact member sets and
   reject removed authoring/provider payloads.
@@ -156,16 +156,14 @@ The executable operation inventory and removal map are the audit authority for
 operation maps to generated evidence or a separately retained query/archive
 contract.
 
-Legacy query nodes remain deprecated until 3.0. The core TypeQL adapter owns
-structured query lowering, official parsing, rendering, and checked projection
-back to those nodes. Internal callers use `QueryCompiler::try_compile` and
-propagate errors; Python exports also emit `DeprecationWarning`. Only deprecated
-caller-owned `Raw` fragments bypass structured lowering and retain their text.
-Released String compiler wrappers retain their historical non-`Has` relation
-attribute discard behavior and otherwise return empty output when lowering is
-impossible. They do not expose the checked contract.
+Legacy caller-owned query nodes and String compiler adapters are removed.
+The core adapter owns official TypeQL parsing and rendering. Typed operations
+lower directly to checked adapter nodes; no compatibility AST is reconstructed.
+The frozen schema reader is internal compatibility machinery for adopted-genesis
+and shadow comparisons, not an SDK authoring API. Scalar formatting and
+historical migration match fragments retain checked official-AST conversion.
 
-V2 read lowering builds opaque adapter nodes for patterns, local functions,
+Typed read lowering builds opaque adapter nodes for patterns, local functions,
 modifiers, document fetches and execution bounds. The adapter renders the
 complete pipeline. Canonical plan bytes and driver given-row values retain
 their existing contract. Pre-change query snapshots compare official ASTs

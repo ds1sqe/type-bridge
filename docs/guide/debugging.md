@@ -60,7 +60,7 @@ After building the purchase plan from generated model tokens:
       type_bridge_execution_diagnostics_close(&diagnostics);
     ```
 
-C explain requires ABI 1.9. The four purchase conformance programs emit the
+C explain requires ABI 2.0. The four purchase conformance programs emit the
 same explanation through these APIs. Their conformance report is compared
 exactly against a fixture for the suite's semantic profile. The core fixture
 uses a separate purchase plan with its own binding and input names.

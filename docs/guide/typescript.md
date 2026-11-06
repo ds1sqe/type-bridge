@@ -415,7 +415,7 @@ import {
   connectProxy,
 } from "./generated/typescript/dist/index.js";
 
-// The built-in HTTP route to the server's /v2/capabilities and /v2/query.
+// The built-in HTTP route to the server's /v3/capabilities and /v3/staged.
 const proxy = await connectProxy("https://typebridge.example", {
   headers: [["Authorization", `Bearer ${token}`]],
 });

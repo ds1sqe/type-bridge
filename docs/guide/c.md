@@ -1,43 +1,26 @@
 # C SDK
 
-**Security update:** Upgrade to TypeBridge 2.2.5. Its prebuilt distributions
-use rustls 0.23.46, which fixes RUSTSEC-2026-0346 through RUSTSEC-2026-0349
-and the earlier
-[RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
-The [2.2.1 post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
-records the affected earlier release.
+TypeBridge 3.0 uses native ABI 2.0 for **Ubuntu 24.04, x86_64 GNU/Linux,
+shared runtime**. C17 and C++17 applications consume generated schema packages
+through CMake or pkg-config. This is the 3.0 development guide; release
+publication and platform claims follow the [C release procedure](../development/c-release.md).
 
-TypeBridge 2.2.5 provides a generated C SDK with native ABI 1.6.0 for
-**Ubuntu 24.04, x86_64 GNU/Linux, shared runtime**. C17 and C++17 applications
-consume generated schema packages through CMake or pkg-config. The public
-release was independently verified on 2026-10-15.
-
-The SDK uses the same Rust-owned schema, CRUD, query, migration, serialization,
-cancellation, diagnostics, and resource-limit contracts as the other SDKs.
-Connected acceptance uses exactly TypeDB 3.12.3; the canonical semantic profile
-is `typedb-3.12.1/v1`. The selected C distribution does not cover static linking,
-macOS, Windows, or other architectures.
+The SDK shares Rust-owned schema, CRUD, query, migration, serialization,
+cancellation, diagnostics and resource policies with the other SDKs. Supported
+TypeDB lines are 3.12–3.14, subject to each generated package's profile floor.
+The selected distribution does not cover static linking or other platforms.
 
 ## Install the runtime
 
-Download the runtime archive and its Sigstore bundle from the
-[2.2.5 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.5):
+Use a matching ABI 2.0 runtime archive and CLI from the release assets. Verify
+the signed files using the [documented signing identity and provenance](../development/c-release.md#protected-promotion).
+The runtime contains `type_bridge.h`, `libtype_bridge_c.so`, CMake configuration
+and pkg-config metadata. The standalone CLI provides `bin/type-bridge`.
 
-- `type-bridge-c-runtime-2.2.5-abi-1.6-x86_64-unknown-linux-gnu.tar.gz`
-- `type-bridge-cli-2.2.5-x86_64-unknown-linux-gnu.tar.gz` for standalone generation
-  and migration commands
-- `type-bridge-c-sdk-example-2.2.5.tar.gz` for the verified `tb_sdkv3` example
-
-Verify the signed release files using the
-[documented signing identity and provenance](../development/c-release.md#protected-promotion).
-Extract the runtime into a private installation prefix. It contains the public
-header, `libtype_bridge_c.so`, CMake configuration, and pkg-config metadata.
-The standalone CLI archive has its own `bin/type-bridge` executable.
-
-Application execution needs the shared runtime and its system-library
-dependencies. Building an application additionally needs a C17 or C++17
-compiler and CMake 3.20+ or pkg-config. Python and Cargo are not application
-runtime dependencies.
+Application execution needs the shared runtime and its system libraries.
+Builds additionally need a C17 or C++17 compiler and CMake 3.20+ or pkg-config;
+Python and Cargo are not application runtime dependencies. Regenerate 2.3.x
+packages (ABI 1.7 and later 1.x descriptors) before linking against ABI 2.0.
 
 ## Generate an application schema package
 
@@ -63,13 +46,13 @@ regenerate rather than editing emitted declarations or runtime resources.
 
 ## Link an application
 
-For the released example, CMake discovers both the runtime and generated
+For a generated example, CMake discovers both the runtime and generated
 schema package:
 
 ```cmake
 cmake_minimum_required(VERSION 3.20)
 project(example LANGUAGES C CXX)
-find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)
+find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)
 find_package(tb_sdkv3 1.0.0 EXACT CONFIG REQUIRED)
 add_executable(example main.c)
 set_target_properties(example PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED YES)
@@ -101,9 +84,7 @@ diagnostics:
 
 So one program runs unchanged against TypeDB directly or through a
 TypeBridge server; only the connection it opens differs. The proxy
-connection, `type_bridge_query_session_open_with_limits`, and their types
-are ABI 1.7; the ABI 1.6 header of 2.2.6 does not declare them. The proxy connection
-is synchronous and blocks the calling thread:
+connection is synchronous and blocks the calling thread:
 
 ```c
 type_bridge_proxy_header_v1_t auth = {
@@ -135,8 +116,8 @@ PEM bundle. An empty `pinned_advertisement` fetches the server's capability
 advertisement during open, bounded by `connection_limits`; a nonempty one is
 used as is. `answer_limits` is a ceiling: every terminal on the connection
 runs under its own limits constrained by it, and limit values are kept or
-refused, never clamped. Manager terminals run only on a database or a read
-transaction.
+refused, never clamped. Manager read terminals support database, borrowed read/write and proxy
+targets; mutations use database, borrowed write or proxy targets.
 
 Independent connection query limits use
 `type_bridge_database_open_with_query_limits` or
@@ -150,10 +131,10 @@ be released after it returns. Proxy limits intersect the staged server ceiling.
 The original open functions keep their defaults and existing configuration
 layouts and reserved words retain their meanings.
 
-ABI 1.6 rollback consumes the write transaction and clears its owner slot,
-just like commit and close. Keep-open rollback requires the later ABI 1.7 API.
+`type_bridge_write_transaction_rollback` consumes its owner slot.
+Use `type_bridge_write_transaction_rollback_keep` to retain a reusable owner.
 
-### Typed reads in a staged transaction (ABI 1.11)
+### Typed reads in a staged transaction
 
 Open a staged transaction with `type_bridge_database_transaction` or
 `type_bridge_proxy_connection_transaction`. Stage writes with the plan authoring
@@ -205,18 +186,16 @@ serialization, cancellation, resource limits, and cleanup. See the
 [release procedure](../development/c-release.md#public-verification-and-support)
 for the public verification record and exact support boundary.
 
-Provider commit status is selected from the typed commit outcome. ABI 1.6
-continues to return `TYPE_BRIDGE_STATUS_EXECUTION_FAILED` for proven rejections
+Provider commit status is selected from the typed commit outcome. It returns `TYPE_BRIDGE_STATUS_EXECUTION_FAILED` for proven rejections
 and `TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN` when a commit may have applied.
 Rejection diagnostics keep the released `commit_definitely_aborted` and
 `provider_operation_failed` codes, paths and details. The typed failure
 details other SDKs expose (`retry_safe`, `code`, `rejection`, `lock_kind`,
-`annotation`) belong to ABI 1.7, rather than changing what ABI 1.6 consumers
-count and read; see [Typed failures](#typed-failures).
+`annotation`) are available through execution diagnostics; see [Typed failures](#typed-failures).
 
-## Stage plans in one transaction (ABI 1.7)
+## Stage plans in one transaction
 
-ABI 1.7 adds deferred transactions over `query-plan/v3` plans. A plan comes
+Deferred transactions execute `query-plan/v3` plans. A plan comes
 from the plan builder or from canonical plan bytes
 (`type_bridge_plan_decode`); C never serializes plans itself. Staging sends
 nothing: `type_bridge_staged_transaction_commit` runs every staged plan in one
@@ -507,7 +486,7 @@ opens the same transaction on a proxy connection. It fetches the server's
 staged advertisement at open; commit is one signed exchange that carries every
 staged plan. The transaction may outlive the connection.
 
-### Reading answers (ABI 1.8)
+### Reading answers
 
 `type_bridge_pending_answer` reports `DOCUMENTS` with its document count for
 a fetch plan, or `ROWS` with its row count for a projected row plan. Read
@@ -575,33 +554,24 @@ commit whose failure is a retry-safe `STC2` conflict with
 
 <a id="require-abi-17"></a>
 
-### Require ABI 1.11
+### Require ABI 2.0
 
-The 1.11 runtime retains header and descriptor compatibility with minors
-1.6 through 1.10. CMake accepts
-`find_package(TypeBridge 1.6.0 EXACT)` and pkg-config keeps
-`type-bridge = 1.6.0` resolving. Applications that use staged typed queries
-require it explicitly:
+ABI 2.0 is a breaking target. Rebuild consumers and regenerate schema packages;
+old 1.x descriptors and binaries are not supported by this header/runtime pair.
 
 ```cmake
-find_package(TypeBridge 1.11 CONFIG REQUIRED)
+find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)
 ```
 
 ```text
-Requires: type-bridge-abi >= 1.11.0
+Requires: type-bridge = 2.0.0
 ```
 
-The runtime's pkg-config file keeps `Version: 1.6.0` and provides
-`type-bridge-abi` at the native ABI version (pkgconf, the Ubuntu 24.04
-`pkg-config`, resolves provided modules). At run time,
-`type_bridge_c_abi_minor()` reports the loaded runtime's minor. Generated packages
-must carry the current generator's code resources; an older projection must be
-regenerated even when its descriptor minor is accepted. The old-header tests
-exercise linking and descriptor compatibility with current resources.
+Check `type_bridge_c_abi_major()` and `type_bridge_c_abi_minor()` when inspecting
+the loaded runtime. C policies default to 60,000 ms; a nonpositive signed
+execution timeout means no deadline. Pass `NULL` policy pointers for defaults.
 
-
-
-### Explain and database debug callbacks (ABI 1.9)
+### Explain and database debug callbacks
 
 `type_bridge_plan_explain(plan, &bytes, &diagnostics)` returns owned canonical
 JSON describing the exact executed statements. Caller values transported in
@@ -615,5 +585,4 @@ Keep the context alive until clearing the callback or closing the database.
 The callback must not retain the byte pointer, unwind or reenter TypeBridge.
 Schema-only build events use tracing or `RUST_LOG`, since they have no database
 handle. A null callback clears the listener. See [Debugging plans](debugging.md)
-for examples and record fields. Require `type-bridge-abi >= 1.9.0` or
-`find_package(TypeBridge 1.9 CONFIG REQUIRED)` for these additions.
+for examples and record fields.

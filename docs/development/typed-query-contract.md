@@ -1,8 +1,10 @@
 # Generated Typed Query Contract
 
-The additive read/write [query-plan V3 wire specification](../reference/query-plan-v3.md)
+The read/write [query-plan wire specification](../reference/query-plan-v3.md)
 defines canonical bytes, expressions, write stages, operations and shared examples.
-V1/V2 encodings and fingerprints described here remain frozen.
+Typed queries and manager terminals lower to this one native plan path.
+Historical parity captures remain test oracles; retired query encodings are
+not accepted execution APIs.
 
 Status: implemented normative semantics for
 [#170](https://github.com/ds1sqe/type-bridge/issues/170) through
@@ -14,7 +16,7 @@ generated packages after the #189 cutover.
     `Query`, `QuerySession`, field tokens, role tokens, and model classes are
     emitted together inside each generated Python or TypeScript package. The
     base SDK supplies connections, the verified runtime projection, and
-    low-level Query V2; it does not accept handwritten descriptors as schema
+    typed staged plan execution; it does not accept handwritten descriptors as schema
     authority.
 
 This document fixes the public behavior shared by the Rust request, Python and
@@ -607,8 +609,8 @@ Rules that hold in every binding:
 - Rust admits limits. A binding passes named overrides through and never
   validates, clamps, or defaults them. An unknown name or an unsupported value
   is refused before a session exists.
-- A session's limits apply to every query it authors. Validation, V2
-  adaptation, canonical encoding, and execution all read the limits the
+- A session's limits apply to every query it authors. Validation, native plan
+  lowering, canonical encoding, and execution all read the limits the
   request was validated under.
 - Repeated `where` clauses and chained `and`/`or` build one flat conjunction
   or disjunction. Nesting depth reflects only nesting the caller wrote.
@@ -719,35 +721,16 @@ retention without shortening an admitted operation's execution time.
 
 ## Remote Envelope
 
-A single query crosses the proxy boundary in one request format and one reply
-format, whatever the query: an authored low-level plan, a generated model
-query, or a reduction. A staged transaction crosses it in the V3 envelope
-described under [Staged transactions](#staged-transactions).
+All typed manager and query execution uses the staged envelope. Requests carry
+canonical native plans, given rows, transaction kind, resource budgets, the
+executor advertisement identity, a nonce and bounded admission expiry. Replies
+bind the request and carry validated answers or structured execution failures.
+The connection verifies the advertised reply key and complete request binding
+before publishing values. See the [wire specification](../reference/query-plan-v3.md#staged-remote-envelope-v3)
+for exact fields, tags and signing rules.
 
-| Wire value | Format |
-| --- | --- |
-| Request | `typebridge.query-remote-request/v2` |
-| Response | `typebridge.query-remote-response/v2` |
-| Failure | `typebridge.query-remote-failure/v2` |
-| Signed outer reply | `typebridge.query-remote-signed-reply/v1` |
-| Capability advertisement | `typebridge.query-remote-capabilities/v1` |
-
-The request carries the exact canonical plan bytes (either released plan
-format), the invocation, the result kind, the caller's answer budget, the
-advertisement fingerprint, a nonce, and an absolute bounded expiry. Every
-reply is signed with the executor's advertised key and binds the nonce, the
-plan fingerprint, and the fingerprint of the whole request, so a replayed or
-foreign reply is refused before any host object is built. A failure carries
-the complete structured diagnostic: category, code, message, path, and
-details.
-
-An executor advertises the envelope with three capabilities, `query.plan.v2`,
-`query.remote.envelope-v2`, and `query.remote.structured-diagnostic`; a client
-refuses to prepare a request for an advertisement that lacks one with
-`unsupported_required_capability` and the `missing` names. A request in
-another format is refused by the executor with
-`query_remote_v2_format_unsupported`, whose `supported` detail names the
-request format it accepts.
+`/v2/query` and `/v2/capabilities` are removed. Clients use `/v3/staged` and
+`/v3/capabilities`; the old envelopes are not accepted by a compatibility route.
 
 ### Staged transactions
 
@@ -761,8 +744,8 @@ reply signed with the key from `GET /v3/capabilities`. The SDK verifies the
 signature and the request binding, then resolves each answer through the same
 plan answer path as direct execution; a failed reply becomes the same typed
 failure, and `commit_outcome_unknown` stays indeterminate rather than "not
-applied". Raw TypeQL and typed match reads have no V3 plan, so the proxy
-backend refuses them at stage time.
+applied". Typed match reads compile to native plans in the same stack.
+Raw TypeQL uses a separate explicit raw context and `/v3/raw`.
 
 Each commit is one request under a fresh random nonce, and the server keeps
 no replies. A lost or unverifiable reply, a cancelled commit, and the server's
@@ -775,7 +758,7 @@ executor binding and reply key equal the connection's advertisement
 (`query_remote_v3_advertisement_mismatch` otherwise); it is pinned or fetched
 once per connection. The server admits writes only from a caller an
 interceptor vouches for (`on_v3_write_authority`), or from any caller under
-`[v2] allow_unauthenticated_staged_writes`. The wire format and failure
+`[staged] allow_unauthenticated_staged_writes`. The wire format and failure
 vocabulary are in the
 [staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3).
 
@@ -789,9 +772,8 @@ TypeScript the `documents` answer variant, and Rust `PlanAnswer::Documents`.
 ### Hosting the staged executor in-process
 
 A host that embeds `type-bridge-server` as a library runs the staged route
-without its HTTP framing through `StagedExecutor`, the V3 counterpart of the
-V2 pair `preflight_remote_request_v2` / `execute_admitted_remote_request_v2`.
-It takes the same `QueryPipeline` and `V2QueryState` the server binary builds
+without its HTTP framing through `StagedExecutor`.
+It takes the same `QueryPipeline` and `StagedQueryState` the server binary builds
 and does everything the route does after the body is read:
 
 ```rust
@@ -803,7 +785,7 @@ let executor = Arc::new(StagedExecutor::new(pipeline, query_state));
 let mut ctx = executor
     .pipeline()
     .v3_request_context(metadata)?;          // every policy must cover V3
-executor.pipeline().begin_v2_request(&mut ctx).await?;
+executor.pipeline().begin_v3_request(&mut ctx).await?;
 
 // Signed request bytes in, signed reply bytes out.
 let outcome = executor
@@ -818,11 +800,11 @@ match outcome.kind {
 ```
 
 The hooks run in a fixed order, pinned by a test: the transport hook
-(`on_v2_transport`, during admission), `on_v3_write_authority` for a write,
+(`on_v3_transport`, during admission), `on_v3_write_authority` for a write,
 `on_v3_plan` for every bound plan in index order before anything is
 reserved or opened, then nonce reservation, staging and one commit,
 `on_v3_commit` once the outcome is known (observe-only, bounded by the audit
-deadline), and the response policies (`on_v2_response`) over the signed
+deadline), and the response policies (`on_v3_response`) over the signed
 reply. A refusal at any step before reservation leaves nothing reserved and
 nothing open, so a retry is re-authorized rather than replayed. The outcome
 is owned by a detached task once admitted: a host that stops awaiting
@@ -934,8 +916,7 @@ Typed diagnostics add `retry_safe` as a boolean, `code` as a validated TypeDB
 identity and `rejection` (`conflict`, `cardinality`, `unique`, `constraint` or
 `other`) for a rejection. Conflict diagnostics include `lock_kind`; annotation
 constraints include `annotation`. These use bounded identity detail values.
-The C ABI 1.6 projection omits them and keeps the released detail set
-(`SdkExecutionDiagnostic::released_details`). A staged operation index
+The C ABI 2.0 projection carries these typed failure details. A staged operation index
 is an `Index` path segment; possible owner and attribute sites are `Type` and
 `Field` path segments taken only from plan metadata. They are possible sites,
 not evidence that a particular site or another transaction caused the failure.
@@ -994,7 +975,7 @@ Python's `Database.staged_transaction` accepts keyword `timeout_milliseconds`
 and `collect_phase_timestamps`. Node's `Database.stagedTransaction(kind, options)`
 accepts `timeoutMilliseconds` (a signed bigint) and `collectPhaseTimestamps`.
 Omitting these options preserves 60000 ms and collection off; zero or a negative
-timeout disables the deadline. C's `*_transaction_with_options_v1` factories
+timeout disables the deadline. C's `*_transaction_with_options` factories
 accept `type_bridge_staged_transaction_options_t`; a null options pointer
 keeps those defaults. Explicit options require version 1 and the exact struct
 size, a signed timeout, and collection 0 or 1.

@@ -100,14 +100,14 @@ setup and the historical 2.0.0 Git declaration.
 
 ## C
 
-The [2.2.5 GitHub release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.5)
-provides the ABI 1.6.0 shared runtime, standalone CLI, and generated C example
-for Ubuntu 24.04 on x86_64 GNU/Linux. Verify the signed archives before
-installation. C17 and C++17 applications use CMake or pkg-config; application
-execution does not require Python or Cargo.
+TypeBridge 3.0 uses the ABI 2.0 shared runtime. Install the runtime and CLI
+from the same product release, then regenerate your C package. C17 and C++17
+applications use CMake or pkg-config; application execution does not require
+Python or Cargo. The 3.0 release is in preparation.
 
-Follow the [C SDK guide](../guide/c.md) for archive names, generation, linking,
-and the exact supported runtime matrix.
+Follow the [C SDK guide](../guide/c.md) for generation, linking, and the
+supported runtime matrix, and [upgrade to 3.0](../guide/upgrade-3.0.md) for
+changes from ABI 1.x.
 
 ## CLI and code generation
 

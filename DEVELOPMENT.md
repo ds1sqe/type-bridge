@@ -30,7 +30,7 @@ generate their own schema packages. See the [C SDK guide](docs/guide/c.md).
 - Node 18+ for the Node package; the primary development matrix uses Node 20
 - CMake 3.20+ plus C17 and C++17 compilers when changing the C
   schema package or native runtime; Unix checks also require `pkg-config`
-- TypeDB 3.x for integration tests
+- TypeDB 3.12–3.14 for supported integration tests (profile floors below)
 - Podman or Docker for the default isolated live suite
 
 ## Set up the source tree
@@ -62,7 +62,7 @@ duplicated directory snapshot here.
 
 ## Architecture invariants
 
-- Rust is the only semantic engine for V2 behavior.
+- Rust is the only semantic engine for typed plans, CRUD and schema behavior.
 - Python and Node bindings marshal typed values and expose language-native
   facades; they do not reimplement schema, query, migration, or ORM rules.
 - The generated C package and native C ABI share the same semantic engine.
@@ -79,7 +79,9 @@ duplicated directory snapshot here.
 - Generated files are projections of canonical schema authority and must not be
   edited by hand.
 - Generated packages are Python's only typed query API. Use staged plans
-  for explicit transactions and `Database.execute_query` for raw TypeQL text.
+  for explicit transactions and `raw_transaction` / `execute_query` for raw TypeQL text.
+  All managers, filter terminals and staged typed queries execute native plans;
+  legacy query AST/compiler and HTTP query routes are removed.
 - Split-YAML is the only active schema/model authoring authority. Python,
   TypeScript/Node, Rust, and C applications consume generated projections.
 - Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io
@@ -157,7 +159,7 @@ selection and environment variables.
 Python facade builds also run a network-disabled metadata check in the exact
 digest-verified publisher image before entering cross-registry publication.
 
-The separately selected C 2.3.2 path uses `c-release.yml`: read-only verification
+The C release path uses `c-release.yml`: read-only verification
 consumes successful same-source master CI artifacts and runs all SDK suites
 and FULL-C acceptance. Protected promotion consumes that exact verification
 run, signs the unchanged bytes and adds only absent or identical assets to

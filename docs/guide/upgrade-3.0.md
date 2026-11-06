@@ -1,5 +1,37 @@
 # Upgrading to 3.0
 
+This draft covers the 3.0 breaking changes. Regenerate every language package
+from its Split-YAML workspace, upgrade the matching runtime, and rebuild your
+application. Generated projection resources and nominal types must come from
+one package generation; mixing old resources with a new runtime is unsupported.
+
+## Runtime and server migration
+
+- General TypeDB admission starts at 3.12.0. Supported lines are 3.12–3.14;
+  generated packages and migrations additionally require 3.12.3 on the
+  `typedb-3.12.1/v1` profile or 3.13.6/3.14.0 on `typedb-3.13.6/v1`.
+  TypeDB 3.11, band 8 and its semantic profile are removed.
+- Rebuild 2.3.x C packages, including ABI 1.7 projections, with the current
+  generator and ABI 2.0 runtime. Old headers, binary consumers and 1.x package
+  descriptors are not a supported ABI 2.0 combination. Use the current exact
+  CMake/pkg-config dependency and regenerate embedded projection resources.
+- Server `/query`, `/query/raw`, `/query/validate`, `/schema`, `/typed/query`,
+  `/v2/query` and `/v2/capabilities` return
+  HTTP 404. There are no redirect or compatibility execution routes. Use
+  `/v3/staged` and `/v3/capabilities`; raw TypeQL uses opt-in `/v3/raw`.
+  Rename the server `[v2]` configuration section to `[staged]` and migrate
+  interceptors to staged authorization and audit hooks.
+- Typed execution defaults to 60,000 ms in every SDK, including C. A
+  nonpositive signed timeout selects no deadline; server ceilings still apply.
+  Proxy admission expiry remains a separate positive finite window.
+- The former 2.3.3 `filter(...).where(...)` predicate correction is part of
+  this 3.0 migration: chained predicates preserve the original filter. There
+  is no separate 2.3.x backport in this work.
+
+For raw TypeQL behavior, see [the escape hatch](queries.md#raw-typeql-execution).
+The following sections give common source migrations. The complete checklist
+at the end includes every 3.0 Breaking entry and its replacement.
+
 ## Rust model identifiers
 
 Generated Rust models and families return `&Iid` from `iid()`; references return
@@ -484,3 +516,10 @@ the staged `Transaction` API. Deprecated Rust `RemoteDatabase`,
 `RemoteQueryLimits` have also been removed. Their replacements are
 `ProxyDatabase`, `ProxyExchange`, `ProxyConnectionPolicy` and
 `QueryExecutionResourceLimits`, respectively.
+
+## Complete breaking-change checklist
+
+This checklist uses the same source as the 3.0 changelog so that removed names,
+replacements and behavioral changes cannot drift between the two pages.
+
+--8<-- "CHANGELOG.md:breaking-3-0"

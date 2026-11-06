@@ -959,8 +959,7 @@ SDK diagnostic vocabulary: version, category, sdk_category, query_category,
 code, message, path and typed details. Typed failure details (`retry_safe`,
 `phase`, `code`, `rejection`, `lock_kind`, `annotation`, and the staged index in
 the path) join this same vocabulary when present; the released codes stay as
-they are, and bindings whose released ABI fixes the detail set (C ABI 1.6) do
-not see them. The client rebuilds the typed failure from these signed details
+they are. C ABI 2.0 carries the same typed failure details. The client rebuilds the typed failure from these signed details
 only when they name a complete, consistent failure in the closed vocabulary, so
 a refusal over the proxy is typed exactly as the same direct commit would be.
 `commit_outcome_unknown` remains indeterminate; a failed outcome alone never
@@ -1032,7 +1031,7 @@ application's policy.
 ## Explaining a plan
 
 Python, TypeScript and Rust expose `plan.explain()` as a typed
-`PlanExplanation`. C ABI 1.9 exposes `type_bridge_plan_explain` as owned
+`PlanExplanation`. C ABI 2.0 exposes `type_bridge_plan_explain` as owned
 canonical JSON. All four use the execution lowerer and renderer, without
 provider IO. A plan with declared inputs needs bound rows. Explanation can
 fail with the same lowering or resource-limit diagnostic as staging.

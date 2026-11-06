@@ -179,7 +179,7 @@ TypeDB. Only the connection object changes; the query program is the same:
 ```python
 from app_models import ExchangeConnection, Person, QueryExecutionResourceLimits, connect_proxy
 
-# The built-in HTTP route to the server's /v2/capabilities and /v2/query.
+# The built-in HTTP route to the server's /v3/capabilities and /v3/staged.
 session = Person.query(connect_proxy("https://typebridge.example"))
 
 # Or a host-owned transport that routes and authenticates itself.
@@ -825,7 +825,7 @@ Stage the built plan on a read transaction and commit it. Python's
 `Pending.result()` returns `Documents(documents)`; TypeScript's `get()`
 returns `{ kind: "documents", documents }`; Rust's `get()` returns
 `PlanAnswer::Documents`. C reads the same answer through the
-[borrowed document cursors](c.md#reading-answers-abi-18).
+[borrowed document cursors](c.md#reading-answers).
 
 #### 2. Plan
 
@@ -884,8 +884,7 @@ documents; generated model hydration belongs to the typed facade.
 ### Replacing `update_with`
 
 `update_with(func)` reads every match, runs `func` in Python and writes each
-instance back. It is deprecated since 2.3.0, warns with a
-`DeprecationWarning`, and is removed in 3.0. Compute the new value in the
+instance back. It was removed in 3.0. Compute the new value in the
 plan with `let_` instead, so the read and the write are one query:
 
 ```python

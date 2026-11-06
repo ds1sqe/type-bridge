@@ -100,19 +100,14 @@ direct or a proxy connection alike (see
 
 ## Raw TypeQL execution
 
-Use generated typed queries and `PlanBuilder` for plan execution. For raw
-TypeQL text, call `Database.execute_query`; the former `Query` and
-`QueryBuilder` compatibility builders are removed in 3.0.
+TypeQL in, the driver's output out, the same pair in every SDK, and no promise: it runs any TypeQL in any transaction kind, schema changes that break the generated models included, without TypeBridge checks, hooks or limits.
 
-Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
-to TypeDB as written, and TypeDB's output comes back as it
-answered, in this SDK's native data types. TypeBridge adds no
-validation, rewriting, hydration, hooks, limits or extra
-queries. It runs in read, write and schema transactions and
-accepts any TypeQL, schema-breaking changes included. The caller
-owns its correctness; TypeBridge makes no promise about its
-effects. On a proxy connection it posts to the server's opt-in
-`/v3/raw` endpoint, which is off by default.
+Use `raw_transaction` and `execute_query` in Python, `rawTransaction` and
+`executeQuery` in TypeScript, or the corresponding Rust and C raw transaction
+and query calls. Direct contexts support several statements in one provider
+transaction. Proxy contexts use the opt-in `/v3/raw` endpoint, which is off
+by default. Use generated typed queries and plan builders when you need
+schema validation and generated results.
 
 The result is the complete HTTP query-answer dictionary; `answers` contains
 its rows or documents. Python integers preserve the provider's full precision.

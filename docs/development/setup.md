@@ -97,7 +97,7 @@ only when intentionally targeting an existing server.
 | `type-bridge-core/crates/python/` | PyO3 generated-runtime boundary |
 | `type-bridge-core/crates/node/` | N-API and public TypeScript runtime boundary |
 | `type-bridge-core/crates/rust/` | Public generated Rust client |
-| `type-bridge-core/crates/c/` | Private C projected-value and provider-lifecycle ABI foundation under development |
+| `type-bridge-core/crates/c/` | Private C ABI 2.0 runtime for generated applications |
 | `tests/contracts/sdk_conformance/manifest.json` | Capability, proof-profile, binding-state, and transition authority |
 | `tests/contracts/sdk_conformance/<suite>/` | Concern-based executable conformance catalogs, journeys, report schemas, and evidence contracts |
 | `tests/fixtures/generated-only-operation-parity-inventory.json` | Retained generated-only cutover evidence and manifest seed, not current acceptance authority |
@@ -111,21 +111,11 @@ Do not add target-language schema declarations or a facade-local semantic
 implementation. Split-YAML is the only active authoring authority, and the Rust
 engine owns lowering and validation.
 
-The generated C package and ABI 1.6 currently carry verified flat/chunked
-schema/projection evidence, projected values/models, synchronous runtime,
-exact-3.12.3 policy-aware database/read/write transaction and cancellation
-handles, plus generated nominal exact single-entity and single-relation
-CRUD/count, homogeneous atomic mutation batches, and closed typed role-player
-unions. The internal ABI also carries generated nominal typed-query, reduction,
-schema-function, and caller-owned remote-transport wrappers without duplicating
-Rust-owned query semantics. Ordered C-v3 packages compose those entries into
-generated nominal field-token manager filters for database and borrowed-read
-execution, with no additional native exports. Chunked package resources and a
-streaming create builder bound large generated objects to the C11
-hosted-implementation portability floors. Exact TypeDB 3.12.3 acceptance
-leaves ordered values empty and makes no live list-instance evidence claim. This remains an internal
-development target, not a supported SDK or published artifact; multi-endpoint
-connection policy and a C distribution contract remain future work.
+The generated C package targets ABI 2.0 and carries verified flat/chunked
+schema/projection evidence. Generated nominal models, policy-aware managers,
+immutable queries, and staged transactions use the shared Rust engine.
+See the [C SDK guide](../guide/c.md) for the current distribution contract,
+platform requirements, and generation workflow.
 
 ## Logging and debugging
 

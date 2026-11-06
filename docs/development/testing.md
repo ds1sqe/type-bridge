@@ -92,7 +92,7 @@ Clang/clang++ are available on macOS, or both MSVC and clang-cl are available
 on Windows. Current accepted evidence covers the native-host run; the
 configured hosted macOS and Windows lanes remain unverified and cannot support
 platform claims. Linux additionally runs address/undefined-behavior sanitizers
-and checks the Rust-owned C boundary on MSRV 1.88. ABI 1.6 coverage includes
+and checks the Rust-owned C boundary on MSRV 1.88. ABI 2.0 coverage includes
 verified flat and chunked schema packages, projected values/models, synchronous
 runtime, policy-aware database and distinct read/write transactions,
 cancellation, classified commit outcomes, parent/child ownership, generated
@@ -105,7 +105,7 @@ siblings, strict identity-first validation, and reusable borrowed reads without
 adding C runtime exports.
 
 The full integration suite runs the ordinary generated C17 CRUD and typed-query
-consumer and strict generated C17/C++17 ABI-1.6 successor consumers on the
+consumer and strict generated C17/C++17 ABI-2.0 consumers on the
 3.12.3, 3.13.6 and 3.14.0 lanes. A focused four-binding lane compares the same generated
 Python, Node, Rust, and C manager-filter observation. The successor lane leaves
 ordered attributes and ordered role-player lists empty and therefore does not
@@ -164,7 +164,7 @@ C17 consumer exercises the exact Person and Membership database/read/write
 CRUD paths, immutable typed queries, reductions and grouping, schema-function
 calls, caller-owned remote transport, structured diagnostics, cancellation,
 limits, and explicit query-resource close; it ends with every created resource
-deleted. The ABI-1.6 successor lane compiles one generated consumer as both C17
+deleted. The ABI-2.0 lane compiles one generated consumer as both C17
 and C++17, exercises both package-admission forms, policy entries, keyed entity
 and relation batches, unkeyed IID lifecycles, and later-row rollback, then
 removes its isolated database before evaluating process assertions. These

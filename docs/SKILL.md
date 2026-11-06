@@ -189,10 +189,10 @@ authorization for database recreation and data loss.
   binding-neutral plan authoring. Let Rust create canonical bytes and
   fingerprints; never assemble mutable plan JSON in a facade.
 - Use raw TypeQL only when the higher-level surfaces cannot express the
-  operation, and retain parameterization and version gates.
+  operation. Raw execution provides no TypeBridge checks, hooks, or limits.
 
 Treat query construction as local and synchronous. Direct terminals perform
-provider work. A proxy terminal performs exactly one `/v2/query` exchange,
+provider work. A proxy terminal performs exactly one `/v3/staged` exchange,
 over the built-in HTTP route or a caller-owned exchange; with the latter the
 client owns transport, authentication, retry policy, and capability trust.
 Generated Python and TypeScript sessions take the connection: a direct

@@ -231,9 +231,9 @@ All notable changes to TypeBridge will be documented in this file.
   connections, with no 24-hour maximum. Signed timeout inputs of zero or
   less mean no deadline; Rust uses `QueryTimeout`. Server ceilings remain
   tighten-only, and a dispatched commit runs to its actual outcome. Raw and
-  schema calls retain their previous defaults. Frozen C policies retain
-  30,000 ms defaults, immediate zero-timeout refusal and the 24-hour maximum
-  until the ABI 2.0 migration.
+  schema calls retain their previous defaults. C ABI 2.0 uses the same
+  60,000 ms default and signed timeout semantics. Frozen parity tests pass
+  their historical policy values explicitly.
 - Proxy request freshness is independent of execution duration. Configure
   `admission_window_milliseconds` on the client and server (default 60,000 ms);
   the server ceiling wins and even unbounded calls retain finite replay expiry.
@@ -283,10 +283,10 @@ All notable changes to TypeBridge will be documented in this file.
   as typed given inputs and retain the shared builder's canonical bytes.
   Model and mixed model/scalar selections publish only after the full Core
   fetch proof succeeds, before commit; SDKs share its row and model ordinals.
-- C ABI 1.10 adds typed scalar carriers, held model/scalar/tuple selections,
+- C ABI 2.0 includes typed scalar carriers, held model/scalar/tuple selections,
   frozen recording caches, and borrowed model views checked against generated
   layout digests. Result owners may outlive recordings and transactions.
-  Existing 1.6 through 1.9 descriptors and exact dependency pins remain accepted.
+  Regenerate old packages and rebuild consumers for the ABI 2.0 target.
 
 - Generated C authoring handles stay 16 bytes regardless of model width and reuse
   per-recording model metadata. Boolean unset selections and nominal unordered
@@ -294,9 +294,8 @@ All notable changes to TypeBridge will be documented in this file.
   during the call.
 - Explicit `fetch` terminals in the Python, TypeScript, Rust and C plan
   builders; plain writes keep their matched-count default.
-- C ABI 1.8 adds borrowed row and document cursors with typed scalar getters,
-  attribute-kind queries and optional role-player access, preserving 1.6/1.7
-  compatibility.
+- C ABI 2.0 includes borrowed row and document cursors with typed scalar
+  getters, attribute-kind queries and optional role-player access.
 - Fetch documents on direct and staged query-plan execution, with schema-derived
   validation, bounded answers, and Python, TypeScript and Rust answer variants.
 - The staged endpoint advertises `query.fetch.thing` and `query.write.attach`.
@@ -333,6 +332,8 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+
+<!-- --8<-- [start:breaking-3-0] -->
 
 Legacy caller-owned query ASTs are removed. Build queries through generated
 models and typed plan builders; raw TypeQL goes through the explicit raw
@@ -1284,6 +1285,8 @@ add the limits argument described in the upgrade guide.
   counters in `RuntimeError::AnswerLimit`.
 - Remove `query_remote_v3_documents_unsupported`: fetch plans now return
   document evidence, with specific document-validation diagnostics.
+
+<!-- --8<-- [end:breaking-3-0] -->
 
 ### Changed
 

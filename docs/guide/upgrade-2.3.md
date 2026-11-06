@@ -1,5 +1,8 @@
 # Upgrading to 2.3
 
+This page describes the historical 2.3 upgrade. For the current development
+release, see [Upgrading to 3.0](upgrade-3.0.md).
+
 TypeBridge 2.3 runs every query, direct or through a TypeBridge server, on
 one Rust pipeline, and adds staged transactions over typed `query-plan/v3`
 programs in Python, TypeScript/Node, Rust and C. Most 2.2 application code

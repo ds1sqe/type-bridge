@@ -373,7 +373,7 @@ them byte for byte, directly and over the proxy:
     --8<-- "examples/purchase/rust/main.rs:purchase"
     ```
 
-=== "C (ABI 1.7)"
+=== "C (ABI 2.0)"
 
     ```c
     --8<-- "examples/purchase/c/program.c:purchase"
@@ -430,7 +430,7 @@ many transactions run at once, is the application's policy.
 
 ### The same names in each SDK
 
-| | Python | TypeScript | Rust | C (ABI 1.7) |
+| | Python | TypeScript | Rust | C (ABI 2.0) |
 | --- | --- | --- | --- | --- |
 | Plan builder | `type_bridge.plan.Plan.builder()` | `Plan.builder()` | `type_bridge::plan::Plan::builder()` | `type_bridge_plan_builder_new`, `type_bridge_plan_builder_*` |
 | Direct transaction | `db.staged_transaction("write")` | `db.stagedTransaction("write")` | `db.transaction(TransactionOptions::default().with_kind(TransactionKind::Write))` | `type_bridge_database_transaction(db, TYPE_BRIDGE_TRANSACTION_WRITE, ...)` |

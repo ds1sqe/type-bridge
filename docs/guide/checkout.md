@@ -52,7 +52,7 @@ per item:
     --8<-- "examples/shop/rust/main.rs:checkout"
     ```
 
-=== "C (ABI 1.7)"
+=== "C (ABI 2.0)"
 
     ```c
     --8<-- "examples/shop/c/program.c:checkout"

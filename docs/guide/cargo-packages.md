@@ -80,31 +80,18 @@ Cargo package index:
 | --- | --- | --- |
 | `type-bridge-core` | PyO3 native engine for the Python product | Private Cargo crate; shipped inside Python artifacts |
 | `type-bridge-node` | N-API native engine for the TypeScript/Node product | Private Cargo crate; shipped inside npm artifacts |
-| `type-bridge-c` | ABI 1.6 projected-value, provider-lifecycle, typed-query, and atomic-batch foundation for generated C | Internal foundation under development; not published or packaged |
+| `type-bridge-c` | ABI 2.0 runtime for generated C | Private Cargo crate; distributed as a native shared runtime |
 
-The C entry is not a support claim. The internal ABI now covers verified schema
-packages, projected values/models, synchronous runtime, a database connection
-enforcing the Rust-owned semantic profile patch floors, distinct read/write
-transactions, cancellation, and
-classified commit outcomes, plus generated nominal exact single-entity and
-single-relation CRUD/count with closed typed role-player unions. ABI 1.6 also
-includes typed flat and chunked schema-package admission, policy-aware database
-and transaction entries, homogeneous atomic mutation batches, and the internal
-generated nominal typed-query, reduction, schema-function, and caller-owned
-remote-transport facade. Ordered C-v3 packages additionally generate nominal
-field-token manager filters over that existing query ABI, including borrowed
-read-transaction terminals, without adding runtime exports. Chunked
-schema-package resources and a streaming create builder keep generated C
-objects within the hosted C11 portability floors.
-Ordered C-v3 live acceptance on exact TypeDB 3.12.3 leaves ordered values empty
-and does not claim list-instance evidence. ABI 1.6 also exposes administration,
-canonical migration and backfill operations, rollback, and canonical model
-archives. The standalone CLI, native runtime, and generated-package artifacts
-must complete their public acceptance before C becomes a supported SDK.
+The C runtime admits verified schema/projection packages and provides generated
+nominal models, managers, immutable queries, staged transactions, raw TypeQL,
+administration, migration, and model archives through the shared Rust engine.
+Policy-aware operations are the single execution path. Generated packages target
+ABI 2.0 and must be regenerated when upgrading from ABI 1.x.
 
-The runtime CMake and pkg-config package version is `1.6.0`, the C ABI version.
+The runtime CMake and pkg-config package version is `2.0.0`, the C ABI version.
 It is distinct from the TypeBridge product version reported by
-`type_bridge_runtime_version` (`2.3.2` in this source line).
+`type_bridge_runtime_version`. See the [C SDK guide](c.md) for distribution
+and platform requirements; the 3.0 release is in preparation.
 
 ## Release contract
 
