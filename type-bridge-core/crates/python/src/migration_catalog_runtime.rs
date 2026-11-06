@@ -1,5 +1,7 @@
 //! Immutable generated migration-catalog inspection for Python.
 
+mod user_steps;
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -150,11 +152,26 @@ impl PyMigrationHistoryEntry {
 /// Generated-package-owned, source-free migration catalog.
 #[pyclass(name = "MigrationCatalog", frozen)]
 pub struct PyMigrationCatalog {
+    user_steps: std::sync::Mutex<user_steps::UserSteps>,
     inner: MigrationCatalog,
 }
 
 #[pymethods]
 impl PyMigrationCatalog {
+    #[pyo3(signature = (step_id, forward, reverse=None))]
+    fn register(
+        &self,
+        py: Python<'_>,
+        step_id: &str,
+        forward: Py<PyAny>,
+        reverse: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.user_steps
+            .lock()
+            .expect("migration callback registry")
+            .register(py, step_id, forward, reverse)
+    }
+
     fn fingerprint_json(&self) -> PyResult<String> {
         serde_json::to_string(self.inner.fingerprint()).map_err(py_catalog_error)
     }
@@ -201,6 +218,11 @@ impl PyMigrationCatalog {
             .map(|plan| PyMigrationPreview {
                 inner: Arc::new(PyMigrationPreviewState {
                     catalog: self.inner.clone(),
+                    user_steps: self
+                        .user_steps
+                        .lock()
+                        .expect("migration callback registry")
+                        .clone(),
                     plan: PyMigrationPreviewInner::Apply(plan),
                 }),
             })
@@ -217,6 +239,11 @@ impl PyMigrationCatalog {
             .map(|plan| PyMigrationPreview {
                 inner: Arc::new(PyMigrationPreviewState {
                     catalog: self.inner.clone(),
+                    user_steps: self
+                        .user_steps
+                        .lock()
+                        .expect("migration callback registry")
+                        .clone(),
                     plan: PyMigrationPreviewInner::Rollback(plan),
                 }),
             })
@@ -264,6 +291,7 @@ enum PyMigrationPreviewInner {
 }
 
 struct PyMigrationPreviewState {
+    user_steps: user_steps::UserSteps,
     catalog: MigrationCatalog,
     plan: PyMigrationPreviewInner,
 }
@@ -343,6 +371,7 @@ impl PyMigrationPreview {
             ));
         }
         Ok(PyMigrationPlan {
+            user_steps: self.inner.user_steps.clone(),
             catalog: self.inner.catalog.clone(),
             plan: authorize_plan(&self.inner, &approvals.approvals)?,
         })
@@ -399,6 +428,7 @@ impl PyMigrationApprovalSet {
 
 #[pyclass(name = "MigrationPlan", frozen)]
 pub struct PyMigrationPlan {
+    user_steps: user_steps::UserSteps,
     #[allow(dead_code)]
     catalog: MigrationCatalog,
     plan: PyMigrationPreviewInner,
@@ -559,16 +589,18 @@ impl PyMigrationPlan {
             resources.map(|value| value.inner).unwrap_or_default(),
         );
         let (database, runtime) = database.handles();
+        let user_steps = self.user_steps.bind(&runtime)?;
         match &self.plan {
             PyMigrationPreviewInner::Apply(plan) => provider_block_on(
                 py,
                 runtime.as_ref(),
-                type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled(
+                type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled_with_user_steps(
                     database,
                     &self.catalog,
                     &holder,
                     plan,
                     &control,
+                    &user_steps,
                 )
                 .instrument(entry.clone()),
             )
@@ -578,12 +610,13 @@ impl PyMigrationPlan {
             PyMigrationPreviewInner::Rollback(plan) => provider_block_on(
                 py,
                 runtime.as_ref(),
-                type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled(
+                type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled_with_user_steps(
                     database,
                     &self.catalog,
                     &holder,
                     plan,
                     &control,
+                    &user_steps,
                 )
                 .instrument(entry.clone()),
             )
@@ -697,7 +730,10 @@ fn open_migration_catalog(
         capabilities,
     );
     MigrationCatalog::open(history_bundle.as_bytes(), &context)
-        .map(|inner| PyMigrationCatalog { inner })
+        .map(|inner| PyMigrationCatalog {
+            inner,
+            user_steps: Default::default(),
+        })
         .map_err(py_catalog_diagnostic)
 }
 
@@ -994,6 +1030,7 @@ mod tests {
         let graph = MigrationHistoryGraph::from_verified(std::iter::empty()).unwrap();
         let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).unwrap();
         let catalog = PyMigrationCatalog {
+            user_steps: Default::default(),
             inner: type_bridge_schema_migration::MigrationCatalog::from_verified_bundle(bundle)
                 .unwrap(),
         };
@@ -1016,6 +1053,7 @@ mod tests {
             migration_runtime_capability_vocabulary().unwrap(),
         );
         let catalog = PyMigrationCatalog {
+            user_steps: Default::default(),
             inner: type_bridge_schema_migration::MigrationCatalog::open(&bytes, &context).unwrap(),
         };
         let preview = catalog.preview_apply(Vec::new(), None).unwrap();

@@ -10,8 +10,8 @@ use sha2::{Digest as _, Sha256};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{
-    BindingTarget, CSymbolPrefix, ProjectionConfig, RuntimeProjection, TYPE_BRIDGE_C_ABI_MAJOR,
-    TYPE_BRIDGE_C_ABI_MINOR, resolve_generated_manager_lookup,
+    BindingTarget, CSymbolPrefix, ProjectionConfig, RuntimeProjection,
+    resolve_generated_manager_lookup,
 };
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
@@ -280,7 +280,7 @@ fn exact_sdk_models_fingerprint_inventory_is_reproducible() {
 }
 
 #[test]
-fn sdk_catalogs_and_release_archive_use_current_emitter_resources() {
+fn sdk_catalog_uses_current_emitter_resources() {
     let baseline = projections_for(include_str!("acceptance/schema.yaml"), "fixture");
     let expected = baseline
         .iter()
@@ -324,27 +324,31 @@ fn sdk_catalogs_and_release_archive_use_current_emitter_resources() {
             );
         }
     }
+}
+
+#[test]
+fn frozen_release_archive_matches_its_published_inventory() {
+    // Published 2.3.2 evidence is independent of the current emitter and ABI.
+    const ARCHIVE: &str =
+        "tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz";
     let policy: serde_json::Value =
         serde_json::from_str(include_str!("../../../../.github/release/c-2.3.2.json")).unwrap();
-    let active_abi = [TYPE_BRIDGE_C_ABI_MAJOR, TYPE_BRIDGE_C_ABI_MINOR, 0];
-    let published_abi: [u32; 3] = policy["abi"]
-        .as_str()
-        .expect("published ABI is a version")
-        .split('.')
-        .map(|part| part.parse::<u32>().expect("ABI component is numeric"))
-        .collect::<Vec<_>>()
-        .try_into()
-        .expect("ABI has three components");
-    if active_abi == published_abi {
-        assert!(
-            policy["public_files"].get(&archive).is_some(),
-            "release archive fingerprint is stale"
-        );
-    } else {
-        // The release policy moves to the active ABI in milestone 07.
-        assert!(
-            active_abi > published_abi,
-            "active ABI must advance the published ABI"
-        );
-    }
+    let archives = policy["ci_artifacts"]["c-package-artifacts-linux-x86_64-gnu"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|name| name.as_str().filter(|name| name.starts_with("tb_sdkv3-c-")))
+        .collect::<Vec<_>>();
+    assert_eq!(archives, [ARCHIVE]);
+    let public_archives = policy["public_files"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| name.starts_with("tb_sdkv3-c-"))
+        .map(|(name, public)| (name.as_str(), public.as_str().unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        public_archives,
+        [(ARCHIVE, "type-bridge-c-sdk-example-2.3.2.tar.gz")]
+    );
 }

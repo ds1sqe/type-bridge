@@ -22,7 +22,7 @@
           "python": {
             "algorithm": "sha256",
             "canonicalization": "typebridge.binding-projection/v1",
-            "digest": "67cc77747cf4ab5bc5e6ee330eecc8b19f6e5d361aa856c38309c0f1010bd159",
+            "digest": "47f2b9789676a46dee9e7834589bcc89c19c3b5822e724f6af176c4cb694ac0c",
             "domain": "typebridge.binding.projection",
             "semantic_profile": "typedb-3.12.1/v1"
           },
@@ -64,7 +64,7 @@
           "python": {
             "algorithm": "sha256",
             "canonicalization": "typebridge.binding-projection/v1",
-            "digest": "47c07dd0114f4ef1350ca8d357acb43fd8e572b21f2f83d8ce210b7ddc51e9f7",
+            "digest": "4e34ef929528217e2d7e0902199c742114c25f50f7386666966cfbd4bfca99cf",
             "domain": "typebridge.binding.projection",
             "semantic_profile": "typedb-3.13.6/v1"
           },

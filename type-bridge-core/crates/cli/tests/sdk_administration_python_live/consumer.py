@@ -23,13 +23,7 @@ def identity(value: object) -> str:
 
 
 def execute(database: PyDatabase, transaction_type: str, query: str):
-    transaction = database.transaction(transaction_type)
-    result = transaction.execute(query)
-    if transaction_type == "read":
-        transaction.close()
-    else:
-        transaction.commit()
-    return result
+    return database.execute_query(query, transaction_type).get("answers") or []
 
 
 def main() -> None:

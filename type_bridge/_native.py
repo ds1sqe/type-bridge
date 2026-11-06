@@ -99,10 +99,11 @@ def database_from_core(
 
 
 def core_transaction_for(connection: Any) -> PyTransactionContext | None:
-    """Return the Rust transaction adapter for a Python TransactionContext."""
+    """Return the native adapter for an ordinary or migration transaction."""
+    from type_bridge.migration.transaction import MigrationTransaction
     from type_bridge.session import TransactionContext
 
-    if not isinstance(connection, TransactionContext):
+    if not isinstance(connection, (TransactionContext, MigrationTransaction)):
         return None
 
     native_tx = getattr(connection, "_native_tx", None)

@@ -16,6 +16,7 @@ from type_bridge_core import Transaction as StagedTransaction
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 from type_bridge.plan import FieldToken as _AuthoringFieldToken
+from type_bridge.migration import MigrationTransaction
 from type_bridge.session import Database, TransactionContext
 from type_bridge.write_result import BatchWriteResult as BatchWriteResult
 from type_bridge.write_result import WriteResult as WriteResult
@@ -88,7 +89,7 @@ class ModelBase:
     @classmethod
     def manager[ModelT: ModelBase](
         cls: type[ModelT],
-        connection: Database | TransactionContext | ProxyConnection,
+        connection: Database | TransactionContext | MigrationTransaction | ProxyConnection,
     ) -> ProjectedModelManager[ModelT]: ...
     @overload
     @classmethod

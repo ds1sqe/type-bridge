@@ -12,7 +12,7 @@ use type_bridge_orm::{CommitFailureCertainty, ProviderRuntimeOwner};
 
 pyo3::create_exception!(type_bridge_core, RawQueryError, PyRuntimeError);
 
-fn raw_error(error: CoreRawError) -> PyErr {
+pub(crate) fn raw_error(error: CoreRawError) -> PyErr {
     Python::attach(|py| {
         let exception = RawQueryError::new_err(error.to_string());
         let value = exception.value(py);

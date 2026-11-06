@@ -1001,6 +1001,17 @@ pub struct PyTransactionContext {
 }
 
 impl PyTransactionContext {
+    pub(crate) fn from_borrowed(
+        context: TransactionContext,
+        runtime: Arc<ProviderRuntimeOwner>,
+    ) -> Self {
+        Self {
+            context,
+            runtime,
+            successor_batch_invoked: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
     }
@@ -1024,6 +1035,15 @@ impl PyTransactionContext {
 
 #[pymethods]
 impl PyTransactionContext {
+    fn execute_query(&self, py: Python<'_>, query: &str) -> PyResult<Py<PyAny>> {
+        let bytes = provider_block_on(py, &self.runtime, self.context.execute_query(query))
+            .map_err(crate::raw_runtime::raw_error)?;
+        let value = serde_json::from_slice(&bytes).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("raw query returned invalid JSON")
+        })?;
+        crate::json_value_to_python(py, &value)
+    }
+
     /// Commit this Rust transaction.
     fn commit(&self, py: Python<'_>) -> PyResult<()> {
         if self.successor_batch_invoked.load(Ordering::Acquire) {

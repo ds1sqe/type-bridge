@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 import type_bridge.typedb_driver as typedb_driver
 import type_bridge.version as version
+from type_bridge.migration.transaction import MigrationTransaction
 from type_bridge.typedb_driver import (
     Credentials,
     TransactionType,
@@ -884,4 +885,4 @@ class TransactionContext:
 
 
 # Direct facade connection types. Generated proxy packages own their connection type.
-Connection = Database | TransactionContext
+Connection = Database | TransactionContext | MigrationTransaction

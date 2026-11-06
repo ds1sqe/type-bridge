@@ -66,6 +66,7 @@ from type_bridge_core import (
 from typing_extensions import TypeVar
 
 from type_bridge._native import core_database_for, core_transaction_for
+from type_bridge.migration import MigrationTransaction
 from type_bridge.session import Database, TransactionContext
 
 from ._authority import SCHEMA_AUTHORITY_BYTES
@@ -915,7 +916,7 @@ class ExchangeConnection(_Frozen):
 
 
 type QueryConnection = (
-    Database | TransactionContext | ProxyConnection | ExchangeConnection | StagedTransaction
+    Database | TransactionContext | MigrationTransaction | ProxyConnection | ExchangeConnection | StagedTransaction
 )
 
 
@@ -1007,7 +1008,7 @@ class _ExchangeTarget(_Frozen):
         return await asyncio.to_thread(pending.decode_reply, response)
 
 
-type _Target = Database | TransactionContext | ProxyConnection | _ExchangeTarget | StagedTransaction
+type _Target = Database | TransactionContext | MigrationTransaction | ProxyConnection | _ExchangeTarget | StagedTransaction
 
 
 def _target(
@@ -1017,10 +1018,10 @@ def _target(
 ) -> _Target:
     if isinstance(connection, ExchangeConnection):
         return _ExchangeTarget(connection, resources, cancellation)
-    if isinstance(connection, (Database, TransactionContext, ProxyConnection, StagedTransaction)):
+    if isinstance(connection, (Database, TransactionContext, MigrationTransaction, ProxyConnection, StagedTransaction)):
         return connection
     raise TypeError(
-        "generated QuerySession requires a Database, TransactionContext, "
+        "generated QuerySession requires a Database, TransactionContext, MigrationTransaction, "
         "ProxyConnection, ExchangeConnection, or staged Transaction"
     )
 
@@ -1043,7 +1044,7 @@ async def _execute[*ArgsT](
         result = await target.exchange(terminal.prepare(query, target.context, *arguments))
     elif isinstance(target, ProxyConnection):
         result = await asyncio.to_thread(lambda: terminal.proxy(query, target, *arguments))
-    elif isinstance(target, TransactionContext):
+    elif isinstance(target, (TransactionContext, MigrationTransaction)):
         transaction = core_transaction_for(target)
         if transaction is None:
             raise RuntimeError("generated query transaction is not active")

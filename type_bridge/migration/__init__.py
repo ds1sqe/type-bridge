@@ -9,8 +9,10 @@ if TYPE_CHECKING:
         is_migration_state_type,
         migration_state_schema,
     )
+    from type_bridge.migration.transaction import MigrationTransaction
 
 __all__ = [
+    "MigrationTransaction",
     "MIGRATION_STATE_SCHEMA",
     "MigrationStateSchema",
     "is_migration_state_type",
@@ -24,6 +26,7 @@ def __getattr__(name: str) -> Any:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     from importlib import import_module
 
-    value = getattr(import_module("type_bridge.migration.state_schema"), name)
+    module = "transaction" if name == "MigrationTransaction" else "state_schema"
+    value = getattr(import_module(f"type_bridge.migration.{module}"), name)
     globals()[name] = value
     return value

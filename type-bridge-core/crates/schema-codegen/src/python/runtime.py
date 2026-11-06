@@ -48,6 +48,7 @@ if TYPE_CHECKING:
         QueryLimits,
     )
 
+    from type_bridge.migration import MigrationTransaction
     from type_bridge.session import Database, TransactionContext
 
     from ._query import QueryConnection, QuerySession
@@ -240,7 +241,7 @@ class ModelBase:
     @classmethod
     def manager(
         cls,
-        connection: Database | TransactionContext | ProxyConnection,
+        connection: Database | TransactionContext | MigrationTransaction | ProxyConnection,
     ) -> ProjectedModelManager[Self]:
         from type_bridge._runtime_projection import projected_manager_for
 

@@ -22,6 +22,7 @@ from type_bridge_core import (
 from type_bridge_core import Transaction as StagedTransaction
 from typing_extensions import TypeVar
 
+from type_bridge.migration import MigrationTransaction
 from type_bridge.session import Database, TransactionContext
 
 from ._runtime import (
@@ -4645,7 +4646,7 @@ class ExchangeConnection:
     @property
     def answer_limits(self) -> QueryExecutionResourceLimits | None: ...
 
-type DirectQueryConnection = Database | TransactionContext | ProxyConnection | ExchangeConnection
+type DirectQueryConnection = Database | TransactionContext | MigrationTransaction | ProxyConnection | ExchangeConnection
 type QueryConnection = DirectQueryConnection | StagedTransaction
 
 def connect_proxy(
