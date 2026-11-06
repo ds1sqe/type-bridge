@@ -14,6 +14,8 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- Generated C projected batches execute insert, put, update, and delete
+  through proxy connections with the same nominal results as direct writes.
 - Generated C entity and relation managers expose single and many returning
   deletes with nominal snapshot results and typed IID inputs.
 - C managers expose typed-IID `delete_returning` and `delete_many_returning`

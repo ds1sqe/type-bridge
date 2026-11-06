@@ -621,7 +621,7 @@ static int check_manager_iid_filters(
 
 static int check_returning_link(
     const type_bridge_schema_package_t *package, const type_bridge_database_t *database,
-    const type_bridge_proxy_connection_t *proxy, const type_bridge_iid_t *person_iid, type_bridge_execution_diagnostics_t **diagnostics) {
+    const type_bridge_proxy_connection_t *proxy, int batch_write, const type_bridge_iid_t *person_iid, type_bridge_execution_diagnostics_t **diagnostics) {
   manager_networkzhlink_manager manager = {0};
   manager_networkzhlink_create_args_v1_t args = {0};
   manager_networkzhlink_create *create = NULL;
@@ -647,12 +647,39 @@ static int check_returning_link(
   args.role_origin = origin;
   args.role_destination = destination;
   CHECK(manager_networkzhlink_create_open(package, &args, &create, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  if (batch_write) {
+    manager_networkzhlink_insert_batch_builder *builder = NULL;
+    manager_networkzhlink_insert_batch *batch = NULL;
+    CHECK(proxy != NULL);
+    CHECK(manager_networkzhlink_insert_batch_builder_open(package, NULL, NULL, &builder, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_insert_batch_builder_add(builder, create, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_insert_batch_builder_finish(&builder, &batch, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_proxy_connection_insert_batch_execute(proxy, batch, NULL, NULL, &inserted, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_insert_batch_close(&batch) == TYPE_BRIDGE_STATUS_OK);
+  } else {
   CHECK((proxy == NULL ? manager_networkzhlink_manager_database_insert(database, &manager, create, NULL, NULL, &inserted, diagnostics) : manager_networkzhlink_manager_proxy_connection_insert(proxy, &manager, create, NULL, NULL, &inserted, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+  }
   CHECK(manager_networkzhlink_insert_batch_result_item(inserted, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK && link != NULL);
   CHECK(manager_networkzhlink_iid(link, &text, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_iid_open(text, &iid) == TYPE_BRIDGE_STATUS_OK);
   CHECK(manager_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
   CHECK(manager_networkzhlink_insert_batch_result_close(&inserted) == TYPE_BRIDGE_STATUS_OK);
+  if (proxy != NULL) {
+    manager_networkzhlink_put_batch_result *put = NULL;
+    manager_networkzhlink_update_batch_result *updated = NULL;
+    manager_networkzhlink_manager_filter *filter = NULL;
+    CHECK(manager_networkzhlink_manager_proxy_connection_put(proxy, &manager, create, NULL, NULL, &put, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_put_batch_result_count(put, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 1u);
+    CHECK(manager_networkzhlink_put_batch_result_close(&put) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_manager_filter_iid(&manager, manager_networkzhlink_manager_filter_root(&manager), iid, &filter, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_manager_proxy_connection_update(proxy, &manager, manager_networkzhlink_manager_filter_ref(filter), create, NULL, NULL, &updated, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_update_batch_result_count(updated, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 1u);
+    CHECK(manager_networkzhlink_update_batch_result_close(&updated) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_manager_filter_close(&filter) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_manager_filter_iids(&manager, manager_networkzhlink_manager_filter_root(&manager), NULL, 0u, &filter, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_manager_proxy_connection_delete(proxy, &manager, manager_networkzhlink_manager_filter_ref(filter), NULL, NULL, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(manager_networkzhlink_manager_filter_close(&filter) == TYPE_BRIDGE_STATUS_OK);
+  }
   CHECK((proxy == NULL ? manager_networkzhlink_manager_database_delete_returning(database, &manager, iid, NULL, NULL, &deleted, diagnostics) : manager_networkzhlink_manager_proxy_connection_delete_returning(proxy, &manager, iid, NULL, NULL, &deleted, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
   CHECK(manager_networkzhlink_delete_returning_batch_result_count(deleted, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 1u);
   CHECK(manager_networkzhlink_delete_returning_batch_result_item(deleted, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK && link != NULL);
@@ -735,7 +762,8 @@ static int check_manager_http_if_requested(
   CHECK(type_bridge_proxy_connection_open_v1(package, &options, NULL, &proxy,
                                              diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_manager_read_twins(package, database, proxy, diagnostics) == 0);
-  CHECK(check_returning_link(package, database, proxy, person_iid, diagnostics) == 0);
+  CHECK(check_returning_link(package, database, proxy, 0, person_iid, diagnostics) == 0);
+  CHECK(check_returning_link(package, database, proxy, 1, person_iid, diagnostics) == 0);
   CHECK(type_bridge_proxy_connection_close(&proxy) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
@@ -1021,7 +1049,7 @@ int main(void) {
   CHECK(type_bridge_read_transaction_close(&read, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         read == NULL && diagnostics == NULL);
-  CHECK(check_returning_link(package, database, NULL, ada_iid.typed, &diagnostics) == 0);
+  CHECK(check_returning_link(package, database, NULL, 0, ada_iid.typed, &diagnostics) == 0);
   {
     const type_bridge_iid_t *iids[] = {dana_iid.typed, ada_iid.typed};
     manager_person_delete_returning_batch_result *deleted = NULL;

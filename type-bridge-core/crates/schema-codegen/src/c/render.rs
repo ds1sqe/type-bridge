@@ -1310,7 +1310,7 @@ fn validate_generated_symbols(
         for operation in extra_write_results(model, ordered) {
             for symbol in successor_batch_function_names(model, operation)?
                 .into_iter()
-                .skip(7)
+                .skip(8)
             {
                 insert(symbol)?;
             }
@@ -2036,6 +2036,10 @@ fn successor_batch_function_names(
             target,
             &format!("write_transaction_{operation_name}_batch_execute"),
         )?,
+        generated_symbol(
+            target,
+            &format!("proxy_connection_{operation_name}_batch_execute"),
+        )?,
         generated_symbol(target, &format!("{operation_name}_batch_result_count"))?,
     ];
     if operation.has_thing_result {
@@ -2334,6 +2338,7 @@ fn render_successor_model_batch(
     let batch_close = function.next().expect("batch close symbol exists");
     let database_execute = function.next().expect("database execute symbol exists");
     let transaction_execute = function.next().expect("transaction execute symbol exists");
+    let proxy_execute = function.next().expect("proxy execute symbol exists");
     let model_token = model_token_symbol(projection, prefix, model.id())?;
     let create = model
         .create()
@@ -2554,6 +2559,12 @@ fn render_successor_model_batch(
             transaction_execute,
             "type_bridge_write_transaction_projected_batch_execute_v1",
         ),
+        (
+            "type_bridge_proxy_connection_t",
+            "TYPE_BRIDGE_GENERATED_INPUT_PROXY_CONNECTION",
+            proxy_execute,
+            "type_bridge_proxy_connection_projected_batch_execute",
+        ),
     ] {
         let _ = write!(
             output,
@@ -2606,7 +2617,7 @@ fn render_model_write_result_accessors(
 ) -> Result<(), Diagnostic> {
     let [_, _, result] = successor_batch_type_names(model, operation)?;
     let functions = successor_batch_function_names(model, operation)?;
-    let mut function = functions.iter().skip(7);
+    let mut function = functions.iter().skip(8);
     let count = function.next().expect("batch result count symbol exists");
     let thing_at = operation
         .has_thing_result
