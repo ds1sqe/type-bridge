@@ -594,6 +594,70 @@ pub unsafe extern "C" fn type_bridge_raw_result_close(
     unsafe { close_box(result) }
 }
 
+/// Execute unchecked TypeQL in the engine-owned migration callback transaction.
+/// The returned result uses the ordinary raw JSON ownership contract.
+/// # Safety
+/// The callback transaction, text and disjoint output slots remain live for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_transaction_execute_query(
+    transaction: *const crate::runtime::TypeBridgeWriteTransaction,
+    query: TypeBridgeByteView,
+    out: *mut *mut TypeBridgeRawResult,
+    errors: *mut *mut TypeBridgeDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: caller retains all inputs throughout execution.
+    if let Err(status) = unsafe {
+        outputs(out, errors, |preflight| {
+            if transaction.is_null() {
+                return Err(TypeBridgeStatus::InvalidArgument);
+            }
+            preflight.check_bytes(
+                transaction.cast(),
+                size_of::<crate::runtime::TypeBridgeWriteTransaction>(),
+            )?;
+            crate::runtime::check_write_transaction_borrowed_ranges(preflight, &*transaction)?;
+            preflight.check_bytes(query.data.cast(), query.length)
+        })
+    } {
+        return status;
+    }
+    guarded(|| {
+        // SAFETY: complete live handle and text were checked above.
+        let transaction = unsafe { &*transaction };
+        let query = match unsafe { text(query) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        if !transaction.is_engine_owned() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        let reservation = match ReservedBox::try_new(AllocationSite::RawResultHandle) {
+            Ok(value) => value,
+            Err(_) => return TypeBridgeStatus::ResourceLimit,
+        };
+        let result = match transaction.context() {
+            Some(context) => transaction.block_on(context.execute_query(query)),
+            None => Err(local_error(
+                "raw_transaction_closed",
+                "migration transaction is closed",
+            )),
+        };
+        match result {
+            Ok(bytes) => {
+                // SAFETY: output was fenced and initialized.
+                unsafe {
+                    out.write_unaligned(Box::into_raw(
+                        reservation.initialize(TypeBridgeRawResult { bytes }),
+                    ))
+                };
+                TypeBridgeStatus::Ok
+            }
+            // SAFETY: output was fenced and initialized.
+            Err(error) => unsafe { publish_error(error, errors) },
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

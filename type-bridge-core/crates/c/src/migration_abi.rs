@@ -2257,6 +2257,78 @@ pub unsafe extern "C" fn type_bridge_migration_verification_finding_close(
     unsafe { close_box(finding) }
 }
 
+/// Register callbacks before creating a preview. Context must remain live and
+/// callable from a worker thread until the catalog and all derived plans close.
+/// # Safety
+/// All inputs are live and disjoint from the writable diagnostics slot. Callbacks
+/// must not unwind and transfer any returned diagnostics to the engine.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_catalog_register(
+    catalog: *const TypeBridgeMigrationCatalog,
+    step_id: TypeBridgeByteView,
+    forward: Option<crate::TypeBridgeMigrationCallback>,
+    reverse: Option<crate::TypeBridgeMigrationCallback>,
+    context: *mut std::ffi::c_void,
+    out_diagnostics: *mut *mut crate::execution_diagnostic::TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let outputs = match direct_output_preflight(&[(
+        out_diagnostics.cast(),
+        size_of::<*mut crate::execution_diagnostic::TypeBridgeExecutionDiagnostics>(),
+    )]) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    if catalog.is_null()
+        || forward.is_none()
+        || out_diagnostics.is_null()
+        || outputs
+            .check_bytes(catalog.cast(), size_of::<TypeBridgeMigrationCatalog>())
+            .and_then(|()| outputs.check_bytes(step_id.data.cast(), step_id.length))
+            .is_err()
+    {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    // SAFETY: fenced writable output slot.
+    unsafe { out_diagnostics.write_unaligned(ptr::null_mut()) };
+    guarded(|| {
+        // SAFETY: caller retains the input bytes and catalog for this call.
+        let bytes = match unsafe { step_id.snapshot("migration_step_id", 1024) } {
+            Ok(value) => value,
+            Err((status, diagnostics)) => return crate::abi::return_schema_package_open_error(
+                status,
+                diagnostics,
+                type_bridge_contract::sdk_diagnostic::SdkProjectionEvidenceSlotPresence::Present,
+                out_diagnostics,
+            ),
+        };
+        let Ok(id) = std::str::from_utf8(&bytes) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        // SAFETY: complete live catalog input was checked above.
+        let catalog = unsafe { &*catalog };
+        let result = catalog
+            .state
+            .user_steps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .register(
+                id,
+                forward.expect("checked callback"),
+                reverse,
+                context as usize,
+            );
+        match result {
+            Ok(()) => TypeBridgeStatus::Ok,
+            Err(error) => crate::abi::return_schema_package_open_error(
+                failure_status(&error),
+                vec![error],
+                type_bridge_contract::sdk_diagnostic::SdkProjectionEvidenceSlotPresence::Present,
+                out_diagnostics,
+            ),
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

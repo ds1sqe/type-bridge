@@ -128,6 +128,7 @@ impl Drop for DatabaseState {
 }
 
 struct TransactionState {
+    engine_owned: bool,
     database: Arc<DatabaseState>,
     context: Option<TransactionContext>,
     poisoned: AtomicBool,
@@ -166,6 +167,12 @@ pub struct TypeBridgeCancellation {
 }
 
 impl TypeBridgeDatabase {
+    pub(crate) fn clone_for_migration(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
+
     pub(crate) fn raw_transaction(
         &self,
         kind: TxType,
@@ -384,6 +391,7 @@ impl TypeBridgeReadTransaction {
             .expect("the C ABI test transaction child count remains bounded");
         Self {
             state: TransactionState {
+                engine_owned: false,
                 database: Arc::clone(&database.state),
                 context: Some(context),
                 poisoned: AtomicBool::new(false),
@@ -421,6 +429,25 @@ impl TypeBridgeReadTransaction {
 }
 
 impl TypeBridgeWriteTransaction {
+    pub(crate) fn from_borrowed(
+        database: &TypeBridgeDatabase,
+        context: TransactionContext,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        increment_child(&database.state.transaction_children)?;
+        Ok(Self {
+            state: TransactionState {
+                engine_owned: true,
+                database: Arc::clone(&database.state),
+                context: Some(context),
+                poisoned: AtomicBool::new(false),
+            },
+        })
+    }
+
+    pub(crate) fn is_engine_owned(&self) -> bool {
+        self.state.engine_owned
+    }
+
     #[cfg(test)]
     pub(crate) fn from_test_context(
         database: &TypeBridgeDatabase,
@@ -430,6 +457,7 @@ impl TypeBridgeWriteTransaction {
             .expect("the C ABI test transaction child count remains bounded");
         Self {
             state: TransactionState {
+                engine_owned: false,
                 database: Arc::clone(&database.state),
                 context: Some(context),
                 poisoned: AtomicBool::new(false),
@@ -618,6 +646,13 @@ fn in_use_diagnostic() -> SdkExecutionDiagnostic {
     invalid_input(
         "c_provider_parent_in_use",
         "The provider parent cannot close while child handles remain open",
+    )
+}
+
+fn engine_owned_transaction_diagnostic() -> SdkExecutionDiagnostic {
+    SdkExecutionDiagnostic::transaction_failure(
+        code("migration_transaction_engine_owned"),
+        message("Only the migration engine may commit, roll back or close this transaction"),
     )
 }
 
@@ -1814,6 +1849,7 @@ pub unsafe extern "C" fn type_bridge_read_transaction_open(
         }
         let transaction = TypeBridgeReadTransaction {
             state: TransactionState {
+                engine_owned: false,
                 database: Arc::clone(&database.state),
                 context: Some(context),
                 poisoned: AtomicBool::new(false),
@@ -1906,6 +1942,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_open(
         }
         let transaction = TypeBridgeWriteTransaction {
             state: TransactionState {
+                engine_owned: false,
                 database: Arc::clone(&database.state),
                 context: Some(context),
                 poisoned: AtomicBool::new(false),
@@ -2037,6 +2074,9 @@ pub unsafe extern "C" fn type_bridge_write_transaction_commit(
         }
         // SAFETY: pre-dispatch rejection retains this exact live handle.
         let live = unsafe { &*value };
+        if live.is_engine_owned() {
+            return return_execution_error(engine_owned_transaction_diagnostic(), out_diagnostics);
+        }
         if live.is_poisoned() {
             return return_execution_error(poisoned_transaction_diagnostic(), out_diagnostics);
         }
@@ -2173,6 +2213,10 @@ unsafe fn rollback_write_transaction(
         let value = unsafe { transaction.read() };
         if value.is_null() {
             return TypeBridgeStatus::Ok;
+        }
+        // The callback borrows this owner; never free it through a lifecycle call.
+        if unsafe { &*value }.is_engine_owned() {
+            return return_execution_error(engine_owned_transaction_diagnostic(), out_diagnostics);
         }
         // Consume before provider dispatch so unwinding cannot leave a hollow
         // non-null C handle or retain the database child count.
@@ -3983,6 +4027,77 @@ entities:
         assert_eq!(state.opens.load(Ordering::Acquire), opens_before + 2);
         unsafe { close_diagnostics(&mut diagnostics) };
         state.pending_open.store(false, Ordering::Release);
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn migration_borrowed_handle_refuses_every_lifecycle_without_consuming_owner() {
+        let state = Arc::new(FakeState::default());
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "migrationborrow")));
+        let fixture = DatabaseConfigFixture::plaintext(QueryExecutionResourceLimits::default());
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database_with_config(runtime, package, &fixture.config, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        let database_ref = unsafe { &*database };
+        let context = database_ref
+            .open_transaction_context(TxType::Write)
+            .unwrap();
+        let mut owner =
+            Box::new(TypeBridgeWriteTransaction::from_borrowed(database_ref, context).unwrap());
+        let mut borrowed = (&mut *owner) as *mut TypeBridgeWriteTransaction;
+        let before = borrowed;
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit(
+                    &mut borrowed,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ExecutionFailed
+        );
+        assert_eq!(borrowed, before);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "migration_transaction_engine_owned"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        for terminal in [
+            type_bridge_write_transaction_rollback,
+            type_bridge_write_transaction_rollback_keep,
+            type_bridge_write_transaction_close,
+        ] {
+            assert_eq!(
+                unsafe { terminal(&mut borrowed, &mut diagnostics) },
+                TypeBridgeStatus::ExecutionFailed
+            );
+            assert_eq!(borrowed, before);
+            assert_eq!(
+                unsafe { diagnostic_code(diagnostics) },
+                "migration_transaction_engine_owned"
+            );
+            unsafe { close_diagnostics(&mut diagnostics) };
+        }
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(state.rollbacks.load(Ordering::Acquire), 0);
+        assert_eq!(state.transaction_closes.load(Ordering::Acquire), 0);
+        database_ref
+            .block_on(owner.context().unwrap().close())
+            .unwrap();
+        drop(owner);
         assert_eq!(
             unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
             TypeBridgeStatus::Ok

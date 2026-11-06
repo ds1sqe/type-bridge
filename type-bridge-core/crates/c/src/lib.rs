@@ -20,6 +20,8 @@ mod manager_returning;
 mod manager_target;
 mod manager_write;
 mod migration_abi;
+mod migration_user_steps;
+pub use migration_user_steps::TypeBridgeMigrationCallback;
 mod migration_runtime;
 mod perf_stages;
 mod plan_builder;

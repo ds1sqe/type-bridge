@@ -136,6 +136,7 @@ typedef struct type_bridge_runtime type_bridge_runtime_t;
 typedef struct type_bridge_database type_bridge_database_t;
 typedef struct type_bridge_read_transaction type_bridge_read_transaction_t;
 typedef struct type_bridge_write_transaction type_bridge_write_transaction_t;
+typedef struct type_bridge_raw_result type_bridge_raw_result_t;
 typedef struct type_bridge_cancellation type_bridge_cancellation_t;
 typedef struct type_bridge_query_session type_bridge_query_session_t;
 typedef struct type_bridge_query_binding type_bridge_query_binding_t;
@@ -3904,6 +3905,21 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_database_administration_close(type_bridge_database_administration_t **);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_migration_catalog_open(const type_bridge_schema_package_t *, type_bridge_byte_view_t, type_bridge_migration_catalog_t **, type_bridge_execution_diagnostics_t **);
+/* Register before previewing. Callbacks run synchronously on a worker thread.
+ * context must remain live until the catalog and every derived plan close.
+ * The write handle supports generated managers and typed queries. It is borrowed:
+ * commit/rollback/close refuse it, and operations refuse after callback return.
+ * Retained callback handles remain allocated until catalog/plan close; close those
+ * owners before closing the database. Callbacks must not unwind and transfer any
+ * non-null execution diagnostics to the engine. A non-OK return rolls back.
+ */
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *type_bridge_migration_callback_t)(
+    type_bridge_write_transaction_t *, void *, type_bridge_execution_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_catalog_register(const type_bridge_migration_catalog_t *, type_bridge_byte_view_t step_id, type_bridge_migration_callback_t forward, type_bridge_migration_callback_t reverse, void *context, type_bridge_execution_diagnostics_t **);
+/* Raw TypeQL on the callback's transaction; ordinary raw-result ownership. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_transaction_execute_query(const type_bridge_write_transaction_t *, type_bridge_byte_view_t, type_bridge_raw_result_t **, type_bridge_diagnostics_t **);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_migration_catalog_fingerprint(const type_bridge_migration_catalog_t *, type_bridge_byte_view_t *);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
@@ -4263,7 +4279,6 @@ type_bridge_canonical_bytes_close(type_bridge_canonical_bytes_t **bytes);
  * Proxy contexts dispatch one query; a second call refuses before any request.
  * A completed proxy write cannot be rolled back. Decode failure after a proxy
  * write reports commit_outcome_unknown. */
-typedef struct type_bridge_raw_result type_bridge_raw_result_t;
 typedef struct type_bridge_raw_transaction type_bridge_raw_transaction_t;
 #define TYPE_BRIDGE_TRANSACTION_SCHEMA 3u
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
