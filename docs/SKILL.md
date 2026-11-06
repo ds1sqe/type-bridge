@@ -210,7 +210,7 @@ unknown outcome (`commit_outcome_unknown`, a dropped reply or a cancelled
 commit) the writes may have applied, so read the database by the operation's
 key before running the work again. Every other signed refusal applied nothing.
 Raw TypeQL and typed match reads are not staged over the proxy. Writes need a
-caller the server's interceptor vouches for (`on_v3_write_authority`), or a
+caller the server's interceptor vouches for (`on_write_authority`), or a
 server with `[v2] allow_unauthenticated_staged_writes`.
 
 ## TypeScript and Node workflow

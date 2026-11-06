@@ -32,13 +32,13 @@ use type_bridge_orm::session::database::Database;
 use type_bridge_orm::session::real_driver::ConnectOptions;
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state};
 use type_bridge_server::interceptor::{
-    InterceptError, Interceptor, RequestContext, StagedWriteAuthority, V3CommitOutcome,
-    V3PolicyOutcome, V3PolicyPlan,
+    CommitOutcome, InterceptError, Interceptor, PolicyOutcome, PolicyPlan, RequestContext,
+    StagedWriteAuthority,
 };
 use type_bridge_server::pipeline::PipelineBuilder;
+use type_bridge_server::transport::staged::create_router;
+use type_bridge_server::transport::staged::{StagedExecutor, StagedOutcome};
 use type_bridge_server::transport::staged_state::StagedQueryState;
-use type_bridge_server::transport::v3::create_v3_router;
-use type_bridge_server::transport::v3::{StagedExecutor, StagedOutcome};
 
 pub static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -68,12 +68,8 @@ impl Interceptor for LivePolicy {
         "live-staged-policy"
     }
 
-    fn supports_v3(&self) -> bool {
-        true
-    }
-
     /// A vouching policy authenticates its caller.
-    fn on_v3_transport<'a>(
+    fn on_transport<'a>(
         &'a self,
         ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
@@ -83,7 +79,7 @@ impl Interceptor for LivePolicy {
         Box::pin(async { Ok(()) })
     }
 
-    fn on_v3_write_authority<'a>(
+    fn on_write_authority<'a>(
         &'a self,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<StagedWriteAuthority, InterceptError>> + Send + 'a>>
@@ -98,10 +94,10 @@ impl Interceptor for LivePolicy {
         })
     }
 
-    fn on_v3_plan<'a>(
+    fn on_plan<'a>(
         &'a self,
         _index: usize,
-        plan: &'a V3PolicyPlan<'a>,
+        plan: &'a PolicyPlan<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         let refused = self.refuse.is_some_and(|cap| plan.requires(cap));
@@ -116,9 +112,9 @@ impl Interceptor for LivePolicy {
         })
     }
 
-    fn on_v3_response<'a>(
+    fn on_response<'a>(
         &'a self,
-        _outcome: &'a V3PolicyOutcome<'a>,
+        _outcome: &'a PolicyOutcome<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         let withhold = self.withhold_next_reply.swap(false, Ordering::SeqCst);
@@ -133,9 +129,9 @@ impl Interceptor for LivePolicy {
         })
     }
 
-    fn on_v3_commit<'a>(
+    fn on_commit<'a>(
         &'a self,
-        outcome: &'a V3CommitOutcome<'a>,
+        outcome: &'a CommitOutcome<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         self.commits.lock().expect("commits").push((
@@ -239,11 +235,11 @@ impl Proxy {
         let pipeline = self.executor.pipeline();
         let metadata = std::collections::HashMap::from([
             ("transport".to_owned(), serde_json::json!("v3")),
-            ("v3_endpoint".to_owned(), serde_json::json!("staged")),
+            ("endpoint".to_owned(), serde_json::json!("staged")),
         ]);
-        let mut ctx = pipeline.v3_request_context(metadata).expect("v3 context");
+        let mut ctx = pipeline.request_context(metadata);
         pipeline
-            .begin_v3_request(&mut ctx)
+            .begin_request(&mut ctx)
             .await
             .expect("transport admission");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -341,7 +337,7 @@ pub async fn proxy_with_database(
         Arc::clone(&pipeline),
         Arc::clone(&state),
     ));
-    let router = create_v3_router(pipeline, state);
+    let router = create_router(pipeline, state);
     let bytes = call(&router, "GET", "/v3/capabilities", Vec::new()).await;
     let advertisement = RemoteCapabilities::decode(&bytes).expect("v3 advertisement");
     Proxy {

@@ -978,16 +978,16 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-server --test raw_integration_tests
 
-      - name: Run V3 staged server live acceptance
+      - name: Run staged server live acceptance
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
         run: >-
           cargo test --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-server
-          --test v3_staged_integration_tests -- --ignored
+          --test staged_integration_tests -- --ignored
 
-      - name: Run Rust SDK plan builder over the V3 staged proxy
+      - name: Run Rust SDK plan builder over the staged proxy
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"

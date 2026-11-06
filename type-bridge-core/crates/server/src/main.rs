@@ -121,17 +121,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
-    if config.staged.enabled {
-        pipeline.validate_v3_coverage()?;
-    }
-
     let router = if config.staged.enabled {
         let state = build_staged_state(&config, &outbound_transport).await?;
         tracing::info!(
             schema_authority = config.staged.schema_authority_file.as_str(),
             "Staged query surface enabled: /v3/staged, /v3/capabilities"
         );
-        transport::v3::create_v3_router(Arc::new(pipeline), Arc::new(state))
+        transport::staged::create_router(Arc::new(pipeline), Arc::new(state))
     } else {
         transport::http::create_health_router(false, Arc::new(pipeline))
     };
@@ -276,7 +272,7 @@ async fn build_staged_state(
 #[cfg(test)]
 mod tests {
 
-    use super::{AuditLogConfig, AuditLogInterceptor, validate_configured_interceptors};
+    use super::validate_configured_interceptors;
 
     #[test]
     fn audit_log_is_the_exact_supported_startup_name() {
@@ -323,17 +319,5 @@ mod tests {
                 .expect("startup operation remains present");
             assert!(preflight < operation, "preflight must precede {operation}");
         }
-    }
-
-    #[test]
-    fn supported_audit_log_declares_staged_coverage() {
-        use type_bridge_server::interceptor::Interceptor;
-
-        let interceptor = AuditLogInterceptor::new(&AuditLogConfig {
-            output: "stdout".to_owned(),
-            file_path: String::new(),
-        })
-        .expect("audit interceptor");
-        assert!(interceptor.supports_v3());
     }
 }

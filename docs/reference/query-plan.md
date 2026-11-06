@@ -694,15 +694,15 @@ section defines the codec. The standalone server executes it at
 `POST /v3/staged` and advertises the staged capabilities at
 `GET /v3/capabilities`; requests bind to that advertisement, not to the
 unchanged `/v2/capabilities` one. A write transaction opens only when an
-interceptor vouches for the caller (`Interceptor::on_v3_write_authority`
+interceptor vouches for the caller (`Interceptor::on_write_authority`
 answers `StagedWriteAuthority::Authenticated`) or `[v2]` sets
 `allow_unauthenticated_staged_writes = true`; otherwise the signed reply fails
 with `staged_write_not_authorized`. Before each plan stages,
-`Interceptor::on_v3_plan` sees its index, required capabilities, touched
+`Interceptor::on_plan` sees its index, required capabilities, touched
 types and operation, but no row values unless the policy returns `true` from
-`wants_v3_plan_rows`; a refusal fails the signed reply with
+`wants_plan_rows`; a refusal fails the signed reply with
 `query_remote_policy_rejected`, stages nothing further and commits nothing.
-Once the outcome is known, the observe-only `Interceptor::on_v3_commit` sees
+Once the outcome is known, the observe-only `Interceptor::on_commit` sees
 `committed`, the diagnostic code, the commit certainty and the typed provider
 failure (such as an `STC2` conflict). Staged replies carry fetch documents with the same
 shape as direct answers. Rust validates exact types, inherited ownership,

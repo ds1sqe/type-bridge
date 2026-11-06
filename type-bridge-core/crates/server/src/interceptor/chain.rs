@@ -2,7 +2,7 @@ use futures::future::join_all;
 
 use super::traits::{InterceptError, Interceptor, RequestContext};
 
-use super::traits::{StagedWriteAuthority, V3CommitOutcome, V3PolicyOutcome, V3PolicyPlan};
+use super::traits::{CommitOutcome, PolicyOutcome, PolicyPlan, StagedWriteAuthority};
 
 /// Ordered request interceptor chain with reverse-order response hooks.
 pub struct InterceptorChain {
@@ -15,38 +15,16 @@ impl InterceptorChain {
         Self { interceptors }
     }
 
-    /// Fail closed if any configured policy has not explicitly declared
-    /// staged V3 coverage.
-    ///
-    pub fn ensure_v3_coverage(&self) -> Result<(), InterceptError> {
-        if let Some(interceptor) = self
-            .interceptors
-            .iter()
-            .find(|interceptor| !interceptor.supports_v3())
-        {
-            return Err(InterceptError::ValidationFailed {
-                reason: format!(
-                    "interceptor {:?} does not declare staged V3 coverage",
-                    interceptor.name(),
-                ),
-            });
-        }
-        Ok(())
-    }
-
     /// Run header/identity policy before decoding an untrusted staged envelope.
-    pub async fn execute_v3_transport(
-        &self,
-        ctx: &mut RequestContext,
-    ) -> Result<(), InterceptError> {
+    pub async fn execute_transport(&self, ctx: &mut RequestContext) -> Result<(), InterceptError> {
         for interceptor in &self.interceptors {
-            interceptor.on_v3_transport(ctx).await?;
+            interceptor.on_transport(ctx).await?;
         }
         Ok(())
     }
 
     /// Run every raw policy so auditing survives a refusal; the first error wins.
-    pub async fn execute_v3_raw(
+    pub async fn execute_raw(
         &self,
         query: &str,
         kind: type_bridge_orm::session::staged::TransactionKind,
@@ -54,7 +32,7 @@ impl InterceptorChain {
     ) -> Result<(), InterceptError> {
         let mut refusal = None;
         for interceptor in &self.interceptors {
-            if let Err(error) = interceptor.on_v3_raw(query, kind, ctx).await
+            if let Err(error) = interceptor.on_raw(query, kind, ctx).await
                 && refusal.is_none()
             {
                 refusal = Some(error);
@@ -63,41 +41,41 @@ impl InterceptorChain {
         refusal.map_or(Ok(()), Err)
     }
 
-    /// Admit a staged V3 write: any error refuses, at least one policy must
+    /// Admit a staged write: any error refuses, at least one policy must
     /// vouch for the caller.
-    pub async fn execute_v3_write_authority(
+    pub async fn execute_write_authority(
         &self,
         ctx: &RequestContext,
     ) -> Result<bool, InterceptError> {
         let mut admitted = false;
         for interceptor in &self.interceptors {
-            admitted |= interceptor.on_v3_write_authority(ctx).await?
-                == StagedWriteAuthority::Authenticated;
+            admitted |=
+                interceptor.on_write_authority(ctx).await? == StagedWriteAuthority::Authenticated;
         }
         Ok(admitted)
     }
 
     /// Run staged plan policy in order; the first refusal wins. Each policy
     /// sees row values only if it asked for them.
-    pub async fn execute_v3_plan(
+    pub async fn execute_plan(
         &self,
         index: usize,
-        plan: V3PolicyPlan<'_>,
+        plan: PolicyPlan<'_>,
         ctx: &RequestContext,
     ) -> Result<(), InterceptError> {
         for interceptor in &self.interceptors {
-            let view = plan.with_rows_visible(interceptor.wants_v3_plan_rows());
-            interceptor.on_v3_plan(index, &view, ctx).await?;
+            let view = plan.with_rows_visible(interceptor.wants_plan_rows());
+            interceptor.on_plan(index, &view, ctx).await?;
         }
         Ok(())
     }
 
     /// Run every staged commit observer concurrently; errors are logged only.
-    pub async fn execute_v3_commit(&self, outcome: &V3CommitOutcome<'_>, ctx: &RequestContext) {
+    pub async fn execute_commit(&self, outcome: &CommitOutcome<'_>, ctx: &RequestContext) {
         let results = join_all(
             self.interceptors
                 .iter()
-                .map(|interceptor| interceptor.on_v3_commit(outcome, ctx)),
+                .map(|interceptor| interceptor.on_commit(outcome, ctx)),
         )
         .await;
         for (interceptor, result) in self.interceptors.iter().zip(results) {
@@ -112,9 +90,9 @@ impl InterceptorChain {
 
     /// Run every staged response hook even when one rejects, so audit evidence is
     /// not skipped by interceptor ordering. The first error remains decisive.
-    pub async fn execute_v3_response(
+    pub async fn execute_response(
         &self,
-        outcome: &V3PolicyOutcome<'_>,
+        outcome: &PolicyOutcome<'_>,
         ctx: &RequestContext,
     ) -> Result<(), InterceptError> {
         // Poll every hook concurrently. A stuck policy can still consume the
@@ -124,7 +102,7 @@ impl InterceptorChain {
             self.interceptors
                 .iter()
                 .rev()
-                .map(|interceptor| interceptor.on_v3_response(outcome, ctx)),
+                .map(|interceptor| interceptor.on_response(outcome, ctx)),
         )
         .await;
         results

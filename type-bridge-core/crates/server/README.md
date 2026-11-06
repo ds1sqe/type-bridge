@@ -5,7 +5,7 @@ TypeDB staged transactions with composable host policy hooks.
 The default build serves `/v3/staged`, `/v3/capabilities`, and `/health`.
 Construct a `pipeline::PipelineBuilder::new()` with the host interceptors,
 then pass the built pipeline and a `transport::staged_state::StagedQueryState`
-to `transport::v3::create_v3_router`.
+to `transport::staged::create_router`.
 
 #### Embedding the staged executor
 
@@ -18,7 +18,7 @@ This sketch is ignored because it needs a configured pipeline, query state,
 and signed request from the host.
 
 ```rust,ignore
-use type_bridge_server::transport::v3::{StagedExecutor, StagedOutcomeKind};
+use type_bridge_server::transport::staged::{StagedExecutor, StagedOutcomeKind};
 
 let executor = Arc::new(StagedExecutor::new(pipeline, query_state));
 let outcome = executor.execute_staged_request(ctx, body, deadline).await;
@@ -29,10 +29,10 @@ match outcome.kind {
 }
 ```
 
-Hooks run in a fixed order: transport admission, `on_v3_write_authority`
-for a write, `on_v3_plan` per plan before anything is reserved, nonce
-reservation, staging and one commit, `on_v3_commit` (observe-only) once the
-outcome is known, then signing and the response policies. `on_v3_commit`
+Hooks run in a fixed order: transport admission, `on_write_authority`
+for a write, `on_plan` per plan before anything is reserved, nonce
+reservation, staging and one commit, `on_commit` (observe-only) once the
+outcome is known, then signing and the response policies. `on_commit`
 therefore runs before the reply bytes exist; the test
 `library_entry_runs_the_hooks_in_order_and_commits` pins this order.
 
@@ -193,10 +193,10 @@ parse, validate, rewrite or hydrate it, and makes no promise about
 it: it can run any query in any transaction kind, including schema changes
 that break your generated models. Use a typed call or a V3 plan for
 anything TypeBridge should check. Proxy hosts still control admission:
-`on_v3_transport` authenticates, `on_v3_raw` receives the exact text and
+`on_transport` authenticates, `on_raw` receives the exact text and
 transaction kind before dispatch. Write and schema requests also need
-`on_v3_write_authority` vouching, unless the host explicitly sets
-`allow_unauthenticated_staged_writes`. `on_v3_commit` observes committed and
+`on_write_authority` vouching, unless the host explicitly sets
+`allow_unauthenticated_staged_writes`. `on_commit` observes committed and
 uncertain write/schema outcomes. `AuditLogInterceptor` records raw text and
 every refusal; transport policies see `query_format = "raw-typeql"`.
 Raw policies all run even after a refusal so auditing is preserved; the

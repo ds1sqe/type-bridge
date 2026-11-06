@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use super::traits::V3PolicyOutcome;
+use super::traits::PolicyOutcome;
 use super::traits::{InterceptError, Interceptor, RequestContext};
 use crate::config::AuditLogConfig;
 
@@ -50,7 +50,7 @@ pub struct AuditLogInterceptor {
 }
 
 #[derive(Debug, serde::Serialize)]
-struct V3AuditEntry {
+struct StagedAuditEntry {
     timestamp: String,
     request_id: String,
     client_id: String,
@@ -108,13 +108,13 @@ impl AuditLogInterceptor {
         }
     }
 
-    async fn write_v3_context(
+    async fn write_context(
         &self,
         ctx: &RequestContext,
-        outcome: &V3PolicyOutcome<'_>,
+        outcome: &PolicyOutcome<'_>,
     ) -> Result<(), InterceptError> {
         let base = Self::entry_from_context(ctx, if outcome.success() { "ok" } else { "error" });
-        let entry = V3AuditEntry {
+        let entry = StagedAuditEntry {
             timestamp: base.timestamp,
             request_id: base.request_id,
             client_id: base.client_id,
@@ -142,13 +142,10 @@ impl Interceptor for AuditLogInterceptor {
         "audit-log"
     }
 
-    /// The audit log authorizes nothing; it observes V3 replies through
-    /// [`Interceptor::on_v3_response`], which `/v3/staged` also runs.
-    fn supports_v3(&self) -> bool {
-        true
-    }
+    // The audit log authorizes nothing; it observes staged replies through
+    // on_response, which /v3/staged also runs.
 
-    fn on_v3_raw<'a>(
+    fn on_raw<'a>(
         &'a self,
         query: &'a str,
         _kind: type_bridge_orm::session::staged::TransactionKind,
@@ -162,13 +159,13 @@ impl Interceptor for AuditLogInterceptor {
         Box::pin(async { Ok(()) })
     }
 
-    fn on_v3_response<'a>(
+    fn on_response<'a>(
         &'a self,
-        outcome: &'a V3PolicyOutcome<'a>,
+        outcome: &'a PolicyOutcome<'a>,
         ctx: &'a RequestContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), InterceptError>> + Send + 'a>>
     {
-        Box::pin(async move { self.write_v3_context(ctx, outcome).await })
+        Box::pin(async move { self.write_context(ctx, outcome).await })
     }
 }
 
@@ -284,8 +281,8 @@ mod tests {
             .expect("fixed timestamp")
             .with_timezone(&chrono::Utc);
         interceptor
-            .on_v3_response(
-                &V3PolicyOutcome::new(false, "query_remote_provider_failed", 128),
+            .on_response(
+                &PolicyOutcome::new(false, "query_remote_provider_failed", 128),
                 &context,
             )
             .await

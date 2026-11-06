@@ -481,7 +481,7 @@ def test_writes_suite_is_listed_and_its_producers_exist() -> None:
     runner = (ROOT / "scripts/ci/run_sdk_conformance.py").read_text(encoding="utf-8")
     fixture = "sdk_writes_fixture_serves_until_stopped"
     assert fixture in runner
-    server = ROOT / "type-bridge-core/crates/server/tests/v3_staged_integration_tests.rs"
+    server = ROOT / "type-bridge-core/crates/server/tests/staged_integration_tests.rs"
     assert f"async fn {fixture}()" in server.read_text(encoding="utf-8")
     for program in ("python/program.py", "ts/program.ts", "rust/main.rs", "c/program.c"):
         assert (ROOT / "examples/purchase" / program).is_file()

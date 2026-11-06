@@ -373,7 +373,7 @@ async fn library_entry_purchase_matches_the_router() {
         .await;
     assert_eq!(
         outcome.kind,
-        type_bridge_server::transport::v3::StagedOutcomeKind::Committed
+        type_bridge_server::transport::staged::StagedOutcomeKind::Committed
     );
     assert_eq!(outcome.code, "ok");
     let entered_reply = verify(&through_entry, &entered_request, &outcome.reply);

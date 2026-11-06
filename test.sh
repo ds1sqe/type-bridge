@@ -993,7 +993,7 @@ run_live_lane() {
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             cargo test --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-server \
-                --test v3_staged_integration_tests -- --ignored
+                --test staged_integration_tests -- --ignored
 
         run_step "Rust SDK plan builder over the V3 staged proxy (live)" \
             run_with_timeout 10m \

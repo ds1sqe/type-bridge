@@ -20,7 +20,7 @@ use type_bridge_orm::{
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state};
 use type_bridge_server::interceptor::{InterceptError, Interceptor, RequestContext};
 use type_bridge_server::pipeline::PipelineBuilder;
-use type_bridge_server::transport::{staged_state::StagedQueryState, v3::create_v3_router};
+use type_bridge_server::transport::{staged::create_router, staged_state::StagedQueryState};
 use type_bridge_server::{
     config::{OutboundTlsMode, SecureTypeDBSection, TypeDBSection},
     typedb::TypeDBClient,
@@ -31,17 +31,14 @@ impl Interceptor for CountRaw {
     fn name(&self) -> &str {
         "raw-sdk-counter"
     }
-    fn supports_v3(&self) -> bool {
-        true
-    }
-    fn on_v3_transport<'a>(
+    fn on_transport<'a>(
         &'a self,
         ctx: &'a mut RequestContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), InterceptError>> + Send + 'a>>
     {
         if ctx
             .metadata
-            .get("v3_endpoint")
+            .get("endpoint")
             .and_then(serde_json::Value::as_str)
             == Some("raw")
         {
@@ -106,7 +103,7 @@ async fn server(database: &str, port: u16, enabled: bool) -> Server {
         .with_interceptor(CountRaw(requests.clone()))
         .build()
         .unwrap();
-    let router = create_v3_router(Arc::new(pipeline), Arc::new(state));
+    let router = create_router(Arc::new(pipeline), Arc::new(state));
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
         .unwrap();

@@ -757,7 +757,7 @@ are application policy. The staged advertisement is trusted only when its
 executor binding and reply key equal the connection's advertisement
 (`query_remote_v3_advertisement_mismatch` otherwise); it is pinned or fetched
 once per connection. The server admits writes only from a caller an
-interceptor vouches for (`on_v3_write_authority`), or from any caller under
+interceptor vouches for (`on_write_authority`), or from any caller under
 `[staged] allow_unauthenticated_staged_writes`. The wire format and failure
 vocabulary are in the
 [staged remote envelope](../reference/query-plan.md#staged-remote-envelope-v3).
@@ -777,15 +777,15 @@ It takes the same `QueryPipeline` and `StagedQueryState` the server binary build
 and does everything the route does after the body is read:
 
 ```rust
-use type_bridge_server::transport::v3::{StagedExecutor, StagedOutcomeKind};
+use type_bridge_server::transport::staged::{StagedExecutor, StagedOutcomeKind};
 
 let executor = Arc::new(StagedExecutor::new(pipeline, query_state));
 
 // Admit the caller through the pipeline, as the route does for its headers.
 let mut ctx = executor
     .pipeline()
-    .v3_request_context(metadata)?;          // every policy must cover V3
-executor.pipeline().begin_v3_request(&mut ctx).await?;
+    .request_context(metadata);
+executor.pipeline().begin_request(&mut ctx).await?;
 
 // Signed request bytes in, signed reply bytes out.
 let outcome = executor
@@ -800,11 +800,11 @@ match outcome.kind {
 ```
 
 The hooks run in a fixed order, pinned by a test: the transport hook
-(`on_v3_transport`, during admission), `on_v3_write_authority` for a write,
-`on_v3_plan` for every bound plan in index order before anything is
+(`on_transport`, during admission), `on_write_authority` for a write,
+`on_plan` for every bound plan in index order before anything is
 reserved or opened, then nonce reservation, staging and one commit,
-`on_v3_commit` once the outcome is known (observe-only, bounded by the audit
-deadline), and the response policies (`on_v3_response`) over the signed
+`on_commit` once the outcome is known (observe-only, bounded by the audit
+deadline), and the response policies (`on_response`) over the signed
 reply. A refusal at any step before reservation leaves nothing reserved and
 nothing open, so a retry is re-authorized rather than replayed. The outcome
 is owned by a detached task once admitted: a host that stops awaiting

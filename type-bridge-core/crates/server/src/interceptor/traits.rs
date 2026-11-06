@@ -53,13 +53,13 @@ impl fmt::Debug for RequestContext {
 }
 
 /// Redacted staged result evidence presented to response and audit policies.
-pub struct V3PolicyOutcome<'a> {
+pub struct PolicyOutcome<'a> {
     success: bool,
     code: &'a str,
     response_bytes: usize,
 }
 
-impl<'a> V3PolicyOutcome<'a> {
+impl<'a> PolicyOutcome<'a> {
     /// Construct one redacted outcome without provider or query payload text.
     #[must_use]
     pub const fn new(success: bool, code: &'a str, response_bytes: usize) -> Self {
@@ -89,15 +89,15 @@ impl<'a> V3PolicyOutcome<'a> {
     }
 }
 
-/// Redacted view of one bound plan in a staged V3 request, presented to
-/// [`Interceptor::on_v3_plan`] before the plan stages.
+/// Redacted view of one bound plan in a staged request, presented to
+/// [`Interceptor::on_plan`] before the plan stages.
 ///
 /// It exposes what the plan may do, never literal or input row values,
-/// unless the policy opts in through [`Interceptor::wants_v3_plan_rows`].
+/// unless the policy opts in through [`Interceptor::wants_plan_rows`].
 /// Its `Debug` output never shows values either: rows appear as a count.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
-pub struct V3PolicyPlan<'a> {
+pub struct PolicyPlan<'a> {
     plan: &'a QueryPlan,
     types: &'a [TypeId],
     rows_visible: bool,
@@ -106,7 +106,7 @@ pub struct V3PolicyPlan<'a> {
     template_rows: Option<&'a [InputRow]>,
 }
 
-impl<'a> V3PolicyPlan<'a> {
+impl<'a> PolicyPlan<'a> {
     pub(crate) const fn new(plan: &'a QueryPlan, types: &'a [TypeId]) -> Self {
         Self {
             plan,
@@ -182,11 +182,11 @@ impl<'a> V3PolicyPlan<'a> {
     }
 }
 
-impl fmt::Debug for V3PolicyPlan<'_> {
+impl fmt::Debug for PolicyPlan<'_> {
     // Hand-written so literals and bound row values never reach logs.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let capabilities: Vec<&str> = self.capabilities().iter().map(|cap| cap.as_str()).collect();
-        f.debug_struct("V3PolicyPlan")
+        f.debug_struct("PolicyPlan")
             .field("operation", &self.operation())
             .field("capabilities", &capabilities)
             .field("types", &self.types)
@@ -204,16 +204,16 @@ impl fmt::Debug for V3PolicyPlan<'_> {
     }
 }
 
-/// Redacted outcome of a staged V3 transaction presented to
-/// [`Interceptor::on_v3_commit`].
+/// Redacted outcome of a staged transaction presented to
+/// [`Interceptor::on_commit`].
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
-pub struct V3CommitOutcome<'a> {
+pub struct CommitOutcome<'a> {
     kind: TransactionKind,
     failure: Option<&'a SdkExecutionDiagnostic>,
 }
 
-impl<'a> V3CommitOutcome<'a> {
+impl<'a> CommitOutcome<'a> {
     pub(crate) const fn new(
         kind: TransactionKind,
         failure: Option<&'a SdkExecutionDiagnostic>,
@@ -302,10 +302,10 @@ impl InterceptError {
     }
 }
 
-/// One policy's write admission for a staged V3 request.
+/// One policy's write admission for a staged request.
 ///
 /// The server has no built-in authentication. A policy that authenticated
-/// the caller in [`Interceptor::on_v3_transport`] vouches for writes here.
+/// the caller in [`Interceptor::on_transport`] vouches for writes here.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum StagedWriteAuthority {
@@ -317,25 +317,14 @@ pub enum StagedWriteAuthority {
 
 /// The core interceptor trait.
 ///
-/// Interceptors receive the query AST and context, and can:
-/// - Pass through unchanged
-/// - Transform the query (e.g., add tenant filters)
-/// - Reject the query (return Err)
-/// - Add metadata to context for downstream interceptors
+/// Interceptors inspect typed plans and request context, admit or reject
+/// execution, add context metadata, and observe commit and response outcomes.
 pub trait Interceptor: Send + Sync {
     /// Human-readable name for logging.
     fn name(&self) -> &str;
 
-    /// Declare that this policy intentionally covers staged V3 requests.
-    ///
-    /// The default is fail-closed: every configured policy must explicitly
-    /// cover staged requests before transport admission can proceed.
-    fn supports_v3(&self) -> bool {
-        false
-    }
-
     /// Authenticate and rate-limit transport metadata before envelope decode.
-    fn on_v3_transport<'a>(
+    fn on_transport<'a>(
         &'a self,
         _ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
@@ -344,7 +333,7 @@ pub trait Interceptor: Send + Sync {
 
     /// Allow or refuse raw TypeQL before replay reservation and provider I/O.
     /// The query is unchanged; the host owns any policy for this escape hatch.
-    fn on_v3_raw<'a>(
+    fn on_raw<'a>(
         &'a self,
         _query: &'a str,
         _kind: TransactionKind,
@@ -353,13 +342,13 @@ pub trait Interceptor: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
-    /// Vouch for a staged V3 write transaction before anything opens.
+    /// Vouch for a staged write transaction before anything opens.
     ///
     /// Writes are refused unless at least one policy answers
     /// [`StagedWriteAuthority::Authenticated`] and none fails, or the server
     /// explicitly allows unauthenticated staged writes. Runs first among the
-    /// V3 hooks, after the transport hook and before [`Self::on_v3_plan`].
-    fn on_v3_write_authority<'a>(
+    /// V3 hooks, after the transport hook and before [`Self::on_plan`].
+    fn on_write_authority<'a>(
         &'a self,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<StagedWriteAuthority, InterceptError>> + Send + 'a>>
@@ -367,44 +356,44 @@ pub trait Interceptor: Send + Sync {
         Box::pin(async { Ok(StagedWriteAuthority::Abstain) })
     }
 
-    /// Authorize one bound plan of a staged V3 request.
+    /// Authorize one bound plan of a staged request.
     ///
     /// Runs for every plan, in order, after write admission and before any
     /// nonce reservation, provider I/O or staging; the
     /// view is computed from the decoded request alone. `index` is the
     /// plan's position in the request. An error refuses the whole request:
     /// later plans are not consulted, nothing is reserved and nothing opens.
-    fn on_v3_plan<'a>(
+    fn on_plan<'a>(
         &'a self,
         _index: usize,
-        _plan: &'a V3PolicyPlan<'a>,
+        _plan: &'a PolicyPlan<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
 
-    /// Whether [`Self::on_v3_plan`] may see bound input row values.
-    fn wants_v3_plan_rows(&self) -> bool {
+    /// Whether [`Self::on_plan`] may see bound input row values.
+    fn wants_plan_rows(&self) -> bool {
         false
     }
 
-    /// Observe a staged V3 transaction's outcome once it is known.
+    /// Observe a staged transaction's outcome once it is known.
     ///
     /// Observe-only: errors are logged, never change the reply. Runs last
     /// among the V3 hooks, after reservation, staging and the commit, and
     /// before the response policies see the signed reply.
-    fn on_v3_commit<'a>(
+    fn on_commit<'a>(
         &'a self,
-        _outcome: &'a V3CommitOutcome<'a>,
+        _outcome: &'a CommitOutcome<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
 
     /// Observe one redacted success or failure outcome for audit/policy.
-    fn on_v3_response<'a>(
+    fn on_response<'a>(
         &'a self,
-        _outcome: &'a V3PolicyOutcome<'a>,
+        _outcome: &'a PolicyOutcome<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async { Ok(()) })

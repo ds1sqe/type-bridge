@@ -10,4 +10,4 @@ pub use chain::InterceptorChain;
 pub use traits::InterceptError;
 pub use traits::{Interceptor, RequestContext};
 
-pub use traits::{StagedWriteAuthority, V3CommitOutcome, V3PolicyOutcome, V3PolicyPlan};
+pub use traits::{CommitOutcome, PolicyOutcome, PolicyPlan, StagedWriteAuthority};

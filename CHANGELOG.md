@@ -338,6 +338,42 @@ All notable changes to TypeBridge will be documented in this file.
 
 <!-- --8<-- [start:breaking-3-0] -->
 
+Server interceptors use the single staged policy path. `supports_v3`,
+`InterceptorChain::ensure_v3_coverage` and `QueryPipeline::validate_v3_coverage`
+are removed; implement the policy hooks directly. Authentication, write
+authority, plan validation and outcome hooks retain their execution order.
+`QueryPipeline::v3_request_context` becomes infallible `request_context`;
+remove the former result handling at that call.
+
+| Removed server API | Replacement |
+| --- | --- |
+| `V3CommitOutcome` | `CommitOutcome` |
+| `V3PolicyOutcome` | `PolicyOutcome` |
+| `V3PolicyPlan` | `PolicyPlan` |
+| `authorize_v3_plan` | `authorize_plan` |
+| `authorize_v3_raw` | `authorize_raw` |
+| `authorize_v3_write` | `authorize_write` |
+| `begin_v3_request` | `begin_request` |
+| `create_v3_router` | `create_router` |
+| `execute_v3_commit` | `execute_commit` |
+| `execute_v3_plan` | `execute_plan` |
+| `execute_v3_raw` | `execute_raw` |
+| `execute_v3_response` | `execute_response` |
+| `execute_v3_transport` | `execute_transport` |
+| `execute_v3_write_authority` | `execute_write_authority` |
+| `finish_v3_request` | `finish_request` |
+| `observe_v3_commit` | `observe_commit` |
+| `on_v3_commit` | `on_commit` |
+| `on_v3_plan` | `on_plan` |
+| `on_v3_raw` | `on_raw` |
+| `on_v3_response` | `on_response` |
+| `on_v3_transport` | `on_transport` |
+| `on_v3_write_authority` | `on_write_authority` |
+| `transport::v3` | `transport::staged` |
+| `v3_endpoint` | `endpoint` |
+| `v3_request_context` | `request_context` |
+| `wants_v3_plan_rows` | `wants_plan_rows` |
+
 The active plan and staged-envelope contract uses one unversioned Rust API.
 Wire discriminators, capability strings, canonical bytes and `/v3/*` routes
 retain their existing versions. Update imports and calls as follows:

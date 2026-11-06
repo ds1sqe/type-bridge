@@ -17,7 +17,7 @@ const { loadNative } = requirePackage(
 ) as typeof import("../../typescript/native.js");
 
 // The live fixture is `sdk_staged_fixture_serves_until_stopped` in
-// crates/server/tests/v3_staged_integration_tests.rs; it writes
+// crates/server/tests/staged_integration_tests.rs; it writes
 // `fixture.json` into TB_STAGED_FIXTURE_DIR.
 interface Fixture {
   readonly direct_database: string;

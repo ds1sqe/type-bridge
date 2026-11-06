@@ -23,7 +23,7 @@ type Plan = InstanceType<typeof Plan>;
 type PlanAuthority = InstanceType<typeof PlanAuthority>;
 
 // A fresh instance of the live fixture `sdk_staged_fixture_serves_until_stopped`
-// (crates/server/tests/v3_staged_integration_tests.rs), separate from the one
+// (crates/server/tests/staged_integration_tests.rs), separate from the one
 // staged-proxy.test.ts consumes: every purchase here needs unbought stock.
 interface Fixture {
   readonly direct_database: string;

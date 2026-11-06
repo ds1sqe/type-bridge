@@ -934,7 +934,7 @@ or pinned out of band (Rust `ProxyConnectionPolicy::staged_advertisement`,
 Python `staged_advertisement=`, TypeScript `stagedAdvertisement`).
 
 The server admits a staged write only from a caller an interceptor vouches for
-(`on_v3_write_authority`), or from any caller when the operator sets
+(`on_write_authority`), or from any caller when the operator sets
 `[v2] allow_unauthenticated_staged_writes`; otherwise the commit fails with the
 typed `staged_write_not_authorized` failure. The [staged remote envelope](../reference/query-plan.md#staged-remote-envelope-v3)
 defines the wire format.

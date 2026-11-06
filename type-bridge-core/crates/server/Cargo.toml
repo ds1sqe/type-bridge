@@ -76,7 +76,7 @@ name = "tls_transport_tests"
 required-features = ["axum-transport"]
 
 [[test]]
-name = "v3_staged_integration_tests"
+name = "staged_integration_tests"
 required-features = ["typedb", "axum-transport"]
 
 [dev-dependencies]

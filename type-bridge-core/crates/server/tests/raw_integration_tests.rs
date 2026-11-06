@@ -19,12 +19,10 @@ use type_bridge_orm::session::staged::TransactionKind;
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state};
 use type_bridge_server::config::AuditLogConfig;
 use type_bridge_server::interceptor::audit_log::AuditLogInterceptor;
-use type_bridge_server::interceptor::{
-    InterceptError, Interceptor, RequestContext, V3CommitOutcome,
-};
+use type_bridge_server::interceptor::{CommitOutcome, InterceptError, Interceptor, RequestContext};
 use type_bridge_server::pipeline::PipelineBuilder;
+use type_bridge_server::transport::staged::create_router;
 use type_bridge_server::transport::staged_state::StagedQueryState;
-use type_bridge_server::transport::v3::create_v3_router;
 use type_bridge_typedb_runtime::{ConnectOptions, TxType, TypeDBRuntime};
 
 #[derive(Default, Clone)]
@@ -36,10 +34,7 @@ impl Interceptor for Host {
     fn name(&self) -> &str {
         "raw-live-host"
     }
-    fn supports_v3(&self) -> bool {
-        true
-    }
-    fn on_v3_write_authority<'a>(
+    fn on_write_authority<'a>(
         &'a self,
         _ctx: &'a RequestContext,
     ) -> Pin<
@@ -61,7 +56,7 @@ impl Interceptor for Host {
             })
         })
     }
-    fn on_v3_raw<'a>(
+    fn on_raw<'a>(
         &'a self,
         query: &'a str,
         _kind: TransactionKind,
@@ -77,9 +72,9 @@ impl Interceptor for Host {
             }
         })
     }
-    fn on_v3_commit<'a>(
+    fn on_commit<'a>(
         &'a self,
-        outcome: &'a V3CommitOutcome<'a>,
+        outcome: &'a CommitOutcome<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         assert!(outcome.committed());
@@ -221,7 +216,7 @@ async fn raw_answers_match_typedb_http_and_host_refusal_writes_nothing() {
         })
         .build()
         .unwrap();
-    let unvouched = create_v3_router(Arc::new(unvouched), Arc::clone(&query));
+    let unvouched = create_router(Arc::new(unvouched), Arc::clone(&query));
     for (text, kind) in [
         (
             "insert $p isa raw-person, has raw-name \"unvouched\";",
@@ -296,7 +291,7 @@ async fn raw_answers_match_typedb_http_and_host_refusal_writes_nothing() {
         .unwrap();
     let unchanged: Value = serde_json::from_slice(&unchanged).unwrap();
     assert_eq!(unchanged["answers"][0]["data"]["n"]["value"], 1);
-    let router = create_v3_router(Arc::new(pipeline), query);
+    let router = create_router(Arc::new(pipeline), query);
     let client = reqwest::Client::new();
     let base = format!(
         "http://127.0.0.1:{}",

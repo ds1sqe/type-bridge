@@ -2,7 +2,7 @@ use super::staged_state::{
     await_before_deadline, response_audit_deadline, staged_request_metadata,
 };
 use crate::error::PipelineError;
-use crate::interceptor::V3PolicyOutcome;
+use crate::interceptor::PolicyOutcome;
 use crate::pipeline::QueryPipeline;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -120,10 +120,10 @@ pub(super) async fn raw_disabled_with_pipeline(
     let mut metadata = staged_request_metadata(headers, "raw");
     metadata.insert("query_format".into(), serde_json::json!("raw-typeql"));
     let ctx = pipeline.request_context(metadata);
-    let outcome = V3PolicyOutcome::new(false, "raw_disabled", 0);
+    let outcome = PolicyOutcome::new(false, "raw_disabled", 0);
     let _ = await_before_deadline(
         response_audit_deadline(Instant::now()),
-        pipeline.finish_v3_request(&outcome, &ctx),
+        pipeline.finish_request(&outcome, &ctx),
     )
     .await;
     raw_disabled().await

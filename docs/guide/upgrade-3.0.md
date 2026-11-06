@@ -532,3 +532,13 @@ use `type_bridge_contract::query_remote` for staged envelopes and signing.
 `StagedLimitsV3` and `StagedReplyV3` lose their `V3` suffix. The complete
 old-to-new public-name table is included in the breaking-change inventory above.
 These source renames do not change plan or envelope bytes.
+
+## Server policy hooks
+
+Import the router and staged executor from `transport::staged`. Rename
+`on_v3_*` hooks to `on_*` and the `V3PolicyPlan`, `V3PolicyOutcome` and
+`V3CommitOutcome` views to `PolicyPlan`, `PolicyOutcome` and `CommitOutcome`.
+Remove `supports_v3` implementations and explicit coverage-check calls.
+`request_context(metadata)` now returns the context directly; call
+`begin_request` to run transport admission before handing a request to the executor.
+The endpoint metadata key is `endpoint`, replacing `v3_endpoint`.

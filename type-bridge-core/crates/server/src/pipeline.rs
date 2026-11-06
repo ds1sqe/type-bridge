@@ -1,7 +1,7 @@
 use crate::error::PipelineError;
 use crate::interceptor::{Interceptor, InterceptorChain, RequestContext};
 
-use crate::interceptor::{V3CommitOutcome, V3PolicyOutcome, V3PolicyPlan};
+use crate::interceptor::{CommitOutcome, PolicyOutcome, PolicyPlan};
 use std::collections::HashMap;
 
 pub(crate) const UNAUTHENTICATED_CLIENT_ID: &str = "unknown";
@@ -13,20 +13,8 @@ pub struct QueryPipeline {
 }
 
 impl QueryPipeline {
-    /// Construct one staged policy context after proving every configured
-    /// interceptor explicitly supports typed plans.
-    pub fn v3_request_context(
-        &self,
-        metadata: HashMap<String, serde_json::Value>,
-    ) -> Result<RequestContext, PipelineError> {
-        self.validate_v3_coverage()?;
-        Ok(self.request_context(metadata))
-    }
-
-    pub(crate) fn request_context(
-        &self,
-        metadata: HashMap<String, serde_json::Value>,
-    ) -> RequestContext {
+    /// Construct the policy context shared by typed and raw requests.
+    pub fn request_context(&self, metadata: HashMap<String, serde_json::Value>) -> RequestContext {
         RequestContext {
             request_id: uuid::Uuid::new_v4().to_string(),
             client_id: UNAUTHENTICATED_CLIENT_ID.to_owned(),
@@ -37,80 +25,63 @@ impl QueryPipeline {
         }
     }
 
-    /// Prove every configured policy explicitly covers staged V3 requests.
-    ///
-    /// Request admission checks coverage before running any policy hooks.
-    pub fn validate_v3_coverage(&self) -> Result<(), PipelineError> {
-        self.interceptor_chain
-            .ensure_v3_coverage()
-            .map_err(|error| PipelineError::Interceptor(error.to_string()))
-    }
-
     /// Authenticate and rate-limit staged transport metadata before envelope
     /// decoding or other attacker-controlled contract work.
-    pub async fn begin_v3_request(
-        &self,
-        context: &mut RequestContext,
-    ) -> Result<(), PipelineError> {
+    pub async fn begin_request(&self, context: &mut RequestContext) -> Result<(), PipelineError> {
         self.interceptor_chain
-            .execute_v3_transport(context)
+            .execute_transport(context)
             .await
             .map_err(|error| PipelineError::Interceptor(error.to_string()))
     }
 
     /// Apply host raw-query policies before dispatch, preserving typed refusals.
-    pub async fn authorize_v3_raw(
+    pub async fn authorize_raw(
         &self,
         query: &str,
         kind: type_bridge_orm::session::staged::TransactionKind,
         ctx: &mut RequestContext,
     ) -> Result<(), crate::interceptor::InterceptError> {
-        self.interceptor_chain
-            .execute_v3_raw(query, kind, ctx)
-            .await
+        self.interceptor_chain.execute_raw(query, kind, ctx).await
     }
 
-    /// Whether the configured policies admit a staged V3 write for this
+    /// Whether the configured policies admit a staged write for this
     /// caller. An interceptor error refuses.
-    pub async fn authorize_v3_write(
-        &self,
-        context: &RequestContext,
-    ) -> Result<bool, PipelineError> {
+    pub async fn authorize_write(&self, context: &RequestContext) -> Result<bool, PipelineError> {
         self.interceptor_chain
-            .execute_v3_write_authority(context)
+            .execute_write_authority(context)
             .await
             .map_err(|error| PipelineError::Interceptor(error.to_string()))
     }
 
     /// Run the staged plan policies for plan `index`. An interceptor error
     /// refuses the request.
-    pub async fn authorize_v3_plan(
+    pub async fn authorize_plan(
         &self,
         index: usize,
-        plan: V3PolicyPlan<'_>,
+        plan: PolicyPlan<'_>,
         context: &RequestContext,
     ) -> Result<(), PipelineError> {
         self.interceptor_chain
-            .execute_v3_plan(index, plan, context)
+            .execute_plan(index, plan, context)
             .await
             .map_err(|error| PipelineError::Interceptor(error.to_string()))
     }
 
     /// Let every policy observe a staged transaction's outcome.
-    pub async fn observe_v3_commit(&self, outcome: &V3CommitOutcome<'_>, context: &RequestContext) {
+    pub async fn observe_commit(&self, outcome: &CommitOutcome<'_>, context: &RequestContext) {
         self.interceptor_chain
-            .execute_v3_commit(outcome, context)
+            .execute_commit(outcome, context)
             .await;
     }
 
     /// Run configured response and audit policies for every staged outcome.
-    pub async fn finish_v3_request(
+    pub async fn finish_request(
         &self,
-        outcome: &V3PolicyOutcome<'_>,
+        outcome: &PolicyOutcome<'_>,
         context: &RequestContext,
     ) -> Result<(), PipelineError> {
         self.interceptor_chain
-            .execute_v3_response(outcome, context)
+            .execute_response(outcome, context)
             .await
             .map_err(|error| PipelineError::Interceptor(error.to_string()))
     }

@@ -1,10 +1,10 @@
 //! Opt-in raw TypeQL transport. Host admission applies; TypeQL is unchecked.
 
+use super::staged::StagedExecutor;
 use super::staged_state::{
     ReplayStoreError, await_before_deadline, response_audit_deadline, staged_request_metadata,
 };
-use super::v3::StagedExecutor;
-use crate::interceptor::{RequestContext, V3CommitOutcome, V3PolicyOutcome};
+use crate::interceptor::{CommitOutcome, PolicyOutcome, RequestContext};
 use axum::body::to_bytes;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
@@ -83,18 +83,8 @@ pub(super) async fn handle_raw(
         )
         .await;
     };
-    if state.pipeline().validate_v3_coverage().is_err() {
-        return refuse(
-            &state,
-            &ctx,
-            deadline,
-            StatusCode::FORBIDDEN,
-            "query_remote_policy_rejected",
-        )
-        .await;
-    }
     if !matches!(
-        await_before_deadline(admission, state.pipeline().begin_v3_request(&mut ctx)).await,
+        await_before_deadline(admission, state.pipeline().begin_request(&mut ctx)).await,
         Some(Ok(()))
     ) {
         return refuse(
@@ -212,7 +202,7 @@ pub(super) async fn handle_raw(
     };
     ctx.transaction_type = request.kind;
     if kind != TransactionKind::Read && !state.query.allow_unauthenticated_staged_writes {
-        match await_before_deadline(admission, state.pipeline().authorize_v3_write(&ctx)).await {
+        match await_before_deadline(admission, state.pipeline().authorize_write(&ctx)).await {
             Some(Ok(true)) => {}
             Some(Ok(false)) => {
                 return refuse(
@@ -220,7 +210,7 @@ pub(super) async fn handle_raw(
                     &ctx,
                     deadline,
                     StatusCode::FORBIDDEN,
-                    super::v3::STAGED_WRITE_NOT_AUTHORIZED,
+                    super::staged::STAGED_WRITE_NOT_AUTHORIZED,
                 )
                 .await;
             }
@@ -250,7 +240,7 @@ pub(super) async fn handle_raw(
         admission,
         state
             .pipeline()
-            .authorize_v3_raw(&request.query, kind, &mut ctx),
+            .authorize_raw(&request.query, kind, &mut ctx),
     )
     .await
     {
@@ -355,10 +345,10 @@ pub(super) async fn handle_raw(
                     failure.commit_outcome() == Some(SdkCommitFailureOutcome::Unknown)
                 }));
         if kind != TransactionKind::Read && (answer.is_ok() || commit_failure.is_some()) {
-            let outcome = V3CommitOutcome::new(kind, commit_failure.as_ref());
+            let outcome = CommitOutcome::new(kind, commit_failure.as_ref());
             let _ = await_before_deadline(
                 response_audit_deadline(deadline),
-                state.pipeline().observe_v3_commit(&outcome, &ctx),
+                state.pipeline().observe_commit(&outcome, &ctx),
             )
             .await;
         }
@@ -427,7 +417,7 @@ pub(super) async fn handle_raw(
             &ctx,
             deadline,
             response,
-            V3PolicyOutcome::new(success, code, size),
+            PolicyOutcome::new(success, code, size),
             may_have_committed,
         )
         .await
@@ -459,7 +449,7 @@ async fn refuse(
         ctx,
         deadline,
         refusal(status, code),
-        V3PolicyOutcome::new(false, code, 0),
+        PolicyOutcome::new(false, code, 0),
         false,
     )
     .await
@@ -470,13 +460,13 @@ async fn finish(
     ctx: &RequestContext,
     deadline: Option<Instant>,
     response: Response,
-    outcome: V3PolicyOutcome<'_>,
+    outcome: PolicyOutcome<'_>,
     may_have_committed: bool,
 ) -> Response {
     if !matches!(
         await_before_deadline(
             response_audit_deadline(deadline),
-            state.pipeline().finish_v3_request(&outcome, ctx)
+            state.pipeline().finish_request(&outcome, ctx)
         )
         .await,
         Some(Ok(()))

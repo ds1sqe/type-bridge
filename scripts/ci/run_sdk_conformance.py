@@ -1168,7 +1168,7 @@ def writes_fixture(
         "-p",
         "type-bridge-server",
         "--test",
-        "v3_staged_integration_tests",
+        "staged_integration_tests",
     ]
     run([*command, "--no-run"], env=environment)
     fixture_env = environment | {

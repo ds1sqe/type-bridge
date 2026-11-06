@@ -1,16 +1,16 @@
-//! Staged V3 transactions over one executor identity.
+//! Staged transactions over one executor identity.
 //!
 //! One canonical request stages ordered plans on one transaction and commits
 //! once. Reply signing, replay protection and host policy hooks share the
 //! executor identity advertised at `/v3/capabilities`.
 //! Writes open only when a policy vouches for the caller through
-//! [`Interceptor::on_v3_write_authority`](crate::interceptor::Interceptor::on_v3_write_authority)
+//! [`Interceptor::on_write_authority`](crate::interceptor::Interceptor::on_write_authority)
 //! or the operator explicitly allows unauthenticated staged writes.
 //!
 //! The executor is a library entry: `StagedExecutor::execute_staged_request`
 //! takes one admitted caller and the signed request bytes and returns the
 //! signed reply bytes, so an embedding host runs the staged route
-//! in-process without the HTTP framing of `create_v3_router`.
+//! in-process without the HTTP framing of `create_router`.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -49,17 +49,17 @@ use super::staged_state::{
     policy_rejected, replay_capacity, replay_unavailable, replayed, response_audit_deadline,
     staged_request_metadata, unavailable,
 };
-use crate::interceptor::{RequestContext, V3CommitOutcome, V3PolicyOutcome, V3PolicyPlan};
+use crate::interceptor::{CommitOutcome, PolicyOutcome, PolicyPlan, RequestContext};
 use crate::pipeline::QueryPipeline;
 
 /// Code of the signed failure refusing a staged write no policy admitted.
 pub const STAGED_WRITE_NOT_AUTHORIZED: &str = "staged_write_not_authorized";
 
-/// The staged V3 executor over one staged executor identity: the policy
+/// The staged executor over one staged executor identity: the policy
 /// pipeline, the query state (advertisement, ceilings, replay store, live
 /// authority, signer) and the staged advertisement it answers under.
 ///
-/// `create_v3_router` wraps one in HTTP; an embedding host builds one and
+/// `create_router` wraps one in HTTP; an embedding host builds one and
 /// calls `StagedExecutor::execute_staged_request` directly.
 pub struct StagedExecutor {
     pipeline: Arc<QueryPipeline>,
@@ -257,13 +257,13 @@ pub(super) fn staged_advertisement_for_profile(
 }
 
 /// Build `POST /v3/staged` and `GET /v3/capabilities` over one staged executor.
-pub fn create_v3_router(pipeline: Arc<QueryPipeline>, query: Arc<StagedQueryState>) -> Router {
+pub fn create_router(pipeline: Arc<QueryPipeline>, query: Arc<StagedQueryState>) -> Router {
     #[cfg(not(feature = "typedb"))]
     let disabled_pipeline = Arc::clone(&pipeline);
     let state = Arc::new(StagedExecutor::new(pipeline, query));
     let router = Router::new()
-        .route("/v3/staged", post(handle_v3_staged))
-        .route("/v3/capabilities", get(handle_v3_capabilities))
+        .route("/v3/staged", post(handle_staged))
+        .route("/v3/capabilities", get(handle_capabilities))
         .route("/health", get(handle_health))
         .fallback(super::http::route_removed);
     #[cfg(feature = "typedb")]
@@ -285,7 +285,7 @@ async fn handle_health(
     super::http::health_response(state.query.database.is_connected())
 }
 
-async fn handle_v3_capabilities(
+async fn handle_capabilities(
     State(state): State<Arc<StagedExecutor>>,
     request: Request,
 ) -> Response {
@@ -315,7 +315,7 @@ async fn handle_v3_capabilities(
     envelope_response(outcome.reply)
 }
 
-async fn handle_v3_staged(State(shared): State<Arc<StagedExecutor>>, request: Request) -> Response {
+async fn handle_staged(State(shared): State<Arc<StagedExecutor>>, request: Request) -> Response {
     let state = shared.as_ref();
     let received_at = Instant::now();
     let deadline = state.query.execution_deadline(received_at);
@@ -354,16 +354,16 @@ impl StagedExecutor {
     /// Execute one staged request from its signed bytes to its signed reply.
     ///
     /// `ctx` is the caller the transport admitted: build it with
-    /// [`QueryPipeline::v3_request_context`] and
-    /// [`QueryPipeline::begin_v3_request`], as the router does. `deadline`
+    /// [`QueryPipeline::request_context`] and
+    /// [`QueryPipeline::begin_request`], as the router does. `deadline`
     /// is the server's execution deadline; the request's own lifetime
     /// tightens it.
     ///
     /// In order: decode under the advertised limits, freshness, transaction
-    /// kind, write vouching (`on_v3_write_authority`), every bound plan's
-    /// policy (`on_v3_plan`, in index order, before anything is reserved
+    /// kind, write vouching (`on_write_authority`), every bound plan's
+    /// policy (`on_plan`, in index order, before anything is reserved
     /// or opened), nonce reservation for the request's lifetime, staging
-    /// and one commit, commit observation (`on_v3_commit`, observe-only),
+    /// and one commit, commit observation (`on_commit`, observe-only),
     /// answer assembly under the ceilings tightened by the request,
     /// signing, and the pipeline's response policies. A write whose
     /// outcome is lost answers `commit_outcome_unknown`
@@ -479,7 +479,7 @@ async fn execute_inner(
     let open_writes = state.query.allow_unauthenticated_staged_writes;
     if kind == TransactionKind::Write && !open_writes {
         let vouched =
-            match await_before_deadline(admission, state.pipeline.authorize_v3_write(&ctx)).await {
+            match await_before_deadline(admission, state.pipeline.authorize_write(&ctx)).await {
                 Some(Ok(vouched)) => vouched,
                 Some(Err(_)) => {
                     return refuse(state, deadline, &ctx, request, policy_rejected()).await;
@@ -524,17 +524,14 @@ async fn execute_inner(
             );
             capabilities
         });
-        let view = V3PolicyPlan::new(plan, &types);
+        let view = PolicyPlan::new(plan, &types);
         let view = if let Some(capabilities) = &capabilities {
             view.with_result_refs(entry.result_refs(), entry.rows(), capabilities)
         } else {
             view
         };
-        match await_before_deadline(
-            admission,
-            state.pipeline.authorize_v3_plan(index, view, &ctx),
-        )
-        .await
+        match await_before_deadline(admission, state.pipeline.authorize_plan(index, view, &ctx))
+            .await
         {
             Some(Ok(())) => {}
             Some(Err(_)) => return refuse(state, deadline, &ctx, request, policy_rejected()).await,
@@ -662,10 +659,10 @@ async fn run_staged(
         );
     // Observe-only and bounded like the response audit: a stuck or failing
     // observer never changes the reply.
-    let outcome = V3CommitOutcome::new(kind, executed.as_ref().err());
+    let outcome = CommitOutcome::new(kind, executed.as_ref().err());
     let _ = await_before_deadline(
         response_audit_deadline(deadline),
-        state.pipeline.observe_v3_commit(&outcome, &ctx),
+        state.pipeline.observe_commit(&outcome, &ctx),
     )
     .await;
     let (reply, outcome, code) = match executed {
@@ -920,14 +917,9 @@ async fn admit_transport(
 ) -> Result<RequestContext, Box<Response>> {
     let mut metadata = staged_request_metadata(headers, endpoint);
     metadata.insert("transport".to_owned(), serde_json::json!("v3"));
-    metadata.insert("v3_endpoint".to_owned(), serde_json::json!(endpoint));
-    // A policy that has not declared V3 coverage fails closed here, before
-    // its transport hook runs, as V2 does for AST-only policies.
-    let mut ctx = state
-        .pipeline
-        .v3_request_context(metadata)
-        .map_err(|_| Box::new(envelope_response(state.unbound(&policy_rejected()))))?;
-    match await_before_deadline(deadline, state.pipeline.begin_v3_request(&mut ctx)).await {
+    metadata.insert("endpoint".to_owned(), serde_json::json!(endpoint));
+    let mut ctx = state.pipeline.request_context(metadata);
+    match await_before_deadline(deadline, state.pipeline.begin_request(&mut ctx)).await {
         Some(Ok(())) => Ok(ctx),
         Some(Err(_)) => Err(Box::new(envelope_response(
             refuse(state, deadline, &ctx, None, policy_rejected())
@@ -1015,10 +1007,10 @@ async fn police(
     code: &str,
     len: usize,
 ) -> Option<Diagnostic> {
-    let outcome = V3PolicyOutcome::new(success, code, len);
+    let outcome = PolicyOutcome::new(success, code, len);
     match await_before_deadline(
         response_audit_deadline(deadline),
-        state.pipeline.finish_v3_request(&outcome, ctx),
+        state.pipeline.finish_request(&outcome, ctx),
     )
     .await
     {

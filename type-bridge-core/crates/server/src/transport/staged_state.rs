@@ -251,7 +251,7 @@ impl StagedQueryState {
             .server_version()
             .as_ref()
             .and_then(type_bridge_core_lib::version::semantic_profile_id);
-        let advertisement = super::v3::staged_advertisement_for_profile(&base, profile)?;
+        let advertisement = super::staged::staged_advertisement_for_profile(&base, profile)?;
         advertisement.fingerprint()?;
         Ok(Self {
             #[cfg(feature = "typedb")]
@@ -719,7 +719,7 @@ pub(super) fn staged_request_metadata(
     }
     HashMap::from([
         ("transport".to_owned(), serde_json::json!("v3")),
-        ("v3_endpoint".to_owned(), serde_json::json!(endpoint)),
+        ("endpoint".to_owned(), serde_json::json!(endpoint)),
         ("query_format".to_owned(), serde_json::json!("typed-plan")),
         ("http_headers".to_owned(), serde_json::Value::Object(values)),
     ])
@@ -802,7 +802,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use crate::interceptor::{RequestContext, V3PolicyOutcome};
+    use crate::interceptor::{PolicyOutcome, RequestContext};
     use axum::Router;
     use axum::body::Body;
     use axum::extract::Request;
@@ -1080,6 +1080,6 @@ mod tests {
             .expect("query pipeline")
     }
     mod staged {
-        include!("v3_tests.rs");
+        include!("staged_tests.rs");
     }
 }

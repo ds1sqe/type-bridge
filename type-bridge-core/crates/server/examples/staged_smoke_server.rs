@@ -38,11 +38,11 @@ use type_bridge_server::config::{
     InboundTlsSection, OutboundTlsMode, SecureTypeDBSection, TypeDBSection,
 };
 use type_bridge_server::interceptor::{
-    InterceptError, Interceptor, RequestContext, V3CommitOutcome, V3PolicyPlan,
+    CommitOutcome, InterceptError, Interceptor, PolicyPlan, RequestContext,
 };
 use type_bridge_server::pipeline::PipelineBuilder;
+use type_bridge_server::transport::staged::create_router;
 use type_bridge_server::transport::staged_state::StagedQueryState;
-use type_bridge_server::transport::v3::create_v3_router;
 use type_bridge_server::typedb::TypeDBClient;
 
 struct SmokeTrace(Mutex<std::fs::File>);
@@ -64,18 +64,15 @@ impl Interceptor for SmokeTrace {
     fn name(&self) -> &str {
         "staged-smoke-trace"
     }
-    fn supports_v3(&self) -> bool {
-        true
-    }
 
-    fn on_v3_transport<'a>(
+    fn on_transport<'a>(
         &'a self,
         ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async move {
             let event = match ctx
                 .metadata
-                .get("v3_endpoint")
+                .get("endpoint")
                 .and_then(serde_json::Value::as_str)
             {
                 Some("staged") => Some("request"),
@@ -89,10 +86,10 @@ impl Interceptor for SmokeTrace {
         })
     }
 
-    fn on_v3_plan<'a>(
+    fn on_plan<'a>(
         &'a self,
         index: usize,
-        plan: &'a V3PolicyPlan<'a>,
+        plan: &'a PolicyPlan<'a>,
         ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async move {
@@ -101,9 +98,9 @@ impl Interceptor for SmokeTrace {
         })
     }
 
-    fn on_v3_commit<'a>(
+    fn on_commit<'a>(
         &'a self,
-        outcome: &'a V3CommitOutcome<'a>,
+        outcome: &'a CommitOutcome<'a>,
         ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async move {
@@ -311,7 +308,7 @@ async fn main() {
         )));
     }
     let pipeline = Arc::new(pipeline.build().expect("policy pipeline builds"));
-    let router = create_v3_router(pipeline, state);
+    let router = create_router(pipeline, state);
     let address = SocketAddr::from((
         [127, 0, 0, 1],
         env("SMOKE_PORT").parse::<u16>().expect("port"),
