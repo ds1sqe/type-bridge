@@ -970,9 +970,21 @@ async fn completed_legacy_history_then_evolve_live() {
         type_bridge_schema_migration::encode_verified_manifest(&bridge).unwrap(),
     )
     .unwrap();
+    let untouched_journal_schema = journal.schema_text().await.unwrap();
+    let pending = run_cli(root, &["migration", "verify", "--environment", "live"]);
+    assert!(!pending.status.success());
+    assert!(String::from_utf8_lossy(&pending.stderr).contains("migration_journal_import_pending"));
+    assert_eq!(
+        journal.schema_text().await.unwrap(),
+        untouched_journal_schema
+    );
+    assert_success(
+        &run_cli(root, &["migration", "apply", "--environment", "live"]),
+        "import completed adoption",
+    );
     assert_success(
         &run_cli(root, &["migration", "verify", "--environment", "live"]),
-        "verify completed adoption",
+        "verify imported adoption",
     );
     fs::write(root.join("schema/fragments/model.yaml"), "format: typebridge.schema/v2\nattributes:\n  name: { value: string }\n  nickname: { value: string }\nentities:\n  person: { owns: [name, nickname] }\n").unwrap();
     assert_success(
