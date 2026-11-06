@@ -245,14 +245,12 @@ several steps to stay within TypeDB transaction limits. There is no batching API
 Put an intent beside the migration history, for example `seed.data.yaml`:
 
 ```yaml
-format: typebridge.migration-data-intent/v1
+format: typebridge.migration-data-step-intent/v1
 id: seed-person
 forward:
-  kind: typeql
-  text: 'insert $p isa person, has name "Ada";'
+  typeql: 'insert $p isa person, has name "Ada";'
 reverse:
-  kind: typeql
-  text: 'match $p isa person, has name "Ada"; delete $p;'
+  typeql: 'match $p isa person, has name "Ada"; delete $p;'
 ```
 
 Review the reverse against your application data: this example assumes that
@@ -266,14 +264,14 @@ migration authoring requires the compiled schema sources to equal the committed
 history head; publish schema expansion first. Data work is classified as opaque
 and uses the existing exact-manifest approval flow.
 
-A plan program uses `kind: plan` and `file: forward.plan.json`. The file must
+A plan program uses `plan-file: forward.plan.json`. The file must
 contain canonical query-plan v3 JSON with no invocation inputs, bound to the
 historical schema. Intent and plan paths must be regular files directly inside
 the configured migration directory. Forward and reverse may use different
 program kinds. The manifest digest covers embedded plan bytes and exact TypeQL
 text.
 
-A callback program uses `kind: user` and `step-id: derive-gender`. Its manifest
+A callback program uses `user: derive-gender`. Its manifest
 covers the registration ID and whether a reverse is declared; it does **not**
 cover the callback's source code. Keep callback code versioned with the
 application. CLI apply cannot load user code and reports

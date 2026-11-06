@@ -2541,7 +2541,7 @@ mod migration_command_tests {
         })
         .unwrap();
         for (name, id) in [("first.data.yaml", "first"), ("second.data.yaml", "second")] {
-            fs::write(directory.path().join("migrations/v2").join(name), format!("format: typebridge.migration-data-intent/v1\nid: {id}\nforward:\n  kind: user\n  step-id: {id}\n")).unwrap();
+            fs::write(directory.path().join("migrations/v2").join(name), format!("format: typebridge.migration-data-step-intent/v1\nid: {id}\nforward:\n  user: {id}\n")).unwrap();
         }
         let cli = Cli::try_parse_from([
             "type-bridge",

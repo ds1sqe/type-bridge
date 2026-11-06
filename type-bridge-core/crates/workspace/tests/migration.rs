@@ -747,7 +747,15 @@ fn data_intents_reject_unknown_duplicate_and_escaping_inputs_before_publication(
     directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
     let secrets = AcceptSecrets(AtomicUsize::new(0));
     let extensions = AcceptExtensions(AtomicUsize::new(0));
-    let available = capabilities();
+    let mut available = capabilities();
+    for name in [
+        "query.output.rows",
+        "query.plan",
+        "query.plan.v3",
+        "query.write.insert",
+    ] {
+        available.insert(CapabilityId::new(name).unwrap());
+    }
     let workspace = load_workspace(&directory, &secrets, &extensions, &available);
     let MigrationGenerationOutcome::Generated(initial) = workspace.migration_make("init").unwrap()
     else {
@@ -756,10 +764,14 @@ fn data_intents_reject_unknown_duplicate_and_escaping_inputs_before_publication(
     workspace.write_generated_migration(&initial).unwrap();
     let authority = workspace.open_migration_directory().unwrap();
     for source in [
-        "format: typebridge.migration-data-intent/v1\nid: seed\nforward: {kind: typeql, text: 'insert $p isa person;', extra: true}\n",
-        "format: typebridge.migration-data-intent/v1\nid: seed\nid: other\nforward: {kind: typeql, text: 'insert $p isa person;'}\n",
-        "format: typebridge.migration-data-intent/v1\nid: seed\nforward: {kind: plan, file: ../outside.json}\n",
-        "format: typebridge.migration-data-intent/v1\nid: seed\nforward: {kind: typeql, text: ''}\n",
+        "format: typebridge.migration-data-intent/v1\nid: seed\nforward: {typeql: 'insert $p isa person;'}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {user: derive, typeql: 'insert $p isa person;'}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {user: derive, user: other}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {typeql: 'insert $p isa person;', extra: true}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nid: other\nforward: {typeql: 'insert $p isa person;'}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {plan-file: ../outside.json}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {typeql: ''}\n",
     ] {
         directory.write("migrations/v2/bad.data.yaml", source);
         assert!(
@@ -774,7 +786,7 @@ fn data_intents_reject_unknown_duplicate_and_escaping_inputs_before_publication(
                 .exists()
         );
     }
-    let valid = "format: typebridge.migration-data-intent/v1\nid: seed\nforward: {kind: typeql, text: 'insert $p isa person;'}\nreverse: {kind: typeql, text: 'match $p isa person; delete $p;'}\n";
+    let valid = "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {typeql: 'insert $p isa person;'}\nreverse: {typeql: 'match $p isa person; delete $p;'}\n";
     directory.write("migrations/v2/valid.data.yaml", valid);
     assert!(
         workspace
@@ -798,6 +810,65 @@ fn data_intents_reject_unknown_duplicate_and_escaping_inputs_before_publication(
         .unwrap();
     assert!(generated.manifest().reversible());
     assert_eq!(generated.manifest().steps().len(), 1);
+    use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+    use type_bridge_contract::query_plan::{
+        InsertThing, Operation, PlanSpec, QueryOutput, QueryPlan, Stage, WriteReturns,
+    };
+    let binding = BindingId::new(0).unwrap();
+    let plan = QueryPlan::new(
+        PlanSpec {
+            bindings: vec![AssertionBinding::new(
+                binding,
+                QueryVariable::new("person").unwrap(),
+            )],
+            inputs: vec![],
+            given_rows: None,
+            operation: Operation::Write {
+                returns: WriteReturns::Matched,
+            },
+            pipeline: vec![Stage::Insert {
+                things: vec![InsertThing {
+                    binding,
+                    type_id: type_bridge_contract::id::TypeId::new(
+                        type_bridge_contract::id::TypeKind::Entity,
+                        "person",
+                    )
+                    .unwrap(),
+                    fields: vec![],
+                    players: vec![],
+                }],
+            }],
+            output: QueryOutput::Rows { columns: vec![] },
+            managed_semantics: initial
+                .manifest()
+                .target_state()
+                .managed_semantic_schema()
+                .clone(),
+            functions: vec![],
+        },
+        initial.manifest().target_schema(),
+    )
+    .unwrap();
+    fs::write(
+        directory.0.join("migrations/v2/seed.plan.json"),
+        plan.canonical_bytes().unwrap(),
+    )
+    .unwrap();
+    directory.write("migrations/v2/plan.data.yaml", "format: typebridge.migration-data-step-intent/v1\nid: planned\nforward: {plan-file: seed.plan.json}\nreverse: {user: undo-seed}\n");
+    let planned = workspace
+        .author_data_migration_in(&authority, "planned", &[PathBuf::from("plan.data.yaml")])
+        .unwrap();
+    let data = planned.manifest().steps()[0].as_data().unwrap();
+    assert_eq!(
+        data.forward(),
+        &type_bridge_contract::migration_data::DataProgram::Plan {
+            plan: Box::new(plan)
+        }
+    );
+    assert!(matches!(
+        data.reverse(),
+        Some(type_bridge_contract::migration_data::DataProgram::User { .. })
+    ));
 }
 
 #[test]

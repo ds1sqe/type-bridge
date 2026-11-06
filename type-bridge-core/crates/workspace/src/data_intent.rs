@@ -72,32 +72,33 @@ fn program(
     let map = node
         .as_mapping()
         .ok_or_else(|| invalid("workspace_data_intent_expected_mapping", "program"))?;
-    let kind = text(required(map, "kind")?, "kind")?;
-    Ok(match kind {
-        "typeql" => {
-            keys(map, &["kind", "text"])?;
-            DataProgram::Typeql {
-                text: text(required(map, "text")?, "text")?.to_owned(),
-            }
-        }
-        "plan" => {
-            keys(map, &["kind", "file"])?;
-            let bytes = read_file(directory, Path::new(text(required(map, "file")?, "file")?))?;
+    keys(map, &["user", "typeql", "plan-file"])?;
+    if map.entries().len() != 1 {
+        return Err(invalid("workspace_data_intent_program_arity", "program").into());
+    }
+    let entry = &map.entries()[0];
+    let key = entry.key().value();
+    let value = text(entry.value(), key)?;
+    Ok(match key {
+        "typeql" => DataProgram::Typeql {
+            text: value.to_owned(),
+        },
+        "plan-file" => {
+            // Intents are direct children; their retained directory is the base.
+            let bytes = read_file(directory, Path::new(value))?;
             DataProgram::Plan {
                 plan: Box::new(type_bridge_contract::query_plan::decode_query_plan(
                     &bytes, schema,
                 )?),
             }
         }
-        "user" => {
-            keys(map, &["kind", "step-id"])?;
-            DataProgram::User {
-                step_id: MigrationStepId::new(text(required(map, "step-id")?, "step-id")?)?,
-            }
-        }
-        _ => return Err(invalid("workspace_data_intent_kind", "kind").into()),
+        "user" => DataProgram::User {
+            step_id: MigrationStepId::new(value)?,
+        },
+        _ => unreachable!("closed program keys were validated"),
     })
 }
+
 pub(crate) fn parse(
     document: DocumentId,
     bytes: &[u8],
@@ -109,7 +110,7 @@ pub(crate) fn parse(
     let doc = SchemaDocument::parse(document, source)?;
     let map = doc.root();
     keys(map, &["format", "id", "forward", "reverse"])?;
-    if text(required(map, "format")?, "format")? != "typebridge.migration-data-intent/v1" {
+    if text(required(map, "format")?, "format")? != "typebridge.migration-data-step-intent/v1" {
         return Err(invalid("workspace_data_intent_format", "format").into());
     }
     Ok(DataStep::new(
