@@ -347,7 +347,7 @@ async function run(
       const failed: Answer = ["failure", { phase, reason, code, retry_safe }];
       return Object.fromEntries(names.map((name) => [name, failed]));
     }
-    const fetched = pending.find(([name]) => name === "read_back")?.[1].get();
+    const fetched = pending.find(([name]) => name === "read_back")?.[1].result();
     if (fetched !== undefined) {
       if (fetched instanceof Matched || fetched.kind !== "documents" || fetched.documents.length !== 1) throw new Error("expected one purchase document");
       const doc = fetched.documents[0] as Record<string, unknown>;
