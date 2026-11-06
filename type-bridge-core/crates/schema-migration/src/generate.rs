@@ -236,6 +236,50 @@ pub fn generate_backfill_migration(
     request: &BackfillMigrationGenerationRequest<'_>,
 ) -> Result<GeneratedMigration, Diagnostic> {
     request.plan.require_new_authoring()?;
+    let generic = MigrationGenerationRequest {
+        app_label: request.app_label,
+        base_name: request.base_name,
+        genesis_source: request.genesis_source,
+        desired: request.desired,
+        context: request.context,
+    };
+    generate_data_steps(
+        graph,
+        &generic,
+        vec![MigrationStep::backfill(
+            MigrationStepId::new("backfill")?,
+            request.plan.clone(),
+        )?],
+        "migration_backfill_generation_schema_drift",
+    )
+}
+
+/// Author ordered atomic data steps against the exact committed schema head.
+pub fn generate_data_migration(
+    graph: &MigrationHistoryGraph,
+    request: &MigrationGenerationRequest<'_>,
+    steps: &[type_bridge_contract::migration_data::DataStep],
+) -> Result<GeneratedMigration, Diagnostic> {
+    if steps.is_empty() {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_data_steps_empty",
+            "data migration requires at least one step",
+        ));
+    }
+    generate_data_steps(
+        graph,
+        request,
+        steps.iter().cloned().map(MigrationStep::Data).collect(),
+        "migration_data_generation_schema_drift",
+    )
+}
+fn generate_data_steps(
+    graph: &MigrationHistoryGraph,
+    request: &MigrationGenerationRequest<'_>,
+    steps: Vec<MigrationStep>,
+    drift_code: &'static str,
+) -> Result<GeneratedMigration, Diagnostic> {
     for (id, _) in graph.manifests() {
         if id.app_label().as_str() != request.app_label {
             return Err(failure(
@@ -261,8 +305,8 @@ pub fn generate_backfill_migration(
     if source_state != desired_state {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
-            "migration_backfill_generation_schema_drift",
-            "backfill authoring requires current Split-YAML to equal the committed head",
+            drift_code,
+            "data authoring requires current Split-YAML to equal the committed head",
         ));
     }
 
@@ -277,8 +321,7 @@ pub fn generate_backfill_migration(
             "allocated migration identity already exists in verified history",
         ));
     }
-    let step = MigrationStep::backfill(MigrationStepId::new("backfill")?, request.plan.clone())?;
-    let draft = SchemaMigrationDraft::new(id, parents, vec![step])?;
+    let draft = SchemaMigrationDraft::new(id, parents, steps)?;
     let manifest = build_verified_manifest(draft, (source, request.context))?;
     let canonical_bytes = encode_verified_manifest(&manifest)?;
     Ok(GeneratedMigration {
@@ -307,6 +350,30 @@ pub fn render_migration_preview(
     let mut pending = Vec::new();
     let mut queries = Vec::new();
     for step in manifest.steps() {
+        if let Some(data) = step.as_data() {
+            let reverse = if data.reverse().is_some() {
+                "reverse declared"
+            } else {
+                "IRREVERSIBLE: no reverse declared"
+            };
+            queries.push(format!(
+                "-- atomic data step {} ({reverse})",
+                data.id().as_str()
+            ));
+            match data.forward() {
+                type_bridge_contract::migration_data::DataProgram::Typeql { text } => {
+                    queries.push(text.clone())
+                }
+                type_bridge_contract::migration_data::DataProgram::User { step_id } => queries
+                    .push(format!(
+                        "-- registered SDK callback: {} (code is not in the manifest)",
+                        step_id.as_str()
+                    )),
+                type_bridge_contract::migration_data::DataProgram::Plan { .. } => queries
+                    .push("-- canonical query-plan v3 bytes are embedded in the manifest".into()),
+            }
+            continue;
+        }
         let Some(schema_step) = step.as_schema_delta() else {
             pending.push(step);
             continue;

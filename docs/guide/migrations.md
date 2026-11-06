@@ -228,3 +228,51 @@ execute only when it matches an existing persisted open plan from an interrupted
 execution; otherwise regenerate it with an explicit mode. The refusal is
 `migration_backfill_historical_execution_requires_open_plan` and occurs before
 saving a new plan or mutating provider data.
+
+## Atomic data steps
+
+Use a data step for a canonical query plan, raw TypeQL, or an SDK callback.
+Each forward or reverse program runs in one engine-owned managed write
+transaction. The engine commits its completion marker in that same transaction;
+a retry uses that marker to repair the journal without running committed work
+again. Reversing the step deletes its marker atomically, so a later apply can
+run forward again. One step is one transaction: split large derivations into
+several steps to stay within TypeDB transaction limits. There is no batching API.
+
+Put an intent beside the migration history, for example `seed.data.yaml`:
+
+```yaml
+format: typebridge.migration-data-intent/v1
+id: seed-person
+forward:
+  kind: typeql
+  text: 'insert $p isa person, has name "Ada";'
+reverse:
+  kind: typeql
+  text: 'match $p isa person, has name "Ada"; delete $p;'
+```
+
+Review the reverse against your application data: this example assumes that
+name identifies the seeded person. Omit `reverse` when no safe inverse exists.
+The preview then marks the step `IRREVERSIBLE`, and rollback refuses it before
+writes.
+
+Author with `type-bridge migration make --name seed --data-step seed.data.yaml`.
+Repeat `--data-step` to include several intents in the given order. Data
+migration authoring requires the compiled schema sources to equal the committed
+history head; publish schema expansion first. Data work is classified as opaque
+and uses the existing exact-manifest approval flow.
+
+A plan program uses `kind: plan` and `file: forward.plan.json`. The file must
+contain canonical query-plan v3 JSON with no invocation inputs, bound to the
+historical schema. Intent and plan paths must be regular files directly inside
+the configured migration directory. Forward and reverse may use different
+program kinds. The manifest digest covers embedded plan bytes and exact TypeQL
+text.
+
+A callback program uses `kind: user` and `step-id: derive-gender`. Its manifest
+covers the registration ID and whether a reverse is declared; it does **not**
+cover the callback's source code. Keep callback code versioned with the
+application. CLI apply cannot load user code and reports
+`migration_user_step_unregistered`; execute such migrations through an SDK
+catalog with the callback registered.

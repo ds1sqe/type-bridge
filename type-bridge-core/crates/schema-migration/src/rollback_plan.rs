@@ -36,6 +36,8 @@ pub struct VerifiedMigrationRollbackStep {
 /// One verified reverse execution entry in exact reverse-manifest order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VerifiedMigrationRollbackOperation {
+    /// Index into atomic data rollback steps.
+    Data(usize),
     /// Index into the lowered schema rollback steps.
     SchemaDelta(usize),
     /// Index into the closed backfill rollback steps.
@@ -75,6 +77,7 @@ pub struct VerifiedMigrationRollbackManifest {
     rollback_safety: SafetyClass,
     steps: Vec<VerifiedMigrationRollbackStep>,
     backfills: Vec<VerifiedMigrationRollbackBackfillStep>,
+    data_steps: Vec<type_bridge_contract::migration_data::DataStep>,
     operations: Vec<VerifiedMigrationRollbackOperation>,
 }
 
@@ -102,6 +105,11 @@ impl VerifiedMigrationRollbackManifest {
     /// Return checked closed reverse backfill programs.
     pub fn backfills(&self) -> &[VerifiedMigrationRollbackBackfillStep] {
         &self.backfills
+    }
+
+    /// Return atomic data programs with verified reverses.
+    pub fn data_steps(&self) -> &[type_bridge_contract::migration_data::DataStep] {
+        &self.data_steps
     }
 
     /// Return the complete reverse order across schema and data operations.
@@ -360,9 +368,24 @@ fn build_verified_migration_rollback_plan_inner(
         let mut rollback_safety = SafetyClass::FormalOnly;
         let mut steps = Vec::new();
         let mut backfills = Vec::new();
+        let mut data_steps = Vec::new();
         let mut operations = Vec::new();
         let mut boundary_index = boundaries.len() - 1;
         for step in manifest.steps().iter().rev() {
+            if let Some(data) = step.as_data() {
+                if data.reverse().is_none() {
+                    return Err(contract_failure(
+                        DiagnosticCategory::InvalidContract,
+                        "migration_rollback_irreversible_data",
+                        "data step has no reverse program",
+                    )
+                    .into());
+                }
+                operations.push(VerifiedMigrationRollbackOperation::Data(data_steps.len()));
+                data_steps.push(data.clone());
+                rollback_safety = rollback_safety.max(SafetyClass::Opaque);
+                continue;
+            }
             if let Some((contract, plan)) = step.as_backfill() {
                 if contract.reverse().is_none() || plan.reverse().is_none() {
                     return Err(contract_failure(
@@ -498,6 +521,7 @@ fn build_verified_migration_rollback_plan_inner(
             rollback_safety,
             steps: lowered_steps,
             backfills,
+            data_steps,
             operations,
         });
         current_schema = manifest.source_schema().clone();

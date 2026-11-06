@@ -451,6 +451,97 @@ pub(crate) fn insert_managed_anchor(fields: &[(&str, &str)]) -> Result<QueryPlan
     )
 }
 
+static MANAGED_AUTHORITY: std::sync::LazyLock<
+    Result<(DeclaredSchema, ManagedSemanticSchemaFingerprint), Diagnostic>,
+> = std::sync::LazyLock::new(|| {
+    let source = type_bridge_contract::reserved::MANAGED_FENCE_SCHEMA_TYPEQL;
+    let schema = type_bridge_schema_compat::typeql_to_declared(
+        DocumentId::new("migration-managed-data.typeql")?,
+        source,
+    )
+    .map_err(|_| shape())?;
+    let fingerprint = ManagedSemanticSchemaFingerprint::compute(
+        SemanticProfileId::new("typedb-3.12.1/v1")?,
+        source.as_bytes(),
+    )?;
+    Ok((schema, fingerprint))
+});
+fn finish_managed(
+    builder: Builder,
+    operation: Operation,
+    columns: Vec<BindingId>,
+) -> Result<QueryPlan, Diagnostic> {
+    let (schema, fingerprint) = MANAGED_AUTHORITY.as_ref().map_err(Clone::clone)?;
+    builder.finish_with(operation, columns, schema, fingerprint)
+}
+pub(crate) fn read_data_marker(key: &str) -> Result<DataQuery, Diagnostic> {
+    use type_bridge_contract::reserved::*;
+    let mut builder = Builder {
+        bindings: vec![],
+        stages: vec![],
+    };
+    let fields = [
+        (DATA_STEP_SCOPE, "scope"),
+        (DATA_STEP_MIGRATION, "migration"),
+        (DATA_STEP_ID, "step"),
+    ];
+    let (_, columns) =
+        builder.matched(DATA_STEP_ENTITY, &[(DATA_STEP_KEY, key)], &fields, false)?;
+    Ok(DataQuery {
+        plan: finish_managed(builder, Operation::Rows, columns)?,
+        aliases: fields
+            .iter()
+            .map(|(_, alias)| (*alias).to_owned())
+            .collect(),
+    })
+}
+pub(crate) fn write_data_marker(
+    fields: &[(&str, &str)],
+    insert: bool,
+) -> Result<QueryPlan, Diagnostic> {
+    use type_bridge_contract::reserved::DATA_STEP_ENTITY;
+    let mut builder = Builder {
+        bindings: vec![],
+        stages: vec![],
+    };
+    if insert {
+        builder.insert(DATA_STEP_ENTITY, fields)?;
+    } else {
+        let (root, _) = builder.matched(DATA_STEP_ENTITY, fields, &[], false)?;
+        builder.stages.push(Stage::Delete {
+            items: vec![DeleteItem::Thing { binding: root }],
+        });
+    }
+    finish_managed(
+        builder,
+        Operation::Write {
+            returns: WriteReturns::Matched,
+        },
+        vec![],
+    )
+}
+/// Rewrite the exact held mirror in the data transaction to participate in
+/// the same write conflict as lease takeover, even for otherwise disjoint rows.
+pub(crate) fn claim_data_fence(fields: &[(&str, &str)]) -> Result<QueryPlan, Diagnostic> {
+    use type_bridge_contract::reserved::MANAGED_CONTROL_ENTITY;
+    let mut builder = Builder {
+        bindings: vec![],
+        stages: vec![],
+    };
+    let (root, _) = builder.matched(MANAGED_CONTROL_ENTITY, fields, &[], false)?;
+    builder.stages.push(Stage::Delete {
+        items: vec![DeleteItem::Thing { binding: root }],
+    });
+    builder.insert(MANAGED_CONTROL_ENTITY, fields)?;
+    finish_managed(
+        builder,
+        Operation::Write {
+            returns: WriteReturns::Matched,
+        },
+        vec![],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

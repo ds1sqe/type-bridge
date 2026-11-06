@@ -34,6 +34,8 @@ pub mod migration;
 pub mod migration_assertion;
 /// Closed binding-neutral migration backfill plans and fingerprints.
 pub mod migration_backfill;
+/// Atomic migration data programs.
+pub mod migration_data;
 pub use migration_assertion::migration_assertion_capability_vocabulary;
 pub use query_plan::query_given_rows_capability;
 mod migration_assertion_wire;

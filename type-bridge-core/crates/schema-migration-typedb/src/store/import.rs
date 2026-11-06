@@ -187,7 +187,9 @@ impl TypeDbMigrationStore<'_> {
                     let kind = required_scalar(&row, "kind")?;
                     if matches!(
                         kind.as_str(),
-                        IMPORT_COMPLETE_RECORD_KIND | LEGACY_IMPORT_RECORD_KIND
+                        IMPORT_COMPLETE_RECORD_KIND
+                            | LEGACY_IMPORT_RECORD_KIND
+                            | DATA_STEP_EVENT_RECORD_KIND
                     ) {
                         return Err(invalid("an old journal cannot contain new import records"));
                     }
@@ -546,6 +548,7 @@ impl TypeDbMigrationStore<'_> {
                 PLAN_RECORD_KIND,
                 EVENT_RECORD_KIND,
                 BACKFILL_EVENT_RECORD_KIND,
+                DATA_STEP_EVENT_RECORD_KIND,
                 APPLIED_RECORD_KIND,
                 ROLLBACK_PLAN_RECORD_KIND,
                 ROLLBACK_EVENT_RECORD_KIND,

@@ -2,6 +2,10 @@
 
 mod import;
 
+use crate::wire::{decode_data_event, encode_data_event};
+use type_bridge_contract::reserved::DATA_STEP_EVENT_RECORD_KIND;
+use type_bridge_schema_migration::{DataStepDirection, DataStepEventRecord};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1515,6 +1519,62 @@ impl<'a> TypeDbMigrationStore<'a> {
         Ok(JournalEntry::from_store(sequence, record))
     }
 
+    async fn record_data_event_inner(
+        &self,
+        lease: &MigrationLease,
+        record: DataStepEventRecord,
+    ) -> Result<JournalEntry<DataStepEventRecord>, Diagnostic> {
+        ensure_record_lease(lease, record.scope(), record.fence())?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
+        let current = load_active_control(&mut transaction, lease).await?;
+        let member = match record.direction() {
+            DataStepDirection::Forward => {
+                let plan = self.require_plan()?;
+                self.load_open_plan_in_transaction(&mut transaction, lease, plan)
+                    .await?
+                    .is_some_and(|open| {
+                        open.plan()
+                            .record()
+                            .manifest_digests()
+                            .contains(&record.manifest_digest())
+                    })
+            }
+            DataStepDirection::Reverse => {
+                let plan = self.require_rollback_plan()?;
+                self.load_open_rollback_plan_in_transaction(&mut transaction, lease, plan)
+                    .await?
+                    .is_some_and(|open| {
+                        open.plan()
+                            .record()
+                            .manifest_digests()
+                            .contains(&record.manifest_digest())
+                    })
+            }
+        };
+        if !member {
+            let _ = rollback_and_close(&mut transaction).await;
+            return Err(record_identity_mismatch());
+        }
+        let payload = encode_data_event(&record)?;
+        let sequence = append_record(
+            &mut transaction,
+            lease,
+            current,
+            DATA_STEP_EVENT_RECORD_KIND,
+            &payload,
+        )
+        .await?;
+        transaction.commit().await.map_err(map_orm_error)?;
+        Ok(JournalEntry::from_store(sequence, record))
+    }
+
     async fn record_applied_inner(
         &self,
         lease: &MigrationLease,
@@ -1816,7 +1876,29 @@ impl<'a> TypeDbMigrationStore<'a> {
             let record = decode_apply_backfill_event_against_plan(&event_row.payload, lease, plan)?;
             backfill_events.push(JournalEntry::from_store(event_row.sequence, record));
         }
-        OpenPlanRecord::from_store_with_backfills(plan_entry, events, backfill_events).map(Some)
+        let mut data_events = Vec::new();
+        for row in load_rows(
+            transaction,
+            lease.scope(),
+            Some(DATA_STEP_EVENT_RECORD_KIND),
+        )
+        .await?
+        {
+            let record = decode_data_event(
+                &row.payload,
+                lease,
+                plan.migrations().iter().map(|entry| entry.manifest()),
+                DataStepDirection::Forward,
+            )?;
+            data_events.push(JournalEntry::from_store(row.sequence, record));
+        }
+        OpenPlanRecord::from_store_with_data_events(
+            plan_entry,
+            events,
+            backfill_events,
+            data_events,
+        )
+        .map(Some)
     }
 
     async fn begin_rollback_plan_inner(
@@ -2098,8 +2180,29 @@ impl<'a> TypeDbMigrationStore<'a> {
                 decode_rollback_backfill_event_against_plan(&event_row.payload, lease, plan)?;
             backfill_events.push(JournalEntry::from_store(event_row.sequence, record));
         }
-        OpenRollbackPlanRecord::from_store_with_backfills(plan_entry, events, backfill_events)
-            .map(Some)
+        let mut data_events = Vec::new();
+        for row in load_rows(
+            transaction,
+            lease.scope(),
+            Some(DATA_STEP_EVENT_RECORD_KIND),
+        )
+        .await?
+        {
+            let record = decode_data_event(
+                &row.payload,
+                lease,
+                plan.rollbacks().iter().map(|entry| entry.manifest()),
+                DataStepDirection::Reverse,
+            )?;
+            data_events.push(JournalEntry::from_store(row.sequence, record));
+        }
+        OpenRollbackPlanRecord::from_store_with_data_events(
+            plan_entry,
+            events,
+            backfill_events,
+            data_events,
+        )
+        .map(Some)
     }
 }
 
@@ -2151,6 +2254,16 @@ impl MigrationExecutionJournal for TypeDbMigrationStore<'_> {
         Box::pin(async move {
             self.require_owned_lease(lease)?;
             self.record_backfill_event_inner(lease, record).await
+        })
+    }
+    fn record_data_event<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: DataStepEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<DataStepEventRecord>> {
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.record_data_event_inner(lease, record).await
         })
     }
 
@@ -2523,6 +2636,7 @@ fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
         PLAN_RECORD_KIND
             | EVENT_RECORD_KIND
             | BACKFILL_EVENT_RECORD_KIND
+            | DATA_STEP_EVENT_RECORD_KIND
             | APPLIED_RECORD_KIND
             | ROLLBACK_PLAN_RECORD_KIND
             | ROLLBACK_EVENT_RECORD_KIND
@@ -2721,6 +2835,7 @@ async fn delete_open_plan(
             PLAN_RECORD_KIND,
             EVENT_RECORD_KIND,
             BACKFILL_EVENT_RECORD_KIND,
+            DATA_STEP_EVENT_RECORD_KIND,
         ],
     )?;
     execute_data_plan(transaction, &plan).await
@@ -2739,6 +2854,7 @@ async fn delete_open_rollback_plan(
             ROLLBACK_PLAN_RECORD_KIND,
             ROLLBACK_EVENT_RECORD_KIND,
             BACKFILL_EVENT_RECORD_KIND,
+            DATA_STEP_EVENT_RECORD_KIND,
         ],
     )?;
     execute_data_plan(transaction, &plan).await

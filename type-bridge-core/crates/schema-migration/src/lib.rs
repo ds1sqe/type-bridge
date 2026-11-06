@@ -53,8 +53,9 @@ pub use execution::{
 pub use generate::{
     BackfillMigrationGenerationRequest, GeneratedMigration, MigrationGenerationOutcome,
     MigrationGenerationRequest, MigrationPreviewError, allocate_migration_name,
-    generate_backfill_migration, generate_next_migration, render_migration_preview,
-    try_acquire_migration_authoring_lock, write_generated_migration_under_lock,
+    generate_backfill_migration, generate_data_migration, generate_next_migration,
+    render_migration_preview, try_acquire_migration_authoring_lock,
+    write_generated_migration_under_lock,
 };
 pub use history::{
     CanonicalMigrationHistoryEvidence, MigrationHistoryGraph, MigrationProfileUpgrade,
@@ -107,3 +108,6 @@ pub use type_bridge_contract::schema_lowering::{
     TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID, TYPEDB_3_13_6_SCHEMA_LOWERING_PROFILE_ID,
 };
 pub use type_bridge_schema::{SafetyClass, SafetyClassificationError, classify_operation_safety};
+
+mod execution_data;
+pub use execution_data::{DataStepDirection, DataStepEventRecord};

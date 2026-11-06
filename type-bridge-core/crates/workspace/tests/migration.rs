@@ -740,3 +740,62 @@ fn workspace_captures_replayable_deterministic_history_bundle() {
     assert_eq!(decoded.entries().len(), 1);
     assert_eq!(decoded.heads(), &[generated.manifest().id().clone()]);
 }
+
+#[test]
+fn data_intents_reject_unknown_duplicate_and_escaping_inputs_before_publication() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let available = capabilities();
+    let workspace = load_workspace(&directory, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(initial) = workspace.migration_make("init").unwrap()
+    else {
+        panic!("initial schema")
+    };
+    workspace.write_generated_migration(&initial).unwrap();
+    let authority = workspace.open_migration_directory().unwrap();
+    for source in [
+        "format: typebridge.migration-data-intent/v1\nid: seed\nforward: {kind: typeql, text: 'insert $p isa person;', extra: true}\n",
+        "format: typebridge.migration-data-intent/v1\nid: seed\nid: other\nforward: {kind: typeql, text: 'insert $p isa person;'}\n",
+        "format: typebridge.migration-data-intent/v1\nid: seed\nforward: {kind: plan, file: ../outside.json}\n",
+        "format: typebridge.migration-data-intent/v1\nid: seed\nforward: {kind: typeql, text: ''}\n",
+    ] {
+        directory.write("migrations/v2/bad.data.yaml", source);
+        assert!(
+            workspace
+                .author_data_migration_in(&authority, "bad", &[PathBuf::from("bad.data.yaml")])
+                .is_err()
+        );
+        assert!(
+            !directory
+                .0
+                .join("migrations/v2/0002_bad.tbmigration.json")
+                .exists()
+        );
+    }
+    let valid = "format: typebridge.migration-data-intent/v1\nid: seed\nforward: {kind: typeql, text: 'insert $p isa person;'}\nreverse: {kind: typeql, text: 'match $p isa person; delete $p;'}\n";
+    directory.write("migrations/v2/valid.data.yaml", valid);
+    assert!(
+        workspace
+            .author_data_migration_in(&authority, "bad", &[PathBuf::from("../valid.data.yaml")])
+            .is_err()
+    );
+    assert!(
+        workspace
+            .author_data_migration_in(
+                &authority,
+                "duplicate",
+                &[
+                    PathBuf::from("valid.data.yaml"),
+                    PathBuf::from("valid.data.yaml")
+                ]
+            )
+            .is_err()
+    );
+    let generated = workspace
+        .author_data_migration_in(&authority, "seed", &[PathBuf::from("valid.data.yaml")])
+        .unwrap();
+    assert!(generated.manifest().reversible());
+    assert_eq!(generated.manifest().steps().len(), 1);
+}

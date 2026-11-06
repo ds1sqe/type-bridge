@@ -1,5 +1,8 @@
 //! Canonical private persistence wire for trusted execution records.
 
+mod data;
+pub(crate) use data::{decode_data_event, encode_data_event};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use type_bridge_contract::codec::{from_canonical_json_with_limits, to_canonical_json_with_limits};

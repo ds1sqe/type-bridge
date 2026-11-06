@@ -298,6 +298,55 @@ impl TypeBridgeWorkspace {
         Ok(generated)
     }
 
+    /// Author and atomically publish ordered data intents under one history lock.
+    /// Intent and plan files must be regular direct children of this directory.
+    pub fn author_data_migration_in(
+        &self,
+        directory: &MigrationDirectoryAuthority,
+        base_name: &str,
+        intents: &[PathBuf],
+    ) -> Result<GeneratedMigration, TypeBridgeWorkspaceError> {
+        self.require_migration_directory(directory)?;
+        let authoring_lock = try_acquire_migration_authoring_lock(directory.directory())?;
+        let (graph, genesis) = self.discover_migrations_with_genesis_in(directory)?;
+        let historical = match graph.default_head()? {
+            Some(head) => graph.manifest(head).expect("verified head").target_schema(),
+            None => &genesis,
+        };
+        let mut steps = Vec::new();
+        for name in intents {
+            let bytes = crate::data_intent::read_file(directory.directory(), name)?;
+            let document = DocumentId::new(name.to_str().ok_or_else(|| {
+                backfill_intent_read_error(
+                    type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+                    "workspace_data_intent_non_utf8",
+                    "data intent filename must be UTF-8",
+                )
+            })?)?;
+            steps.push(crate::data_intent::parse(
+                document,
+                &bytes,
+                directory.directory(),
+                historical,
+            )?);
+        }
+        let generated = type_bridge_schema_migration::generate_data_migration(
+            &graph,
+            &MigrationGenerationRequest {
+                app_label: self.config().app_label().as_str(),
+                base_name,
+                genesis_source: &genesis,
+                desired: self.declared_schema(),
+                context: self.delta_context(),
+            },
+            &steps,
+        )?;
+        let preview = render_migration_preview(generated.manifest(), self.delta_context())
+            .map_err(preview_diagnostic)?;
+        write_generated_migration_under_lock(&authoring_lock, &generated, &preview)?;
+        Ok(generated)
+    }
+
     /// Persist one generated manifest and its review-only TypeQL preview.
     pub fn write_generated_migration(
         &self,

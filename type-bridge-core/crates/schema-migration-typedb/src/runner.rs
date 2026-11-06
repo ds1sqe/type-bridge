@@ -598,6 +598,13 @@ impl MigrationExecutionJournal for LegacyBoundStore<'_> {
     ) -> ExecutionFuture<'a, JournalEntry<BackfillEventRecord>> {
         self.inner.record_backfill_event(lease, record)
     }
+    fn record_data_event<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: type_bridge_schema_migration::DataStepEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<type_bridge_schema_migration::DataStepEventRecord>> {
+        self.inner.record_data_event(lease, record)
+    }
 
     fn record_applied<'a>(
         &'a self,
@@ -794,6 +801,8 @@ impl TypeDbMigrationRunner {
             .transpose()?;
         let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?
             .with_import_binding(import_binding);
+        self.validate_pending_data_read_only(&store, graph, target)
+            .await?;
         store.ensure_control_schema().await?;
 
         let basis = self.load_applied_basis(&store, holder).await?;
@@ -926,6 +935,12 @@ impl TypeDbMigrationRunner {
             .transpose()?;
         let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?
             .with_import_binding(import_binding);
+        self.validate_pending_data_read_only(
+            &store,
+            &graph,
+            &MigrationApplyTarget::Explicit(BTreeSet::from([bridge.id().clone()])),
+        )
+        .await?;
         store.ensure_control_schema().await?;
         let basis = self.load_applied_basis(&store, holder).await?;
         if profile_upgrade_bridge_recorded(&graph, bridge, &basis)? {
@@ -1091,6 +1106,16 @@ impl TypeDbMigrationRunner {
     ) -> Result<MigrationDirectoryRollbackOutcome, MigrationDirectoryApplyError> {
         self.require_supported_execution_binding()?;
         let graph = self.discover_in(directory)?;
+        for id in removals {
+            if let Some(manifest) = graph.manifest(id) {
+                for step in manifest.steps().iter().filter_map(|step| step.as_data()) {
+                    crate::provider::data::validate(
+                        step,
+                        type_bridge_schema_migration::DataStepDirection::Reverse,
+                    )?;
+                }
+            }
+        }
         let adopted_authority = self.verify_adopted_extension_state(directory).await?;
         require_adoption_authority_pair(&graph, adopted_authority.is_some())?;
         let observation_authority =
@@ -1198,6 +1223,70 @@ impl TypeDbMigrationRunner {
             self.verify_adopted_extension_state(directory).await?;
         }
         Ok(MigrationDirectoryRollbackOutcome::Executed(outcome))
+    }
+
+    // Reporting-grade history is only a preflight filter. Execution reloads
+    // the authoritative basis and validates the selected plan under its lease.
+    async fn validate_pending_data_read_only(
+        &self,
+        store: &TypeDbMigrationStore<'_>,
+        graph: &MigrationHistoryGraph,
+        target: &MigrationApplyTarget,
+    ) -> Result<(), Diagnostic> {
+        if !graph.manifests().any(|(_, manifest)| {
+            manifest.steps().iter().any(|step| {
+                step.as_data().is_some_and(|data| {
+                    matches!(
+                        data.forward(),
+                        type_bridge_contract::migration_data::DataProgram::User { .. }
+                    )
+                })
+            })
+        }) {
+            return Ok(());
+        }
+        let scope = ExecutionScope::new(self.context.scope_id().clone());
+        let basis = if self
+            .journal_database
+            .database_exists()
+            .await
+            .map_err(crate::provider::map_orm_error)?
+        {
+            match store.load_applied_read_only(&scope).await {
+                Ok(entries) => entries
+                    .iter()
+                    .map(|entry| entry.record().migration_id().clone())
+                    .collect(),
+                // Frozen histories cannot contain User programs. Until import
+                // completes, checking their whole selected closure is sufficient.
+                Err(error)
+                    if matches!(
+                        error.code().as_str(),
+                        "migration_journal_import_pending"
+                            | "migration_typedb_journal_control_schema_absent"
+                    ) =>
+                {
+                    BTreeSet::new()
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            BTreeSet::new()
+        };
+        let pending = match target {
+            MigrationApplyTarget::DefaultHead => graph.plan_apply_to_default_head(&basis)?,
+            MigrationApplyTarget::Explicit(targets) => graph.plan_apply(&basis, targets)?,
+        };
+        for id in pending {
+            let manifest = graph.manifest(&id).expect("planned manifest");
+            for step in manifest.steps().iter().filter_map(|step| step.as_data()) {
+                crate::provider::data::validate(
+                    step,
+                    type_bridge_schema_migration::DataStepDirection::Forward,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     async fn load_applied_basis(

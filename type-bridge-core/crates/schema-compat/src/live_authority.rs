@@ -683,6 +683,7 @@ fn expected_frozen_value_type(label: &str) -> Option<typeql::token::ValueType> {
     match label {
         MANAGED_CONTROL_ENTITY
         | LEGACY_CUTOVER_ANCHOR_ENTITY
+        | type_bridge_contract::reserved::DATA_STEP_ENTITY
         | "type_bridge_migration"
         | "type_bridge_migration_run" => None,
         "migration_applied_at" | "migration_started_at" | "migration_finished_at" => {
@@ -707,6 +708,11 @@ fn is_managed_fence_label(label: &str) -> bool {
             | LEGACY_CUTOVER_ANCHOR_KEY
             | LEGACY_CUTOVER_ANCHOR_SCOPE
             | LEGACY_CUTOVER_ANCHOR_FINGERPRINT
+            | type_bridge_contract::reserved::DATA_STEP_ENTITY
+            | type_bridge_contract::reserved::DATA_STEP_KEY
+            | type_bridge_contract::reserved::DATA_STEP_SCOPE
+            | type_bridge_contract::reserved::DATA_STEP_MIGRATION
+            | type_bridge_contract::reserved::DATA_STEP_ID
     )
 }
 

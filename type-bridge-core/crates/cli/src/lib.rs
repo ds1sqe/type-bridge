@@ -88,6 +88,9 @@ enum MigrationCommand {
         /// Closed backfill-intent YAML inside the configured migration directory.
         #[arg(long)]
         backfill_intent: Option<PathBuf>,
+        /// Ordered data-step intent files inside the migration directory; repeatable.
+        #[arg(long = "data-step", conflicts_with = "backfill_intent")]
+        data_step: Vec<PathBuf>,
     },
     /// Order the committed chain and report each manifest's safety class.
     Plan,
@@ -231,8 +234,24 @@ fn run(cli: &Cli) -> Result<(), String> {
             MigrationCommand::Make {
                 name,
                 backfill_intent,
+                data_step,
             } => {
                 let directory = workspace.ensure_migration_directory().map_err(display)?;
+                if !data_step.is_empty() {
+                    let generated = workspace
+                        .author_data_migration_in(&directory, name, data_step)
+                        .map_err(display_workspace)?;
+                    println!(
+                        "wrote {}\n  safety: {:?}\n  reversible: {}",
+                        directory
+                            .display_path()
+                            .join(generated.file_name())
+                            .display(),
+                        generated.manifest().safety(),
+                        generated.manifest().reversible()
+                    );
+                    return Ok(());
+                }
                 if let Some(intent) = backfill_intent {
                     let generated = workspace
                         .author_backfill_migration_in(&directory, name, intent)
@@ -2446,6 +2465,7 @@ mod migration_command_tests {
                 command: MigrationCommand::Make {
                     name: "initial".to_owned(),
                     backfill_intent: None,
+                    data_step: Vec::new(),
                 },
             },
         })
@@ -2474,6 +2494,7 @@ mod migration_command_tests {
                 command: MigrationCommand::Make {
                     name: "initial".to_owned(),
                     backfill_intent: None,
+                    data_step: Vec::new(),
                 },
             },
         };
@@ -2490,6 +2511,7 @@ mod migration_command_tests {
                 command: MigrationCommand::Make {
                     name: "copy-name".to_owned(),
                     backfill_intent: Some(PathBuf::from("copy-name.backfill.yaml")),
+                    data_step: Vec::new(),
                 },
             },
         })
@@ -2500,6 +2522,70 @@ mod migration_command_tests {
                 .path()
                 .join("migrations/v2/0002_copy-name.tbmigration.json")
                 .is_file()
+        );
+    }
+
+    #[test]
+    fn migration_make_authors_ordered_repeatable_data_intents() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = write_workspace_manifest(directory.path(), "typedb-3.12.1/v1");
+        run(&Cli {
+            manifest: manifest.clone(),
+            command: Command::Migration {
+                command: MigrationCommand::Make {
+                    name: "initial".into(),
+                    backfill_intent: None,
+                    data_step: vec![],
+                },
+            },
+        })
+        .unwrap();
+        for (name, id) in [("first.data.yaml", "first"), ("second.data.yaml", "second")] {
+            fs::write(directory.path().join("migrations/v2").join(name), format!("format: typebridge.migration-data-intent/v1\nid: {id}\nforward:\n  kind: user\n  step-id: {id}\n")).unwrap();
+        }
+        let cli = Cli::try_parse_from([
+            "type-bridge",
+            "--manifest",
+            manifest.to_str().unwrap(),
+            "migration",
+            "make",
+            "--name",
+            "derive",
+            "--data-step",
+            "first.data.yaml",
+            "--data-step",
+            "second.data.yaml",
+        ])
+        .unwrap();
+        run(&cli).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                directory
+                    .path()
+                    .join("migrations/v2/0002_derive.tbmigration.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["steps"][0]["step"]["id"], "first");
+        assert_eq!(value["steps"][1]["step"]["id"], "second");
+        assert_eq!(value["safety"]["reversible"], false);
+        let preview =
+            fs::read_to_string(directory.path().join("migrations/v2/0002_derive.typeql")).unwrap();
+        assert!(preview.contains("IRREVERSIBLE"));
+        assert!(
+            Cli::try_parse_from([
+                "type-bridge",
+                "migration",
+                "make",
+                "--name",
+                "bad",
+                "--data-step",
+                "first.data.yaml",
+                "--backfill-intent",
+                "copy.yaml"
+            ])
+            .is_err()
         );
     }
 
@@ -2575,6 +2661,7 @@ mod migration_command_tests {
                 command: MigrationCommand::Make {
                     name: "initial".to_owned(),
                     backfill_intent: None,
+                    data_step: Vec::new(),
                 },
             },
         })
@@ -2803,6 +2890,7 @@ mod migration_command_tests {
                 command: MigrationCommand::Make {
                     name: "company".to_owned(),
                     backfill_intent: None,
+                    data_step: Vec::new(),
                 },
             },
         })

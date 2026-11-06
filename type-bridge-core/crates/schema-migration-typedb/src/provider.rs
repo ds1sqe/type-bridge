@@ -6,6 +6,12 @@
 //! in-transaction fence recheck immediately before commit satisfies the
 //! same-transaction fencing contract rather than an advisory check.
 
+pub(crate) mod data;
+use type_bridge_contract::migration_data::DataStep;
+use type_bridge_schema_migration::{
+    DataStepDirection, MigrationExecutionControl, VerifiedSchemaMigrationManifest,
+};
+
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -297,6 +303,33 @@ impl TypeDbMigrationProvider {
 }
 
 impl MigrationExecutionProvider for TypeDbMigrationProvider {
+    fn validate_data_step(
+        &self,
+        step: &DataStep,
+        direction: DataStepDirection,
+    ) -> Result<(), Diagnostic> {
+        data::validate(step, direction)
+    }
+    fn observe_data_step<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        manifest: &'a VerifiedSchemaMigrationManifest,
+        step: &'a DataStep,
+        direction: DataStepDirection,
+    ) -> ExecutionFuture<'a, bool> {
+        Box::pin(self.observe_data(lease, manifest, step, direction))
+    }
+    fn execute_data_step<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        manifest: &'a VerifiedSchemaMigrationManifest,
+        step: &'a DataStep,
+        direction: DataStepDirection,
+        control: &'a MigrationExecutionControl,
+    ) -> GroupCommitFuture<'a> {
+        Box::pin(self.execute_data(lease, manifest, step, direction, control))
+    }
+
     fn available_capabilities(&self) -> &CapabilitySet {
         self.binding.context.available_capabilities()
     }
@@ -985,7 +1018,7 @@ fn map_assertion_error(error: MigrationAssertionExecutionError) -> Diagnostic {
     .with_detail("assertion", error.to_string())
 }
 
-fn map_orm_error(error: OrmError) -> Diagnostic {
+pub(crate) fn map_orm_error(error: OrmError) -> Diagnostic {
     failure(
         DiagnosticCategory::InvalidContract,
         "migration_typedb_provider_error",
@@ -1386,6 +1419,11 @@ mod tests {
                 .iter()
                 .map(ToString::to_string),
             )
+            .chain(
+                type_bridge_contract::query_plan::query_plan_capability_vocabulary()
+                    .iter()
+                    .map(ToString::to_string),
+            )
             .collect();
         let actual: std::collections::BTreeSet<String> =
             capabilities.iter().map(ToString::to_string).collect();
@@ -1393,7 +1431,11 @@ mod tests {
         let backfill = CapabilityId::new(COPY_ATTRIBUTE_BACKFILL_CAPABILITY).unwrap();
         let schema_only: CapabilitySet = capabilities
             .iter()
-            .filter(|capability| *capability != &backfill)
+            .filter(|capability| {
+                *capability != &backfill
+                    && !type_bridge_contract::query_plan::query_plan_capability_vocabulary()
+                        .contains(capability)
+            })
             .cloned()
             .collect();
         schema_only

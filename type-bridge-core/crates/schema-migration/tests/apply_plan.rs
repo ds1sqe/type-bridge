@@ -1122,7 +1122,8 @@ fn new_subtype_migration_lowers_without_assertion_coverage() {
             .flat_map(StatementUnit::statements)
             .any(|statement| statement.query().contains("sub person")),
         VerifiedMigrationApplyStep::Assertion { .. }
-        | VerifiedMigrationApplyStep::Backfill { .. } => false,
+        | VerifiedMigrationApplyStep::Backfill { .. }
+        | VerifiedMigrationApplyStep::Data { .. } => false,
     });
     assert!(rendered_sub, "lowered statements must define the sub edge");
 }
@@ -1220,7 +1221,8 @@ fn destructive_manifest_requires_an_identity_bound_approval() {
             .flat_map(StatementUnit::statements)
             .any(|statement| statement.query().contains("undefine")),
         VerifiedMigrationApplyStep::Assertion { .. }
-        | VerifiedMigrationApplyStep::Backfill { .. } => false,
+        | VerifiedMigrationApplyStep::Backfill { .. }
+        | VerifiedMigrationApplyStep::Data { .. } => false,
     });
     assert!(rendered_undefine, "approved destructive work must lower");
 }

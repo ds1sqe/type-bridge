@@ -1016,3 +1016,263 @@ async fn runner_applies_a_completed_legacy_frontier() {
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn atomic_typeql_data_step_applies_once_reverses_and_reapplies() {
+    atomic_data_round_trip(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn atomic_plan_data_step_applies_once_reverses_and_reapplies() {
+    atomic_data_round_trip(true).await;
+}
+
+async fn atomic_data_round_trip(use_plan: bool) {
+    use type_bridge_contract::migration_data::{DataProgram, DataStep};
+    let (managed, journal) = databases().await;
+    let context = context();
+    let empty = declared_facts(vec![]);
+    let schema = declared_facts(vec![type_fact("data-person")]);
+    let first = manifest_with_derived_assertions("0001_schema", vec![], &empty, &schema, &context);
+    let (forward, reverse) = if use_plan {
+        use type_bridge_contract::migration_assertion::{
+            AssertionBinding, BindingId, QueryVariable,
+        };
+        use type_bridge_contract::query_plan::{
+            DeleteItem, InsertThing, Operation, PlanSpec, QueryOutput, QueryPattern, QueryPlan,
+            Stage, WriteReturns,
+        };
+        let binding = BindingId::new(0).unwrap();
+        let semantics = managed_schema_state(&schema, &context)
+            .unwrap()
+            .managed_semantic_schema()
+            .clone();
+        let build = |pipeline| {
+            QueryPlan::new(
+                PlanSpec {
+                    bindings: vec![AssertionBinding::new(
+                        binding,
+                        QueryVariable::new("person").unwrap(),
+                    )],
+                    inputs: vec![],
+                    given_rows: None,
+                    operation: Operation::Write {
+                        returns: WriteReturns::Matched,
+                    },
+                    pipeline,
+                    output: QueryOutput::Rows { columns: vec![] },
+                    managed_semantics: semantics.clone(),
+                    functions: vec![],
+                },
+                &schema,
+            )
+            .unwrap()
+        };
+        let forward = build(vec![Stage::Insert {
+            things: vec![InsertThing {
+                binding,
+                type_id: entity_id("data-person"),
+                fields: vec![],
+                players: vec![],
+            }],
+        }]);
+        let reverse = build(vec![
+            Stage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding,
+                        type_id: entity_id("data-person"),
+                        include_subtypes: false,
+                    }
+                    .into(),
+                ],
+            },
+            Stage::Delete {
+                items: vec![DeleteItem::Thing { binding }],
+            },
+        ]);
+        (
+            DataProgram::Plan {
+                plan: Box::new(forward),
+            },
+            DataProgram::Plan {
+                plan: Box::new(reverse),
+            },
+        )
+    } else {
+        (
+            DataProgram::Typeql {
+                text: "insert $p isa data-person;".into(),
+            },
+            DataProgram::Typeql {
+                text: "match $p isa data-person; delete $p;".into(),
+            },
+        )
+    };
+    let step = DataStep::new(
+        MigrationStepId::new("seed-person").unwrap(),
+        forward,
+        Some(reverse),
+    )
+    .unwrap();
+    let data = build_verified_manifest(
+        SchemaMigrationDraft::new(
+            migration_id("0002_data"),
+            vec![first.id().clone()],
+            vec![MigrationStep::Data(step)],
+        )
+        .unwrap(),
+        (&schema, &context),
+    )
+    .unwrap();
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &first);
+    write_manifest(directory.path(), &data);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        empty,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("data-runner").unwrap();
+    let approval = MigrationApplyApproval::for_manifest(&data).unwrap();
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            std::slice::from_ref(&approval),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                std::slice::from_ref(&approval)
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::UpToDate
+    ));
+    let count = |rows: type_bridge_orm::session::backend::QueryResult| match rows {
+        type_bridge_orm::session::backend::QueryResult::Documents(rows)
+        | type_bridge_orm::session::backend::QueryResult::Rows(rows) => rows.len(),
+        other => panic!("unexpected answer {other:?}"),
+    };
+    let query = "match $p isa data-person; fetch { \"iid\": iid($p) };";
+    assert_eq!(
+        count(managed.execute_raw(query, TxType::Read).await.unwrap()),
+        1
+    );
+    let reverse = MigrationApplyApproval::for_rollback(&data, SafetyClass::Opaque).unwrap();
+    runner
+        .rollback(
+            directory.path(),
+            &BTreeSet::from([data.id().clone()]),
+            &holder,
+            &[reverse],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        count(managed.execute_raw(query, TxType::Read).await.unwrap()),
+        0
+    );
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[approval],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        count(managed.execute_raw(query, TxType::Read).await.unwrap()),
+        1
+    );
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn unregistered_user_step_refuses_before_any_control_write() {
+    use type_bridge_contract::migration_data::{DataProgram, DataStep};
+    let (managed, journal) = databases().await;
+    let context = context();
+    let empty = declared_facts(vec![]);
+    let schema = declared_facts(vec![type_fact("data-person")]);
+    let first = manifest_with_derived_assertions("0001_schema", vec![], &empty, &schema, &context);
+    let data = build_verified_manifest(
+        SchemaMigrationDraft::new(
+            migration_id("0002_user"),
+            vec![first.id().clone()],
+            vec![MigrationStep::Data(
+                DataStep::new(
+                    MigrationStepId::new("derive").unwrap(),
+                    DataProgram::User {
+                        step_id: MigrationStepId::new("derive-person").unwrap(),
+                    },
+                    None,
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap(),
+        (&schema, &context),
+    )
+    .unwrap();
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &first);
+    write_manifest(directory.path(), &data);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        empty,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let before_managed = managed.schema_text().await.unwrap();
+    let before_journal = journal.schema_text().await.unwrap();
+    let holder = LeaseHolderId::new("unregistered-user").unwrap();
+    let error = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[MigrationApplyApproval::for_manifest(&data).unwrap()],
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("migration_user_step_unregistered"),
+        "{error}"
+    );
+    assert_eq!(managed.schema_text().await.unwrap(), before_managed);
+    assert_eq!(journal.schema_text().await.unwrap(), before_journal);
+    // A user program outside the selected closure does not block schema apply.
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::Explicit(BTreeSet::from([first.id().clone()])),
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+}

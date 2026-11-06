@@ -40,6 +40,19 @@ pub const LEGACY_CUTOVER_ANCHOR_FINGERPRINT: &str =
 /// Frozen singleton key carried by the managed legacy-cutover anchor.
 pub const LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY: &str = "typebridge-legacy-cutover-anchor/v1";
 
+/// Atomic data-step completion marker entity.
+pub const DATA_STEP_ENTITY: &str = "typebridge-internal-data-step";
+/// Canonical compound completion-marker key.
+pub const DATA_STEP_KEY: &str = "typebridge-internal-data-step-key";
+/// Managed scope carried by the completion marker.
+pub const DATA_STEP_SCOPE: &str = "typebridge-internal-data-step-scope";
+/// Canonical compound migration identity carried by the marker.
+pub const DATA_STEP_MIGRATION: &str = "typebridge-internal-data-step-migration";
+/// Manifest-local data-step identity carried by the marker.
+pub const DATA_STEP_ID: &str = "typebridge-internal-data-step-id";
+/// Journal commit-boundary record for an atomic data step.
+pub const DATA_STEP_EVENT_RECORD_KIND: &str = "data-step-event";
+
 /// Frozen V1 applied-migration entity used by the cutover sentinel.
 pub const LEGACY_LEDGER_APPLIED_ENTITY: &str = "type_bridge_migration";
 /// Frozen V1 applied-ledger migration-id attribute.
@@ -200,6 +213,15 @@ entity typebridge-internal-legacy-cutover,
     owns typebridge-internal-legacy-cutover-key @key,
     owns typebridge-internal-legacy-cutover-scope @card(1..1),
     owns typebridge-internal-legacy-cutover-fingerprint @card(1..1);
+attribute typebridge-internal-data-step-key, value string;
+attribute typebridge-internal-data-step-scope, value string;
+attribute typebridge-internal-data-step-migration, value string;
+attribute typebridge-internal-data-step-id, value string;
+entity typebridge-internal-data-step,
+    owns typebridge-internal-data-step-key @key,
+    owns typebridge-internal-data-step-scope @card(1..1),
+    owns typebridge-internal-data-step-migration @card(1..1),
+    owns typebridge-internal-data-step-id @card(1..1);
 "#;
 
 /// Frozen journal suffix accepted only for migration import.

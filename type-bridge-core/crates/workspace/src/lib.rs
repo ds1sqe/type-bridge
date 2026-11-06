@@ -34,6 +34,7 @@ use unicode_normalization::UnicodeNormalization as _;
 mod authority;
 mod backfill_intent;
 mod bundle;
+mod data_intent;
 mod lock;
 mod migration;
 mod workspace;
