@@ -93,6 +93,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- C batch insert/put/update results count and retain every returned root,
+  including missing inputs and several roots from one input. Additional
+  result storage is reserved before commit.
+
 - C database and write-transaction entity/relation `insert`, `put`, and
   `update` functions (including `_v2` forms) return an owned projected result
   instead of one thing. Use `count`, `thing_at`, and optional `item`, then

@@ -79,7 +79,7 @@ pub struct TypeBridgeProjectedBatchResult {
     package: Arc<SchemaPackageState>,
     model: TypeId,
     operation: ProjectedBatchOperation,
-    input_count: usize,
+    count: usize,
     things: Vec<Arc<ProjectedThing>>,
 }
 
@@ -281,7 +281,7 @@ impl TypeBridgeProjectedBatch {
 impl TypeBridgeProjectedBatchResult {
     #[cfg(test)]
     pub(crate) fn test_item(&self) -> &Arc<ProjectedThing> {
-        assert_eq!(self.input_count, 1);
+        assert_eq!(self.count, 1);
         assert_eq!(self.things.len(), 1);
         &self.things[0]
     }
@@ -309,7 +309,7 @@ impl TypeBridgeProjectedBatchResult {
             package,
             model,
             operation,
-            input_count: count,
+            count,
             things,
         })
     }
@@ -575,23 +575,32 @@ fn reserve_result_things(
     count: usize,
 ) -> Result<Vec<Arc<MaybeUninit<ProjectedThing>>>, SdkExecutionDiagnostic> {
     let mut things = Vec::new();
+    extend_result_things(&mut things, count)?;
+    Ok(things)
+}
+
+fn extend_result_things(
+    things: &mut Vec<Arc<MaybeUninit<ProjectedThing>>>,
+    count: usize,
+) -> Result<(), SdkExecutionDiagnostic> {
+    let additional = count.saturating_sub(things.len());
     try_reserve(
-        &mut things,
-        count,
+        things,
+        additional,
         AllocationSite::ProjectedBatchResultThings,
     )
     .map_err(|_| allocation_exhausted())?;
-    for _ in 0..count {
+    for _ in 0..additional {
         allocation_checkpoint(AllocationSite::ProjectedBatchResultThingStorage)
             .map_err(|_| allocation_exhausted())?;
-        // Batch input reservations precede dispatch; single-write mappings run
-        // under the uncommitted lease. Recoverable failures can still abort.
+        // Additional fanout storage is prepared under the uncommitted lease.
         let slot = Arc::new_uninit();
         #[cfg(test)]
         crate::thing_crud::record_reserved_thing_storage(Arc::as_ptr(&slot).addr());
         things.push(slot);
     }
-    Ok(things)
+    things.truncate(count);
+    Ok(())
 }
 
 unsafe fn assume_initialized_things(
@@ -618,28 +627,38 @@ fn map_result(
         (ProjectedBatchOperation::Delete, ProjectedBatchResult::Deleted) => Default::default(),
         (ProjectedBatchOperation::Delete, ProjectedBatchResult::Things(_))
         | (_, ProjectedBatchResult::Deleted) => return Err(result_shape_invalid()),
-        (_, ProjectedBatchResult::Things(values)) if values.count() == input_count => values,
-        (_, ProjectedBatchResult::Things(_)) => return Err(result_shape_invalid()),
+        (_, ProjectedBatchResult::Things(values)) => values,
         _ => return Err(result_shape_invalid()),
     };
-    if reserved_things.len() != values.count() {
+    let count = if operation == ProjectedBatchOperation::Delete {
+        input_count
+    } else {
+        values.count()
+    };
+    if values
+        .input_indexes()
+        .iter()
+        .any(|index| *index >= input_count)
+        || values
+            .input_indexes()
+            .windows(2)
+            .any(|pair| pair[0] > pair[1])
+    {
+        return Err(result_shape_invalid());
+    }
+    if values.items().iter().any(|thing| thing.type_id() != &model) {
         return Err(result_thing_model_mismatch());
     }
-    for (ordinal, ((slot, thing), input_index)) in reserved_things
+    if values.count() > reserved_things.len() {
+        extend_result_things(&mut reserved_things, values.count())?;
+    } else {
+        reserved_things.truncate(values.count());
+    }
+    if reserved_things
         .iter_mut()
-        .zip(values.items())
-        .zip(values.input_indexes())
-        .enumerate()
+        .any(|slot| Arc::get_mut(slot).is_none())
     {
-        if *input_index != ordinal {
-            return Err(result_shape_invalid());
-        }
-        if thing.type_id() != &model {
-            return Err(result_thing_model_mismatch());
-        }
-        if Arc::get_mut(slot).is_none() {
-            return Err(SdkExecutionDiagnostic::internal_failure());
-        }
+        return Err(SdkExecutionDiagnostic::internal_failure());
     }
     for (slot, thing) in reserved_things.iter_mut().zip(values.into_items()) {
         Arc::get_mut(slot)
@@ -657,7 +676,7 @@ fn map_result(
         package,
         model,
         operation,
-        input_count,
+        count,
         things,
     })
 }
@@ -667,7 +686,7 @@ fn empty_result(batch: &TypeBridgeProjectedBatch) -> TypeBridgeProjectedBatchRes
         package: Arc::clone(&batch.package),
         model: batch.value.model().clone(),
         operation: batch.value.operation(),
-        input_count: 0,
+        count: 0,
         things: Vec::new(),
     }
 }
@@ -1259,7 +1278,7 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_result_count_impl(
             return return_execution_error(diagnostic, out_diagnostics);
         }
         // SAFETY: initialized count output remains caller-writable.
-        unsafe { out_count.write_unaligned(result.input_count) };
+        unsafe { out_count.write_unaligned(result.count) };
         TypeBridgeStatus::Ok
     })
 }
@@ -1346,7 +1365,7 @@ unsafe fn result_thing(
         if let Err(diagnostic) = validate_result_fence(result, expected_model, expected_operation) {
             return return_execution_error(diagnostic, out_diagnostics);
         }
-        if index.is_none() && (result.input_count != 1 || result.things.len() != 1) {
+        if index.is_none() && (result.count != 1 || result.things.len() != 1) {
             return TypeBridgeStatus::Ok;
         }
         if result.operation == ProjectedBatchOperation::Delete {
@@ -2059,7 +2078,7 @@ plays:
                 package: Arc::clone(&original.package),
                 model: original.model.clone(),
                 operation,
-                input_count: length,
+                count: length,
                 things: original.things[..length].to_vec(),
             }));
             let mut item = ptr::dangling_mut();
@@ -2996,6 +3015,67 @@ plays:
         close_batch(&mut delete);
     }
 
+    fn assert_complete_batch_mapping(original: &TypeBridgeProjectedBatchResult) {
+        let map = |indexes: &[usize]| {
+            map_result(
+                Arc::clone(&original.package),
+                original.model.clone(),
+                ProjectedBatchOperation::Insert,
+                2,
+                reserve_result_things(2).unwrap(),
+                ProjectedBatchResult::Things(type_bridge_orm::BatchWriteResult::from_indexed(
+                    indexes.iter().enumerate().map(|(ordinal, index)| {
+                        (
+                            *index,
+                            (*original.things[ordinal % original.things.len()]).clone(),
+                        )
+                    }),
+                )),
+            )
+        };
+        for indexes in [&[][..], &[1][..], &[0, 0, 1][..]] {
+            let result = map(indexes).unwrap();
+            assert_eq!(result.count, indexes.len());
+            assert_eq!(result.things.len(), indexes.len());
+            for (ordinal, thing) in result.things.iter().enumerate() {
+                assert_eq!(
+                    thing.iid(),
+                    original.things[ordinal % original.things.len()].iid()
+                );
+            }
+        }
+        for indexes in [&[2][..], &[1, 0][..]] {
+            assert_eq!(
+                map(indexes).err().unwrap().code().as_str(),
+                "c_projected_batch_result_shape_invalid"
+            );
+        }
+        // The first two slots are reserved before dispatch; expansion for a
+        // third root remains fallible while the executor owns the write lease.
+        let reserved = reserve_result_things(2).unwrap();
+        let values = type_bridge_orm::BatchWriteResult::from_indexed(
+            [0, 0, 1]
+                .into_iter()
+                .map(|index| (index, (*original.things[0]).clone())),
+        );
+        let _failure = inject_failure(AllocationSite::ProjectedBatchResultThingStorage, 0);
+        assert_eq!(
+            map_result(
+                Arc::clone(&original.package),
+                original.model.clone(),
+                ProjectedBatchOperation::Insert,
+                2,
+                reserved,
+                ProjectedBatchResult::Things(values),
+            )
+            .err()
+            .unwrap()
+            .code()
+            .as_str(),
+            "c_allocation_exhausted"
+        );
+    }
+
     #[test]
     fn nominal_result_fences_independent_clones_and_deep_alias_checks_fail_closed() {
         let package = make_package("batchnominal");
@@ -3034,6 +3114,9 @@ plays:
             },
             TypeBridgeStatus::Ok
         );
+
+        // SAFETY: successful execution returned a live result retained by this test.
+        assert_complete_batch_mapping(unsafe { &*result });
 
         let mut count = usize::MAX;
         assert_eq!(
