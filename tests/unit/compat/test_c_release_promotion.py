@@ -120,6 +120,13 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
             for key, outcome in frozen_steps.items()
             if key[0] in retired_jobs or key == skipped_retired_probe or key in legacy_steps
         }
+        # The removed typed-query diagnostics script no longer has a CI step.
+        retired_query_checks = {
+            ("Python Type Check (examples)", "Check intentional typed Query API diagnostics"),
+            ("Python Type Check (tests)", "Check intentional typed Query API diagnostics"),
+            ("Python Type Check (type_bridge)", "Check intentional typed Query API diagnostics"),
+        }
+        retired.update({key: frozen_steps[key] for key in retired_query_checks})
         renamed_steps = {
             "Run V3 staged server live acceptance": "Run staged server live acceptance",
             "Run Rust SDK plan builder over the V3 staged proxy": "Run Rust SDK plan builder over the staged proxy",
