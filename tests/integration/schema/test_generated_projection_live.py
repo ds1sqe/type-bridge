@@ -1030,12 +1030,12 @@ def _sdk_queries_lifecycle(
         ancestor = session.query(person).where(scope)
         sibling = ancestor.clone()
         closed_descendant = ancestor.where(
-            person.field(generated.Person.score).gte(generated.Score(1))
+            person.field(generated.Person.score).ge(generated.Score(1))
         )
         closed_descendant.close()
         closed_descendant.close()
         ancestor_usable = _sdk_queries_key(await ancestor.one()) == "query-ada"
-        descendant = ancestor.where(person.field(generated.Person.score).gte(generated.Score(1)))
+        descendant = ancestor.where(person.field(generated.Person.score).ge(generated.Score(1)))
         result = await descendant.one()
         ancestor.close()
         ancestor.close()
@@ -1278,7 +1278,7 @@ def _run_sdk_queries_journey(
             direct_session.query(direct_person)
             .where(
                 scoped,
-                direct_score.gte(generated.Score(40)) & direct_boolean.eq(generated.ValBool(True)),
+                direct_score.ge(generated.Score(40)) & direct_boolean.eq(generated.ValBool(True)),
             )
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
@@ -1294,7 +1294,7 @@ def _run_sdk_queries_journey(
         )
         direct_field_comparison_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
-            .where(scoped, direct_score.gte_field(direct_score_gte))
+            .where(scoped, direct_score.ge_field(direct_score_gte))
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
 
@@ -1450,7 +1450,7 @@ def _run_sdk_queries_journey(
 
         direct_scalar_domain_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
-            .where(scoped, direct_score.gte(generated.Score(40)))
+            .where(scoped, direct_score.ge(generated.Score(40)))
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
         direct_reducers = _sdk_queries_reducers(
@@ -1469,7 +1469,7 @@ def _run_sdk_queries_journey(
         )
         direct_function_values = [
             row.score.value
-            for row in direct_query.where(direct_call.gte_field(direct_score)).rows(
+            for row in direct_query.where(direct_call.ge_field(direct_score)).rows(
                 limit=2,
                 order_by=(direct_identifier.asc(),),
             )
@@ -1481,7 +1481,7 @@ def _run_sdk_queries_journey(
         )
         direct_nested_function_values = [
             row.score.value
-            for row in direct_query.where(direct_nested.gte_field(direct_score)).rows(
+            for row in direct_query.where(direct_nested.ge_field(direct_score)).rows(
                 limit=2,
                 order_by=(direct_identifier.asc(),),
             )
@@ -1602,7 +1602,7 @@ def _run_sdk_queries_journey(
                 remote_session.query(remote_person)
                 .where(
                     remote_scoped,
-                    remote_score.gte(generated.Score(40))
+                    remote_score.ge(generated.Score(40))
                     & remote_boolean.eq(generated.ValBool(True)),
                 )
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
@@ -1628,7 +1628,7 @@ def _run_sdk_queries_journey(
         remote_field_comparison_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
-                .where(remote_scoped, remote_score.gte_field(remote_score_gte))
+                .where(remote_scoped, remote_score.ge_field(remote_score_gte))
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
@@ -1791,7 +1791,7 @@ def _run_sdk_queries_journey(
         remote_scalar_domain_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
-                .where(remote_scoped, remote_score.gte(generated.Score(40)))
+                .where(remote_scoped, remote_score.ge(generated.Score(40)))
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
@@ -1816,7 +1816,7 @@ def _run_sdk_queries_journey(
         remote_function_values = [
             row.score.value
             for row in asyncio.run(
-                remote_query.where(remote_call.gte_field(remote_score)).rows(
+                remote_query.where(remote_call.ge_field(remote_score)).rows(
                     limit=2,
                     order_by=(remote_identifier.asc(),),
                 )
@@ -1832,7 +1832,7 @@ def _run_sdk_queries_journey(
         remote_nested_function_values = [
             row.score.value
             for row in asyncio.run(
-                remote_query.where(remote_nested.gte_field(remote_score)).rows(
+                remote_query.where(remote_nested.ge_field(remote_score)).rows(
                     limit=2,
                     order_by=(remote_identifier.asc(),),
                 )
@@ -4220,27 +4220,27 @@ def test_generated_projection_round_trips_live_models(
         ("boolean", person_var.field(generated.Person.val_bool).eq(generated.ValBool(True))),
         (
             "double",
-            person_var.field(generated.Person.val_double).gte(generated.ValDouble(3.5)),
+            person_var.field(generated.Person.val_double).ge(generated.ValDouble(3.5)),
         ),
         (
             "decimal",
-            person_var.field(generated.Person.val_decimal).gte(
+            person_var.field(generated.Person.val_decimal).ge(
                 generated.ValDecimal(Decimal("3.5"))
             ),
         ),
         (
             "date",
-            person_var.field(generated.Person.val_date).gte(generated.ValDate(date(2026, 7, 29))),
+            person_var.field(generated.Person.val_date).ge(generated.ValDate(date(2026, 7, 29))),
         ),
         (
             "datetime",
-            person_var.field(generated.Person.val_datetime).gte(
+            person_var.field(generated.Person.val_datetime).ge(
                 generated.ValDatetime(datetime(2026, 7, 29))
             ),
         ),
         (
             "datetime-tz",
-            person_var.field(generated.Person.val_datetime_tz).gte(
+            person_var.field(generated.Person.val_datetime_tz).ge(
                 generated.ValDatetimeTz(datetime(2026, 7, 29, tzinfo=UTC))
             ),
         ),
@@ -4337,7 +4337,7 @@ def test_generated_projection_round_trips_live_models(
     assert plain_activity_manager.get_by_iid(plain_activity.iid) is None
 
     matching_people = query_session.query(person_var).where(
-        person_var.field(generated.Person.score).gte(generated.Score(3))
+        person_var.field(generated.Person.score).ge(generated.Score(3))
     )
     assert matching_people.count_by(person_var) == 1
     assert matching_people.exists_by(person_var) is True
@@ -4500,8 +4500,8 @@ def test_generated_projection_round_trips_live_models(
         identifier_field.starts_with(generated.Identifier("person-"))
         & identifier_field.contains(generated.Identifier("son-"))
         & identifier_field.ends_with(generated.Identifier("-1"))
-        & identifier_field.regex(generated.Identifier("^person-1$"))
-        & ~identifier_field.neq(identifier_value)
+        & identifier_field.like(generated.Identifier("^person-1$"))
+        & ~identifier_field.ne(identifier_value)
         & (
             identifier_field.eq(identifier_value)
             | identifier_field.eq(generated.Identifier("does-not-exist"))
@@ -4729,7 +4729,7 @@ def test_generated_projection_round_trips_live_models(
         .where(
             interaction_var.role(generated.Interaction.actor).connects(person_actor_var),
             interaction_var.field(generated.Interaction.nickname).eq(generated.Nickname("read")),
-            person_actor_var.field(generated.Person.score).gte(generated.Score(3)),
+            person_actor_var.field(generated.Person.score).ge(generated.Score(3)),
         )
         .one()
     )

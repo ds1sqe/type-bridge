@@ -719,7 +719,7 @@ employment_var = query_session.exact(Employment)
 party_var = query_session.subtypes(Party)
 actor_var = query_session.subtypes(Actor)
 other_actor_var = query_session.subtypes(Actor)
-adult = person_var.field(Person.score).gte(Score(18))
+adult = person_var.field(Person.score).ge(Score(18))
 query = query_session.query(person_var).where(adult).match(party_var)
 assert query is not None
 employee = employment_var.role(Employment.employee).connects(person_var)
@@ -753,7 +753,7 @@ assert query_session.query(person_var, employment_var.collect()).where(employee)
 
 lifecycle_session = Person.query(Database(address="localhost:1729", database="lifecycle-only"))
 lifecycle_person = lifecycle_session.exact(Person)
-lifecycle_predicate = lifecycle_person.field(Person.score).gte(Score(1))
+lifecycle_predicate = lifecycle_person.field(Person.score).ge(Score(1))
 lifecycle_source = lifecycle_session.query(lifecycle_person)
 lifecycle_clone = lifecycle_source.clone()
 lifecycle_derived = lifecycle_source.where(lifecycle_predicate)
@@ -790,7 +790,7 @@ for immutable in (query_session, person_var, employee, query, named):
         raise AssertionError("generated query wrapper was mutable")
 for rejected_same_package_query in (
     lambda: person_var.field(Employment.employee),
-    lambda: person_var.field(Person.score).gte(Identifier("wrong-wrapper")),
+    lambda: person_var.field(Person.score).ge(Identifier("wrong-wrapper")),
     lambda: (
         query_session.exact(Employment)
         .role(Employment.employee)
@@ -1191,8 +1191,8 @@ try:
     asyncio.run(
         limited_remote_session.query(limited_remote_person)
         .where(
-            limited_remote_person.field(Person.score).gte(Score(1)),
-            limited_remote_person.field(Person.score).gte(Score(2)),
+            limited_remote_person.field(Person.score).ge(Score(1)),
+            limited_remote_person.field(Person.score).ge(Score(2)),
         )
         .rows(limit=1)
     )
@@ -1336,7 +1336,7 @@ wide_remote_person = wide_remote_session.exact(Person)
 try:
     asyncio.run(
         wide_remote_session.query(wide_remote_person)
-        .where(*(wide_remote_person.field(Person.score).gte(Score(1)) for _ in range(38)))
+        .where(*(wide_remote_person.field(Person.score).ge(Score(1)) for _ in range(38)))
         .rows(limit=1)
     )
 except MatchRequestError as error:
@@ -1350,9 +1350,9 @@ native_predicate_depth = QueryLimits().get("predicate_depth")
 
 
 def nested_predicate(binding, nesting):
-    predicate = binding.field(Person.score).gte(Score(1))
+    predicate = binding.field(Person.score).ge(Score(1))
     for depth in range(1, nesting):
-        term = binding.field(Person.score).gte(Score(1))
+        term = binding.field(Person.score).ge(Score(1))
         predicate = predicate.and_(term) if depth % 2 == 0 else predicate.or_(term)
     return predicate
 
@@ -1882,7 +1882,7 @@ def _emit_sdk_models_package_proof_fragment() -> None:
 remote_lifecycle = generated_remote_session.query(generated_remote_person)
 remote_lifecycle_clone = remote_lifecycle.clone()
 remote_lifecycle_derived = remote_lifecycle.where(
-    generated_remote_person.field(Person.score).gte(Score(1))
+    generated_remote_person.field(Person.score).ge(Score(1))
 )
 remote_lifecycle.close()
 remote_lifecycle.close()
@@ -2028,7 +2028,7 @@ try:
     remote_minimum = integer_input(remote_session, Score(18))
     remote_call = qualifying_score(remote_session, remote_person, remote_minimum)
     remote_nested_call = qualifying_score(remote_session, remote_person, remote_call)
-    assert remote_call.gte_call(remote_nested_call) is not None
+    assert remote_call.ge_call(remote_nested_call) is not None
     remote_query = remote_session.query(remote_person)
     assert asyncio.run(remote_query.one()) is person
     assert asyncio.run(remote_query.first()) is person

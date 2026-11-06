@@ -258,7 +258,7 @@ export class FunctionCall<out Domain> {
   ): Predicate {
     return this.#compareField("less_than", field);
   }
-  lteField<Value extends { readonly value: Domain }>(
+  leField<Value extends { readonly value: Domain }>(
     field: BoundField<Value>,
   ): Predicate {
     return this.#compareField("less_than_or_equal", field);
@@ -268,7 +268,7 @@ export class FunctionCall<out Domain> {
   ): Predicate {
     return this.#compareField("greater_than", field);
   }
-  gteField<Value extends { readonly value: Domain }>(
+  geField<Value extends { readonly value: Domain }>(
     field: BoundField<Value>,
   ): Predicate {
     return this.#compareField("greater_than_or_equal", field);
@@ -283,13 +283,13 @@ export class FunctionCall<out Domain> {
   ltValue(value: FunctionInput<Domain>): Predicate {
     return this.#compareValue("less_than", value);
   }
-  lteValue(value: FunctionInput<Domain>): Predicate {
+  leValue(value: FunctionInput<Domain>): Predicate {
     return this.#compareValue("less_than_or_equal", value);
   }
   gtValue(value: FunctionInput<Domain>): Predicate {
     return this.#compareValue("greater_than", value);
   }
-  gteValue(value: FunctionInput<Domain>): Predicate {
+  geValue(value: FunctionInput<Domain>): Predicate {
     return this.#compareValue("greater_than_or_equal", value);
   }
 
@@ -302,13 +302,13 @@ export class FunctionCall<out Domain> {
   ltCall(other: FunctionCall<Domain>): Predicate {
     return this.#compareCall("less_than", other);
   }
-  lteCall(other: FunctionCall<Domain>): Predicate {
+  leCall(other: FunctionCall<Domain>): Predicate {
     return this.#compareCall("less_than_or_equal", other);
   }
   gtCall(other: FunctionCall<Domain>): Predicate {
     return this.#compareCall("greater_than", other);
   }
-  gteCall(other: FunctionCall<Domain>): Predicate {
+  geCall(other: FunctionCall<Domain>): Predicate {
     return this.#compareCall("greater_than_or_equal", other);
   }
 
@@ -1770,22 +1770,22 @@ export interface BoundField<Value> {
   gtField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate;
-  gte(value: Value | BoundField<Value>): Predicate;
-  gteField<Other extends { readonly value: AttributeDomain<Value> }>(
+  ge(value: Value | BoundField<Value>): Predicate;
+  geField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate;
   lt(value: Value | BoundField<Value>): Predicate;
   ltField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate;
-  lte(value: Value | BoundField<Value>): Predicate;
-  lteField<Other extends { readonly value: AttributeDomain<Value> }>(
+  le(value: Value | BoundField<Value>): Predicate;
+  leField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate;
   contains(value: Value): Predicate;
   startsWith(value: Value): Predicate;
   endsWith(value: Value): Predicate;
-  regex(value: Value): Predicate;
+  like(value: Value): Predicate;
   isPresent(): Predicate;
   isMissing(): Predicate;
   asc(missing?: "reject" | "first" | "last"): QueryOrder;
@@ -2425,10 +2425,10 @@ class BoundFieldValue<Value> implements BoundField<Value> {
   ): Predicate {
     return this.#compareField("greater_than", field);
   }
-  gte(value: Value | BoundField<Value>): Predicate {
+  ge(value: Value | BoundField<Value>): Predicate {
     return this.#compare("greater_than_or_equal", value);
   }
-  gteField<Other extends { readonly value: AttributeDomain<Value> }>(
+  geField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate {
     return this.#compareField("greater_than_or_equal", field);
@@ -2441,10 +2441,10 @@ class BoundFieldValue<Value> implements BoundField<Value> {
   ): Predicate {
     return this.#compareField("less_than", field);
   }
-  lte(value: Value | BoundField<Value>): Predicate {
+  le(value: Value | BoundField<Value>): Predicate {
     return this.#compare("less_than_or_equal", value);
   }
-  lteField<Other extends { readonly value: AttributeDomain<Value> }>(
+  leField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate {
     return this.#compareField("less_than_or_equal", field);
@@ -2458,7 +2458,7 @@ class BoundFieldValue<Value> implements BoundField<Value> {
   endsWith(value: Value): Predicate {
     return this.#compare("ends_with", value);
   }
-  regex(value: Value): Predicate {
+  like(value: Value): Predicate {
     return this.#compare("regex", value);
   }
   isPresent(): Predicate {

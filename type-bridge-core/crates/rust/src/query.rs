@@ -1877,7 +1877,7 @@ impl<S: Schema, Owner: Model<Schema = S>, V> BoundField<S, Owner, V> {
     /// Regular-expression match against a client-owned validated pattern;
     /// admitted only for text field domains.
     #[must_use]
-    pub fn regex(self, pattern: crate::value::Regex) -> Predicate<S>
+    pub fn like(self, pattern: crate::value::Regex) -> Predicate<S>
     where
         V: crate::__codegen::TextValued,
     {

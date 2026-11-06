@@ -864,13 +864,13 @@ async function sdkQueriesLifecycle(
     const ancestor = session.query(person).where(scope);
     const sibling = ancestor.clone();
     const closedDescendant = ancestor.where(
-      person.field(generated.Person.score).gte(generated.Score.create(1n)),
+      person.field(generated.Person.score).ge(generated.Score.create(1n)),
     );
     closedDescendant.close();
     closedDescendant.close();
     const ancestorUsable = sdkQueriesKey(await ancestor.one()) === "query-ada";
     const descendant = ancestor.where(
-      person.field(generated.Person.score).gte(generated.Score.create(1n)),
+      person.field(generated.Person.score).ge(generated.Score.create(1n)),
     );
     const result = await descendant.one();
     ancestor.close();
@@ -1322,7 +1322,7 @@ async function sdkQueriesQueryLane(
       .query(person)
       .where(
         scope,
-        score.gte(Score.create(40n)).and(boolean.eq(ValBool.create(true))),
+        score.ge(Score.create(40n)).and(boolean.eq(ValBool.create(true))),
       )
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
@@ -1344,7 +1344,7 @@ async function sdkQueriesQueryLane(
   const fieldComparisonKeys = sdkQueriesKeys(
     await session
       .query(person)
-      .where(scope, score.gteField(scoreGte))
+      .where(scope, score.geField(scoreGte))
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
 
@@ -1478,7 +1478,7 @@ async function sdkQueriesQueryLane(
   const scalarDomainKeys = sdkQueriesKeys(
     await session
       .query(person)
-      .where(scope, score.gte(Score.create(40n)))
+      .where(scope, score.ge(Score.create(40n)))
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
   capture?.mark("grouped_reducer.global");
@@ -1518,13 +1518,13 @@ async function sdkQueriesQueryLane(
   const call = qualifyingScore(session, person, minimum);
   capture?.mark("schema_function.simple");
   const functionValues = (await query
-    .where(call.gteField(score))
+    .where(call.geField(score))
     .rows({ limit: 2n, orderBy: [identifier.asc()] }))
     .map((person: any) => Number(person.score.value));
   const nested = qualifyingScore(session, person, call);
   capture?.mark("schema_function.nested");
   const nestedFunctionValues = (await query
-    .where(nested.gteField(score))
+    .where(nested.geField(score))
     .rows({ limit: 2n, orderBy: [identifier.asc()] }))
     .map((person: any) => Number(person.score.value));
   capture?.mark("structured_query_diagnostic.one");
@@ -2695,17 +2695,17 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       .where(
         scalarDomainVariable.field(Person.identifier).eq(Identifier.create("person-1")),
         scalarDomainVariable.field(Person.valBool).eq(ValBool.create(true)),
-        scalarDomainVariable.field(Person.valDouble).gte(ValDouble.create(3.5)),
-        scalarDomainVariable.field(Person.valDecimal).gte(ValDecimal.create("3.5")),
+        scalarDomainVariable.field(Person.valDouble).ge(ValDouble.create(3.5)),
+        scalarDomainVariable.field(Person.valDecimal).ge(ValDecimal.create("3.5")),
         scalarDomainVariable
           .field(Person.valDate)
-          .gte(ValDate.create(new Date("2026-07-29T00:00:00Z"))),
+          .ge(ValDate.create(new Date("2026-07-29T00:00:00Z"))),
         scalarDomainVariable
           .field(Person.valDatetime)
-          .gte(ValDatetime.create(new Date("2026-07-29T12:34:56Z"))),
+          .ge(ValDatetime.create(new Date("2026-07-29T12:34:56Z"))),
         scalarDomainVariable
           .field(Person.valDatetimeTz)
-          .gte(ValDatetimeTz.create(new Date("2026-07-29T12:34:56Z"))),
+          .ge(ValDatetimeTz.create(new Date("2026-07-29T12:34:56Z"))),
         scalarDomainVariable.field(Person.valDuration).eq(ValDuration.create("PT3S")),
       )
       .one();
@@ -2887,7 +2887,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       .where(
         interactionVariable.role(Interaction.actor).connects(personActorVariable),
         interactionVariable.field(Interaction.nickname).eq(Nickname.create("read")),
-        personActorVariable.field(Person.score).gte(Score.create(3n)),
+        personActorVariable.field(Person.score).ge(Score.create(3n)),
       )
       .one();
     assertIidsEqual(queriedPersonInteraction.iid, personInteraction.iid);
@@ -2964,7 +2964,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       const generatedExpression = identifierField.startsWith(Identifier.create("person-"))
         .and(identifierField.contains(Identifier.create("son-")))
         .and(identifierField.endsWith(Identifier.create("-1")))
-        .and(identifierField.regex(Identifier.create("^person-1$")))
+        .and(identifierField.like(Identifier.create("^person-1$")))
         .and(identifierField.ne(identifierValue).not())
         .and(
           identifierField.eq(identifierValue)

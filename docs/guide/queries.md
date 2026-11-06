@@ -36,12 +36,12 @@ rejected before query execution.
 ## Comparison and string predicates
 
 ```python
-adult = age.gte(Age(18))
+adult = age.ge(Age(18))
 not_retired = age.lt(Age(65))
 named_ada = name.eq(Name("Ada"))
 prefix = name.starts_with(Name("A"))
 substring = name.contains(Name("da"))
-pattern = name.regex(Name("^A.*"))
+pattern = name.like(Name("^A.*"))
 ```
 
 Generated fields provide scalar-appropriate predicates. Equality can also

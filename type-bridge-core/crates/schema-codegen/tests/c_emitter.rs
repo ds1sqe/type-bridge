@@ -1032,8 +1032,8 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
         "static inline acme_query_function_integer_argument_v1_t TYPE_BRIDGE_CALL acme_query_function_integer_argument_from_input(",
         "static inline acme_query_function_integer_argument_v1_t TYPE_BRIDGE_CALL acme_query_function_integer_argument_from_call(",
         "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_score_query_function_input_open(",
-        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_qualifyingzhscore_query_call_greater_than_or_equal_field(",
-        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_query_function_integer_field_less_than_call(",
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_qualifyingzhscore_query_call_ge_field(",
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_query_function_integer_field_lt_call(",
     ] {
         assert!(
             header.contains(declaration),
@@ -4612,24 +4612,24 @@ int main(void) {
           function, &arguments, &nested, &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
     return 3;
   }
-  if (acme_qualifyingzhscore_query_call_equal_field(
+  if (acme_qualifyingzhscore_query_call_eq_field(
           call, acme_person_score_query_field_function_field(score_field),
           &predicate, &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
     return 4;
   }
   (void)acme_query_predicate_close(&predicate);
-  if (acme_qualifyingzhscore_query_call_less_than_value(
+  if (acme_qualifyingzhscore_query_call_lt_value(
           call, minimum, &predicate, &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
     return 5;
   }
   (void)acme_query_predicate_close(&predicate);
-  if (acme_qualifyingzhscore_query_call_greater_than_call(
+  if (acme_qualifyingzhscore_query_call_gt_call(
           nested, acme_qualifyingzhscore_query_call_ref(call),
           &predicate, &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
     return 6;
   }
   (void)acme_query_predicate_close(&predicate);
-  if (acme_query_function_integer_field_less_than_or_equal_call(
+  if (acme_query_function_integer_field_le_call(
           acme_person_score_query_field_function_field(score_field),
           acme_qualifyingzhscore_query_call_ref(nested),
           &predicate, &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
@@ -5719,7 +5719,7 @@ int main(void) {
   const acme_actor_displayzhname_query_field *wrong = 0;
   acme_query_predicate *predicate = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
-  return acme_qualifyingzhscore_query_call_equal_field(
+  return acme_qualifyingzhscore_query_call_eq_field(
       call, acme_actor_displayzhname_query_field_function_field(wrong),
       &predicate, &diagnostics);
 }

@@ -681,3 +681,15 @@ spelling; they are not active diagnostic producers.
 | `query_v2_reachable_source_domain` | `query_reachable_source_domain` |
 | `query_v2_shared_buffer_unsupported` | `query_shared_buffer_unsupported` |
 | `query_v2_unknown_binding` | `query_unknown_binding` |
+
+## Comparison methods and lookup tokens
+
+Use `ne`, `le`, `ge` and `like` for typed query comparisons. Python suffix
+variants (`_field`, `_value`, `_call`) and TypeScript variants (`Field`,
+`Value`, `Call`) follow the same spelling. Regenerate C packages for the
+corresponding manager and schema-function comparison names; use
+`TYPE_BRIDGE_QUERY_COMPARE_LIKE` for the unchanged numeric comparison tag 10.
+
+Manager keyword filters retain their protocol: `field__gte`, `field__lte`,
+and explicit comparison tokens `eq`, `ne`, `lt`, `lte`, `gt`, `gte` keep their
+meaning. Those lookup tokens are separate from typed method names.

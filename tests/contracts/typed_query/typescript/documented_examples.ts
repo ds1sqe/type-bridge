@@ -68,11 +68,11 @@ void personPair;
 // diagnostic.
 
 const adults = onePerson.where(
-  person.field(Person.score).gte(Score.create(18n)),
+  person.field(Person.score).ge(Score.create(18n)),
   person.field(Person.identifier).startsWith(Identifier.create("Al")),
   person.field(Person.identifier).contains(Identifier.create("Research")),
   person.field(Person.identifier).endsWith(Identifier.create("Labs")),
-  person.field(Person.identifier).regex(Identifier.create(String.raw`^A[[:alpha:]]+$`)),
+  person.field(Person.identifier).like(Identifier.create(String.raw`^A[[:alpha:]]+$`)),
 );
 
 const literalPercent = onePerson.where(

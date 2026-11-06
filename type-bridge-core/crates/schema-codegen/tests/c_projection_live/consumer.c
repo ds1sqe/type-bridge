@@ -2780,7 +2780,7 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_qualifyingzhscore_query_call_open(
             function, &arguments, &call, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_qualifyingzhscore_query_call_greater_than_or_equal_field(
+  CHECK(fixture_qualifyingzhscore_query_call_ge_field(
             call,
             fixture_person_score_query_field_function_field(score_field),
             &predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -3256,7 +3256,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_qualifyingzhscore_query_call_open(
               function, &nested_arguments, &nested_call, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_qualifyingzhscore_query_call_greater_than_or_equal_field(
+    CHECK(fixture_qualifyingzhscore_query_call_ge_field(
               nested_call,
               fixture_person_score_query_field_function_field(score_field),
               &nested_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);

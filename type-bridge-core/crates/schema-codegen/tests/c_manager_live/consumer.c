@@ -873,9 +873,9 @@ int main(void) {
       manager_person_manager_filter_foozuzubar_eq,
       manager_person_manager_filter_foozuzubar_ne,
       manager_person_manager_filter_foozuzubar_gt,
-      manager_person_manager_filter_foozuzubar_gte,
+      manager_person_manager_filter_foozuzubar_ge,
       manager_person_manager_filter_foozuzubar_lt,
-      manager_person_manager_filter_foozuzubar_lte};
+      manager_person_manager_filter_foozuzubar_le};
   const unsigned expected_masks[6] = {1u, 2u, 2u, 3u, 0u, 1u};
   size_t index;
   uint64_t count = 0u;
@@ -997,7 +997,7 @@ int main(void) {
                                              &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         read != NULL && diagnostics == NULL);
-  CHECK(manager_person_manager_filter_foozuzubar_gte(
+  CHECK(manager_person_manager_filter_foozuzubar_ge(
             &manager, manager_person_manager_filter_root(&manager), seven,
             &filter, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(manager_person_manager_read_transaction_first(
@@ -1024,7 +1024,7 @@ int main(void) {
     CHECK(manager_person_manager_filter_close(&filter) == TYPE_BRIDGE_STATUS_OK);
   }
 
-  CHECK(manager_person_manager_filter_foozuzubar_gte(
+  CHECK(manager_person_manager_filter_foozuzubar_ge(
             &manager, manager_person_manager_filter_root(&manager), seven,
             &filter, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(manager_person_manager_filter_score_gt(

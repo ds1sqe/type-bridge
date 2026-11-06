@@ -223,7 +223,7 @@ typedef uint32_t type_bridge_query_comparison_t;
 #define TYPE_BRIDGE_QUERY_COMPARE_STARTS_WITH                              \
   ((type_bridge_query_comparison_t)8)
 #define TYPE_BRIDGE_QUERY_COMPARE_ENDS_WITH ((type_bridge_query_comparison_t)9)
-#define TYPE_BRIDGE_QUERY_COMPARE_REGEX ((type_bridge_query_comparison_t)10)
+#define TYPE_BRIDGE_QUERY_COMPARE_LIKE ((type_bridge_query_comparison_t)10)
 
 typedef uint32_t type_bridge_query_predicate_combine_t;
 #define TYPE_BRIDGE_QUERY_PREDICATE_AND                                    \

@@ -217,55 +217,55 @@ class FunctionCall[DomainT](_Frozen):
     def eq_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("equal", field)
 
-    def neq_field(self, field: BoundField) -> Predicate:
+    def ne_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("not_equal", field)
 
     def lt_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("less_than", field)
 
-    def lte_field(self, field: BoundField) -> Predicate:
+    def le_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("less_than_or_equal", field)
 
     def gt_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("greater_than", field)
 
-    def gte_field(self, field: BoundField) -> Predicate:
+    def ge_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("greater_than_or_equal", field)
 
     def eq_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("equal", value)
 
-    def neq_value(self, value: FunctionInput[DomainT]) -> Predicate:
+    def ne_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("not_equal", value)
 
     def lt_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("less_than", value)
 
-    def lte_value(self, value: FunctionInput[DomainT]) -> Predicate:
+    def le_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("less_than_or_equal", value)
 
     def gt_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("greater_than", value)
 
-    def gte_value(self, value: FunctionInput[DomainT]) -> Predicate:
+    def ge_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("greater_than_or_equal", value)
 
     def eq_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("equal", other)
 
-    def neq_call(self, other: FunctionCall[DomainT]) -> Predicate:
+    def ne_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("not_equal", other)
 
     def lt_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("less_than", other)
 
-    def lte_call(self, other: FunctionCall[DomainT]) -> Predicate:
+    def le_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("less_than_or_equal", other)
 
     def gt_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("greater_than", other)
 
-    def gte_call(self, other: FunctionCall[DomainT]) -> Predicate:
+    def ge_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("greater_than_or_equal", other)
 
     def native_argument(self) -> MatchFunctionArgumentHandle:
@@ -430,10 +430,10 @@ class BoundField(_Frozen):
     def eq_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("equal", field)
 
-    def neq(self, value: AttributeBase | BoundField) -> Predicate:
+    def ne(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("not_equal", value)
 
-    def neq_field(self, field: BoundField) -> Predicate:
+    def ne_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("not_equal", field)
 
     def lt(self, value: AttributeBase | BoundField) -> Predicate:
@@ -442,10 +442,10 @@ class BoundField(_Frozen):
     def lt_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("less_than", field)
 
-    def lte(self, value: AttributeBase | BoundField) -> Predicate:
+    def le(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("less_than_or_equal", value)
 
-    def lte_field(self, field: BoundField) -> Predicate:
+    def le_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("less_than_or_equal", field)
 
     def gt(self, value: AttributeBase | BoundField) -> Predicate:
@@ -454,10 +454,10 @@ class BoundField(_Frozen):
     def gt_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("greater_than", field)
 
-    def gte(self, value: AttributeBase | BoundField) -> Predicate:
+    def ge(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("greater_than_or_equal", value)
 
-    def gte_field(self, field: BoundField) -> Predicate:
+    def ge_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("greater_than_or_equal", field)
 
     def contains(self, value: AttributeBase) -> Predicate:
@@ -469,7 +469,7 @@ class BoundField(_Frozen):
     def ends_with(self, value: AttributeBase) -> Predicate:
         return self.__compare("ends_with", value)
 
-    def regex(self, value: AttributeBase) -> Predicate:
+    def like(self, value: AttributeBase) -> Predicate:
         return self.__compare("regex", value)
 
     def is_present(self) -> Predicate:

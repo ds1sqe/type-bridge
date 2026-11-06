@@ -694,7 +694,7 @@ const generatedRemoteNestedCall = qualifyingScore(
   generatedRemotePerson,
   generatedRemoteCall,
 );
-assert.ok(generatedRemoteCall.gteCall(generatedRemoteNestedCall));
+assert.ok(generatedRemoteCall.geCall(generatedRemoteNestedCall));
 assert.throws(
   () => generatedRemoteSession.var(Person, "subtype"),
   (error) =>
@@ -1222,8 +1222,8 @@ await assert.rejects(
     limitedRemoteSession
       .query(limitedRemotePerson)
       .where(
-        limitedRemotePerson.field(Person.score).gte(Score.create(1n)),
-        limitedRemotePerson.field(Person.score).gte(Score.create(2n)),
+        limitedRemotePerson.field(Person.score).ge(Score.create(1n)),
+        limitedRemotePerson.field(Person.score).ge(Score.create(2n)),
       )
       .one(),
   (error) => {
@@ -1377,7 +1377,7 @@ await assert.rejects(
       .query(wideRemotePerson)
       .where(
         ...Array.from({ length: 38 }, () =>
-          wideRemotePerson.field(Person.score).gte(Score.create(1n)),
+          wideRemotePerson.field(Person.score).ge(Score.create(1n)),
         ),
       )
       .one(),
@@ -1391,9 +1391,9 @@ assert.equal(wideRemoteRequests, 0);
 // Measured default encoding boundary for this alternating AND/OR terminal.
 const nativePredicateDepth = Number(new QueryLimits().get("predicate_depth"));
 function nestedPredicate(binding,nesting) {
-  let predicate=binding.field(Person.score).gte(Score.create(1n));
+  let predicate=binding.field(Person.score).ge(Score.create(1n));
   for(let depth=1;depth<nesting;depth+=1) {
-    const term=binding.field(Person.score).gte(Score.create(1n));
+    const term=binding.field(Person.score).ge(Score.create(1n));
     predicate=depth%2===0 ? predicate.and(term) : predicate.or(term);
   }
   return predicate;
@@ -1426,7 +1426,7 @@ wideRemoteSession.close();
 const remoteLifecycle = generatedRemoteSession.query(generatedRemotePerson);
 const remoteLifecycleClone = remoteLifecycle.clone();
 const remoteLifecycleDerived = remoteLifecycle.where(
-  generatedRemotePerson.field(Person.score).gte(Score.create(1n)),
+  generatedRemotePerson.field(Person.score).ge(Score.create(1n)),
 );
 const remoteLifecyclePage = generatedRemoteSession.query(generatedRemotePerson);
 const remoteLifecycleCount = generatedRemoteSession.query(generatedRemotePerson);

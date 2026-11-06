@@ -82,7 +82,7 @@ session = blocking(Person.query(db))
 person = session.exact(Person)
 adults = (
     session.query(person)
-    .where(person.field(Person.age).gte(Age(18)))
+    .where(person.field(Person.age).ge(Age(18)))
     .rows(limit=100)
 )
 ```

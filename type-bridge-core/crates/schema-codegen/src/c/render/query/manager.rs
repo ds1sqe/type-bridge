@@ -14,9 +14,9 @@ const OPERATIONS: [(&str, &str); 6] = [
     ("eq", "TYPE_BRIDGE_QUERY_COMPARE_EQUAL"),
     ("ne", "TYPE_BRIDGE_QUERY_COMPARE_NOT_EQUAL"),
     ("lt", "TYPE_BRIDGE_QUERY_COMPARE_LESS_THAN"),
-    ("lte", "TYPE_BRIDGE_QUERY_COMPARE_LESS_THAN_OR_EQUAL"),
+    ("le", "TYPE_BRIDGE_QUERY_COMPARE_LESS_THAN_OR_EQUAL"),
     ("gt", "TYPE_BRIDGE_QUERY_COMPARE_GREATER_THAN"),
-    ("gte", "TYPE_BRIDGE_QUERY_COMPARE_GREATER_THAN_OR_EQUAL"),
+    ("ge", "TYPE_BRIDGE_QUERY_COMPARE_GREATER_THAN_OR_EQUAL"),
 ];
 
 fn manager_name(model: &ModelProjection) -> Result<String, Diagnostic> {

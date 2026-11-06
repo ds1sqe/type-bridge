@@ -1604,7 +1604,7 @@ fn predicates_lower_operators_and_compose_by_domain() {
             ..
         }
     ));
-    let pattern = name.regex(Regex::new("^A").unwrap());
+    let pattern = name.like(Regex::new("^A").unwrap());
     assert!(matches!(
         pattern.expr,
         PredicateExpr::FieldValue {

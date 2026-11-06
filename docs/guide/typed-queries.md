@@ -33,7 +33,7 @@ used for hydration.
 ## Match fields and roles
 
 ```python
-adult = person.field(Person.age).gte(Age(18))
+adult = person.field(Person.age).ge(Age(18))
 employee = employment.role(Employment.employee).connects(person)
 
 query = session.query(person, employment).where(adult, employee)

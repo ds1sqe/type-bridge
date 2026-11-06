@@ -338,6 +338,22 @@ All notable changes to TypeBridge will be documented in this file.
 
 <!-- --8<-- [start:breaking-3-0] -->
 
+Typed comparison methods use `ne`, `le`, `ge` and `like` consistently.
+Manager lookup tokens (`lte`, `gte`, `regex`, and keyword suffixes such as
+`field__gte`) remain the existing lookup protocol.
+
+| Removed comparison API | Replacement |
+| --- | --- |
+| Python query `neq`, `neq_field`, `neq_value`, `neq_call` | `ne`, `ne_field`, `ne_value`, `ne_call` |
+| Python query `lte`, `lte_field`, `lte_value`, `lte_call` | `le`, `le_field`, `le_value`, `le_call` |
+| Python query `gte`, `gte_field`, `gte_value`, `gte_call` | `ge`, `ge_field`, `ge_value`, `ge_call` |
+| TypeScript query `lte`, `lteField`, `lteValue`, `lteCall` | `le`, `leField`, `leValue`, `leCall` |
+| TypeScript query `gte`, `gteField`, `gteValue`, `gteCall` | `ge`, `geField`, `geValue`, `geCall` |
+| Python, TypeScript and Rust typed query `regex` | `like` |
+| Generated C manager `*_manager_filter_*_lte` / `*_manager_filter_*_gte` | `*_manager_filter_*_le` / `*_manager_filter_*_ge` |
+| Generated C schema-function comparison `equal`, `not_equal`, `less_than`, `less_than_or_equal`, `greater_than`, `greater_than_or_equal` (all field/value/call variants) | `eq`, `ne`, `lt`, `le`, `gt`, `ge` in the same function names |
+| C `TYPE_BRIDGE_QUERY_COMPARE_REGEX` | `TYPE_BRIDGE_QUERY_COMPARE_LIKE` (numeric value 10 unchanged) |
+
 Active `query_remote_v2_*` / `query_remote_v3_*` diagnostics become
 `query_remote_*`; `query_v2_model_*` and `query_v2_adapter_*` become
 `query_model_*` and `query_adapter_*`. Remaining versioned query diagnostic

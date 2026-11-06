@@ -237,11 +237,11 @@ async def check_direct() -> None:
     assert_type(minimum_score, IntegerInput)
     qualifying_call = qualifying_score(query_session, person_var, minimum_score)
     assert_type(qualifying_call, IntegerCall)
-    qualifying_predicate = qualifying_call.gte_field(score_field)
+    qualifying_predicate = qualifying_call.ge_field(score_field)
     nested_call = qualifying_score(query_session, person_var, qualifying_call)
-    nested_predicate = qualifying_call.gte_call(nested_call)
+    nested_predicate = qualifying_call.ge_call(nested_call)
     bool_field = person_var.field(Person.val_bool)
-    adult = score_field.gte(Score(18))
+    adult = score_field.ge(Score(18))
     assert_type(adult, Predicate)
     assert_type(score_field.is_present(), Predicate)
     assert_type(score_field.is_missing(), Predicate)
@@ -397,7 +397,7 @@ async def check_proxy(session: QuerySession) -> None:
     remote_employee = remote_employment.role(Employment.employee).connects(remote_person)
     remote = session.query(remote_person, remote_employment).where(
         remote_employee,
-        remote_qualifying_call.gte_call(remote_nested_call),
+        remote_qualifying_call.ge_call(remote_nested_call),
     )
     assert_type(remote, Query[Person, Employment])
     assert_type(remote.is_closed, bool)

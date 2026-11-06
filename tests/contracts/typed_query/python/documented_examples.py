@@ -73,11 +73,11 @@ async def selection_shapes() -> None:
 # seventeenth selection is a static diagnostic and Rust rejects forged input.
 
 adults = one_person.where(
-    person.field(Person.score).gte(Score(18)),
+    person.field(Person.score).ge(Score(18)),
     person.field(Person.identifier).starts_with(Identifier("Al")),
     person.field(Person.identifier).contains(Identifier("Research")),
     person.field(Person.identifier).ends_with(Identifier("Labs")),
-    person.field(Person.identifier).regex(Identifier(r"^A[[:alpha:]]+$")),
+    person.field(Person.identifier).like(Identifier(r"^A[[:alpha:]]+$")),
 )
 
 # Percent is literal input here; it has no SQL wildcard meaning.

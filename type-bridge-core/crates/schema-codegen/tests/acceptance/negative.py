@@ -114,7 +114,7 @@ exact_actor_var = query_session.exact(Actor)
 exact_robot_var = query_session.exact(Robot)
 subtype_robot_var = query_session.subtypes(Robot)
 person_var.field(Employment.employee)  # E: wrong_query_owner:reportArgumentType
-person_var.field(Person.score).gte(Identifier("wrong"))  # E: wrong_query_value:reportArgumentType
+person_var.field(Person.score).ge(Identifier("wrong"))  # E: wrong_query_value:reportArgumentType
 employment_var.role(Employment.employee).connects(
     query_session.exact(Event)  # E: wrong_query_player:reportArgumentType
 )

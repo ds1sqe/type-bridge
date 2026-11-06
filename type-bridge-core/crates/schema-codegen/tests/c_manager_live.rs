@@ -297,7 +297,7 @@ fn c_manager_live_producer_is_bounded_and_expectation_independent() {
     assert!(CONSUMER.len() <= MAX_PRODUCER_BYTES);
     for required in [
         "manager_person_manager_filter_foozuzubar_eq",
-        "manager_person_manager_filter_foozuzubar_gte",
+        "manager_person_manager_filter_foozuzubar_ge",
         "manager_person_manager_read_transaction_all",
         "manager_first_requires_identity",
         "manager_read_transaction_query_execute_count",

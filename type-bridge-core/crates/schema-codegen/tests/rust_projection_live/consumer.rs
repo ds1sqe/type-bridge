@@ -4023,7 +4023,7 @@ async fn generated_inheritance_exact_and_subtype_reads() {
             & party_name.starts_with(Text::new("man").expect("manager prefix"))
             & party_name.contains(Text::new("anag").expect("manager substring"))
             & party_name.ends_with(Text::new("ger").expect("manager suffix"))
-            & party_name.regex(Regex::new("^manager$").expect("manager regex"))
+            & party_name.like(Regex::new("^manager$").expect("manager regex"))
             & !party_name.ne(manager_name.clone())
             & (party_name.eq(manager_name)
                 | party_name.starts_with(Text::new("unused").expect("alternate prefix")));
@@ -4566,7 +4566,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
 
         let worker_predicate = identifier.starts_with(Text::new("p-2").expect("worker prefix"))
             & identifier.contains(Text::new("p-20").expect("worker substring"))
-            & identifier.regex(Regex::new("^p-20[0-2]$").expect("worker regex"))
+            & identifier.like(Regex::new("^p-20[0-2]$").expect("worker regex"))
             & score.ge(70_i64)
             & score.lt(71_i64)
             & !(identifier.eq(Identifier::new("p-999").expect("absent worker")) | score.lt(70_i64));

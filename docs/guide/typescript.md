@@ -200,7 +200,7 @@ const session = new QuerySession(db);
 const person = session.exact(Person);
 const employmentVar = session.exact(Employment);
 
-const adult = person.field(Person.age).gte(Age.create(18n));
+const adult = person.field(Person.age).ge(Age.create(18n));
 const employee = employmentVar.role(Employment.employee).connects(person);
 
 const rows = await session
