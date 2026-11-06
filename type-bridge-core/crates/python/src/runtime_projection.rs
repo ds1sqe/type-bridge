@@ -1,6 +1,4 @@
 //! Verified package-scoped runtime projections for generated Python models.
-
-#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -39,10 +37,11 @@ use type_bridge_contract::temporal::{
     MAX_TIME_ZONE_NAME_BYTES, TimeZoneDesignator,
 };
 use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue};
-use type_bridge_core_lib::ast::{Clause, Constraint, Pattern, RolePlayer, Statement};
 use type_bridge_orm::_attribute::ValueType;
 use type_bridge_orm::_descriptor::{OwnedAttributeDescriptor, RoleDescriptor, TypeDescriptor};
-use type_bridge_orm::_dynamic::{DynamicAttributeMap, DynamicComparisonOp, DynamicExpr};
+#[cfg(test)]
+use type_bridge_orm::_dynamic::DynamicAttributeMap;
+use type_bridge_orm::_dynamic::{DynamicComparisonOp, DynamicExpr};
 #[cfg(test)]
 use type_bridge_orm::_dynamic::{DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer};
 use type_bridge_orm::_registry::DescriptorRegistry;
@@ -1582,160 +1581,6 @@ impl PyRuntimeProjection {
             type_bridge_contract::limits::QueryLimits::CANONICAL,
         )
     }
-
-    fn lower_query_builder_match_entity(
-        &self,
-        py: Python<'_>,
-        model: Py<PyType>,
-        variable: &str,
-        filters: &Bound<'_, PyDict>,
-    ) -> PyResult<Clause> {
-        let id = self.package.model_id_for_class(py, &model)?;
-        if id.kind() != TypeKind::Entity {
-            return Err(py_type_error(
-                "generated entity matches require an exact installed entity class",
-            ));
-        }
-        let descriptor = self
-            .package
-            .projection
-            .entity_descriptor(&id)
-            .map_err(py_orm_error)?;
-        let mut constraints = Vec::with_capacity(filters.len());
-        for (field_name, value) in filters.iter() {
-            let field_name: String = field_name
-                .cast_exact::<PyString>()
-                .map_err(|_| py_type_error("generated entity filter names must be exact strings"))?
-                .extract()?;
-            let field = descriptor
-                .owned_attributes
-                .iter()
-                .find(|field| field.field_name == field_name)
-                .ok_or_else(|| {
-                    py_value_error(format!(
-                        "generated entity {:?} has no projected field {field_name:?}",
-                        id.label().as_str()
-                    ))
-                })?;
-            let attribute_id = self
-                .package
-                .type_by_label(&field.attr_name, TypeKind::Attribute)?;
-            let attribute_class = self
-                .package
-                .class(attribute_id, ProjectedModelForm::Complete)?;
-            let scalar = if value.get_type().as_ptr() == attribute_class.bind(py).as_ptr() {
-                value.call_method0("runtime_attribute_value")?
-            } else {
-                value
-            };
-            let value = attribute_value_from_py(py, &scalar, field.value_type)?;
-            constraints.push(Constraint::Has {
-                attr_name: field.attr_name.clone(),
-                value: value.to_ast_value(),
-            });
-        }
-        Ok(Clause::Match(vec![Pattern::Entity {
-            variable: variable.to_owned(),
-            type_name: id.label().as_str().to_owned(),
-            constraints,
-            is_strict: false,
-        }]))
-    }
-
-    fn lower_query_builder_insert_entity(
-        &self,
-        py: Python<'_>,
-        instance: Bound<'_, PyAny>,
-        variable: &str,
-    ) -> PyResult<Clause> {
-        let (id, form) = self.package.identify_value(py, &instance)?;
-        if id.kind() != TypeKind::Entity || form != ProjectedModelForm::Complete {
-            return Err(py_type_error(
-                "generated entity inserts require an exact installed complete entity",
-            ));
-        }
-        let descriptor = self
-            .package
-            .projection
-            .entity_descriptor(&id)
-            .map_err(py_orm_error)?;
-        let attributes = lower_attributes(
-            py,
-            self.package.as_ref(),
-            &id,
-            &descriptor.owned_attributes,
-            &instance,
-        )?;
-        let mut statements = vec![Statement::Isa {
-            variable: variable.to_owned(),
-            type_name: id.label().as_str().to_owned(),
-        }];
-        statements.extend(
-            attributes
-                .into_iter()
-                .map(|(attribute, value)| Statement::Has {
-                    subject_var: variable.to_owned(),
-                    attr_name: attribute,
-                    value: value.to_ast_value(),
-                }),
-        );
-        Ok(Clause::Insert(statements))
-    }
-
-    fn lower_query_builder_match_relation(
-        &self,
-        py: Python<'_>,
-        model: Py<PyType>,
-        variable: &str,
-        role_players: Option<Bound<'_, PyDict>>,
-    ) -> PyResult<Clause> {
-        let id = self.package.model_id_for_class(py, &model)?;
-        if id.kind() != TypeKind::Relation {
-            return Err(py_type_error(
-                "generated relation matches require an exact installed relation class",
-            ));
-        }
-        let projected = &self.package.projection.projection().models()[&id];
-        let mut players = Vec::new();
-        if let Some(role_players) = role_players {
-            players.reserve(role_players.len());
-            for (role_name, player_variable) in role_players.iter() {
-                let role_name: String = role_name
-                    .cast_exact::<PyString>()
-                    .map_err(|_| {
-                        py_type_error("generated relation role names must be exact strings")
-                    })?
-                    .extract()?;
-                let token = projected
-                    .query_tokens()
-                    .roles()
-                    .values()
-                    .find(|token| token.target_name().as_str() == role_name)
-                    .ok_or_else(|| {
-                        py_value_error(format!(
-                            "generated relation {:?} has no projected role {role_name:?}",
-                            id.label().as_str()
-                        ))
-                    })?;
-                let player_variable: String = player_variable
-                    .cast_exact::<PyString>()
-                    .map_err(|_| {
-                        py_type_error("generated relation player variables must be exact strings")
-                    })?
-                    .extract()?;
-                players.push(RolePlayer {
-                    role: token.role().label().as_str().to_owned(),
-                    player_var: player_variable,
-                });
-            }
-        }
-        Ok(Clause::Match(vec![Pattern::Relation {
-            variable: variable.to_owned(),
-            type_name: id.label().as_str().to_owned(),
-            role_players: players,
-            constraints: Vec::new(),
-        }]))
-    }
 }
 
 #[pymethods]
@@ -2600,90 +2445,6 @@ impl PyRuntimeProjection {
             .collect::<PyResult<Vec<_>>>()?;
         control.check()?;
         PyList::new(py, records)
-    }
-
-    /// Retained string fragment API, deprecated until removal in 3.0.
-    fn query_builder_match_entity(
-        &self,
-        py: Python<'_>,
-        model: Py<PyType>,
-        variable: &str,
-        filters: &Bound<'_, PyDict>,
-    ) -> PyResult<String> {
-        crate::warn_legacy_query_api(py)?;
-        compatibility_clause_body(
-            self.lower_query_builder_match_entity(py, model, variable, filters)?,
-            "match",
-        )
-    }
-
-    fn _query_builder_match_entity_clause(
-        &self,
-        py: Python<'_>,
-        model: Py<PyType>,
-        variable: &str,
-        filters: &Bound<'_, PyDict>,
-    ) -> PyResult<Py<PyAny>> {
-        crate::pythonize_serde_value(
-            py,
-            &self.lower_query_builder_match_entity(py, model, variable, filters)?,
-        )
-    }
-
-    /// Retained string fragment API, deprecated until removal in 3.0.
-    fn query_builder_insert_entity(
-        &self,
-        py: Python<'_>,
-        instance: Bound<'_, PyAny>,
-        variable: &str,
-    ) -> PyResult<String> {
-        crate::warn_legacy_query_api(py)?;
-        compatibility_clause_body(
-            self.lower_query_builder_insert_entity(py, instance, variable)?,
-            "insert",
-        )
-    }
-
-    fn _query_builder_insert_entity_clause(
-        &self,
-        py: Python<'_>,
-        instance: Bound<'_, PyAny>,
-        variable: &str,
-    ) -> PyResult<Py<PyAny>> {
-        crate::pythonize_serde_value(
-            py,
-            &self.lower_query_builder_insert_entity(py, instance, variable)?,
-        )
-    }
-
-    /// Retained string fragment API, deprecated until removal in 3.0.
-    #[pyo3(signature = (model, variable, role_players=None))]
-    fn query_builder_match_relation(
-        &self,
-        py: Python<'_>,
-        model: Py<PyType>,
-        variable: &str,
-        role_players: Option<Bound<'_, PyDict>>,
-    ) -> PyResult<String> {
-        crate::warn_legacy_query_api(py)?;
-        compatibility_clause_body(
-            self.lower_query_builder_match_relation(py, model, variable, role_players)?,
-            "match",
-        )
-    }
-
-    #[pyo3(signature = (model, variable, role_players=None))]
-    fn _query_builder_match_relation_clause(
-        &self,
-        py: Python<'_>,
-        model: Py<PyType>,
-        variable: &str,
-        role_players: Option<Bound<'_, PyDict>>,
-    ) -> PyResult<Py<PyAny>> {
-        crate::pythonize_serde_value(
-            py,
-            &self.lower_query_builder_match_relation(py, model, variable, role_players)?,
-        )
     }
 
     /// Build a match session with one common direct/remote resource policy
@@ -5984,49 +5745,6 @@ fn ensure_manageable(package: &InstalledPackage, id: &TypeId) -> PyResult<()> {
     Ok(())
 }
 
-fn compatibility_clause_body(clause: Clause, _keyword: &str) -> PyResult<String> {
-    type_bridge_core_lib::__internal::legacy_clause_body(&clause)
-        .map_err(|error| py_runtime_error(error.to_string()))
-}
-
-fn lower_attributes(
-    py: Python<'_>,
-    package: &InstalledPackage,
-    id: &TypeId,
-    descriptors: &[OwnedAttributeDescriptor],
-    instance: &Bound<'_, PyAny>,
-) -> PyResult<DynamicAttributeMap> {
-    let values = instance.call_method0("runtime_values")?;
-    let values = values.cast::<PyDict>()?;
-    let mut attributes = Vec::new();
-    for descriptor in descriptors {
-        let value = values.get_item(&descriptor.field_name)?;
-        let items = normalized_items(
-            package,
-            id,
-            &descriptor.field_name,
-            value.as_ref(),
-            descriptor_cardinality(descriptor),
-        )?;
-        for item in items {
-            let (id, form) = package.identify_value(py, &item)?;
-            let expected = package.type_by_label(&descriptor.attr_name, TypeKind::Attribute)?;
-            if &id != expected || form != ProjectedModelForm::Complete {
-                return Err(py_type_error(format!(
-                    "field {:?} requires its exact complete attribute wrapper",
-                    descriptor.field_name
-                )));
-            }
-            let scalar = item.call_method0("runtime_attribute_value")?;
-            attributes.push((
-                descriptor.attr_name.clone(),
-                attribute_value_from_py(py, &scalar, descriptor.value_type)?,
-            ));
-        }
-    }
-    Ok(attributes)
-}
-
 fn project_create(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -7227,38 +6945,6 @@ fn required_projected_iid<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py,
     }
     iid.cast_into::<PyIid>()
         .map_err(|_| py_type_error("generated manager IID lookup requires Iid values"))
-}
-
-/// Unpack one generated create member of `id` for lowering into a provider
-/// row. The core checks the member count (`ProjectedCardinalityError`); the
-/// descriptor's maximum only picks the host shape.
-fn normalized_items<'py>(
-    package: &InstalledPackage,
-    id: &TypeId,
-    member: &str,
-    value: Option<&Bound<'py, PyAny>>,
-    cardinality: (u32, Option<u32>),
-) -> PyResult<Vec<Bound<'py, PyAny>>> {
-    let mut items = Vec::new();
-    match value {
-        None => {}
-        Some(value) if value.is_none() => {}
-        Some(value) if cardinality.1 == Some(1) => items.push(value.clone()),
-        Some(value) => {
-            if value.cast::<PyString>().is_ok() {
-                return Err(py_type_error(
-                    "projected multi-value input requires a sequence",
-                ));
-            }
-            let tuple = value
-                .cast::<PyTuple>()
-                .map_err(|_| py_type_error("projected multi-value input requires a tuple"))?;
-            items.extend(tuple.iter());
-        }
-    }
-    validate_projected_create_member_count(&package.projection, id, member, items.len())
-        .map_err(py_projected_cardinality)?;
-    Ok(items)
 }
 
 fn descriptor_cardinality(descriptor: &OwnedAttributeDescriptor) -> (u32, Option<u32>) {
@@ -18395,7 +18081,7 @@ class CyclicFinalizer:
     }
 
     #[test]
-    fn native_lowering_and_hydration_preserve_wrappers_iids_and_relation_references() {
+    fn native_hydration_preserves_wrappers_iids_and_relation_references() {
         Python::initialize();
         Python::attach(|py| {
             let (_, package) = install(py);
@@ -18423,26 +18109,6 @@ class CyclicFinalizer:
                 .class(&aliases_id, ProjectedModelForm::Complete)
                 .unwrap()
                 .bind(py);
-            let identifier = identifier_class.call1(("person-1",)).unwrap();
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("identifier", &identifier).unwrap();
-            let person = person_class.call((), Some(&kwargs)).unwrap();
-            let descriptor = package.projection.entity_descriptor(&person_id).unwrap();
-            assert_eq!(
-                lower_attributes(
-                    py,
-                    package.as_ref(),
-                    &person_id,
-                    &descriptor.owned_attributes,
-                    &person,
-                )
-                .unwrap(),
-                vec![(
-                    "identifier".into(),
-                    AttributeValue::String("person-1".into())
-                )]
-            );
-
             let hydrated = hydrate_entity(
                 py,
                 package.as_ref(),

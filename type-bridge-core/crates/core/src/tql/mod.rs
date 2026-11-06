@@ -5,10 +5,6 @@ mod builders;
 mod schema_builders;
 mod schema_projection;
 pub use schema_builders::*;
-mod legacy;
-mod legacy_projection;
-pub use legacy::*;
-pub use legacy_projection::project_legacy;
 mod render_guard;
 pub use builders::*;
 

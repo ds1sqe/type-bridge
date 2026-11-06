@@ -334,6 +334,40 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+Legacy caller-owned query ASTs are removed. Build queries through generated
+models and typed plan builders; raw TypeQL goes through the explicit raw
+transaction API. Rust engine callers retain `QueryCompiler::compile_typed_*`
+and `prepare_typed_*` for canonical typed operations.
+
+| Removed API | Replacement |
+| --- | --- |
+| Rust `ast::{Value, LiteralValue, FunctionCallValue, ArithmeticValue, RolePlayer, Constraint, Pattern, Statement, Clause, LetAssignment, FetchItem, QueryNode, SortField, ReduceAssignment}` | Canonical typed query operations and plan builders |
+| Rust `QueryCompiler::{compile, compile_node, compile_clause, compile_pattern, compile_statement, compile_constraint, compile_value, try_compile, try_compile_node}` | `compile_typed_*` / `prepare_typed_*` |
+| Rust `query_parser::{parse_typeql_query, parse_typeql_query_checked, QueryParseError}` | Official TypeQL parsing for parser integrations; explicit raw transactions for execution |
+| Python `QueryCompiler` (including `compile`, `compile_dicts`, `compile_node`, `compile_clause_body`, `parse` and private `_compile_query`, `_compile_batch`, `_compile_fetch_items`, `_compile_node`, `_compile_clause_body`) and `parse_typeql_query` | Generated queries and typed plan builders |
+| Rust and Python `ValidationEngine::{validate_pattern, validate_statement, validate_query}`; Python `_ArchivedTypeSchema.validate_query` | Typed query/plan validation; identifier and custom entity-rule validation remain available |
+| Rust `_parser::parse_typeql`, `_schema::TypeSchema::from_typeql`; Python `_ArchivedTypeSchema.from_typeql` | Split-YAML schema authority and checked schema adapters |
+| Rust `AttributeValue::to_ast_value`, `Expr::to_patterns`, `Agg::to_reduce_assignment` | Pass values and expressions directly to native plan builders |
+
+The Python wrappers for the removed AST vocabulary are also removed:
+`LiteralValue`, `FunctionCallValue`, `ArithmeticValue`, `RolePlayer`, `IidConstraint`,
+`HasConstraint`, `IsaConstraint`, `EntityPattern`, `RelationPattern`, `SubTypePattern`,
+`AttributePattern`, `HasPattern`, `ValueComparisonPattern`, `NotPattern`, `OrPattern`,
+`IidPattern`, `RawPattern`, `HasStatement`, `IsaStatement`, `RelationStatement`,
+`DeleteThingStatement`, `RawStatement`, `MatchClause`, `MatchLetClause`, `LetAssignment`,
+`InsertClause`, `DeleteClause`, `UpdateClause`, `FetchAttribute`, `FetchVariable`,
+`FetchAttributeList`, `FetchFunction`, `FetchWildcard`, `FetchNestedWildcard`, `FetchClause`,
+`AggregateExpr`, `ReduceAssignment`, `ReduceClause`.
+
+The old generated-query `update_with(func)` and direct-driver
+`type_bridge.session.Transaction` are gone; use manager filter `update` and
+the staged `Transaction` API. Deprecated Rust `RemoteDatabase`,
+`RemoteQueryTransport`, `RemoteConnectionOptions::{generated, new}` and
+`RemoteQueryLimits` have also been removed. Their replacements are
+`ProxyDatabase`, `ProxyExchange`, `ProxyConnectionPolicy` and
+`QueryExecutionResourceLimits`, respectively.
+
+
 The generated Python and TypeScript compatibility query aliases are removed:
 
 | Removed generated API | Replacement |

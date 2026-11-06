@@ -57,19 +57,11 @@ name = "validation"
 harness = false
 
 [[bench]]
-name = "compilation"
-harness = false
-
-[[bench]]
 name = "schema"
 harness = false
 
 [[bench]]
 name = "validation_iai"
-harness = false
-
-[[bench]]
-name = "compilation_iai"
 harness = false
 
 [[bench]]

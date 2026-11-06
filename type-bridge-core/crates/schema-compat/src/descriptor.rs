@@ -1,6 +1,4 @@
 //! Closed generated-descriptor compatibility input for direct schema facts.
-
-#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -362,7 +360,7 @@ pub fn typeql_to_generated_descriptors(
     document: DocumentId,
     source: &str,
 ) -> Result<String, SchemaDiagnostics> {
-    if type_bridge_core_lib::_parser::parse_typeql(source).is_ok_and(|schema| {
+    if type_bridge_core_lib::__internal::archive::parse_unresolved(source).is_ok_and(|schema| {
         schema.attributes.is_empty()
             && schema.entities.is_empty()
             && schema.relations.is_empty()

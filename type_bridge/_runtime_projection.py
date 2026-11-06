@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from type_bridge_core import PyProjectedModelManager, PyRuntimeProjection
@@ -72,64 +72,6 @@ def _installed_projection_for(model: type[object]) -> PyRuntimeProjection:
         return _installed_projection_by_model[model]
     except KeyError:
         raise TypeError("query builder requires an exact installed generated model class") from None
-
-
-def projected_query_builder_match_entity_for(
-    model: type[GeneratedEntityProjection],
-    variable: str,
-    filters: dict[str, object],
-) -> str:
-    """Compile a raw-query entity match from verified generated projection facts."""
-    projection = _installed_projection_for(model)
-    return projection.query_builder_match_entity(model, variable, filters)
-
-
-def projected_query_builder_insert_entity_for(
-    instance: GeneratedEntityProjection,
-    variable: str,
-) -> str:
-    """Compile a raw-query entity insert from one exact generated value."""
-    projection = _installed_projection_for(type(instance))
-    return projection.query_builder_insert_entity(instance, variable)
-
-
-def projected_query_builder_match_relation_for(
-    model: type[GeneratedRelationProjection],
-    variable: str,
-    role_players: dict[str, str] | None,
-) -> str:
-    """Compile a raw-query relation match from verified generated role tokens."""
-    projection = _installed_projection_for(model)
-    return projection.query_builder_match_relation(model, variable, role_players)
-
-
-def _projected_query_builder_match_entity_clause_for(
-    model: type[GeneratedEntityProjection],
-    variable: str,
-    filters: dict[str, object],
-) -> dict[str, Any]:
-    return _installed_projection_for(model)._query_builder_match_entity_clause(
-        model, variable, filters
-    )
-
-
-def _projected_query_builder_insert_entity_clause_for(
-    instance: GeneratedEntityProjection,
-    variable: str,
-) -> dict[str, Any]:
-    return _installed_projection_for(type(instance))._query_builder_insert_entity_clause(
-        instance, variable
-    )
-
-
-def _projected_query_builder_match_relation_clause_for(
-    model: type[GeneratedRelationProjection],
-    variable: str,
-    role_players: dict[str, str] | None,
-) -> dict[str, Any]:
-    return _installed_projection_for(model)._query_builder_match_relation_clause(
-        model, variable, role_players
-    )
 
 
 def projected_manager_for(

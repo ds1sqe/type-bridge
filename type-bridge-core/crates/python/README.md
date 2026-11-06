@@ -8,34 +8,11 @@ This crate wraps [`type-bridge-core-lib`](../core/) and exposes it as a native
 Python extension module via [PyO3](https://pyo3.rs) and
 [maturin](https://www.maturin.rs).
 
-All complex types cross the Python ↔ Rust boundary via
-`pythonize` / `depythonize` using **serde-tagged-enum dicts**:
-
-```python
-# Pattern dict format (serde tag = "type", content = "data")
-pattern = {
-    "type": "Entity",
-    "data": {
-        "variable": "$p",
-        "type_name": "person",
-        "constraints": [],
-        "is_strict": False,
-    },
-}
-```
-
-## Available Python classes
-
-| Class | Wraps |
-|-------|-------|
-| `ValidationEngine` | `type_bridge_core_lib::validation::ValidationEngine` |
-| `QueryCompiler` | `type_bridge_core_lib::compiler::QueryCompiler` |
-| `TypeSchema` | `type_bridge_core_lib::_schema::TypeSchema` |
-| `ValueCoercer` | `type_bridge_core_lib::value_coercion::ValueCoercer` |
-
-**Standalone functions:** `parse_typeql_query()`, `format_value()`, `coerce_value()`
-
-**AST wrappers:** `EntityPattern`, `RelationPattern`, `MatchClause`, `InsertClause`, etc. (mirrors of `type_bridge_core_lib::ast`)
+Applications use generated models and the `type_bridge` query API. This
+extension provides native projection, plan execution, validation and value
+coercion. `ValidationEngine` validates identifiers and custom data rules;
+`ValueCoercer`, `format_value()` and `coerce_value()` handle scalar values.
+Legacy query-node wrappers and `QueryCompiler` were removed in 3.0.
 
 ## Building
 
@@ -55,18 +32,10 @@ the abi3-py312 wheel baseline and GIL requirement.
 ## Usage from Python
 
 ```python
-from type_bridge_core import ValidationEngine, QueryCompiler, TypeSchema
+from type_bridge_core import ValidationEngine
 
-# Parse and compile
-compiler = QueryCompiler()
-clauses = compiler.parse("match $p isa person, has name 'Alice';")
-typeql = compiler.compile(clauses)
-
-# Schema-aware validation
-schema = TypeSchema.from_typeql("define entity person, owns name; attribute name, value string;")
 engine = ValidationEngine()
-result = schema.validate_query(clauses)
-print(result)  # {"is_valid": true, "errors": []}
+assert engine.validate_type_name("person", "entity")
 ```
 
 ## Prepared V2 remote execution

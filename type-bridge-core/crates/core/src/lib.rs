@@ -38,8 +38,6 @@ pub mod decimal;
 mod parser;
 /// Plaintext or TLS HTTP client for a TypeBridge proxy's `/v2` routes.
 pub mod proxy_http;
-/// Parses a TypeQL query string into the AST.
-pub mod query_parser;
 /// TypeQL reserved-word detection.
 pub mod reserved_words;
 mod tql;
@@ -49,6 +47,21 @@ mod validation_rule_wire;
 /// Implementation-only TypeQL construction boundary for sibling crates.
 #[doc(hidden)]
 pub mod __internal {
+    /// Frozen schema recovery for internal compatibility comparisons only.
+    #[doc(hidden)]
+    pub mod archive {
+        use crate::_schema::{SchemaError, TypeSchema};
+
+        /// Decode released schema syntax without resolving inheritance.
+        pub fn parse_unresolved(input: &str) -> Result<TypeSchema, SchemaError> {
+            crate::_parser::parse_typeql(input)
+        }
+
+        /// Decode and resolve released schema syntax without changing its grammar.
+        pub fn parse_resolved(input: &str) -> Result<TypeSchema, SchemaError> {
+            parse_unresolved(input)?.validate_and_resolve()
+        }
+    }
     pub use crate::tql::*;
 }
 /// Coerces raw values into TypeDB value-types and formats TypeQL literals.

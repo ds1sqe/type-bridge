@@ -4,13 +4,6 @@ import pytest
 import type_bridge_core as core
 
 
-def test_archived_schema_reader_warns_and_keeps_released_only_syntax() -> None:
-    source = "define attribute name value string; entity person @abstract owns name;"
-    with pytest.warns(DeprecationWarning, match="schema archive reader"):
-        schema = core._ArchivedTypeSchema.from_typeql(source)
-    assert '"person"' in schema.to_json()
-
-
 def test_checked_schema_generation_propagates_invalid_identifier() -> None:
     info = {
         "attributes": {},

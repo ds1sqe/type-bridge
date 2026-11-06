@@ -1,4 +1,3 @@
-#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 mod common;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
@@ -47,24 +46,6 @@ fn bench_validate_batch_names(c: &mut Criterion) {
                 let _ = engine.validate_type_name(black_box(name), black_box("entity"));
             }
         })
-    });
-}
-
-fn bench_validate_pattern_simple(c: &mut Criterion) {
-    let engine = ValidationEngine::new();
-    let pattern = common::simple_entity_pattern();
-
-    c.bench_function("validate_pattern/simple_entity", |b| {
-        b.iter(|| engine.validate_pattern(black_box(&pattern)))
-    });
-}
-
-fn bench_validate_pattern_complex(c: &mut Criterion) {
-    let engine = ValidationEngine::new();
-    let pattern = common::complex_nested_pattern();
-
-    c.bench_function("validate_pattern/complex_nested", |b| {
-        b.iter(|| engine.validate_pattern(black_box(&pattern)))
     });
 }
 
@@ -130,24 +111,6 @@ fn bench_validate_type_name_invalid_digit(c: &mut Criterion) {
 // Statement validation
 // ---------------------------------------------------------------------------
 
-fn bench_validate_statement_simple(c: &mut Criterion) {
-    let engine = ValidationEngine::new();
-    let statement = common::simple_isa_statement();
-
-    c.bench_function("validate_statement/simple_isa", |b| {
-        b.iter(|| engine.validate_statement(black_box(&statement)))
-    });
-}
-
-fn bench_validate_statement_relation(c: &mut Criterion) {
-    let engine = ValidationEngine::new();
-    let statement = common::relation_with_attrs_statement();
-
-    c.bench_function("validate_statement/relation_with_attrs", |b| {
-        b.iter(|| engine.validate_statement(black_box(&statement)))
-    });
-}
-
 // ---------------------------------------------------------------------------
 // Large batch: 5000 names
 // ---------------------------------------------------------------------------
@@ -172,16 +135,12 @@ criterion_group!(
     bench_validate_unicode_name,
     bench_validate_reserved_word,
     bench_validate_batch_names,
-    bench_validate_pattern_simple,
-    bench_validate_pattern_complex,
     bench_validate_variable_name_valid,
     bench_validate_variable_name_invalid,
     bench_validate_type_name_relation,
     bench_validate_type_name_attribute,
     bench_validate_type_name_role,
     bench_validate_type_name_invalid_digit,
-    bench_validate_statement_simple,
-    bench_validate_statement_relation,
     bench_validate_batch_5000,
 );
 criterion_main!(benches);

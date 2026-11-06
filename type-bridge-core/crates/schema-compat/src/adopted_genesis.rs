@@ -14,8 +14,6 @@
 //! therefore rejects any reserved-namespace fact outright, requires the
 //! ledger partition to be absent or exactly the frozen contract, and
 //! returns the remaining facts as the adopted genesis.
-
-#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
@@ -442,13 +440,14 @@ pub fn parse_adopted_genesis_authority_with_internal(
     // The frozen V1 parser owns identity for constructs absent from the V2
     // fact vocabulary. Serialize its resolved, map-ordered representation
     // after removing only the already-verified legacy ledger partition.
-    let unresolved = type_bridge_core_lib::_parser::parse_typeql(source).map_err(|_| {
-        failure(
-            DiagnosticCategory::InvalidContract,
-            "adopted_genesis_released_parse_failed",
-            "adopted-genesis TypeQL is outside the released schema grammar",
-        )
-    })?;
+    let unresolved =
+        type_bridge_core_lib::__internal::archive::parse_unresolved(source).map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "adopted_genesis_released_parse_failed",
+                "adopted-genesis TypeQL is outside the released schema grammar",
+            )
+        })?;
     let released_extensions = released_extensions(&unresolved, &full, source)?;
     let extension_bytes = serde_json::to_vec(&released_extensions).map_err(|_| {
         failure(
@@ -465,7 +464,7 @@ pub fn parse_adopted_genesis_authority_with_internal(
     );
 
     let mut legacy =
-        type_bridge_core_lib::_schema::TypeSchema::from_typeql(source).map_err(|_| {
+        type_bridge_core_lib::__internal::archive::parse_resolved(source).map_err(|_| {
             failure(
                 DiagnosticCategory::InvalidContract,
                 "adopted_genesis_released_parse_failed",

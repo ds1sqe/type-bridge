@@ -380,11 +380,7 @@ pub struct RelationType {
 /// The complete parsed TypeDB schema containing all attribute, entity, and
 /// relation type definitions.
 ///
-/// This is the main entry point for working with a TypeDB schema in Rust.
-/// Create one via [`TypeSchema::from_typeql()`] to parse a TypeQL `define`
-/// block, which performs parsing, validation, and inheritance resolution in
-/// one step. Alternatively, build one programmatically and call
-/// `resolve_inheritance()` yourself.
+/// Schema adapters construct this representation and resolve inheritance.
 ///
 /// After construction, use the lookup methods (`get_entity`, `get_relation`,
 /// `get_attribute`) and the inheritance-aware accessors
@@ -424,19 +420,6 @@ impl TypeSchema {
             functions: BTreeMap::new(),
             structs: BTreeMap::new(),
         }
-    }
-
-    /// Parse a TypeQL `define` block into a fully-resolved `TypeSchema`.
-    #[deprecated(
-        since = "2.3.0",
-        note = "archive reader; use the checked official schema adapter; removed in 3.0"
-    )]
-    #[allow(deprecated)]
-    pub fn from_typeql(input: &str) -> Result<TypeSchema, SchemaError> {
-        let mut schema = super::_parser::parse_typeql(input)?;
-        schema.validate()?;
-        schema.resolve_inheritance()?;
-        Ok(schema)
     }
 
     pub(crate) fn validate_and_resolve(mut self) -> Result<Self, SchemaError> {
@@ -928,7 +911,6 @@ impl TypeSchema {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -1263,7 +1245,9 @@ mod tests {
 
     #[test]
     fn test_validate_card_min_gt_max() {
-        let result = TypeSchema::from_typeql("define\nentity person, owns name @card(5..1);");
+        let result = crate::__internal::archive::parse_resolved(
+            "define\nentity person, owns name @card(5..1);",
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("minimum (5)"), "expected min in msg: {}", msg);
@@ -1272,25 +1256,31 @@ mod tests {
 
     #[test]
     fn test_validate_card_valid_passes() {
-        let result = TypeSchema::from_typeql("define\nentity person, owns name @card(1..5);");
+        let result = crate::__internal::archive::parse_resolved(
+            "define\nentity person, owns name @card(1..5);",
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_card_exact_passes() {
-        let result = TypeSchema::from_typeql("define\nentity person, owns name @card(3);");
+        let result = crate::__internal::archive::parse_resolved(
+            "define\nentity person, owns name @card(3);",
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_card_unbounded_passes() {
-        let result = TypeSchema::from_typeql("define\nentity person, owns name @card(1..);");
+        let result = crate::__internal::archive::parse_resolved(
+            "define\nentity person, owns name @card(1..);",
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_regex_invalid() {
-        let result = TypeSchema::from_typeql(
+        let result = crate::__internal::archive::parse_resolved(
             "define\nattribute email, value string, @regex(\"[invalid(\");",
         );
         assert!(result.is_err());
@@ -1300,7 +1290,7 @@ mod tests {
 
     #[test]
     fn test_validate_regex_valid_passes() {
-        let result = TypeSchema::from_typeql(
+        let result = crate::__internal::archive::parse_resolved(
             "define\nattribute email, value string, @regex(\"^[a-z]+@[a-z]+\\\\.[a-z]+$\");",
         );
         assert!(result.is_ok());
@@ -1308,7 +1298,7 @@ mod tests {
 
     #[test]
     fn test_validate_values_duplicate() {
-        let result = TypeSchema::from_typeql(
+        let result = crate::__internal::archive::parse_resolved(
             "define\nattribute status, value string, @values(\"active\", \"inactive\", \"active\");",
         );
         assert!(result.is_err());
@@ -1322,7 +1312,7 @@ mod tests {
 
     #[test]
     fn test_validate_values_valid_passes() {
-        let result = TypeSchema::from_typeql(
+        let result = crate::__internal::archive::parse_resolved(
             "define\nattribute status, value string, @values(\"active\", \"inactive\");",
         );
         assert!(result.is_ok());

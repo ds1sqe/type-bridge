@@ -4,11 +4,9 @@
 //! aggregation operations, [`SortDir`] for sort direction, and
 //! [`AggResult`] for typed aggregation results.
 
-#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use type_bridge_core_lib::ast::{FunctionCallValue, Pattern, ReduceAssignment, Value};
 
 use crate::value::AttributeValue;
 
@@ -29,7 +27,7 @@ pub enum SortDir {
 // Filter expressions
 // ---------------------------------------------------------------------------
 
-/// A filter expression that converts to AST [`Pattern`] nodes.
+/// A filter expression lowered through native query plans.
 ///
 /// Supports comparison operators, string operators, and boolean
 /// combinators. Multiple `Expr`s added via `filter()` are ANDed together.
@@ -264,102 +262,6 @@ impl Expr {
         }
     }
 
-    // -- AST conversion --
-
-    /// Convert this expression to a list of AST [`Pattern`] nodes.
-    ///
-    /// `entity_var` is the variable bound to the entity (e.g. `"$e"`).
-    /// `counter` is a mutable counter for generating unique attribute
-    /// variable names (`$attr0`, `$attr1`, etc.).
-    pub fn to_patterns(&self, entity_var: &str, counter: &mut usize) -> Vec<Pattern> {
-        match self {
-            Self::Eq { attr, value }
-            | Self::Gt { attr, value }
-            | Self::Lt { attr, value }
-            | Self::Gte { attr, value }
-            | Self::Lte { attr, value }
-            | Self::Neq { attr, value } => {
-                let op = match self {
-                    Self::Eq { .. } => "==",
-                    Self::Gt { .. } => ">",
-                    Self::Lt { .. } => "<",
-                    Self::Gte { .. } => ">=",
-                    Self::Lte { .. } => "<=",
-                    Self::Neq { .. } => "!=",
-                    _ => unreachable!(),
-                };
-                let var_name = format!("$attr{}", counter);
-                *counter += 1;
-                vec![
-                    Pattern::Has {
-                        thing_var: entity_var.to_string(),
-                        attr_type: attr.clone(),
-                        attr_var: var_name.clone(),
-                    },
-                    Pattern::ValueComparison {
-                        var: var_name,
-                        operator: op.to_string(),
-                        value: value.to_ast_value(),
-                    },
-                ]
-            }
-            Self::Contains { attr, substring } => {
-                let var_name = format!("$attr{}", counter);
-                *counter += 1;
-                vec![
-                    Pattern::Has {
-                        thing_var: entity_var.to_string(),
-                        attr_type: attr.clone(),
-                        attr_var: var_name.clone(),
-                    },
-                    Pattern::ValueComparison {
-                        var: var_name,
-                        operator: "contains".to_string(),
-                        value: AttributeValue::String(substring.clone()).to_ast_value(),
-                    },
-                ]
-            }
-            Self::Like { attr, pattern } => {
-                let var_name = format!("$attr{}", counter);
-                *counter += 1;
-                vec![
-                    Pattern::Has {
-                        thing_var: entity_var.to_string(),
-                        attr_type: attr.clone(),
-                        attr_var: var_name.clone(),
-                    },
-                    Pattern::ValueComparison {
-                        var: var_name,
-                        operator: "like".to_string(),
-                        value: AttributeValue::String(pattern.clone()).to_ast_value(),
-                    },
-                ]
-            }
-            Self::And(children) => {
-                let mut patterns = Vec::new();
-                for child in children {
-                    patterns.extend(child.to_patterns(entity_var, counter));
-                }
-                patterns
-            }
-            Self::Or(children) => {
-                let branches: Vec<Vec<Pattern>> = children
-                    .iter()
-                    .map(|child| child.to_patterns(entity_var, counter))
-                    .collect();
-                vec![Pattern::Or(branches)]
-            }
-            Self::Not(inner) => {
-                let inner_patterns = inner.to_patterns(entity_var, counter);
-                vec![Pattern::Not(inner_patterns)]
-            }
-            Self::RolePlayer { role, inner } => {
-                let role_var = format!("${}", role);
-                inner.to_patterns(&role_var, counter)
-            }
-        }
-    }
-
     /// Collect unique role names from role player expressions.
     pub fn collect_roles(
         &self,
@@ -434,61 +336,6 @@ impl Agg {
             result_key: format!("${function}"),
             function: function.into(),
             attr_name,
-        }
-    }
-
-    /// Convert to a [`ReduceAssignment`] and optional `Has` binding pattern.
-    ///
-    /// Returns `(assignment, optional_has_pattern)`.
-    /// For `Count`, no has pattern is needed. For attribute-based
-    /// aggregations, a `Has` binding connects the entity variable
-    /// to the attribute variable used in the function call.
-    pub fn to_reduce_assignment(
-        &self,
-        entity_var: &str,
-        counter: &mut usize,
-    ) -> (ReduceAssignment, Option<Pattern>) {
-        match self {
-            Self::Count => {
-                let assignment = ReduceAssignment {
-                    variable: "$count".to_string(),
-                    expression: Value::FunctionCall(FunctionCallValue {
-                        function: "count".to_string(),
-                        args: vec![Value::Variable(entity_var.to_string())],
-                    }),
-                };
-                (assignment, None)
-            }
-            _ => {
-                let (func_name, attr_name, result_var) = match self {
-                    Self::Sum(a) => ("sum", a.as_str(), "$sum"),
-                    Self::Min(a) => ("min", a.as_str(), "$min"),
-                    Self::Max(a) => ("max", a.as_str(), "$max"),
-                    Self::Mean(a) => ("mean", a.as_str(), "$mean"),
-                    Self::Median(a) => ("median", a.as_str(), "$median"),
-                    Self::Std(a) => ("std", a.as_str(), "$std"),
-                    Self::Count => unreachable!(),
-                };
-
-                let attr_var = format!("$agg{}", counter);
-                *counter += 1;
-
-                let has_pattern = Pattern::Has {
-                    thing_var: entity_var.to_string(),
-                    attr_type: attr_name.to_string(),
-                    attr_var: attr_var.clone(),
-                };
-
-                let assignment = ReduceAssignment {
-                    variable: result_var.to_string(),
-                    expression: Value::FunctionCall(FunctionCallValue {
-                        function: func_name.to_string(),
-                        args: vec![Value::Variable(attr_var)],
-                    }),
-                };
-
-                (assignment, Some(has_pattern))
-            }
         }
     }
 }
@@ -610,191 +457,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_expr_eq_patterns() {
-        let expr = Expr::eq("age", AttributeValue::Long(30));
-        let mut counter = 0;
-        let patterns = expr.to_patterns("$e", &mut counter);
-        assert_eq!(patterns.len(), 2);
-        assert_eq!(counter, 1);
-        match &patterns[0] {
-            Pattern::Has {
-                thing_var,
-                attr_type,
-                attr_var,
-            } => {
-                assert_eq!(thing_var, "$e");
-                assert_eq!(attr_type, "age");
-                assert_eq!(attr_var, "$attr0");
-            }
-            _ => panic!("expected Has"),
-        }
-        match &patterns[1] {
-            Pattern::ValueComparison { var, operator, .. } => {
-                assert_eq!(var, "$attr0");
-                assert_eq!(operator, "==");
-            }
-            _ => panic!("expected ValueComparison"),
-        }
-    }
-
-    #[test]
-    fn test_expr_gt_patterns() {
-        let expr = Expr::gt("salary", AttributeValue::Long(50000));
-        let mut counter = 0;
-        let patterns = expr.to_patterns("$e", &mut counter);
-        assert_eq!(patterns.len(), 2);
-        match &patterns[1] {
-            Pattern::ValueComparison { operator, .. } => assert_eq!(operator, ">"),
-            _ => panic!("expected ValueComparison"),
-        }
-    }
-
-    #[test]
-    fn test_expr_lt_patterns() {
-        let expr = Expr::lt("age", AttributeValue::Long(18));
-        let mut counter = 0;
-        let patterns = expr.to_patterns("$e", &mut counter);
-        match &patterns[1] {
-            Pattern::ValueComparison { operator, .. } => assert_eq!(operator, "<"),
-            _ => panic!("expected ValueComparison"),
-        }
-    }
-
-    #[test]
-    fn test_expr_gte_lte_neq() {
-        for (expr, expected_op) in [
-            (Expr::gte("x", AttributeValue::Long(1)), ">="),
-            (Expr::lte("x", AttributeValue::Long(1)), "<="),
-            (Expr::neq("x", AttributeValue::Long(1)), "!="),
-        ] {
-            let mut counter = 0;
-            let patterns = expr.to_patterns("$e", &mut counter);
-            match &patterns[1] {
-                Pattern::ValueComparison { operator, .. } => assert_eq!(operator, expected_op),
-                _ => panic!("expected ValueComparison"),
-            }
-        }
-    }
-
-    #[test]
-    fn test_expr_contains_patterns() {
-        let expr = Expr::contains("name", "Ali");
-        let mut counter = 0;
-        let patterns = expr.to_patterns("$e", &mut counter);
-        assert_eq!(patterns.len(), 2);
-        match &patterns[1] {
-            Pattern::ValueComparison {
-                operator, value, ..
-            } => {
-                assert_eq!(operator, "contains");
-                if let Value::Literal(lit) = value {
-                    assert_eq!(lit.value, json!("Ali"));
-                } else {
-                    panic!("expected Literal");
-                }
-            }
-            _ => panic!("expected ValueComparison"),
-        }
-    }
-
-    #[test]
-    fn test_expr_like_patterns() {
-        let expr = Expr::like("email", "^.*@example\\.com$");
-        let mut counter = 0;
-        let patterns = expr.to_patterns("$e", &mut counter);
-        assert_eq!(patterns.len(), 2);
-        match &patterns[1] {
-            Pattern::ValueComparison { operator, .. } => assert_eq!(operator, "like"),
-            _ => panic!("expected ValueComparison"),
-        }
-    }
-
-    #[test]
-    fn test_expr_and_flattens() {
-        let expr = Expr::and(vec![
-            Expr::gt("age", AttributeValue::Long(18)),
-            Expr::lt("age", AttributeValue::Long(65)),
-        ]);
-        let mut counter = 0;
-        let patterns = expr.to_patterns("$e", &mut counter);
-        // 2 patterns per comparison × 2 comparisons = 4
-        assert_eq!(patterns.len(), 4);
-        assert_eq!(counter, 2);
-    }
-
-    #[test]
-    fn test_expr_or_generates_or_pattern() {
-        let expr = Expr::or(vec![
-            Expr::eq("dept", AttributeValue::String("HR".into())),
-            Expr::eq("dept", AttributeValue::String("Eng".into())),
-        ]);
-        let mut counter = 0;
-        let patterns = expr.to_patterns("$e", &mut counter);
-        assert_eq!(patterns.len(), 1);
-        match &patterns[0] {
-            Pattern::Or(branches) => {
-                assert_eq!(branches.len(), 2);
-                assert_eq!(branches[0].len(), 2); // Has + ValueComparison
-                assert_eq!(branches[1].len(), 2);
-            }
-            _ => panic!("expected Or"),
-        }
-    }
-
-    #[test]
-    fn test_expr_not_generates_not_pattern() {
-        let expr = Expr::not(Expr::eq(
-            "status",
-            AttributeValue::String("inactive".into()),
-        ));
-        let mut counter = 0;
-        let patterns = expr.to_patterns("$e", &mut counter);
-        assert_eq!(patterns.len(), 1);
-        match &patterns[0] {
-            Pattern::Not(inner) => assert_eq!(inner.len(), 2),
-            _ => panic!("expected Not"),
-        }
-    }
-
-    #[test]
-    fn test_counter_increments_across_expressions() {
-        let mut counter = 0;
-        Expr::eq("a", AttributeValue::Long(1)).to_patterns("$e", &mut counter);
-        Expr::gt("b", AttributeValue::Long(2)).to_patterns("$e", &mut counter);
-        Expr::contains("c", "x").to_patterns("$e", &mut counter);
-        assert_eq!(counter, 3);
-    }
-
-    #[test]
-    fn test_agg_count() {
-        let mut counter = 0;
-        let (assign, pattern) = Agg::Count.to_reduce_assignment("$e", &mut counter);
-        assert_eq!(assign.variable, "$count");
-        assert!(pattern.is_none());
-        assert_eq!(counter, 0); // Count doesn't use counter
-    }
-
-    #[test]
-    fn test_agg_sum() {
-        let mut counter = 0;
-        let (assign, pattern) = Agg::Sum("salary".into()).to_reduce_assignment("$e", &mut counter);
-        assert_eq!(assign.variable, "$sum");
-        assert!(pattern.is_some());
-        match pattern.unwrap() {
-            Pattern::Has {
-                attr_type,
-                attr_var,
-                ..
-            } => {
-                assert_eq!(attr_type, "salary");
-                assert_eq!(attr_var, "$agg0");
-            }
-            _ => panic!("expected Has"),
-        }
-        assert_eq!(counter, 1);
-    }
-
-    #[test]
     fn test_agg_result_count() {
         let mut values = HashMap::new();
         values.insert("$count".into(), json!(42));
@@ -878,26 +540,6 @@ mod tests {
                 assert_eq!(pattern, "^foo\\.bar.*");
             }
             _ => panic!("expected Like"),
-        }
-    }
-
-    #[test]
-    fn test_expr_role_player_patterns() {
-        let expr = Expr::role_player("employee", Expr::gt("age", AttributeValue::Long(30)));
-        let mut counter = 0;
-        let patterns = expr.to_patterns("$r", &mut counter);
-        // Should generate patterns against $employee, not $r
-        assert_eq!(patterns.len(), 2);
-        match &patterns[0] {
-            Pattern::Has {
-                thing_var,
-                attr_type,
-                ..
-            } => {
-                assert_eq!(thing_var, "$employee");
-                assert_eq!(attr_type, "age");
-            }
-            _ => panic!("expected Has"),
         }
     }
 

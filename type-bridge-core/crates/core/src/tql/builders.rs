@@ -1,4 +1,3 @@
-#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use super::{Query, TqlError};
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use typeql::{
@@ -980,4 +979,90 @@ pub fn render_commented(query: &Query, comment: &str) -> Result<String, TqlError
 /// Join already-rendered complete queries for retained document-returning APIs.
 pub fn render_query_document(queries: &[String]) -> String {
     queries.join("\n\n")
+}
+
+/// Parse a fragment as exactly one official TypeQL match stage.
+pub fn parse_patterns(source: &str) -> Result<Vec<Pattern>, TqlError> {
+    let source = source.trim().trim_end_matches(';');
+    let query = super::parse(&format!("match {source};"))?;
+    if query.inner.has_explicit_end {
+        return Err(TqlError::InvalidShape);
+    }
+    let QueryStructure::Pipeline(mut pipeline) = query.inner.structure else {
+        return Err(TqlError::InvalidShape);
+    };
+    if !pipeline.preambles.is_empty() || pipeline.stages.len() != 1 {
+        return Err(TqlError::InvalidShape);
+    }
+    let stage::Stage::Match(value) = pipeline.stages.remove(0) else {
+        return Err(TqlError::InvalidShape);
+    };
+    Ok(value
+        .patterns
+        .into_iter()
+        .map(|inner| Pattern { inner })
+        .collect())
+}
+
+/// Lower a scalar from a binding's JSON value and declared TypeDB type.
+pub fn literal_from_json(value: &serde_json::Value, value_type: &str) -> Result<Expr, TqlError> {
+    if ![
+        "string",
+        "long",
+        "integer",
+        "double",
+        "decimal",
+        "boolean",
+        "date",
+        "datetime",
+        "datetime-tz",
+        "datetime_tz",
+        "duration",
+    ]
+    .contains(&value_type)
+    {
+        return Err(TqlError::InvalidLiteral);
+    }
+    let source = match value {
+        serde_json::Value::String(text) if value_type == "string" => {
+            serde_json::to_string(text).map_err(|_| TqlError::InvalidLiteral)?
+        }
+        serde_json::Value::String(text) if value_type == "decimal" => {
+            format!("{}dec", text.strip_suffix("dec").unwrap_or(text))
+        }
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Number(number) if value_type == "decimal" => {
+            format!("{number}dec")
+        }
+        serde_json::Value::Number(number) if value_type == "double" => {
+            let mut source = number.to_string();
+            if !source.contains(['.', 'e', 'E']) {
+                source.push_str(".0");
+            }
+            source
+        }
+        serde_json::Value::Number(number) => number.to_string(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        _ => return Err(TqlError::InvalidLiteral),
+    };
+    let inner = typeql::parse_value(&source).map_err(|_| TqlError::InvalidLiteral)?;
+    use typeql::value::ValueLiteral as Literal;
+    let matches_domain = matches!(
+        (value_type, &inner),
+        ("string", Literal::String(_))
+            | ("long" | "integer", Literal::Integer(_))
+            | ("double", Literal::Double(_))
+            | ("decimal", Literal::Decimal(_))
+            | ("boolean", Literal::Boolean(_))
+            | ("date", Literal::Date(_))
+            | ("datetime", Literal::DateTime(_))
+            | ("datetime-tz" | "datetime_tz", Literal::DateTimeTz(_))
+            | ("duration", Literal::Duration(_))
+    );
+    if !matches_domain {
+        return Err(TqlError::InvalidLiteral);
+    }
+    Ok(Expr {
+        inner: Expression::Value(typeql::value::Literal { span: None, inner }),
+    })
 }

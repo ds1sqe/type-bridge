@@ -160,12 +160,10 @@ pub use session::database::is_identity_safe_provider_address;
 #[cfg(feature = "typedb")]
 pub use session::embedded_driver_versions;
 #[cfg(feature = "typedb")]
-#[allow(deprecated)]
 pub use session::{
     ConnectOptions, DirectConnectionPolicy, PreparedSecureConnectOptions, SecureConnectError,
     SecureConnectOptions, SecureResult, TlsMode,
 };
-#[allow(deprecated)]
 pub use session::{
     Database, DatabaseConnectionAuthority, GivenColumnType, GivenRowsSpec, GivenValue,
     OwnedTransaction, ProxyEndpoint, ProxyHttpTransport, TlsPolicy, Transaction,
@@ -173,7 +171,6 @@ pub use session::{
     require_legacy_writer_open_in_transaction,
 };
 #[cfg(feature = "typedb")]
-#[allow(deprecated)]
 pub use session::{
     database_exists, database_exists_prepared_secure, database_exists_secure,
     delete_database_prepared_secure, delete_database_secure, ensure_database_exists,
