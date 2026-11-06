@@ -27,7 +27,7 @@ const C_HOSTED_OBJECT_BYTES_MIN: usize = 65_535;
 const C_EMBEDDED_BYTE_CHUNK_MAX: usize = 32_768;
 const C_CREATE_ARGS_VERSION: u32 = 1;
 const C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 607;
-const C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 356;
+const C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 357;
 // Windows Clang exposes 1580 predefined and stddef/stdint platform macros.
 // Reserve space above that measured count while keeping the complete macro
 // inventory within the C minimum of 4095.
@@ -2114,7 +2114,7 @@ fn render_successor_model_crud(
         let _ = write!(
             output,
             "static inline type_bridge_status_t TYPE_BRIDGE_CALL {get}(\n\
-               const {owner} *owner, type_bridge_byte_view_t iid,\n\
+               const {owner} *owner, const type_bridge_iid_t *iid,\n\
                const type_bridge_query_execution_limits_v1_t *limits,\n\
                const type_bridge_cancellation_t *cancellation,\n\
                {target} **out_entity,\n\
@@ -2128,7 +2128,7 @@ fn render_successor_model_crud(
                {add_input}(alias_inputs, &alias_input_count,\n\
                    TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &{model_token}, 1u);\n\
                {add_input}(alias_inputs, &alias_input_count,\n\
-                   TYPE_BRIDGE_GENERATED_INPUT_BYTES, iid.data, iid.length);\n\
+                   TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n\
                {add_input}(alias_inputs, &alias_input_count,\n\
                    TYPE_BRIDGE_GENERATED_INPUT_BYTES, limits, sizeof(*limits));\n\
                {add_input}(alias_inputs, &alias_input_count,\n\
@@ -2157,7 +2157,7 @@ fn render_successor_model_crud(
             let _ = write!(
                 output,
                 "static inline type_bridge_status_t TYPE_BRIDGE_CALL {update}(\n\
-                   const {owner} *owner, type_bridge_byte_view_t iid,\n\
+                   const {owner} *owner, const type_bridge_iid_t *iid,\n\
                    const {create} *replacement,\n\
                    const type_bridge_query_execution_limits_v1_t *limits,\n\
                    const type_bridge_cancellation_t *cancellation,\n\
@@ -2172,7 +2172,7 @@ fn render_successor_model_crud(
                    {add_input}(alias_inputs, &alias_input_count,\n\
                        TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &{model_token}, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_BYTES, iid.data, iid.length);\n\
+                       TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
                        TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CREATE, replacement, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
@@ -2203,7 +2203,7 @@ fn render_successor_model_crud(
             let _ = write!(
                 output,
                 "static inline type_bridge_status_t TYPE_BRIDGE_CALL {delete}(\n\
-                   const {owner} *owner, type_bridge_byte_view_t iid,\n\
+                   const {owner} *owner, const type_bridge_iid_t *iid,\n\
                    const type_bridge_query_execution_limits_v1_t *limits,\n\
                    const type_bridge_cancellation_t *cancellation,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
@@ -2215,7 +2215,7 @@ fn render_successor_model_crud(
                    {add_input}(alias_inputs, &alias_input_count,\n\
                        TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &{model_token}, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_BYTES, iid.data, iid.length);\n\
+                       TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
                        TYPE_BRIDGE_GENERATED_INPUT_BYTES, limits, sizeof(*limits));\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
@@ -3488,7 +3488,7 @@ fn render_model_crud_declarations(
         let _ = write!(
             output,
             "type_bridge_status_t TYPE_BRIDGE_CALL {get}(\n\
-               const {owner} *owner, type_bridge_byte_view_t iid,\n\
+               const {owner} *owner, const type_bridge_iid_t *iid,\n\
                const type_bridge_cancellation_t *cancellation,\n\
                {target} **out_entity,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics);\n"
@@ -3498,7 +3498,7 @@ fn render_model_crud_declarations(
             let _ = write!(
                 output,
                 "type_bridge_status_t TYPE_BRIDGE_CALL {update}(\n\
-                       const {owner} *owner, type_bridge_byte_view_t iid,\n\
+                       const {owner} *owner, const type_bridge_iid_t *iid,\n\
                        const {create} *create,\n\
                        const type_bridge_cancellation_t *cancellation,\n\
                        {target} **out_entity,\n\
@@ -3509,7 +3509,7 @@ fn render_model_crud_declarations(
             let _ = write!(
                 output,
                 "type_bridge_status_t TYPE_BRIDGE_CALL {delete}(\n\
-                   const {owner} *owner, type_bridge_byte_view_t iid,\n\
+                   const {owner} *owner, const type_bridge_iid_t *iid,\n\
                    const type_bridge_cancellation_t *cancellation,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics);\n"
             );
@@ -4621,7 +4621,7 @@ fn render_model_crud_definitions(
         let _ = write!(
             output,
             "type_bridge_status_t TYPE_BRIDGE_CALL {get}(\n\
-               const {owner} *owner, type_bridge_byte_view_t iid,\n\
+               const {owner} *owner, const type_bridge_iid_t *iid,\n\
                const type_bridge_cancellation_t *cancellation,\n\
                {target} **out_entity,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
@@ -4634,7 +4634,7 @@ fn render_model_crud_definitions(
                {add_input}(alias_inputs, &alias_input_count,\n\
                    TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &{model_token}, 1u);\n\
                {add_input}(alias_inputs, &alias_input_count,\n\
-                   TYPE_BRIDGE_GENERATED_INPUT_BYTES, iid.data, iid.length);\n\
+                   TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n\
                {add_input}(alias_inputs, &alias_input_count,\n\
                    TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION, cancellation, 1u);\n\
                status = {preflight}(alias_inputs, alias_input_count,\n\
@@ -4661,7 +4661,7 @@ fn render_model_crud_definitions(
             let _ = write!(
                 output,
                 "type_bridge_status_t TYPE_BRIDGE_CALL {update}(\n\
-                   const {owner} *owner, type_bridge_byte_view_t iid,\n\
+                   const {owner} *owner, const type_bridge_iid_t *iid,\n\
                    const {create} *create,\n\
                    const type_bridge_cancellation_t *cancellation,\n\
                    {target} **out_entity,\n\
@@ -4675,7 +4675,7 @@ fn render_model_crud_definitions(
                    {add_input}(alias_inputs, &alias_input_count,\n\
                        TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &{model_token}, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_BYTES, iid.data, iid.length);\n\
+                       TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
                        TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CREATE, create, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
@@ -4705,7 +4705,7 @@ fn render_model_crud_definitions(
             let _ = write!(
                 output,
                 "type_bridge_status_t TYPE_BRIDGE_CALL {delete}(\n\
-                   const {owner} *owner, type_bridge_byte_view_t iid,\n\
+                   const {owner} *owner, const type_bridge_iid_t *iid,\n\
                    const type_bridge_cancellation_t *cancellation,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
                    type_bridge_generated_opaque_input_v1_t alias_inputs[4];\n\
@@ -4716,7 +4716,7 @@ fn render_model_crud_definitions(
                    {add_input}(alias_inputs, &alias_input_count,\n\
                        TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &{model_token}, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
-                       TYPE_BRIDGE_GENERATED_INPUT_BYTES, iid.data, iid.length);\n\
+                       TYPE_BRIDGE_GENERATED_INPUT_IID, iid, 1u);\n\
                    {add_input}(alias_inputs, &alias_input_count,\n\
                        TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION, cancellation, 1u);\n\
                    status = {preflight}(alias_inputs, alias_input_count,\n\

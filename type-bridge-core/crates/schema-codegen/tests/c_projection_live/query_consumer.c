@@ -25,6 +25,17 @@ type_bridge_status_t TYPE_BRIDGE_CALL query_schema_package_open_flat_v2(
     }                                                                          \
   } while (0)
 
+/* Reuse one caller-owned validated argument between synchronous calls. */
+static const type_bridge_iid_t *checked_iid(type_bridge_byte_view_t text,
+                                          type_bridge_iid_t **owner) {
+  if (type_bridge_iid_close(owner) != TYPE_BRIDGE_STATUS_OK ||
+      type_bridge_iid_open(text, owner) != TYPE_BRIDGE_STATUS_OK) {
+    fputs("invalid test IID argument\n", stderr);
+    abort();
+  }
+  return *owner;
+}
+
 static type_bridge_byte_view_t view_of(const char *text) {
   type_bridge_byte_view_t view;
   view.data = (const uint8_t *)text;
@@ -363,6 +374,7 @@ static int run_counter_plan_lifecycle(
     const type_bridge_database_t *database,
     const type_bridge_query_execution_limits_v1_t *limits,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_iid_t *iid_argument = NULL;
   type_bridge_query_execution_limits_v1_t common_limits = *limits;
   common_limits.items = UINT64_C(100000);
   common_limits.bytes = UINT64_C(67108864);
@@ -424,7 +436,7 @@ static int run_counter_plan_lifecycle(
   CHECK(run_staged_counter_count(package, database, before + 2u, out_diagnostics) == 0);
   CHECK(open_counter_create(package, 11, &replacement, out_diagnostics) == 0);
   model_plan_mark("update");
-  CHECK(fixture_counter_database_update_v2(database, ids[0], replacement, limits, NULL, &value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_database_update_v2(database, checked_iid(ids[0], &iid_argument), replacement, limits, NULL, &value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_counter_iid(value, &borrowed, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && borrowed.length == ids[0].length && memcmp(borrowed.data, ids[0].data, borrowed.length) == 0);
   CHECK(fixture_counter_counterzuvalue(value, &counter_value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -432,7 +444,7 @@ static int run_counter_plan_lifecycle(
   CHECK(fixture_counterzuvalue_close(&counter_value) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_close(&value) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("unkeyed_entity_iid_lifecycle.get_by_iid");
-  CHECK(fixture_counter_database_get_by_iid_v2(database, ids[0], limits, NULL, &value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_database_get_by_iid_v2(database, checked_iid(ids[0], &iid_argument), limits, NULL, &value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_counter_counterzuvalue(value, &counter_value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counterzuvalue_value(counter_value, &scalar, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && scalar == 11);
@@ -467,6 +479,7 @@ static int run_counter_plan_lifecycle(
   CHECK(fixture_counter_create_close(&replacement) == TYPE_BRIDGE_STATUS_OK);
   for (index = 0u; index < 2u; ++index)
     CHECK(fixture_counter_create_close(&inputs[index]) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 
@@ -526,6 +539,7 @@ static int run_manager_batch_lifecycle(
     const type_bridge_schema_package_t *package, const type_bridge_database_t *database,
     type_bridge_byte_view_t person_iid, const type_bridge_query_execution_limits_v1_t *limits,
     type_bridge_execution_diagnostics_t **diagnostics) {
+  type_bridge_iid_t *iid_argument = NULL;
   fixture_person_create *people[2] = {NULL, NULL};
   fixture_person *person = NULL;
   fixture_person_put_batch_builder *people_builder = NULL;
@@ -569,7 +583,7 @@ static int run_manager_batch_lifecycle(
   CHECK(fixture_person_put_batch_result_close(&people_result) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_put_batch_close(&people_batch) == TYPE_BRIDGE_STATUS_OK);
   for (index=0u; index<2u; ++index) CHECK(fixture_person_create_close(&people[index]) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_person_database_delete_by_iid_v2(database, dana_iid, limits, NULL, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_database_delete_by_iid_v2(database, checked_iid(dana_iid, &iid_argument), limits, NULL, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(open_empty_ordered_link(package, person_iid, "data-link-forward", 0, &links[0], diagnostics) == 0);
   CHECK(open_empty_ordered_link(package, person_iid, "data-link-return", 0, &links[1], diagnostics) == 0);
   CHECK(fixture_networkzhlink_put_batch_builder_open(package, limits, NULL, &put_builder, diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -636,6 +650,7 @@ static int run_manager_batch_lifecycle(
   CHECK(fixture_networkzhlink_delete_batch_result_close(&delete_result) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_delete_batch_close(&delete_batch) == TYPE_BRIDGE_STATUS_OK);
   for (index=0u; index<2u; ++index) CHECK(fixture_networkzhlink_create_close(&links[index]) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 
@@ -643,6 +658,7 @@ static int run_empty_ordered_lifecycle(
     const type_bridge_schema_package_t *package, const type_bridge_database_t *database,
     const type_bridge_query_execution_limits_v1_t *limits,
     type_bridge_execution_diagnostics_t **diagnostics) {
+  type_bridge_iid_t *iid_argument = NULL;
   fixture_person_create *input = NULL;
   fixture_person *person = NULL;
   fixture_networkzhlink_create *link_input = NULL;
@@ -672,11 +688,11 @@ static int run_empty_ordered_lifecycle(
   CHECK(fixture_person_database_count_v2(database, limits, NULL, &total, diagnostics) == TYPE_BRIDGE_STATUS_OK && total == 2u);
   model_plan_mark("");
   model_plan_mark("ordered_distinct_collections.entity_update");
-  CHECK(fixture_person_database_update_v2(database, person_iid, input, limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_database_update_v2(database, checked_iid(person_iid, &iid_argument), input, limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("ordered_distinct_collections.entity_read");
-  CHECK(fixture_person_database_get_by_iid_v2(database, person_iid, limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_database_get_by_iid_v2(database, checked_iid(person_iid, &iid_argument), limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_person_aliases_count(person, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
   CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
@@ -700,12 +716,12 @@ static int run_empty_ordered_lifecycle(
   CHECK(fixture_networkzhlink_database_count_v2(database, limits, NULL, &total, diagnostics) == TYPE_BRIDGE_STATUS_OK && total == 1u);
   model_plan_mark("");
   model_plan_mark("ordered_distinct_collections.role_update");
-  CHECK(fixture_networkzhlink_database_update_v2(database, link_iid, link_input, limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_database_update_v2(database, checked_iid(link_iid, &iid_argument), link_input, limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_networkzhlink_participant_count(link, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
   CHECK(fixture_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("ordered_distinct_collections.role_read");
-  CHECK(fixture_networkzhlink_database_get_by_iid_v2(database, link_iid, limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_database_get_by_iid_v2(database, checked_iid(link_iid, &iid_argument), limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(fixture_networkzhlink_participant_count(link, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
   CHECK(fixture_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
@@ -724,12 +740,13 @@ static int run_empty_ordered_lifecycle(
   model_plan_mark("");
   CHECK(fixture_networkzhlink_create_close(&link_input) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("ordered_distinct_collections.role_delete");
-  CHECK(fixture_networkzhlink_database_delete_by_iid_v2(database, link_iid, limits, NULL, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_database_delete_by_iid_v2(database, checked_iid(link_iid, &iid_argument), limits, NULL, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
   CHECK(run_manager_batch_lifecycle(package, database, person_iid, limits, diagnostics) == 0);
   model_plan_mark("ordered_distinct_collections.entity_delete");
-  CHECK(fixture_person_database_delete_by_iid_v2(database, person_iid, limits, NULL, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_database_delete_by_iid_v2(database, checked_iid(person_iid, &iid_argument), limits, NULL, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   model_plan_mark("");
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 
@@ -739,6 +756,7 @@ run_unkeyed_lifecycles(const type_bridge_schema_package_t *package,
                        type_bridge_byte_view_t person_iid,
                        const type_bridge_query_execution_limits_v1_t *limits,
                        type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_iid_t *iid_argument = NULL;
   uint8_t iid_storage[256];
   size_t iid_length = 0u;
   type_bridge_byte_view_t iid;
@@ -761,17 +779,17 @@ run_unkeyed_lifecycles(const type_bridge_schema_package_t *package,
   iid.data = iid_storage;
   iid.length = iid_length;
   CHECK(fixture_counter_close(&counter) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_counter_database_get_by_iid_v2(database, iid, limits, NULL,
+  CHECK(fixture_counter_database_get_by_iid_v2(database, checked_iid(iid, &iid_argument), limits, NULL,
                                                &counter, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_close(&counter) == TYPE_BRIDGE_STATUS_OK);
   CHECK(open_counter_create(package, 11, &counter_update, out_diagnostics) ==
         0);
   CHECK(fixture_counter_database_update_v2(
-            database, iid, counter_update, limits, NULL, &counter,
+            database, checked_iid(iid, &iid_argument), counter_update, limits, NULL, &counter,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_close(&counter) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_counter_database_delete_by_iid_v2(database, iid, limits, NULL,
+  CHECK(fixture_counter_database_delete_by_iid_v2(database, checked_iid(iid, &iid_argument), limits, NULL,
                                                   out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_counter_database_count_v2(database, limits, NULL, &count,
@@ -793,14 +811,14 @@ run_unkeyed_lifecycles(const type_bridge_schema_package_t *package,
   iid.length = iid_length;
   CHECK(fixture_membership_close(&membership) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_membership_database_get_by_iid_v2(
-            database, iid, limits, NULL, &membership, out_diagnostics) ==
+            database, checked_iid(iid, &iid_argument), limits, NULL, &membership, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_membership_close(&membership) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_membership_database_update_v2(
-            database, iid, membership_create, limits, NULL, &membership,
+            database, checked_iid(iid, &iid_argument), membership_create, limits, NULL, &membership,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_membership_close(&membership) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_membership_database_delete_by_iid_v2(database, iid, limits,
+  CHECK(fixture_membership_database_delete_by_iid_v2(database, checked_iid(iid, &iid_argument), limits,
                                                      NULL, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_membership_database_count_v2(database, limits, NULL, &count,
@@ -810,6 +828,7 @@ run_unkeyed_lifecycles(const type_bridge_schema_package_t *package,
   CHECK(fixture_membership_create_close(&membership_create) ==
         TYPE_BRIDGE_STATUS_OK);
   puts("ABI 1.6 unkeyed entity/relation IID lifecycle: passed");
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 
@@ -818,6 +837,7 @@ run_robot_batches(const type_bridge_schema_package_t *package,
                   const type_bridge_database_t *database,
                   const type_bridge_query_execution_limits_v1_t *limits,
                   type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_iid_t *iid_argument = NULL;
   uint8_t insert_iid_storage[256];
   uint8_t put_iid_storage[256];
   size_t insert_iid_length = 0u;
@@ -1053,7 +1073,7 @@ run_robot_batches(const type_bridge_schema_package_t *package,
                                         out_diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         count == 1u);
-  CHECK(fixture_robot_database_delete_by_iid_v2(database, put_iid, limits, NULL,
+  CHECK(fixture_robot_database_delete_by_iid_v2(database, checked_iid(put_iid, &iid_argument), limits, NULL,
                                                 out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_robot_database_count_v2(database, limits, NULL, &count,
@@ -1063,6 +1083,7 @@ run_robot_batches(const type_bridge_schema_package_t *package,
   puts("ABI 1.6 entity insert/put/update/delete batches: passed");
   puts("ABI 1.6 later-row failure has zero committed prefix: passed");
   puts("ABI 1.6 borrowed failure is rollback-only before commit: passed");
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 
@@ -1072,6 +1093,7 @@ run_interaction_batches(const type_bridge_schema_package_t *package,
                         type_bridge_byte_view_t person_iid,
                         const type_bridge_query_execution_limits_v1_t *limits,
                         type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_iid_t *iid_argument = NULL;
   uint8_t insert_iid_storage[256];
   uint8_t put_iid_storage[256];
   size_t insert_iid_length = 0u;
@@ -1210,7 +1232,7 @@ run_interaction_batches(const type_bridge_schema_package_t *package,
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_interaction_delete_batch_close(&delete_batch) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_interaction_database_delete_by_iid_v2(database, put_iid, limits,
+  CHECK(fixture_interaction_database_delete_by_iid_v2(database, checked_iid(put_iid, &iid_argument), limits,
                                                       NULL, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_interaction_database_count_v2(database, limits, NULL, &count,
@@ -1218,6 +1240,7 @@ run_interaction_batches(const type_bridge_schema_package_t *package,
             TYPE_BRIDGE_STATUS_OK &&
         count == 0u);
   puts("ABI 1.6 relation insert/put/update/delete batches: passed");
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 
@@ -1270,6 +1293,7 @@ static int check_answer_ceiling_binds_calls(
 }
 
 int main(void) {
+  type_bridge_iid_t *iid_argument = NULL;
   const char *address = getenv("TYPEDB_ADDRESS");
   const char *database_name = getenv("TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE");
   const char *username = getenv("TYPEDB_USERNAME");
@@ -1393,7 +1417,7 @@ int main(void) {
   CHECK(run_interaction_batches(package, database, person_iid, &limits,
                                 &diagnostics) == 0);
 
-  CHECK(fixture_person_database_delete_by_iid_v2(database, person_iid, &limits,
+  CHECK(fixture_person_database_delete_by_iid_v2(database, checked_iid(person_iid, &iid_argument), &limits,
                                                  NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_database_count_v2(database, &limits, NULL, &count,
@@ -1408,5 +1432,6 @@ int main(void) {
   CHECK(type_bridge_schema_package_close(&package) == TYPE_BRIDGE_STATUS_OK);
   CHECK(diagnostics == NULL);
   puts("ABI 1.6 successor generated consumer: passed");
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }

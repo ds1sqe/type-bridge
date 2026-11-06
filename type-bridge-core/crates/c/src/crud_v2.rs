@@ -1,8 +1,9 @@
 //! Policy-aware C CRUD implementations.
 
+use crate::iid::TypeBridgeIid;
 use std::{mem::size_of, ptr};
 
-use crate::abi::{TypeBridgeByteView, TypeBridgeStatus};
+use crate::abi::TypeBridgeStatus;
 use crate::execution_diagnostic::TypeBridgeExecutionDiagnostics;
 use crate::generated_preflight::{
     DirectOutputPreflight, GENERATED_INPUT_CANCELLATION, GENERATED_INPUT_DATABASE,
@@ -175,7 +176,7 @@ unsafe fn check_crud_inputs(
     preflight: &DirectOutputPreflight,
     model: *const TypeBridgeProjectedTokenV1,
     create: *const TypeBridgeProjectedCreate,
-    iid: Option<TypeBridgeByteView>,
+    iid: Option<*const TypeBridgeIid>,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
 ) -> Result<(), TypeBridgeStatus> {
@@ -186,7 +187,7 @@ unsafe fn check_crud_inputs(
         unsafe { &*create }.check_borrowed_ranges(preflight)?;
     }
     if let Some(iid) = iid {
-        preflight.check_bytes(iid.data.cast(), iid.length)?;
+        check_optional_object(preflight, iid)?;
     }
     check_optional_object(preflight, limits)?;
     preflight.check_object_kind(GENERATED_INPUT_CANCELLATION, cancellation.cast())
@@ -306,7 +307,7 @@ unsafe fn update_impl(
     kind: CrudKind,
     target: RawWriteTarget,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     create: *const TypeBridgeProjectedCreate,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
@@ -333,7 +334,7 @@ unsafe fn update_impl(
             &[
                 target.memory_range(),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(create),
                 MemoryRange::of_object(limits),
                 MemoryRange::of_object(cancellation),
@@ -368,7 +369,7 @@ unsafe fn get_impl(
     kind: CrudKind,
     target: RawReadTarget,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
     out_thing: *mut *mut TypeBridgeProjectedThing,
@@ -401,7 +402,7 @@ unsafe fn get_impl(
             &[
                 target.memory_range(),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(limits),
                 MemoryRange::of_object(cancellation),
             ],
@@ -433,7 +434,7 @@ unsafe fn delete_impl(
     kind: CrudKind,
     target: RawWriteTarget,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -463,7 +464,7 @@ unsafe fn delete_impl(
         &[
             target.memory_range(),
             MemoryRange::of_object(model),
-            MemoryRange::of_bytes(iid),
+            MemoryRange::of_object(iid),
             MemoryRange::of_object(limits),
             MemoryRange::of_object(cancellation),
         ],
@@ -625,7 +626,7 @@ macro_rules! define_update {
         pub(crate) unsafe extern "C" fn $name(
             target: *const $target_type,
             model: *const TypeBridgeProjectedTokenV1,
-            iid: TypeBridgeByteView,
+            iid: *const TypeBridgeIid,
             create: *const TypeBridgeProjectedCreate,
             limits: *const TypeBridgeQueryExecutionLimitsV1,
             cancellation: *const TypeBridgeCancellation,
@@ -650,7 +651,7 @@ macro_rules! define_update {
         const _: unsafe extern "C" fn(
             *const $target_type,
             *const TypeBridgeProjectedTokenV1,
-            TypeBridgeByteView,
+            *const TypeBridgeIid,
             *const TypeBridgeProjectedCreate,
             *const TypeBridgeQueryExecutionLimitsV1,
             *const TypeBridgeCancellation,
@@ -666,7 +667,7 @@ macro_rules! define_get {
         pub(crate) unsafe extern "C" fn $name(
             target: *const $target_type,
             model: *const TypeBridgeProjectedTokenV1,
-            iid: TypeBridgeByteView,
+            iid: *const TypeBridgeIid,
             limits: *const TypeBridgeQueryExecutionLimitsV1,
             cancellation: *const TypeBridgeCancellation,
             out_thing: *mut *mut TypeBridgeProjectedThing,
@@ -689,7 +690,7 @@ macro_rules! define_get {
         const _: unsafe extern "C" fn(
             *const $target_type,
             *const TypeBridgeProjectedTokenV1,
-            TypeBridgeByteView,
+            *const TypeBridgeIid,
             *const TypeBridgeQueryExecutionLimitsV1,
             *const TypeBridgeCancellation,
             *mut *mut TypeBridgeProjectedThing,
@@ -704,7 +705,7 @@ macro_rules! define_delete {
         pub(crate) unsafe extern "C" fn $name(
             target: *const $target_type,
             model: *const TypeBridgeProjectedTokenV1,
-            iid: TypeBridgeByteView,
+            iid: *const TypeBridgeIid,
             limits: *const TypeBridgeQueryExecutionLimitsV1,
             cancellation: *const TypeBridgeCancellation,
             out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -725,7 +726,7 @@ macro_rules! define_delete {
         const _: unsafe extern "C" fn(
             *const $target_type,
             *const TypeBridgeProjectedTokenV1,
-            TypeBridgeByteView,
+            *const TypeBridgeIid,
             *const TypeBridgeQueryExecutionLimitsV1,
             *const TypeBridgeCancellation,
             *mut *mut TypeBridgeExecutionDiagnostics,
@@ -960,6 +961,7 @@ define_count!(
 
 #[cfg(test)]
 mod tests {
+    use crate::abi::TypeBridgeByteView;
     use std::mem::size_of;
     use std::ptr;
     use std::sync::Arc;
@@ -971,8 +973,8 @@ mod tests {
     use super::*;
     use crate::allocation::{AllocationSite, inject_failure};
     use crate::entity_crud::tests::{
-        COMMIT_SUCCESS, FakeState, Response, byte_view, close_diagnostics, close_thing, diagnostic,
-        documents, fixture, fixture_with_answer_ceiling, membership_document, person_document,
+        COMMIT_SUCCESS, FakeState, Response, close_diagnostics, close_thing, diagnostic, documents,
+        fixture, fixture_with_answer_ceiling, membership_document, person_document,
         relation_fixture, relation_fixture_with_answer_ceiling,
     };
     use crate::entity_crud::{
@@ -998,7 +1000,7 @@ mod tests {
     type DatabaseGet = unsafe extern "C" fn(
         *const TypeBridgeDatabase,
         *const TypeBridgeProjectedTokenV1,
-        TypeBridgeByteView,
+        *const TypeBridgeIid,
         *const TypeBridgeQueryExecutionLimitsV1,
         *const TypeBridgeCancellation,
         *mut *mut TypeBridgeProjectedThing,
@@ -1015,7 +1017,7 @@ mod tests {
     type ReadGet = unsafe extern "C" fn(
         *const TypeBridgeReadTransaction,
         *const TypeBridgeProjectedTokenV1,
-        TypeBridgeByteView,
+        *const TypeBridgeIid,
         *const TypeBridgeQueryExecutionLimitsV1,
         *const TypeBridgeCancellation,
         *mut *mut TypeBridgeProjectedThing,
@@ -1041,7 +1043,7 @@ mod tests {
     type WriteGet = unsafe extern "C" fn(
         *const TypeBridgeWriteTransaction,
         *const TypeBridgeProjectedTokenV1,
-        TypeBridgeByteView,
+        *const TypeBridgeIid,
         *const TypeBridgeQueryExecutionLimitsV1,
         *const TypeBridgeCancellation,
         *mut *mut TypeBridgeProjectedThing,
@@ -1135,7 +1137,7 @@ mod tests {
                 get_call(
                     database,
                     token,
-                    byte_view(iid),
+                    &TypeBridgeIid::new(std::str::from_utf8(iid).unwrap()).unwrap(),
                     &limits,
                     ptr::null(),
                     &mut thing,
@@ -1196,7 +1198,7 @@ mod tests {
                 get_call(
                     transaction,
                     token,
-                    byte_view(iid),
+                    &TypeBridgeIid::new(std::str::from_utf8(iid).unwrap()).unwrap(),
                     &limits,
                     ptr::null(),
                     &mut thing,
@@ -1277,7 +1279,7 @@ mod tests {
                 get_call(
                     transaction,
                     token,
-                    byte_view(iid),
+                    &TypeBridgeIid::new(std::str::from_utf8(iid).unwrap()).unwrap(),
                     &limits,
                     ptr::null(),
                     &mut thing,
@@ -2021,7 +2023,7 @@ mod tests {
                 type_bridge_write_transaction_entity_delete_by_iid(
                     write_transaction,
                     &write.token,
-                    byte_view(b"0x10"),
+                    &TypeBridgeIid::new("0x10").unwrap(),
                     ptr::null(),
                     forged_diagnostics,
                 )

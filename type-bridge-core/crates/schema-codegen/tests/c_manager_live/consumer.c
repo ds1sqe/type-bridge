@@ -17,6 +17,7 @@
   } while (0)
 
 typedef struct iid_copy {
+  type_bridge_iid_t *typed;
   uint8_t bytes[256];
   size_t length;
 } iid_copy_t;
@@ -86,12 +87,10 @@ static int copy_iid(type_bridge_byte_view_t iid, iid_copy_t *output) {
   }
   memcpy(output->bytes, iid.data, iid.length);
   output->length = iid.length;
-  return 1;
+  return type_bridge_iid_open(iid, &output->typed) == TYPE_BRIDGE_STATUS_OK;
 }
 
-static type_bridge_byte_view_t iid_view(const iid_copy_t *iid) {
-  return (type_bridge_byte_view_t){iid->bytes, iid->length};
-}
+
 
 static int close_person_inputs(person_inputs_t *values) {
   return manager_valzuduration_close(&values->duration) ==
@@ -601,8 +600,8 @@ int main(void) {
   manager_person_create *ada_create = NULL;
   manager_person_create *dana_create = NULL;
   manager_person *person = NULL;
-  iid_copy_t ada_iid = {{0}, 0u};
-  iid_copy_t dana_iid = {{0}, 0u};
+  iid_copy_t ada_iid = {NULL, {0}, 0u};
+  iid_copy_t dana_iid = {NULL, {0}, 0u};
   manager_person_manager manager = {0};
   manager_person_manager foreign_manager = {0};
   manager_foozuzubar *seven = NULL;
@@ -856,10 +855,10 @@ int main(void) {
   CHECK(type_bridge_read_transaction_close(&read, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         read == NULL && diagnostics == NULL);
-  CHECK(manager_person_database_delete_by_iid(database, iid_view(&dana_iid),
+  CHECK(manager_person_database_delete_by_iid(database, dana_iid.typed,
                                              NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(manager_person_database_delete_by_iid(database, iid_view(&ada_iid), NULL,
+  CHECK(manager_person_database_delete_by_iid(database, ada_iid.typed, NULL,
                                              &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(manager_person_database_count(database, NULL, &count, &diagnostics) ==
@@ -875,6 +874,8 @@ int main(void) {
         manager_person_manager_close(&manager) == TYPE_BRIDGE_STATUS_OK &&
         manager_person_create_close(&dana_create) == TYPE_BRIDGE_STATUS_OK &&
         manager_person_create_close(&ada_create) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_close(&ada_iid.typed) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_close(&dana_iid.typed) == TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_database_close(&database, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         database == NULL && diagnostics == NULL);

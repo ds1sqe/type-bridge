@@ -2527,7 +2527,7 @@ fn supported_c_preprocessors_fit_the_frozen_implementation_macro_reserve() {
     let runtime_macros = runtime_header_macro_names();
     assert_eq!(
         runtime_macros.len(),
-        356,
+        357,
         "runtime-header macro reserve drifted"
     );
     let mut invocations = 0;
@@ -2682,6 +2682,7 @@ int main(void) {
   acme_ratiozhvalue *ratio_value = 0;
   acme_zzonedzhvalue *zoned_value = 0;
   type_bridge_byte_view_t text = {0};
+  const type_bridge_iid_t *iid = 0;
   int64_t scalar = 0;
   size_t field_count = 0;
   uint64_t entity_count = 0;
@@ -2748,15 +2749,15 @@ int main(void) {
   (void)acme_personzhrecord_database_put(
       database, create, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_database_get_by_iid(
-      database, text, cancellation, &person, &diagnostics);
+      database, iid, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_database_update(
-      database, text, create, cancellation, &person, &diagnostics);
+      database, iid, create, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_database_delete_by_iid(
-      database, text, cancellation, &diagnostics);
+      database, iid, cancellation, &diagnostics);
   (void)acme_personzhrecord_database_count(
       database, cancellation, &entity_count, &diagnostics);
   (void)acme_personzhrecord_read_transaction_get_by_iid(
-      read_tx, text, cancellation, &person, &diagnostics);
+      read_tx, iid, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_read_transaction_count(
       read_tx, cancellation, &entity_count, &diagnostics);
   (void)acme_personzhrecord_write_transaction_insert(
@@ -2764,11 +2765,11 @@ int main(void) {
   (void)acme_personzhrecord_write_transaction_put(
       write_tx, create, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_get_by_iid(
-      write_tx, text, cancellation, &person, &diagnostics);
+      write_tx, iid, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_update(
-      write_tx, text, create, cancellation, &person, &diagnostics);
+      write_tx, iid, create, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_delete_by_iid(
-      write_tx, text, cancellation, &diagnostics);
+      write_tx, iid, cancellation, &diagnostics);
   (void)acme_personzhrecord_write_transaction_count(
       write_tx, cancellation, &entity_count, &diagnostics);
   (void)acme_membership_database_insert(
@@ -2776,16 +2777,16 @@ int main(void) {
   (void)acme_membership_database_put(
       database, membership_create, cancellation, &membership, &diagnostics);
   (void)acme_membership_database_get_by_iid(
-      database, text, cancellation, &membership, &diagnostics);
+      database, iid, cancellation, &membership, &diagnostics);
   (void)acme_membership_database_update(
-      database, text, membership_create, cancellation, &membership,
+      database, iid, membership_create, cancellation, &membership,
       &diagnostics);
   (void)acme_membership_database_delete_by_iid(
-      database, text, cancellation, &diagnostics);
+      database, iid, cancellation, &diagnostics);
   (void)acme_membership_database_count(
       database, cancellation, &entity_count, &diagnostics);
   (void)acme_membership_read_transaction_get_by_iid(
-      read_tx, text, cancellation, &membership, &diagnostics);
+      read_tx, iid, cancellation, &membership, &diagnostics);
   (void)acme_membership_read_transaction_count(
       read_tx, cancellation, &entity_count, &diagnostics);
   (void)acme_membership_write_transaction_insert(
@@ -2793,12 +2794,12 @@ int main(void) {
   (void)acme_membership_write_transaction_put(
       write_tx, membership_create, cancellation, &membership, &diagnostics);
   (void)acme_membership_write_transaction_get_by_iid(
-      write_tx, text, cancellation, &membership, &diagnostics);
+      write_tx, iid, cancellation, &membership, &diagnostics);
   (void)acme_membership_write_transaction_update(
-      write_tx, text, membership_create, cancellation, &membership,
+      write_tx, iid, membership_create, cancellation, &membership,
       &diagnostics);
   (void)acme_membership_write_transaction_delete_by_iid(
-      write_tx, text, cancellation, &diagnostics);
+      write_tx, iid, cancellation, &diagnostics);
   (void)acme_membership_write_transaction_count(
       write_tx, cancellation, &entity_count, &diagnostics);
   (void)acme_container_item_player_close(&item_player);
@@ -4961,6 +4962,7 @@ int main() {
   acme_ratiozhvalue *ratio_value = nullptr;
   acme_zzonedzhvalue *zoned_value = nullptr;
   type_bridge_byte_view_t text{};
+  const type_bridge_iid_t *iid = nullptr;
   int64_t scalar = 0;
   size_t field_count = 0;
   uint64_t thing_count = 0;
@@ -5026,15 +5028,15 @@ int main() {
   (void)acme_personzhrecord_database_put(
       database, create, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_database_get_by_iid(
-      database, text, cancellation, &person, &diagnostics);
+      database, iid, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_database_update(
-      database, text, create, cancellation, &person, &diagnostics);
+      database, iid, create, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_database_delete_by_iid(
-      database, text, cancellation, &diagnostics);
+      database, iid, cancellation, &diagnostics);
   (void)acme_personzhrecord_database_count(
       database, cancellation, &thing_count, &diagnostics);
   (void)acme_personzhrecord_read_transaction_get_by_iid(
-      read_tx, text, cancellation, &person, &diagnostics);
+      read_tx, iid, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_read_transaction_count(
       read_tx, cancellation, &thing_count, &diagnostics);
   (void)acme_personzhrecord_write_transaction_insert(
@@ -5042,11 +5044,11 @@ int main() {
   (void)acme_personzhrecord_write_transaction_put(
       write_tx, create, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_get_by_iid(
-      write_tx, text, cancellation, &person, &diagnostics);
+      write_tx, iid, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_update(
-      write_tx, text, create, cancellation, &person, &diagnostics);
+      write_tx, iid, create, cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_delete_by_iid(
-      write_tx, text, cancellation, &diagnostics);
+      write_tx, iid, cancellation, &diagnostics);
   (void)acme_personzhrecord_write_transaction_count(
       write_tx, cancellation, &thing_count, &diagnostics);
 
@@ -5055,16 +5057,16 @@ int main() {
   (void)acme_membership_database_put(
       database, membership_create, cancellation, &membership, &diagnostics);
   (void)acme_membership_database_get_by_iid(
-      database, text, cancellation, &membership, &diagnostics);
+      database, iid, cancellation, &membership, &diagnostics);
   (void)acme_membership_database_update(
-      database, text, membership_create, cancellation, &membership,
+      database, iid, membership_create, cancellation, &membership,
       &diagnostics);
   (void)acme_membership_database_delete_by_iid(
-      database, text, cancellation, &diagnostics);
+      database, iid, cancellation, &diagnostics);
   (void)acme_membership_database_count(
       database, cancellation, &thing_count, &diagnostics);
   (void)acme_membership_read_transaction_get_by_iid(
-      read_tx, text, cancellation, &membership, &diagnostics);
+      read_tx, iid, cancellation, &membership, &diagnostics);
   (void)acme_membership_read_transaction_count(
       read_tx, cancellation, &thing_count, &diagnostics);
   (void)acme_membership_write_transaction_insert(
@@ -5072,12 +5074,12 @@ int main() {
   (void)acme_membership_write_transaction_put(
       write_tx, membership_create, cancellation, &membership, &diagnostics);
   (void)acme_membership_write_transaction_get_by_iid(
-      write_tx, text, cancellation, &membership, &diagnostics);
+      write_tx, iid, cancellation, &membership, &diagnostics);
   (void)acme_membership_write_transaction_update(
-      write_tx, text, membership_create, cancellation, &membership,
+      write_tx, iid, membership_create, cancellation, &membership,
       &diagnostics);
   (void)acme_membership_write_transaction_delete_by_iid(
-      write_tx, text, cancellation, &diagnostics);
+      write_tx, iid, cancellation, &diagnostics);
   (void)acme_membership_write_transaction_count(
       write_tx, cancellation, &thing_count, &diagnostics);
 

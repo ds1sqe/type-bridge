@@ -24,6 +24,17 @@
     }                                                                          \
   } while (0)
 
+/* Reuse one caller-owned validated argument between synchronous calls. */
+static const type_bridge_iid_t *checked_iid(type_bridge_byte_view_t text,
+                                          type_bridge_iid_t **owner) {
+  if (type_bridge_iid_close(owner) != TYPE_BRIDGE_STATUS_OK ||
+      type_bridge_iid_open(text, owner) != TYPE_BRIDGE_STATUS_OK) {
+    fputs("invalid test IID argument\n", stderr);
+    abort();
+  }
+  return *owner;
+}
+
 static type_bridge_byte_view_t view_of(const char *text) {
   type_bridge_byte_view_t view;
   view.data = (const uint8_t *)text;
@@ -5278,10 +5289,12 @@ static int write_canonical_view(const char *directory, const char *name,
   return 1;
 }
 
+
 static int run_sdk_serialization_live_codec(
     const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_iid_t *iid_argument = NULL;
   const char *directory = getenv("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE_DIR");
   const uint16_t remote_port = required_remote_port();
   fixture_person_create *person_create = NULL;
@@ -5518,19 +5531,19 @@ static int run_sdk_serialization_live_codec(
                                        &rebound_create, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_employment_database_update(
-            database, employment_iid, rebound_create, NULL,
+            database, checked_iid(employment_iid, &iid_argument), rebound_create, NULL,
             &updated_employment, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(write_canonical_view(directory, "entity.bin", direct_entity_view));
   CHECK(write_canonical_view(directory, "relation.bin", direct_relation_view));
 
   CHECK(fixture_employment_database_delete_by_iid(
-            database, employment_iid, NULL, out_diagnostics) ==
+            database, checked_iid(employment_iid, &iid_argument), NULL, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   {
     type_bridge_byte_view_t person_iid = {0};
     CHECK(fixture_person_iid(inserted_person, &person_iid, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_person_database_delete_by_iid(database, person_iid, NULL,
+    CHECK(fixture_person_database_delete_by_iid(database, checked_iid(person_iid, &iid_argument), NULL,
                                                 out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
   }
@@ -5591,11 +5604,13 @@ static int run_sdk_serialization_live_codec(
   CHECK(fixture_person_close(&inserted_person) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_create_close(&person_create) == TYPE_BRIDGE_STATUS_OK);
   puts("Serialization C live codec direct/remote parity: passed");
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 #endif
 
 int main(void) {
+  type_bridge_iid_t *iid_argument = NULL;
   const char *address = getenv("TYPEDB_ADDRESS");
   const char *database_name = getenv("TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE");
   const char *username = getenv("TYPEDB_USERNAME");
@@ -5764,7 +5779,7 @@ int main(void) {
     const type_bridge_byte_view_t ada_iid = {ada_iid_storage, ada_iid_length};
     CHECK(check_reference_constructors(package, ada_iid, &diagnostics) == 0);
     puts("P4 nominal references: passed");
-    CHECK(fixture_person_database_get_by_iid(database, ada_iid, NULL, &person,
+    CHECK(fixture_person_database_get_by_iid(database, checked_iid(ada_iid, &iid_argument), NULL, &person,
                                              &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 36, &diagnostics) == 0);
@@ -5778,7 +5793,7 @@ int main(void) {
 
     CHECK(open_person_create(package, "query-ada", 37, &ada_update, &diagnostics) ==
           0);
-    CHECK(fixture_person_database_update(database, ada_iid, ada_update, NULL,
+    CHECK(fixture_person_database_update(database, checked_iid(ada_iid, &iid_argument), ada_update, NULL,
                                          &person, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 37, &diagnostics) == 0);
@@ -5814,14 +5829,14 @@ int main(void) {
     puts("P4 write transaction put: passed");
 
     CHECK(fixture_person_write_transaction_get_by_iid(
-              write_tx, ada_iid, NULL, &person, &diagnostics) ==
+              write_tx, checked_iid(ada_iid, &iid_argument), NULL, &person, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 37, &diagnostics) == 0);
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
     puts("P4 write transaction get: passed");
 
     CHECK(fixture_person_write_transaction_update(
-              write_tx, ada_iid, ada_tx_update, NULL, &person,
+              write_tx, checked_iid(ada_iid, &iid_argument), ada_tx_update, NULL, &person,
               &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 38, &diagnostics) == 0);
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
@@ -5833,7 +5848,7 @@ int main(void) {
       const type_bridge_byte_view_t bob_iid = {bob_iid_storage,
                                                bob_iid_length};
       CHECK(fixture_person_write_transaction_delete_by_iid(
-                write_tx, bob_iid, NULL, &diagnostics) ==
+                write_tx, checked_iid(bob_iid, &iid_argument), NULL, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
     }
     puts("P4 write transaction delete: passed");
@@ -5851,7 +5866,7 @@ int main(void) {
                                             &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_read_transaction_get_by_iid(
-              read_tx, ada_iid, NULL, &person, &diagnostics) ==
+              read_tx, checked_iid(ada_iid, &iid_argument), NULL, &person, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 38, &diagnostics) == 0);
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
@@ -5917,7 +5932,7 @@ int main(void) {
               database, query_membership_create, NULL, &membership,
               &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     relation_created = 1;
-    CHECK(fixture_person_database_get_by_iid(database, ada_iid, NULL, &person,
+    CHECK(fixture_person_database_get_by_iid(database, checked_iid(ada_iid, &iid_argument), NULL, &person,
                                              &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(read_query_person_identifier(person, relation_lifecycle_player_key,
@@ -5965,14 +5980,12 @@ int main(void) {
                                               &diagnostics) == 0);
 
     CHECK(fixture_networkzhlink_database_delete_by_iid(
-              database,
-              (type_bridge_byte_view_t){query_network_link_iid_storage,
-                                        query_network_link_iid_length},
+              database, checked_iid((type_bridge_byte_view_t){query_network_link_iid_storage,
+                                        query_network_link_iid_length}, &iid_argument),
               NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_membership_database_delete_by_iid(
-              database,
-              (type_bridge_byte_view_t){query_membership_iid_storage,
-                                        query_membership_iid_length},
+              database, checked_iid((type_bridge_byte_view_t){query_membership_iid_storage,
+                                        query_membership_iid_length}, &iid_argument),
               NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     relation_deleted = 1;
     CHECK(emit_v2_observationf(
@@ -5982,14 +5995,12 @@ int main(void) {
         relation_created ? "true" : "false",
         relation_deleted ? "true" : "false", relation_lifecycle_player_key));
     CHECK(fixture_manager_database_delete_by_iid(
-              database,
-              (type_bridge_byte_view_t){query_manager_iid_storage,
-                                        query_manager_iid_length},
+              database, checked_iid((type_bridge_byte_view_t){query_manager_iid_storage,
+                                        query_manager_iid_length}, &iid_argument),
               NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_employee_database_delete_by_iid(
-              database,
-              (type_bridge_byte_view_t){query_employee_iid_storage,
-                                        query_employee_iid_length},
+              database, checked_iid((type_bridge_byte_view_t){query_employee_iid_storage,
+                                        query_employee_iid_length}, &iid_argument),
               NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     puts("C14/C16/C17 query fixture cleanup: passed");
 
@@ -6033,7 +6044,7 @@ int main(void) {
         puts("P5 nominal relation reference: passed");
 
         CHECK(fixture_membership_database_get_by_iid(
-                  database, membership_one_iid, NULL, &membership,
+                  database, checked_iid(membership_one_iid, &iid_argument), NULL, &membership,
                   &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
@@ -6046,7 +6057,7 @@ int main(void) {
         puts("P5 database relation count: passed");
 
         CHECK(fixture_membership_database_update(
-                  database, membership_one_iid, cara_membership_create, NULL,
+                  database, checked_iid(membership_one_iid, &iid_argument), cara_membership_create, NULL,
                   &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, cara_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
@@ -6093,7 +6104,7 @@ int main(void) {
         puts("P5 write transaction relation put: passed");
 
         CHECK(fixture_membership_write_transaction_get_by_iid(
-                  write_tx, membership_one_iid, NULL, &membership,
+                  write_tx, checked_iid(membership_one_iid, &iid_argument), NULL, &membership,
                   &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, cara_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
@@ -6101,7 +6112,7 @@ int main(void) {
         puts("P5 write transaction relation get: passed");
 
         CHECK(fixture_membership_write_transaction_update(
-                  write_tx, membership_one_iid, ada_membership_create, NULL,
+                  write_tx, checked_iid(membership_one_iid, &iid_argument), ada_membership_create, NULL,
                   &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
@@ -6112,7 +6123,7 @@ int main(void) {
           const type_bridge_byte_view_t membership_three_iid = {
               membership_three_iid_storage, membership_three_iid_length};
           CHECK(fixture_membership_write_transaction_delete_by_iid(
-                    write_tx, membership_three_iid, NULL, &diagnostics) ==
+                    write_tx, checked_iid(membership_three_iid, &iid_argument), NULL, &diagnostics) ==
                 TYPE_BRIDGE_STATUS_OK);
         }
         puts("P5 write transaction relation delete: passed");
@@ -6130,7 +6141,7 @@ int main(void) {
                                                 &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
         CHECK(fixture_membership_read_transaction_get_by_iid(
-                  read_tx, membership_one_iid, NULL, &membership,
+                  read_tx, checked_iid(membership_one_iid, &iid_argument), NULL, &membership,
                   &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
@@ -6146,7 +6157,7 @@ int main(void) {
         CHECK(read_tx == NULL && diagnostics == NULL);
 
         CHECK(fixture_membership_database_delete_by_iid(
-                  database, membership_one_iid, NULL, &diagnostics) ==
+                  database, checked_iid(membership_one_iid, &iid_argument), NULL, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
         {
           const type_bridge_byte_view_t membership_two_iid = {
@@ -6154,13 +6165,13 @@ int main(void) {
           const type_bridge_byte_view_t membership_four_iid = {
               membership_four_iid_storage, membership_four_iid_length};
           CHECK(fixture_membership_database_delete_by_iid(
-                    database, membership_two_iid, NULL, &diagnostics) ==
+                    database, checked_iid(membership_two_iid, &iid_argument), NULL, &diagnostics) ==
                 TYPE_BRIDGE_STATUS_OK);
           CHECK(fixture_membership_database_delete_by_iid(
-                    database, membership_four_iid, NULL, &diagnostics) ==
+                    database, checked_iid(membership_four_iid, &iid_argument), NULL, &diagnostics) ==
                 TYPE_BRIDGE_STATUS_OK);
           CHECK(fixture_membership_database_delete_by_iid(
-                    database, membership_four_iid, NULL, &diagnostics) ==
+                    database, checked_iid(membership_four_iid, &iid_argument), NULL, &diagnostics) ==
                 TYPE_BRIDGE_STATUS_OK);
         }
         puts("P5 database relation delete and repeated delete: passed");
@@ -6178,7 +6189,7 @@ int main(void) {
       puts("P5 generated C relation CRUD journey: passed");
     }
 
-    CHECK(fixture_person_database_delete_by_iid(database, ada_iid, NULL,
+    CHECK(fixture_person_database_delete_by_iid(database, checked_iid(ada_iid, &iid_argument), NULL,
                                                 &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     entity_deleted = 1;
@@ -6187,13 +6198,13 @@ int main(void) {
                                                 cara_iid_length};
       const type_bridge_byte_view_t dana_iid = {dana_iid_storage,
                                                 dana_iid_length};
-      CHECK(fixture_person_database_delete_by_iid(database, cara_iid, NULL,
+      CHECK(fixture_person_database_delete_by_iid(database, checked_iid(cara_iid, &iid_argument), NULL,
                                                   &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
-      CHECK(fixture_person_database_delete_by_iid(database, dana_iid, NULL,
+      CHECK(fixture_person_database_delete_by_iid(database, checked_iid(dana_iid, &iid_argument), NULL,
                                                   &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
-      CHECK(fixture_person_database_delete_by_iid(database, dana_iid, NULL,
+      CHECK(fixture_person_database_delete_by_iid(database, checked_iid(dana_iid, &iid_argument), NULL,
                                                   &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
     }
@@ -6218,5 +6229,6 @@ int main(void) {
   CHECK(database == NULL && runtime == NULL && package == NULL &&
         diagnostics == NULL);
   puts("P4 generated C entity CRUD journey: passed");
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }

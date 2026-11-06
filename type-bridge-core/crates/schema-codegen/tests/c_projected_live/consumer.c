@@ -19,6 +19,7 @@
   ((type_bridge_byte_view_t){(const uint8_t *)(text), sizeof(text) - 1u})
 
 typedef struct iid_copy {
+  type_bridge_iid_t *typed;
   uint8_t bytes[256];
   size_t length;
 } iid_copy_t;
@@ -75,7 +76,7 @@ static int copy_iid(type_bridge_byte_view_t iid, iid_copy_t *output) {
   }
   memcpy(output->bytes, iid.data, iid.length);
   output->length = iid.length;
-  return 1;
+  return type_bridge_iid_open(iid, &output->typed) == TYPE_BRIDGE_STATUS_OK;
 }
 
 static type_bridge_byte_view_t iid_view(const iid_copy_t *iid) {
@@ -352,7 +353,7 @@ int main(void) {
   projected_robot_create *robot_positive_create = NULL;
   projected_robot_create *robot_negative_create = NULL;
   projected_robot *robot = NULL;
-  iid_copy_t iids[10] = {{{0}, 0u}};
+  iid_copy_t iids[10] = {{NULL, {0}, 0u}};
   projected_person_ref *ada_ref = NULL;
   projected_person_ref *dana_ref = NULL;
   projected_robot_ref *robot_ref = NULL;
@@ -580,7 +581,7 @@ int main(void) {
               TYPE_BRIDGE_STATUS_OK &&
           projected_plainzhactivity_close(&plain) == TYPE_BRIDGE_STATUS_OK);
     CHECK(projected_plainzhactivity_database_get_by_iid(
-              database, iid_view(&iids[7]), NULL, &plain, &diagnostics) ==
+              database, iids[7].typed, NULL, &plain, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK &&
           plain != NULL && diagnostics == NULL);
     CHECK(projected_plainzhactivity_close(&plain) == TYPE_BRIDGE_STATUS_OK);
@@ -650,16 +651,16 @@ int main(void) {
   }
 
   CHECK(projected_container_database_delete_by_iid(
-            database, iid_view(&iids[9]), NULL, &diagnostics) ==
+            database, iids[9].typed, NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(projected_event_database_delete_by_iid(database, iid_view(&iids[8]), NULL,
+  CHECK(projected_event_database_delete_by_iid(database, iids[8].typed, NULL,
                                             &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(projected_plainzhactivity_database_delete_by_iid(
-            database, iid_view(&iids[7]), NULL, &diagnostics) ==
+            database, iids[7].typed, NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(projected_plainzhactivity_database_get_by_iid(
-            database, iid_view(&iids[7]), NULL, &plain, &diagnostics) ==
+            database, iids[7].typed, NULL, &plain, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         plain == NULL && diagnostics == NULL);
   CHECK(projected_plainzhactivity_database_count(database, NULL, &count,
@@ -667,24 +668,24 @@ int main(void) {
             TYPE_BRIDGE_STATUS_OK &&
         count == 0u);
   CHECK(projected_interaction_database_delete_by_iid(
-            database, iid_view(&iids[6]), NULL, &diagnostics) ==
+            database, iids[6].typed, NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(projected_interaction_database_delete_by_iid(
-            database, iid_view(&iids[5]), NULL, &diagnostics) ==
+            database, iids[5].typed, NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(projected_interaction_database_delete_by_iid(
-            database, iid_view(&iids[4]), NULL, &diagnostics) ==
+            database, iids[4].typed, NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(projected_robot_database_delete_by_iid(database, iid_view(&iids[3]), NULL,
+  CHECK(projected_robot_database_delete_by_iid(database, iids[3].typed, NULL,
                                             &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(projected_robot_database_delete_by_iid(database, iid_view(&iids[2]), NULL,
+  CHECK(projected_robot_database_delete_by_iid(database, iids[2].typed, NULL,
                                             &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(projected_person_database_delete_by_iid(database, iid_view(&iids[1]), NULL,
+  CHECK(projected_person_database_delete_by_iid(database, iids[1].typed, NULL,
                                              &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(projected_person_database_delete_by_iid(database, iid_view(&iids[0]), NULL,
+  CHECK(projected_person_database_delete_by_iid(database, iids[0].typed, NULL,
                                              &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(projected_container_database_count(database, NULL, &count, &diagnostics) ==
@@ -742,6 +743,9 @@ int main(void) {
         projected_person_ref_close(&ada_ref) == TYPE_BRIDGE_STATUS_OK &&
         projected_person_create_close(&dana_create) == TYPE_BRIDGE_STATUS_OK &&
         projected_person_create_close(&ada_create) == TYPE_BRIDGE_STATUS_OK);
+  for (size_t index = 0u; index < 10u; ++index) {
+    CHECK(type_bridge_iid_close(&iids[index].typed) == TYPE_BRIDGE_STATUS_OK);
+  }
   CHECK(type_bridge_database_close(&database, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         database == NULL && diagnostics == NULL);

@@ -1,7 +1,8 @@
 //! Generated-only exact entity CRUD exports.
 
-use crate::abi::{TypeBridgeByteView, TypeBridgeStatus};
+use crate::abi::TypeBridgeStatus;
 use crate::execution_diagnostic::TypeBridgeExecutionDiagnostics;
+use crate::iid::TypeBridgeIid;
 use crate::projected_model::{TypeBridgeProjectedCreate, TypeBridgeProjectedThing};
 use crate::projected_token::TypeBridgeProjectedTokenV1;
 use crate::runtime::{
@@ -61,6 +62,7 @@ pub unsafe extern "C" fn type_bridge_database_entity_insert(
 }
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::abi::TypeBridgeByteView;
     mod native_batch_answer_item {
         pub use type_bridge_orm::session::backend::{AnswerItem, QueryResult};
     }
@@ -1062,7 +1064,7 @@ functions:
             ],
             COMMIT_SUCCESS,
         );
-        let iid = byte_view(b"0x10");
+        let iid = &TypeBridgeIid::new("0x10").unwrap();
         let mut thing = ptr::dangling_mut();
         let mut diagnostics = ptr::dangling_mut();
         assert_eq!(
@@ -1435,7 +1437,7 @@ functions:
                 type_bridge_database_entity_get_by_iid(
                     &*fixture.database,
                     &forged,
-                    byte_view(b"0x10"),
+                    &TypeBridgeIid::new("0x10").unwrap(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1477,7 +1479,7 @@ functions:
                 type_bridge_database_entity_get_by_iid(
                     &*fixture.database,
                     &fixture.token,
-                    byte_view(b"not-an-iid"),
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1593,12 +1595,8 @@ functions:
         );
         assert_eq!(requested, 0);
 
-        let mut iid_storage = AlignedBytes([0; 24]);
-        iid_storage.0[..4].copy_from_slice(b"0x10");
-        let iid = TypeBridgeByteView {
-            data: iid_storage.0.as_ptr(),
-            length: 4,
-        };
+        let mut iid_storage = TypeBridgeIid::new("0x10").unwrap();
+        let iid = ptr::addr_of!(iid_storage);
         assert_eq!(
             // SAFETY: this hostile overlap must leave the IID bytes intact.
             unsafe {
@@ -1607,13 +1605,13 @@ functions:
                     &fixture.token,
                     iid,
                     ptr::null(),
-                    iid_storage.0.as_mut_ptr().cast(),
+                    ptr::addr_of_mut!(iid_storage).cast(),
                     &mut untouched_diagnostics,
                 )
             },
             TypeBridgeStatus::InvalidArgument
         );
-        assert_eq!(&iid_storage.0[..4], b"0x10");
+        assert_eq!(iid_storage.as_str(), "0x10");
 
         let mut overlapping = AlignedBytes([0xaa; 24]);
         let first = overlapping
@@ -1629,7 +1627,7 @@ functions:
                 type_bridge_database_entity_get_by_iid(
                     &*fixture.database,
                     &fixture.token,
-                    byte_view(b"0x10"),
+                    &TypeBridgeIid::new("0x10").unwrap(),
                     ptr::null(),
                     first,
                     second,
@@ -1769,7 +1767,7 @@ functions:
                 type_bridge_database_entity_update(
                     &*update_fixture.database,
                     &update_fixture.token,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
                     &*update_fixture.create,
                     ptr::null(),
                     &mut thing,
@@ -1805,7 +1803,7 @@ functions:
                 type_bridge_read_transaction_entity_get_by_iid(
                     read,
                     &read_fixture.token,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1865,7 +1863,7 @@ functions:
                 type_bridge_write_transaction_entity_get_by_iid(
                     write,
                     &write_fixture.token,
-                    byte_view(b"0x30"),
+                    &TypeBridgeIid::new("0x30").unwrap(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1880,7 +1878,7 @@ functions:
                 type_bridge_write_transaction_entity_update(
                     write,
                     &write_fixture.token,
-                    byte_view(b"0x30"),
+                    &TypeBridgeIid::new("0x30").unwrap(),
                     &*write_fixture.create,
                     ptr::null(),
                     &mut thing,
@@ -1896,7 +1894,7 @@ functions:
                 type_bridge_write_transaction_entity_delete_by_iid(
                     write,
                     &write_fixture.token,
-                    byte_view(b"0x30"),
+                    &TypeBridgeIid::new("0x30").unwrap(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -1975,7 +1973,7 @@ functions:
                 type_bridge_database_relation_update(
                     &*update.database,
                     &update.token,
-                    byte_view(b"0x22"),
+                    &TypeBridgeIid::new("0x22").unwrap(),
                     &*update.create,
                     ptr::null(),
                     &mut thing,
@@ -2008,7 +2006,7 @@ functions:
                 type_bridge_database_relation_get_by_iid(
                     &*owned.database,
                     &owned.token,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2036,7 +2034,7 @@ functions:
                 type_bridge_database_relation_delete_by_iid(
                     &*owned.database,
                     &owned.token,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -2071,7 +2069,7 @@ functions:
                 type_bridge_read_transaction_relation_get_by_iid(
                     read,
                     &read_fixture.token,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2152,7 +2150,7 @@ functions:
                     type_bridge_write_transaction_relation_get_by_iid(
                         write,
                         &write_fixture.token,
-                        byte_view(b"0x31"),
+                        &TypeBridgeIid::new("0x31").unwrap(),
                         ptr::null(),
                         &mut thing,
                         &mut diagnostics,
@@ -2165,7 +2163,7 @@ functions:
                     type_bridge_write_transaction_relation_update(
                         write,
                         &write_fixture.token,
-                        byte_view(b"0x31"),
+                        &TypeBridgeIid::new("0x31").unwrap(),
                         &*write_fixture.create,
                         ptr::null(),
                         &mut thing,
@@ -2182,7 +2180,7 @@ functions:
                 type_bridge_write_transaction_relation_delete_by_iid(
                     write,
                     &write_fixture.token,
-                    byte_view(b"0x31"),
+                    &TypeBridgeIid::new("0x31").unwrap(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -2314,7 +2312,7 @@ functions:
                 type_bridge_database_relation_get_by_iid(
                     &*source_database,
                     &event_token,
-                    byte_view(b"0x11"),
+                    &TypeBridgeIid::new("0x11").unwrap(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2404,7 +2402,7 @@ functions:
             type_bridge_database_relation_update(
                 &*target_database,
                 &membership_token,
-                byte_view(b"0x20"),
+                &TypeBridgeIid::new("0x20").unwrap(),
                 &*create,
                 ptr::null(),
                 &mut thing,
@@ -2631,7 +2629,7 @@ functions:
                     type_bridge_database_relation_delete_by_iid(
                         &*fixture.database,
                         &fixture.token,
-                        byte_view(b"0x20"),
+                        &TypeBridgeIid::new("0x20").unwrap(),
                         ptr::null(),
                         &mut diagnostics,
                     )
@@ -2766,7 +2764,7 @@ functions:
                 type_bridge_database_relation_get_by_iid(
                     &*fixture.database,
                     &forged,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2784,7 +2782,7 @@ functions:
                 type_bridge_database_relation_get_by_iid(
                     &*fixture.database,
                     &fixture.token,
-                    byte_view(b"not-an-iid"),
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2867,12 +2865,8 @@ functions:
             TypeBridgeStatus::Ok
         );
 
-        let mut iid_storage = AlignedBytes([0; 24]);
-        iid_storage.0[..4].copy_from_slice(b"0x20");
-        let iid = TypeBridgeByteView {
-            data: iid_storage.0.as_ptr(),
-            length: 4,
-        };
+        let mut iid_storage = TypeBridgeIid::new("0x20").unwrap();
+        let iid = ptr::addr_of!(iid_storage);
         assert_eq!(
             unsafe {
                 type_bridge_database_relation_get_by_iid(
@@ -2880,13 +2874,13 @@ functions:
                     &fixture.token,
                     iid,
                     ptr::null(),
-                    iid_storage.0.as_mut_ptr().cast(),
+                    ptr::addr_of_mut!(iid_storage).cast(),
                     &mut untouched,
                 )
             },
             TypeBridgeStatus::InvalidArgument
         );
-        assert_eq!(&iid_storage.0[..4], b"0x20");
+        assert_eq!(iid_storage.as_str(), "0x20");
         assert!(fixture.state.opens.lock().unwrap().is_empty());
         assert_eq!(fixture.state.query_count(), 0);
 
@@ -3011,7 +3005,7 @@ pub unsafe extern "C" fn type_bridge_database_entity_put(
 pub unsafe extern "C" fn type_bridge_database_entity_get_by_iid(
     database: *const TypeBridgeDatabase,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
     out_thing: *mut *mut TypeBridgeProjectedThing,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -3023,7 +3017,7 @@ pub unsafe extern "C" fn type_bridge_database_entity_get_by_iid(
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(cancellation),
             ],
             out_thing,
@@ -3054,7 +3048,7 @@ pub unsafe extern "C" fn type_bridge_database_entity_get_by_iid(
 pub unsafe extern "C" fn type_bridge_database_entity_update(
     database: *const TypeBridgeDatabase,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
     out_thing: *mut *mut TypeBridgeProjectedThing,
@@ -3067,7 +3061,7 @@ pub unsafe extern "C" fn type_bridge_database_entity_update(
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(create),
                 MemoryRange::of_object(cancellation),
             ],
@@ -3100,7 +3094,7 @@ pub unsafe extern "C" fn type_bridge_database_entity_update(
 pub unsafe extern "C" fn type_bridge_database_entity_delete_by_iid(
     database: *const TypeBridgeDatabase,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -3111,7 +3105,7 @@ pub unsafe extern "C" fn type_bridge_database_entity_delete_by_iid(
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(cancellation),
             ],
             out_diagnostics,
@@ -3181,7 +3175,7 @@ pub unsafe extern "C" fn type_bridge_database_entity_count(
 pub unsafe extern "C" fn type_bridge_read_transaction_entity_get_by_iid(
     transaction: *const TypeBridgeReadTransaction,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
     out_thing: *mut *mut TypeBridgeProjectedThing,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -3193,7 +3187,7 @@ pub unsafe extern "C" fn type_bridge_read_transaction_entity_get_by_iid(
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(cancellation),
             ],
             out_thing,
@@ -3340,7 +3334,7 @@ write_transaction_create_operation!(type_bridge_write_transaction_entity_put, pu
 pub unsafe extern "C" fn type_bridge_write_transaction_entity_update(
     transaction: *const TypeBridgeWriteTransaction,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
     out_thing: *mut *mut TypeBridgeProjectedThing,
@@ -3353,7 +3347,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_entity_update(
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(create),
                 MemoryRange::of_object(cancellation),
             ],
@@ -3386,7 +3380,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_entity_update(
 pub unsafe extern "C" fn type_bridge_write_transaction_entity_get_by_iid(
     transaction: *const TypeBridgeWriteTransaction,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
     out_thing: *mut *mut TypeBridgeProjectedThing,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -3398,7 +3392,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_entity_get_by_iid(
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(cancellation),
             ],
             out_thing,
@@ -3429,7 +3423,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_entity_get_by_iid(
 pub unsafe extern "C" fn type_bridge_write_transaction_entity_delete_by_iid(
     transaction: *const TypeBridgeWriteTransaction,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -3440,7 +3434,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_entity_delete_by_iid(
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(cancellation),
             ],
             out_diagnostics,

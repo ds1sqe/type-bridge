@@ -1,14 +1,13 @@
 //! Shared generated-only exact thing CRUD over projected tokens and opaque values.
 
+use crate::iid::TypeBridgeIid;
 use std::ffi::c_void;
 use std::mem::{MaybeUninit, size_of};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::Arc;
 
-use type_bridge_contract::id::{
-    MAX_THING_IID_HEX_DIGITS, TypeId, TypeKind, is_canonical_thing_iid,
-};
+use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
     SdkProviderOperation,
@@ -19,7 +18,7 @@ use type_bridge_orm::{
     QueryExecutionResourceLimits, TxType, lower_execution_error,
 };
 
-use crate::abi::{SchemaPackageState, TypeBridgeByteView, TypeBridgeStatus, guarded};
+use crate::abi::{SchemaPackageState, TypeBridgeStatus, guarded};
 use crate::allocation::{
     AllocationFailure, AllocationSite, ReservedBox, allocation_checkpoint, allocation_exhausted,
 };
@@ -36,8 +35,6 @@ use crate::runtime::{
     check_read_transaction_borrowed_ranges, check_write_transaction_borrowed_ranges,
     poisoned_transaction_diagnostic,
 };
-
-const MAX_THING_IID_BYTES: usize = 2 + MAX_THING_IID_HEX_DIGITS;
 
 #[cfg(test)]
 std::thread_local! {
@@ -92,13 +89,6 @@ impl MemoryRange {
 
     fn of_output<T>(pointer: *mut T) -> Option<Self> {
         Self::of_object(pointer.cast_const())
-    }
-
-    pub(crate) fn of_bytes(view: TypeBridgeByteView) -> Option<Self> {
-        (view.length != 0 && !view.data.is_null()).then_some(Self {
-            start: view.data.addr(),
-            length: view.length,
-        })
     }
 
     fn overlaps(self, other: Self) -> bool {
@@ -233,19 +223,13 @@ fn cancelled() -> SdkExecutionDiagnostic {
 
 unsafe fn copied_iid(
     kind: CrudKind,
-    view: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
 ) -> Result<String, SdkExecutionDiagnostic> {
-    if view.length == 0 || view.length > MAX_THING_IID_BYTES || view.data.is_null() {
+    if iid.is_null() {
         return Err(kind.invalid_iid());
     }
-    // SAFETY: the C caller promises this already-bounded byte range is readable
-    // and immutable for the duration of the call. Copying ends that borrow.
-    let bytes = unsafe { std::slice::from_raw_parts(view.data, view.length) }.to_vec();
-    let iid = String::from_utf8(bytes).map_err(|_| kind.invalid_iid())?;
-    if !is_canonical_thing_iid(&iid) {
-        return Err(kind.invalid_iid());
-    }
-    Ok(iid)
+    // SAFETY: the caller retains the validated IID; output preflight fenced it.
+    Ok(unsafe { &*iid }.as_str().to_owned())
 }
 
 unsafe fn resolve_model(
@@ -1501,7 +1485,7 @@ pub(crate) unsafe fn run_write_thing_call_controlled(
     prepared: PreparedThingOutputs,
     model: *const TypeBridgeProjectedTokenV1,
     create: *const TypeBridgeProjectedCreate,
-    iid: Option<TypeBridgeByteView>,
+    iid: Option<*const TypeBridgeIid>,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
 ) -> TypeBridgeStatus {
@@ -1628,7 +1612,7 @@ pub(crate) unsafe fn run_get_call_controlled(
     target: ReadTarget<'_>,
     prepared: PreparedThingOutputs,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
 ) -> TypeBridgeStatus {
@@ -1680,7 +1664,7 @@ pub(crate) unsafe fn run_delete_call_controlled(
     target: WriteTarget<'_>,
     prepared: PreparedDiagnosticsOutput,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
 ) -> TypeBridgeStatus {
@@ -1759,7 +1743,7 @@ pub(crate) unsafe fn run_write_thing_call(
     prepared: PreparedThingOutputs,
     model: *const TypeBridgeProjectedTokenV1,
     create: *const TypeBridgeProjectedCreate,
-    iid: Option<TypeBridgeByteView>,
+    iid: Option<*const TypeBridgeIid>,
     cancellation: *const TypeBridgeCancellation,
 ) -> TypeBridgeStatus {
     let PreparedThingOutputs {
@@ -1896,7 +1880,7 @@ pub(crate) unsafe fn run_get_call(
     target: ReadTarget<'_>,
     prepared: PreparedThingOutputs,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
 ) -> TypeBridgeStatus {
     let PreparedThingOutputs {
@@ -1953,7 +1937,7 @@ pub(crate) unsafe fn run_delete_call(
     target: WriteTarget<'_>,
     prepared: PreparedDiagnosticsOutput,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
 ) -> TypeBridgeStatus {
     let out_diagnostics = prepared.diagnostics;

@@ -1,7 +1,8 @@
 //! Generated-only exact relation CRUD exports.
 
-use crate::abi::{TypeBridgeByteView, TypeBridgeStatus};
+use crate::abi::TypeBridgeStatus;
 use crate::execution_diagnostic::TypeBridgeExecutionDiagnostics;
+use crate::iid::TypeBridgeIid;
 use crate::projected_model::{TypeBridgeProjectedCreate, TypeBridgeProjectedThing};
 use crate::projected_token::TypeBridgeProjectedTokenV1;
 use crate::runtime::{
@@ -108,7 +109,7 @@ pub unsafe extern "C" fn type_bridge_database_relation_put(
 pub unsafe extern "C" fn type_bridge_database_relation_get_by_iid(
     database: *const TypeBridgeDatabase,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
     out_thing: *mut *mut TypeBridgeProjectedThing,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -120,7 +121,7 @@ pub unsafe extern "C" fn type_bridge_database_relation_get_by_iid(
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(cancellation),
             ],
             out_thing,
@@ -151,7 +152,7 @@ pub unsafe extern "C" fn type_bridge_database_relation_get_by_iid(
 pub unsafe extern "C" fn type_bridge_database_relation_update(
     database: *const TypeBridgeDatabase,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
     out_thing: *mut *mut TypeBridgeProjectedThing,
@@ -164,7 +165,7 @@ pub unsafe extern "C" fn type_bridge_database_relation_update(
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(create),
                 MemoryRange::of_object(cancellation),
             ],
@@ -197,7 +198,7 @@ pub unsafe extern "C" fn type_bridge_database_relation_update(
 pub unsafe extern "C" fn type_bridge_database_relation_delete_by_iid(
     database: *const TypeBridgeDatabase,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -208,7 +209,7 @@ pub unsafe extern "C" fn type_bridge_database_relation_delete_by_iid(
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(cancellation),
             ],
             out_diagnostics,
@@ -278,7 +279,7 @@ pub unsafe extern "C" fn type_bridge_database_relation_count(
 pub unsafe extern "C" fn type_bridge_read_transaction_relation_get_by_iid(
     transaction: *const TypeBridgeReadTransaction,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
     out_thing: *mut *mut TypeBridgeProjectedThing,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -290,7 +291,7 @@ pub unsafe extern "C" fn type_bridge_read_transaction_relation_get_by_iid(
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(cancellation),
             ],
             out_thing,
@@ -437,7 +438,7 @@ write_transaction_create_operation!(type_bridge_write_transaction_relation_put, 
 pub unsafe extern "C" fn type_bridge_write_transaction_relation_update(
     transaction: *const TypeBridgeWriteTransaction,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     create: *const TypeBridgeProjectedCreate,
     cancellation: *const TypeBridgeCancellation,
     out_thing: *mut *mut TypeBridgeProjectedThing,
@@ -450,7 +451,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_relation_update(
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(create),
                 MemoryRange::of_object(cancellation),
             ],
@@ -483,7 +484,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_relation_update(
 pub unsafe extern "C" fn type_bridge_write_transaction_relation_get_by_iid(
     transaction: *const TypeBridgeWriteTransaction,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
     out_thing: *mut *mut TypeBridgeProjectedThing,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -495,7 +496,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_relation_get_by_iid(
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(cancellation),
             ],
             out_thing,
@@ -526,7 +527,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_relation_get_by_iid(
 pub unsafe extern "C" fn type_bridge_write_transaction_relation_delete_by_iid(
     transaction: *const TypeBridgeWriteTransaction,
     model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     cancellation: *const TypeBridgeCancellation,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -537,7 +538,7 @@ pub unsafe extern "C" fn type_bridge_write_transaction_relation_delete_by_iid(
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(iid),
                 MemoryRange::of_object(cancellation),
             ],
             out_diagnostics,

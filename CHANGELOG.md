@@ -273,6 +273,25 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+- C by-IID CRUD arguments now require a validated `type_bridge_iid_t *`.
+  Construct it with `type_bridge_iid_open` and release it with
+  `type_bridge_iid_close`; generated manager wrappers use the same type.
+  This changes the following symbols and each corresponding `_v2` symbol:
+  - `type_bridge_database_entity_get_by_iid`
+  - `type_bridge_database_entity_update`
+  - `type_bridge_database_entity_delete_by_iid`
+  - `type_bridge_database_relation_get_by_iid`
+  - `type_bridge_database_relation_update`
+  - `type_bridge_database_relation_delete_by_iid`
+  - `type_bridge_read_transaction_entity_get_by_iid`
+  - `type_bridge_read_transaction_relation_get_by_iid`
+  - `type_bridge_write_transaction_entity_get_by_iid`
+  - `type_bridge_write_transaction_entity_update`
+  - `type_bridge_write_transaction_entity_delete_by_iid`
+  - `type_bridge_write_transaction_relation_get_by_iid`
+  - `type_bridge_write_transaction_relation_update`
+  - `type_bridge_write_transaction_relation_delete_by_iid`
+
 - C staged and plan options also use unversioned names:
   `type_bridge_database_transaction_with_options_v1` → `type_bridge_database_transaction_with_options`;
   `type_bridge_proxy_connection_transaction_with_options_v1` → `type_bridge_proxy_connection_transaction_with_options`;
