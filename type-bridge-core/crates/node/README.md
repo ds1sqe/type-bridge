@@ -94,10 +94,10 @@ calls occupies the JavaScript event-loop thread, JavaScript cannot dispatch
 Promises and run off that thread; cancel them through the session's
 `QueryCancellation` and bound them with its `timeoutMilliseconds`.
 
-For V2 work that must remain cancellable, use the Promise-returning
-`queryV2ExecuteLocal(...)` surface and supply its `deadlineMs` argument. Remote
-V2 requests likewise carry the bounded `QueryV2RemoteLimits.deadlineMs` expiry.
-Do not rely on a later synchronous `db.close()` call as the timeout mechanism.
+Generated query sessions and staged transactions carry cancellation and timeout
+policy through the shared Rust execution path. Proxy requests use the staged
+protocol and its bounded admission expiry. Do not rely on a later synchronous
+`db.close()` call as the timeout mechanism.
 
 ## Immutable Typed Queries
 

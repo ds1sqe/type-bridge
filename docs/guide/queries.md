@@ -102,9 +102,16 @@ direct or a proxy connection alike (see
 
 TypeQL in, the driver's output out, the same pair in every SDK, and no promise: it runs any TypeQL in any transaction kind, schema changes that break the generated models included, without TypeBridge checks, hooks or limits.
 
-Use `raw_transaction` and `execute_query` in Python, `rawTransaction` and
-`executeQuery` in TypeScript, or the corresponding Rust and C raw transaction
-and query calls. Direct contexts support several statements in one provider
+The pair is spelled per SDK:
+
+| SDK | Open a raw context | Execute TypeQL |
+| --- | --- | --- |
+| Python | `raw_transaction` | `execute_query` |
+| TypeScript | `rawTransaction` | `executeQuery` |
+| Rust | `raw_transaction` | `execute_query` |
+| C | `type_bridge_database_raw_transaction` or `type_bridge_proxy_connection_raw_transaction` | `type_bridge_raw_transaction_execute_query` |
+
+Direct contexts support several statements in one provider
 transaction. Proxy contexts use the opt-in `/v3/raw` endpoint, which is off
 by default. Use generated typed queries and plan builders when you need
 schema validation and generated results.
