@@ -90,6 +90,11 @@ their manager and typed-query connection types accept `MigrationTransaction`.
 See [user data steps](migrations.md#registered-user-data-steps) for each SDK's
 callback signature and transaction ownership.
 
+C callback transactions become unusable when the callback ends, but their
+handle allocations remain retained until the catalog and every derived plan
+close. Close those owners before closing the database; database close is
+refused while retained callback handles still hold it.
+
 ### Import the existing journal once
 
 Stop all 2.x migration runners before the first 3.0 apply. Keep a backup of the

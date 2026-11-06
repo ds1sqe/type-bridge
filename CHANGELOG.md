@@ -341,7 +341,9 @@ All notable changes to TypeBridge will be documented in this file.
   journal and verified legacy partition once; old rows remain untouched.
   Read-only verification reports `migration_journal_import_pending` until then.
   Changes to the old journal afterward fail with `migration_old_writer_after_import`.
-  Pair inspection exposes `ImportPending` / `import_pending`; pair deletion also
+  Pair inspection exposes `ManagedDatabasePairState::ImportPending` /
+  `import_pending` (`TYPE_BRIDGE_DATABASE_PAIR_IMPORT_PENDING` in C); pair
+  deletion also
   removes the exact owner-verified old companion to prevent later resurrection.
 - Persisted-name constants retain their Rust names but now contain the new
   suffix and label values. `TYPEBRIDGE_INTERNAL_PREFIX` reserves the full
@@ -355,7 +357,10 @@ All notable changes to TypeBridge will be documented in this file.
   `JOURNAL_CONTROL_SCHEMA_TYPEQL` and `MANAGED_FENCE_SCHEMA_TYPEQL` now come
   from `contract::reserved` and remain re-exported by their existing modules.
 - `MigrationStep` gains `Data(DataStep)`, with `DataProgram::{Plan, Typeql, User}`
-  forward and optional reverse programs. Exhaustive matches must handle `Data`.
+  forward and optional reverse programs. `MigrationStepKind` gains `Data` too;
+  exhaustive matches must handle both `MigrationStep::Data` and
+  `MigrationStepKind::Data`. `VerifiedMigrationApplyStep::Data` and
+  `VerifiedMigrationRollbackOperation::Data` also extend their public enums.
   Data steps without a reverse are irreversible and rollback refuses them before
   writes. `migration make --data-step` consumes
   `typebridge.migration-data-step-intent/v1` YAML; each program has exactly one
@@ -389,7 +394,10 @@ All notable changes to TypeBridge will be documented in this file.
   `generate_data_migration()`, `author_data_migration_in()`,
   `data_step_indices()`, `data_steps()`, `DataStepDirection`,
   `DataStepEventRecord`, and journal `from_store_with_data_events()` /
-  `data_events()`. Providers and runners accept `MigrationUserSteps` through
+  `data_events()`. Provider/store traits add `validate_data_step()`,
+  `observe_data_step()`, `execute_data_step()`, and `record_data_event()`;
+  their defaults refuse unsupported data execution. Providers and runners accept
+  `MigrationUserSteps` through
   `with_user_steps()`; controlled catalog executors add
   `execute_catalog_apply_plan_controlled_with_user_steps()` and
   `execute_catalog_rollback_plan_controlled_with_user_steps()`.
