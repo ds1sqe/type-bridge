@@ -28,7 +28,7 @@ int main(int argc, char **argv) {
     CHECK(argc == 8);
     const int proxy_mode = strcmp(argv[1], "proxy") == 0;
     type_bridge_schema_package_t *package = NULL;
-    type_bridge_diagnostics_t *package_errors = NULL;
+    type_bridge_execution_diagnostics_t *package_errors = NULL;
     type_bridge_execution_diagnostics_t *errors = NULL;
     CHECK(fixture_schema_package_open(&package, &package_errors) == TYPE_BRIDGE_STATUS_OK);
     size_t schema_len = 0, plan_len = 0;
@@ -46,9 +46,9 @@ int main(int argc, char **argv) {
         type_bridge_database_t *database = NULL;
         type_bridge_proxy_connection_t *proxy = NULL;
         type_bridge_staged_transaction_t *tx = NULL;
+        type_bridge_query_execution_limits_v1_t limits = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
+        limits.timeout_milliseconds = timeout; limits.collect_phase_timestamps = 1;
         if (proxy_mode) {
-            type_bridge_query_execution_limits_v1_t limits = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
-            limits.timeout_milliseconds = timeout; limits.collect_phase_timestamps = 1;
             type_bridge_proxy_connection_options_v1_t connection = {0};
             connection.struct_size = sizeof(connection); connection.version = TYPE_BRIDGE_PROXY_CONNECTION_OPTIONS_VERSION;
             connection.endpoint = view(argv[4]); connection.tls_mode = TYPE_BRIDGE_TLS_DISABLED; connection.answer_limits = &limits;
@@ -60,6 +60,7 @@ int main(int argc, char **argv) {
             connection.address = view(argv[2]); connection.database = view(argv[3]);
             connection.username = view("admin"); connection.password = view("password");
             connection.http_port = 43131; connection.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
+            connection.answer_limits = limits;
             CHECK(type_bridge_database_open(runtime, package, &connection, NULL, &database, &errors) == TYPE_BRIDGE_STATUS_OK);
             CHECK(type_bridge_database_transaction_with_options(database, TYPE_BRIDGE_TRANSACTION_WRITE, &options, &tx, &errors) == TYPE_BRIDGE_STATUS_OK);
         }
@@ -91,6 +92,13 @@ int main(int argc, char **argv) {
             CHECK(found); type_bridge_execution_diagnostics_close(&errors);
             struct timespec wait = {2, 100000000}; nanosleep(&wait, NULL);
         } else {
+            fprintf(stderr, "%s unbounded commit: status=%d elapsed=%.3f seconds\n",
+                    proxy_mode ? "proxy" : "direct", result, now() - started);
+            if (errors != NULL) {
+                type_bridge_execution_diagnostic_view_v1_t diagnostic = {0}; diagnostic.struct_size = sizeof(diagnostic);
+                CHECK(type_bridge_execution_diagnostics_get_v1(errors, 0, &diagnostic) == TYPE_BRIDGE_STATUS_OK);
+                fprintf(stderr, "diagnostic: %.*s\n", (int)diagnostic.code.length, diagnostic.code.data);
+            }
             CHECK(result == TYPE_BRIDGE_STATUS_OK && errors == NULL && now() - started > 60.0);
             type_bridge_plan_answer_kind_t kind; uint64_t value;
             CHECK(type_bridge_pending_answer(pending, &kind, &value) == TYPE_BRIDGE_STATUS_OK);
