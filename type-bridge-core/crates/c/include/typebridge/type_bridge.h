@@ -2291,14 +2291,14 @@ type_bridge_query_field_compare_function(
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_binding_iid(const type_bridge_query_binding_t *binding,
     const type_bridge_projected_token_v1_t *expected_model,
-    type_bridge_query_match_mode_t expected_mode, type_bridge_byte_view_t iid,
+    type_bridge_query_match_mode_t expected_mode, const type_bridge_iid_t *iid,
     type_bridge_query_predicate_t **out_predicate,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_binding_iid_in(const type_bridge_query_binding_t *binding,
     const type_bridge_projected_token_v1_t *expected_model,
     type_bridge_query_match_mode_t expected_mode,
-    const type_bridge_byte_view_t *iids, size_t iid_count,
+    const type_bridge_iid_t *const *iids, size_t iid_count,
     type_bridge_query_predicate_t **out_predicate,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL

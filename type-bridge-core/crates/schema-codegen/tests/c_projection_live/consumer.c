@@ -2582,6 +2582,9 @@ static int run_typed_query_function_and_remote(
     type_bridge_byte_view_t membership_iid,
     type_bridge_byte_view_t network_link_iid,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_iid_t *iid_argument = NULL;
+  type_bridge_iid_t *iid_ada = NULL;
+  type_bridge_iid_t *iid_dana = NULL;
   const int64_t minimum_number = 30;
   const int64_t threshold_number = 40;
   const type_bridge_query_comparison_t threshold_comparison =
@@ -2636,7 +2639,7 @@ static int run_typed_query_function_and_remote(
   fixture_score *threshold = NULL;
   fixture_query_order *identifier_order = NULL;
   const fixture_query_order *orders[1];
-  const type_bridge_byte_view_t sdk_iids[2] = {ada_iid, dana_iid};
+  const type_bridge_iid_t *sdk_iids[2] = {checked_iid(ada_iid, &iid_ada), checked_iid(dana_iid, &iid_dana)};
   const char *const expected_rows[2] = {"query-ada", "query-dana"};
   const char *const expected_dana[1] = {"query-dana"};
   const char *const expected_ada[1] = {"query-ada"};
@@ -4210,7 +4213,7 @@ static int run_typed_query_function_and_remote(
               fixture_membership_member_query_role_player_person_exact(member),
               &role_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_membership_query_exact_binding_iid(
-              relation, membership_iid, &relation_iid_predicate,
+              relation, checked_iid(membership_iid, &iid_argument), &relation_iid_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(person_identifier_predicate(package, member, "query-ada", &member_iid_predicate, out_diagnostics) == 0);
     CHECK(fixture_query_predicate_and(
@@ -4479,7 +4482,7 @@ static int run_typed_query_function_and_remote(
               destination_role, target_destination, &destination_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_networkzhlink_query_exact_binding_iid(
-              relation, network_link_iid, &relation_iid_predicate,
+              relation, checked_iid(network_link_iid, &iid_argument), &relation_iid_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(person_identifier_predicate(package, source, "query-ada", &source_iid_predicate, out_diagnostics) == 0);
     CHECK(person_identifier_predicate(package, target, "query-dana", &target_iid_predicate, out_diagnostics) == 0);
@@ -4961,7 +4964,7 @@ static int run_typed_query_function_and_remote(
     fixture_query_page_terminal *positional_terminal = NULL;
     fixture_query_page_result *named_result = NULL;
     fixture_query_page_result *positional_result = NULL;
-    const type_bridge_byte_view_t participant_iids[2] = {ada_iid, dana_iid};
+    const type_bridge_iid_t *participant_iids[2] = {iid_ada, iid_dana};
     const int collected_distinct = 1;
     const type_bridge_query_sort_direction_t collection_order =
         TYPE_BRIDGE_QUERY_SORT_ASCENDING;
@@ -5000,10 +5003,10 @@ static int run_typed_query_function_and_remote(
               &participant_role_predicate, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_networkzhlink_query_exact_binding_iid(
-              relation, network_link_iid, &relation_iid_predicate,
+              relation, checked_iid(network_link_iid, &iid_argument), &relation_iid_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_query_exact_binding_iid(
-              origin, ada_iid, &origin_iid_predicate, out_diagnostics) ==
+              origin, checked_iid(ada_iid, &iid_argument), &origin_iid_predicate, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_query_exact_binding_iid_in(
               participant, participant_iids, 2u, &participant_iid_predicate,
@@ -5271,6 +5274,9 @@ static int run_typed_query_function_and_remote(
                                        threshold_comparison,
                                        threshold_number));
   CHECK(*out_diagnostics == NULL);
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_close(&iid_ada) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_close(&iid_dana) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 

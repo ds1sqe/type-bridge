@@ -2,6 +2,8 @@
 
 #![allow(missing_docs)]
 
+use crate::iid::TypeBridgeIid;
+
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -2150,29 +2152,11 @@ pub unsafe extern "C" fn type_bridge_query_field_compare_function(
     })
 }
 
-unsafe fn copied_iid(view: TypeBridgeByteView) -> Result<String, SdkExecutionDiagnostic> {
-    if view.length == 0 || view.length > 258 || view.data.is_null() {
-        return Err(invalid(
-            "c_query_iid_view_invalid",
-            "A typed-query IID must be one nonempty bounded canonical byte view",
-        ));
-    }
-    // SAFETY: full bounded storage was checked by the caller before this snapshot.
-    let bytes = unsafe { std::slice::from_raw_parts(view.data, view.length) };
-    let value = std::str::from_utf8(bytes).map_err(|_| {
-        invalid(
-            "c_query_iid_utf8_invalid",
-            "A typed-query IID must be canonical UTF-8 identity text",
-        )
-    })?;
-    Ok(value.to_owned())
-}
-
 unsafe fn binding_iid_impl(
     binding: *const TypeBridgeQueryBinding,
     expected_model: *const TypeBridgeProjectedTokenV1,
     expected_mode: u32,
-    iids: *const TypeBridgeByteView,
+    iids: *const *const TypeBridgeIid,
     iid_count: usize,
     out_predicate: *mut *mut TypeBridgeQueryPredicate,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -2203,7 +2187,7 @@ unsafe fn binding_iid_impl(
         }
         return return_execution_error(layout_invalid(), out_diagnostics);
     }
-    let table_bytes = match iid_count.checked_mul(size_of::<TypeBridgeByteView>()) {
+    let table_bytes = match iid_count.checked_mul(size_of::<*const TypeBridgeIid>()) {
         Some(value) => value,
         None => return TypeBridgeStatus::ResourceLimit,
     };
@@ -2211,11 +2195,9 @@ unsafe fn binding_iid_impl(
         return status;
     }
     for index in 0..iid_count {
-        // SAFETY: complete bounded view storage was checked immediately above.
-        let view = unsafe { iids.add(index).read_unaligned() };
-        if view.length != 0
-            && let Err(status) = preflight.check_bytes(view.data.cast(), view.length)
-        {
+        // SAFETY: complete bounded pointer storage was checked immediately above.
+        let iid = unsafe { iids.add(index).read_unaligned() };
+        if let Err(status) = unsafe { preflight_handle(&preflight, iid) } {
             return status;
         }
     }
@@ -2240,13 +2222,13 @@ unsafe fn binding_iid_impl(
             return return_execution_error(allocation_exhausted(), out_diagnostics);
         }
         for index in 0..iid_count {
-            // SAFETY: complete view storage and its bytes were checked before output writes.
-            let view = unsafe { iids.add(index).read_unaligned() };
-            // SAFETY: this view's complete bytes remain readable for the call.
-            match unsafe { copied_iid(view) } {
-                Ok(value) => copied.push(value),
-                Err(error) => return return_execution_error(error, out_diagnostics),
+            // SAFETY: complete pointer storage and IID owners were checked before output writes.
+            let iid = unsafe { iids.add(index).read_unaligned() };
+            if iid.is_null() {
+                return TypeBridgeStatus::InvalidArgument;
             }
+            // SAFETY: the complete immutable IID was fenced before output writes.
+            copied.push(unsafe { &*iid }.as_str().to_owned());
         }
         let handle = if copied.len() == 1 {
             binding.handle.iid(copied.pop().expect("one IID remains"))
@@ -2275,11 +2257,11 @@ pub unsafe extern "C" fn type_bridge_query_binding_iid(
     binding: *const TypeBridgeQueryBinding,
     expected_model: *const TypeBridgeProjectedTokenV1,
     expected_mode: u32,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     out_predicate: *mut *mut TypeBridgeQueryPredicate,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    // SAFETY: the shared implementation snapshots exactly one bounded view.
+    // SAFETY: the shared implementation snapshots exactly one validated IID.
     unsafe {
         binding_iid_impl(
             binding,
@@ -2299,12 +2281,12 @@ pub unsafe extern "C" fn type_bridge_query_binding_iid_in(
     binding: *const TypeBridgeQueryBinding,
     expected_model: *const TypeBridgeProjectedTokenV1,
     expected_mode: u32,
-    iids: *const TypeBridgeByteView,
+    iids: *const *const TypeBridgeIid,
     iid_count: usize,
     out_predicate: *mut *mut TypeBridgeQueryPredicate,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    // SAFETY: the shared implementation checks and snapshots the bounded view table.
+    // SAFETY: the shared implementation checks and snapshots the bounded IID pointer table.
     unsafe {
         binding_iid_impl(
             binding,
@@ -9524,10 +9506,7 @@ mod tests {
                     built.binding,
                     &built.model,
                     MATCH_EXACT,
-                    TypeBridgeByteView {
-                        data: iid.as_ptr(),
-                        length: iid.len(),
-                    },
+                    &TypeBridgeIid::new(std::str::from_utf8(iid).unwrap()).unwrap(),
                     &mut predicate,
                     &mut diagnostics,
                 )
@@ -11116,6 +11095,66 @@ mod tests {
             unsafe { type_bridge_query_binding_close(&mut target) },
             TypeBridgeStatus::Ok,
         );
+    }
+
+    #[test]
+    fn typed_iid_predicates_fence_each_owner_and_snapshot_the_list() {
+        let package = package("querytypedids");
+        // SAFETY: fixture owns exact generated handles.
+        let built = unsafe { BuiltQuery::open(&package, TERMINAL_FIRST, ROWS_BOUNDED_MANY) };
+        let mut iid = TypeBridgeIid::new("0xAb12").unwrap();
+        let ids = [ptr::addr_of!(iid)];
+        let mut predicate = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: inputs and independent output owners are live; alias calls only preflight.
+        unsafe {
+            assert_eq!(
+                type_bridge_query_binding_iid_in(
+                    built.binding,
+                    &built.model,
+                    MATCH_EXACT,
+                    ids.as_ptr(),
+                    1,
+                    ptr::addr_of_mut!(iid).cast(),
+                    &mut diagnostics,
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(iid.as_str(), "0xAb12");
+            assert!(diagnostics.is_null());
+            assert_eq!(
+                type_bridge_query_binding_iid_in(
+                    built.binding,
+                    &built.model,
+                    MATCH_EXACT,
+                    ids.as_ptr(),
+                    1,
+                    &mut predicate,
+                    &mut diagnostics,
+                ),
+                TypeBridgeStatus::Ok
+            );
+            assert!(!predicate.is_null());
+            assert_eq!(
+                type_bridge_query_predicate_close(&mut predicate),
+                TypeBridgeStatus::Ok
+            );
+            let missing = [ptr::null()];
+            assert_eq!(
+                type_bridge_query_binding_iid_in(
+                    built.binding,
+                    &built.model,
+                    MATCH_EXACT,
+                    missing.as_ptr(),
+                    1,
+                    &mut predicate,
+                    &mut diagnostics,
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert!(predicate.is_null());
+            assert!(diagnostics.is_null());
+        }
     }
 
     #[test]

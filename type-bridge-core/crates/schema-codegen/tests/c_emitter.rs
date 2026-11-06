@@ -3237,7 +3237,7 @@ int main(void) {
   (void)acme_person_query_exact_binding_open(
       session, &function_person, &diagnostics);
   (void)acme_personzhrecord_query_exact_binding_iid(
-      person, output_name, &predicate, &diagnostics);
+      person, NULL, &predicate, &diagnostics);
   (void)acme_personzhrecord_countzhvalue_query_field_from_exact(
       person, &count_field, &diagnostics);
   (void)acme_personzhrecord_ratiozhvalue_query_field_from_exact(

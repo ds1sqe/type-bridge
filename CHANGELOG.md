@@ -273,6 +273,9 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+- `type_bridge_query_binding_iid` accepts `const type_bridge_iid_t *`;
+  `type_bridge_query_binding_iid_in` accepts an array of validated IID
+  pointers. Generated query binding wrappers use the same argument types.
 - C by-IID CRUD arguments now require a validated `type_bridge_iid_t *`.
   Construct it with `type_bridge_iid_open` and release it with
   `type_bridge_iid_close`; generated manager wrappers use the same type.

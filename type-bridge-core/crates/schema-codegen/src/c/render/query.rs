@@ -691,11 +691,11 @@ fn render_model_declarations(
              {root_ref} TYPE_BRIDGE_CALL {to_root}(\n\
                const {prefix}_query *query, const {binding} *binding);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {iid}(\n\
-               const {binding} *binding, type_bridge_byte_view_t iid,\n\
+               const {binding} *binding, const type_bridge_iid_t *iid,\n\
                {predicate} **out_predicate,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {iid_in}(\n\
-               const {binding} *binding, const type_bridge_byte_view_t *iids,\n\
+               const {binding} *binding, const type_bridge_iid_t *const *iids,\n\
                size_t iid_count, {predicate} **out_predicate,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {close}({binding} **binding);\n",
@@ -1867,7 +1867,7 @@ fn render_model_definitions(
                return value;\n\
              }}\n\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {iid}(\n\
-               const {binding} *binding, type_bridge_byte_view_t iid,\n\
+               const {binding} *binding, const type_bridge_iid_t *iid,\n\
                {predicate} **out_predicate,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
                return type_bridge_query_binding_iid(\n\
@@ -1876,7 +1876,7 @@ fn render_model_definitions(
                    (type_bridge_query_predicate_t **)out_predicate, out_diagnostics);\n\
              }}\n\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {iid_in}(\n\
-               const {binding} *binding, const type_bridge_byte_view_t *iids,\n\
+               const {binding} *binding, const type_bridge_iid_t *const *iids,\n\
                size_t iid_count, {predicate} **out_predicate,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
                return type_bridge_query_binding_iid_in(\n\

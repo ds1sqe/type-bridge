@@ -26,3 +26,13 @@ void iid_function_types(void) {
     type_bridge_status_t (*close)(type_bridge_iid_t **) = type_bridge_iid_close;
     (void)open; (void)text; (void)close;
 }
+
+void iid_query_function_types(void) {
+    type_bridge_status_t (*single)(const type_bridge_query_binding_t *,
+        const type_bridge_projected_token_v1_t *, uint32_t, const type_bridge_iid_t *,
+        type_bridge_query_predicate_t **, type_bridge_execution_diagnostics_t **) = type_bridge_query_binding_iid;
+    type_bridge_status_t (*list)(const type_bridge_query_binding_t *,
+        const type_bridge_projected_token_v1_t *, uint32_t, const type_bridge_iid_t *const *, size_t,
+        type_bridge_query_predicate_t **, type_bridge_execution_diagnostics_t **) = type_bridge_query_binding_iid_in;
+    (void)single; (void)list;
+}
