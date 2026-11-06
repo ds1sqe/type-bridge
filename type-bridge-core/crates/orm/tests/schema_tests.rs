@@ -641,6 +641,23 @@ entity typebridge-internal-legacy-cutover;
             .lock()
             .unwrap()
             .push((typeql.to_string(), self.tx_type));
+        // Pending-import fixtures have populated old rows and empty new rows.
+        let pending_import = self
+            .schema_snapshot_override
+            .as_ref()
+            .is_some_and(|schema| schema.contains("typebridge-internal-v2-"));
+        let normalized = typeql.replace("typebridge-internal-v2-", "typebridge-internal-");
+        if pending_import
+            && typeql.contains("typebridge-internal-")
+            && !typeql.contains("typebridge-internal-v2-")
+        {
+            return Box::pin(async { Ok(QueryResult::Rows(vec![])) });
+        }
+        let typeql = if pending_import {
+            normalized.as_str()
+        } else {
+            typeql
+        };
         if is_native_guard_query(typeql) {
             if self.legacy_guard_error {
                 return Box::pin(async {
@@ -945,6 +962,40 @@ async fn sync_schema_rejects_an_anchor_bound_cutover_before_user_typeql() {
             .iter()
             .all(|(query, _)| { is_native_guard_query(query) })
     );
+}
+
+#[tokio::test]
+async fn interrupted_import_does_not_reopen_old_fences() {
+    use type_bridge_contract::reserved::IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL;
+    for old in [
+        IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL.to_owned(),
+        IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL.replace(
+            "owns typebridge-internal-v2-lease-holder @card(0..1)",
+            "owns typebridge-internal-v2-lease-holder @cascade @card(0..1)",
+        ),
+        IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL.replace(
+            "owns typebridge-internal-v2-lease-holder @card(0..1)",
+            "owns typebridge-internal-v2-lease-holder @card(0..2)",
+        ),
+    ] {
+        let export = format!("{MANAGED_FENCE_SCHEMA_TYPEQL}\n{old}\n{LEGACY_LEDGER_SCHEMA_TYPEQL}");
+        let backend = MockBackend::with_writer_fence_schema(export, true);
+        let queries = Arc::clone(&backend.queries);
+        let db = Database::with_backend(Box::new(backend), "testdb");
+        let mut schema = SchemaManager::new(&db);
+        schema.register_entity::<Person>();
+        schema
+            .sync_schema(true, false)
+            .await
+            .expect_err("old authority must stay closed before new rows publish");
+        assert!(
+            queries
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(query, _)| !query.trim_start().starts_with("define"))
+        );
+    }
 }
 
 #[tokio::test]

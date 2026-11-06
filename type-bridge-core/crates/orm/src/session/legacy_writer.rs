@@ -66,15 +66,16 @@ pub async fn require_legacy_writer_open_in_transaction(
         Err(error) => return Err(error),
     };
     let current = managed_fence_schema_presence(&schema_export);
+    let old = type_bridge_schema_compat::import_legacy_fence_schema_presence(&schema_export);
     let mut legacy = matches!(current, Ok(LiveQueryControlPresence::Absent));
     // Installing the new schema is not the cutover: only the atomically
     // published mirror and anchor establish it. Keep the old guard while
     // an interrupted import has installed schema but no new authority rows.
-    if matches!(current, Ok(LiveQueryControlPresence::ManagedFence))
-        && matches!(
-            type_bridge_schema_compat::import_legacy_fence_schema_presence(&schema_export),
-            Ok(LiveQueryControlPresence::ManagedFence)
-        )
+    if matches!(
+        current,
+        Ok(LiveQueryControlPresence::ManagedFence
+            | LiveQueryControlPresence::ManagedFenceWithExtensions)
+    ) && !matches!(old, Ok(LiveQueryControlPresence::Absent))
     {
         let controls = query_values(
             transaction,
@@ -89,12 +90,13 @@ pub async fn require_legacy_writer_open_in_transaction(
         )
         .await?;
         legacy = controls.is_empty() && anchors.is_empty();
+        if legacy && old.is_err() {
+            return Err(integrity_error(
+                "pending journal import carries a malformed old managed fence",
+            ));
+        }
     }
-    let presence = if legacy {
-        type_bridge_schema_compat::import_legacy_fence_schema_presence(&schema_export)
-    } else {
-        current
-    };
+    let presence = if legacy { old } else { current };
     let managed_schema_has_extensions = match presence {
         Ok(LiveQueryControlPresence::ManagedFence) => false,
         Ok(LiveQueryControlPresence::ManagedFenceWithExtensions) => true,
