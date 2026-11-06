@@ -267,6 +267,34 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+- C staged and plan options also use unversioned names:
+  `type_bridge_database_transaction_with_options_v1` → `type_bridge_database_transaction_with_options`;
+  `type_bridge_proxy_connection_transaction_with_options_v1` → `type_bridge_proxy_connection_transaction_with_options`;
+  `type_bridge_staged_transaction_options_v1` → `type_bridge_staged_transaction_options`;
+  `type_bridge_plan_options_v1` → `type_bridge_plan_options`;
+  `TYPE_BRIDGE_STAGED_TRANSACTION_OPTIONS_V1` → `TYPE_BRIDGE_STAGED_TRANSACTION_OPTIONS_VERSION`;
+  `TYPE_BRIDGE_PLAN_OPTIONS_V1_DEFAULT` → `TYPE_BRIDGE_PLAN_OPTIONS_DEFAULT`;
+  `TYPE_BRIDGE_PLAN_OPTIONS_V1` → `TYPE_BRIDGE_PLAN_OPTIONS_VERSION`;
+- C ABI 2.0 query and plan exports use unversioned names; regenerate C packages:
+  `type_bridge_database_query_execute_v1` → `type_bridge_database_query_execute`;
+  `type_bridge_proxy_query_execute_v1` → `type_bridge_proxy_query_execute`;
+  `type_bridge_query_binding_iid_in_v1` → `type_bridge_query_binding_iid_in`;
+  `type_bridge_query_binding_iid_v1` → `type_bridge_query_binding_iid`;
+  `type_bridge_query_binding_open_v1` → `type_bridge_query_binding_open`;
+  `type_bridge_query_function_call_open_v1` → `type_bridge_query_function_call_open`;
+  `type_bridge_query_open_v1` → `type_bridge_query_open`;
+  `type_bridge_query_order_open_v1` → `type_bridge_query_order_open`;
+  `type_bridge_query_remote_claim_decode_v1` → `type_bridge_query_remote_claim_decode`;
+  `type_bridge_query_remote_context_open_v1` → `type_bridge_query_remote_context_open`;
+  `type_bridge_query_remote_prepare_v1` → `type_bridge_query_remote_prepare`;
+  `type_bridge_query_result_page_metadata_v1` → `type_bridge_query_result_page_metadata`;
+  `type_bridge_query_result_reduction_value_metadata_v1` → `type_bridge_query_result_reduction_value_metadata`;
+  `type_bridge_query_selection_open_v1` → `type_bridge_query_selection_open`;
+  `type_bridge_query_session_open_with_limits_v1` → `type_bridge_query_session_open_with_limits`;
+  `type_bridge_query_terminal_open_v1` → `type_bridge_query_terminal_open`;
+  `type_bridge_read_transaction_query_execute_v1` → `type_bridge_read_transaction_query_execute`;
+  `type_bridge_plan_v3_canonical_bytes` → `type_bridge_plan_canonical_bytes`;
+  `type_bridge_plan_v3_decode` → `type_bridge_plan_decode`;
 - C ABI execution limits replace unsigned `timeout_milliseconds` with signed
   milliseconds: use a positive deadline or a nonpositive value for no deadline.
   Omitted C policies use 60 seconds instead of 30 seconds. The limits descriptor

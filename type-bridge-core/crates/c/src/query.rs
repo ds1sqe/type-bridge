@@ -74,7 +74,7 @@ pub use proxy_connection::{
 #[cfg(test)]
 use proxy_connection::{
     type_bridge_proxy_connection_close, type_bridge_proxy_connection_open_v1,
-    type_bridge_proxy_query_execute_v1,
+    type_bridge_proxy_query_execute,
 };
 
 const DESCRIPTOR_VERSION: u32 = 1;
@@ -1062,7 +1062,7 @@ pub unsafe extern "C" fn type_bridge_query_session_open(
 ) -> TypeBridgeStatus {
     // SAFETY: the caller contract is forwarded unchanged with no overrides.
     unsafe {
-        type_bridge_query_session_open_with_limits_v1(
+        type_bridge_query_session_open_with_limits(
             package,
             ptr::null(),
             0,
@@ -1080,7 +1080,7 @@ pub unsafe extern "C" fn type_bridge_query_session_open(
 /// admits the values: an unknown name, a repeated name, or an unsupported
 /// value returns `TYPE_BRIDGE_STATUS_INVALID_ARGUMENT` and opens nothing.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_session_open_with_limits_v1(
+pub unsafe extern "C" fn type_bridge_query_session_open_with_limits(
     package: *const TypeBridgeSchemaPackage,
     overrides: *const TypeBridgeQueryLimitOverrideV1,
     override_count: usize,
@@ -1237,7 +1237,7 @@ pub unsafe extern "C" fn type_bridge_query_session_close(
 
 /// Open one fresh exact or subtype-inclusive model binding.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_binding_open_v1(
+pub unsafe extern "C" fn type_bridge_query_binding_open(
     session: *const TypeBridgeQuerySession,
     model: *const TypeBridgeProjectedTokenV1,
     mode: u32,
@@ -1640,7 +1640,7 @@ fn function_argument_graph_layout(value: TypeBridgeQueryFunctionArgumentsGraphV1
 
 /// Construct one immutable, signature-checked scalar schema-function call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_function_call_open_v1(
+pub unsafe extern "C" fn type_bridge_query_function_call_open(
     function: *const TypeBridgeQueryFunction,
     expected_function: *const TypeBridgeProjectedTokenV1,
     arguments: *const TypeBridgeQueryFunctionArgumentsGraphV1,
@@ -2271,7 +2271,7 @@ unsafe fn binding_iid_impl(
 
 /// Construct one generated-model-fenced IID predicate.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_binding_iid_v1(
+pub unsafe extern "C" fn type_bridge_query_binding_iid(
     binding: *const TypeBridgeQueryBinding,
     expected_model: *const TypeBridgeProjectedTokenV1,
     expected_mode: u32,
@@ -2295,7 +2295,7 @@ pub unsafe extern "C" fn type_bridge_query_binding_iid_v1(
 
 /// Construct one generated-model-fenced bounded IID-set predicate.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_binding_iid_in_v1(
+pub unsafe extern "C" fn type_bridge_query_binding_iid_in(
     binding: *const TypeBridgeQueryBinding,
     expected_model: *const TypeBridgeProjectedTokenV1,
     expected_mode: u32,
@@ -2844,7 +2844,7 @@ pub unsafe extern "C" fn type_bridge_query_predicate_close(
 
 /// Open one immutable exact-field stable order term.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_order_open_v1(
+pub unsafe extern "C" fn type_bridge_query_order_open(
     descriptor: *const TypeBridgeQueryOrderDescriptorV1,
     out_order: *mut *mut TypeBridgeQueryOrder,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -2969,7 +2969,7 @@ unsafe fn snapshot_orders(
 
 /// Open one singular or collection selected output slot.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_selection_open_v1(
+pub unsafe extern "C" fn type_bridge_query_selection_open(
     descriptor: *const TypeBridgeQuerySelectionDescriptorV1,
     out_selection: *mut *mut TypeBridgeQuerySelection,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -3105,7 +3105,7 @@ pub unsafe extern "C" fn type_bridge_query_selection_close(
 
 /// Open one immutable positional or declaration-checked named query lineage.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_open_v1(
+pub unsafe extern "C" fn type_bridge_query_open(
     session: *const TypeBridgeQuerySession,
     descriptor: *const TypeBridgeQueryDescriptorV1,
     out_query: *mut *mut TypeBridgeQuery,
@@ -3929,7 +3929,7 @@ unsafe fn reducer_specs(
 
 /// Open one immutable reusable terminal plan.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_terminal_open_v1(
+pub unsafe extern "C" fn type_bridge_query_terminal_open(
     query: *const TypeBridgeQuery,
     descriptor: *const TypeBridgeQueryTerminalDescriptorV1,
     out_terminal: *mut *mut TypeBridgeQueryTerminal,
@@ -4800,7 +4800,7 @@ pub unsafe extern "C" fn type_bridge_pending_query_result(
 
 /// Execute one reusable terminal through a database-owned read transaction.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
+pub unsafe extern "C" fn type_bridge_database_query_execute(
     database: *const TypeBridgeDatabase,
     terminal: *const TypeBridgeQueryTerminal,
     expected_terminal_kind: u32,
@@ -4932,7 +4932,7 @@ pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
 
 /// Execute one reusable terminal through a caller-owned borrowed read transaction.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
+pub unsafe extern "C" fn type_bridge_read_transaction_query_execute(
     transaction: *const TypeBridgeReadTransaction,
     terminal: *const TypeBridgeQueryTerminal,
     expected_terminal_kind: u32,
@@ -5063,7 +5063,7 @@ pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
 
 /// Open one managed caller-transport remote query context.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_remote_context_open_v1(
+pub unsafe extern "C" fn type_bridge_query_remote_context_open(
     package: *const TypeBridgeSchemaPackage,
     advertisement: TypeBridgeByteView,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
@@ -5158,7 +5158,7 @@ pub unsafe extern "C" fn type_bridge_query_remote_context_close(
 
 /// Prepare one fresh authenticated remote request from a reusable terminal.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_remote_prepare_v1(
+pub unsafe extern "C" fn type_bridge_query_remote_prepare(
     context: *const TypeBridgeQueryRemoteContext,
     terminal: *const TypeBridgeQueryTerminal,
     expected_terminal_kind: u32,
@@ -5450,7 +5450,7 @@ pub unsafe extern "C" fn type_bridge_query_remote_pending_response_snapshot_limi
 
 /// Snapshot, authenticate, decode, and materialize one claimed remote reply.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_remote_claim_decode_v1(
+pub unsafe extern "C" fn type_bridge_query_remote_claim_decode(
     claim: *const TypeBridgeQueryRemoteClaim,
     expected_terminal_kind: u32,
     cancellation: *const TypeBridgeCancellation,
@@ -5929,7 +5929,7 @@ pub unsafe extern "C" fn type_bridge_query_result_row_slot_thing_at(
 
 /// Return page window and optional same-snapshot total metadata.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_result_page_metadata_v1(
+pub unsafe extern "C" fn type_bridge_query_result_page_metadata(
     result: *const TypeBridgeQueryResult,
     out_metadata: *mut TypeBridgeQueryPageMetadataV1,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -6397,7 +6397,7 @@ pub unsafe extern "C" fn type_bridge_query_result_reduction_group_field_at(
 
 /// Return kind and optionality metadata for one reducer output cell.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_result_reduction_value_metadata_v1(
+pub unsafe extern "C" fn type_bridge_query_result_reduction_value_metadata(
     result: *const TypeBridgeQueryResult,
     expected_result_kind: u32,
     row_index: usize,
@@ -8031,7 +8031,7 @@ mod tests {
         assert_eq!(
             // SAFETY: caller retains all immutable inputs and writable independent outputs.
             unsafe {
-                type_bridge_query_remote_context_open_v1(
+                type_bridge_query_remote_context_open(
                     package,
                     view,
                     limits,
@@ -8090,7 +8090,7 @@ mod tests {
             let mut diagnostics = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_database_query_execute_v1(
+                    type_bridge_database_query_execute(
                         &*database.value,
                         built.terminal,
                         kind,
@@ -8594,7 +8594,7 @@ mod tests {
         assert_eq!(
             // SAFETY: caller retains all immutable inputs and writable independent outputs.
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     terminal,
                     kind,
@@ -8677,7 +8677,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: package, overrides, and writable independent outputs are live.
                 unsafe {
-                    type_bridge_query_session_open_with_limits_v1(
+                    type_bridge_query_session_open_with_limits(
                         package,
                         if overrides.is_empty() {
                             ptr::null()
@@ -8696,7 +8696,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: retained session/token and writable outputs are live.
                 unsafe {
-                    type_bridge_query_binding_open_v1(
+                    type_bridge_query_binding_open(
                         session,
                         &model,
                         MATCH_EXACT,
@@ -8723,7 +8723,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: descriptor graph and writable outputs are live.
                 unsafe {
-                    type_bridge_query_selection_open_v1(
+                    type_bridge_query_selection_open(
                         &selection_descriptor,
                         &mut selection,
                         &mut diagnostics,
@@ -8758,12 +8758,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: descriptor graph and writable outputs are live.
                 unsafe {
-                    type_bridge_query_open_v1(
-                        session,
-                        &query_descriptor,
-                        &mut query,
-                        &mut diagnostics,
-                    )
+                    type_bridge_query_open(session, &query_descriptor, &mut query, &mut diagnostics)
                 },
                 TypeBridgeStatus::Ok,
             );
@@ -8793,7 +8788,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: descriptor graph and writable outputs are live.
                 unsafe {
-                    type_bridge_query_terminal_open_v1(
+                    type_bridge_query_terminal_open(
                         query,
                         &terminal_descriptor,
                         &mut terminal,
@@ -8863,7 +8858,7 @@ mod tests {
             TypeBridgeStatus::Ok,
         );
         let status = unsafe {
-            type_bridge_database_query_execute_v1(
+            type_bridge_database_query_execute(
                 &*database.value,
                 built.terminal,
                 TERMINAL_FIRST,
@@ -8904,7 +8899,7 @@ mod tests {
         );
         result = std::ptr::NonNull::<TypeBridgeQueryResult>::dangling().as_ptr();
         let status = unsafe {
-            type_bridge_database_query_execute_v1(
+            type_bridge_database_query_execute(
                 &*statement_database.value,
                 built.terminal,
                 TERMINAL_FIRST,
@@ -8971,7 +8966,7 @@ mod tests {
             TypeBridgeStatus::Ok,
         );
         let before_exchange_status = unsafe {
-            type_bridge_query_remote_prepare_v1(
+            type_bridge_query_remote_prepare(
                 context,
                 built.terminal,
                 TERMINAL_COUNT,
@@ -9020,7 +9015,7 @@ mod tests {
         );
         let mut result = std::ptr::NonNull::<TypeBridgeQueryResult>::dangling().as_ptr();
         let during_decode_status = unsafe {
-            type_bridge_query_remote_claim_decode_v1(
+            type_bridge_query_remote_claim_decode(
                 claim,
                 TERMINAL_COUNT,
                 cancellation,
@@ -9042,7 +9037,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -9140,7 +9135,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -9305,7 +9300,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -9504,7 +9499,7 @@ mod tests {
         assert_eq!(
             // SAFETY: the descriptor graph and independent output slots remain live.
             unsafe {
-                type_bridge_query_terminal_open_v1(
+                type_bridge_query_terminal_open(
                     built.query,
                     descriptor,
                     &mut built.terminal,
@@ -9525,7 +9520,7 @@ mod tests {
         assert_eq!(
             // SAFETY: exact generated handles and immutable IID bytes remain live.
             unsafe {
-                type_bridge_query_binding_iid_v1(
+                type_bridge_query_binding_iid(
                     built.binding,
                     &built.model,
                     MATCH_EXACT,
@@ -9634,7 +9629,7 @@ mod tests {
         assert_eq!(
             // SAFETY: the inactive dangling lane must be rejected before traversal.
             unsafe {
-                type_bridge_query_terminal_open_v1(
+                type_bridge_query_terminal_open(
                     built.query,
                     &descriptor,
                     &mut output,
@@ -9709,7 +9704,7 @@ mod tests {
             let mut diagnostics = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_query_terminal_open_v1(
+                    type_bridge_query_terminal_open(
                         built.query,
                         &descriptor,
                         &mut built.terminal,
@@ -9814,7 +9809,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: package, overrides, and writable outputs are live.
                 unsafe {
-                    type_bridge_query_session_open_with_limits_v1(
+                    type_bridge_query_session_open_with_limits(
                         &package,
                         refused.as_ptr(),
                         refused.len(),
@@ -9831,7 +9826,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_session_open_with_limits_v1(
+                type_bridge_query_session_open_with_limits(
                     &package,
                     ptr::null(),
                     1,
@@ -9864,7 +9859,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_terminal_open_v1(
+                type_bridge_query_terminal_open(
                     built.query,
                     &descriptor,
                     &mut built.terminal,
@@ -9914,7 +9909,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_terminal_open_v1(
+                type_bridge_query_terminal_open(
                     built.query,
                     &descriptor,
                     &mut built.terminal,
@@ -9951,7 +9946,7 @@ mod tests {
         let mut result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     all.terminal,
                     TERMINAL_ROWS,
@@ -10034,7 +10029,7 @@ mod tests {
             let database = fake_database(&package, vec![Response::Items(items)], Vec::new());
             assert_eq!(
                 unsafe {
-                    type_bridge_database_query_execute_v1(
+                    type_bridge_database_query_execute(
                         &*database.value,
                         built.terminal,
                         descriptor.kind,
@@ -10083,7 +10078,7 @@ mod tests {
         let database = fake_database(&package, Vec::new(), Vec::new());
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     first.terminal,
                     TERMINAL_FIRST,
@@ -10117,7 +10112,7 @@ mod tests {
         );
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     first.terminal,
                     TERMINAL_FIRST,
@@ -10169,7 +10164,7 @@ mod tests {
             let mut result = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_read_transaction_query_execute_v1(
+                    type_bridge_read_transaction_query_execute(
                         read,
                         built.terminal,
                         TERMINAL_COUNT,
@@ -10255,7 +10250,7 @@ mod tests {
         let mut order = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_order_open_v1(&order_descriptor, &mut order, &mut diagnostics)
+                type_bridge_query_order_open(&order_descriptor, &mut order, &mut diagnostics)
             },
             TypeBridgeStatus::Ok,
         );
@@ -10267,7 +10262,7 @@ mod tests {
         let mut relation_binding = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_binding_open_v1(
+                type_bridge_query_binding_open(
                     built.session,
                     &membership,
                     MATCH_EXACT,
@@ -10342,7 +10337,7 @@ mod tests {
         let mut function_call = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     function,
                     &identity,
                     &graph,
@@ -10357,7 +10352,7 @@ mod tests {
         let mut result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -10513,7 +10508,7 @@ mod tests {
         let mut identity_call = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &value_graph,
@@ -10533,7 +10528,7 @@ mod tests {
         let mut person_call = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     person_handle,
                     &person_identifier,
                     &binding_graph,
@@ -10553,7 +10548,7 @@ mod tests {
         let mut nested_call = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &nested_graph,
@@ -10632,7 +10627,7 @@ mod tests {
         let mut rejected = std::ptr::NonNull::<TypeBridgeQueryFunctionCall>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &person_identifier,
                     &value_graph,
@@ -10660,7 +10655,7 @@ mod tests {
         let malformed_graph = function_arguments_graph(&malformed_arguments, &single_member);
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &malformed_graph,
@@ -10728,7 +10723,7 @@ mod tests {
         let _failure = inject_failure(AllocationSite::QueryFunctionArguments, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &foreign_graph,
@@ -10752,7 +10747,7 @@ mod tests {
             .cast::<*mut TypeBridgeQueryFunctionCall>();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &over_limit_graph,
@@ -10799,7 +10794,7 @@ mod tests {
         };
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &max_graph,
@@ -10823,7 +10818,7 @@ mod tests {
         let bad_version_graph = function_arguments_graph(&bad_version_arguments, &single_member);
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &bad_version_graph,
@@ -10841,7 +10836,7 @@ mod tests {
         let argument_failure = inject_failure(AllocationSite::QueryFunctionArguments, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &value_graph,
@@ -10857,7 +10852,7 @@ mod tests {
         let call_failure = inject_failure(AllocationSite::QueryFunctionCallHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &value_graph,
@@ -10873,7 +10868,7 @@ mod tests {
         // The active foreign handle and local function remain reusable.
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &value_graph,
@@ -10951,7 +10946,7 @@ mod tests {
         let mut target = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_binding_open_v1(
+                type_bridge_query_binding_open(
                     built.session,
                     &event,
                     MATCH_EXACT,
@@ -10964,7 +10959,7 @@ mod tests {
         let mut relation_binding = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_binding_open_v1(
+                type_bridge_query_binding_open(
                     built.session,
                     &membership,
                     MATCH_EXACT,
@@ -11234,7 +11229,7 @@ mod tests {
         let mut query = std::ptr::NonNull::<TypeBridgeQuery>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(built.session, &descriptor, &mut query, &mut diagnostics)
+                type_bridge_query_open(built.session, &descriptor, &mut query, &mut diagnostics)
             },
             TypeBridgeStatus::InvalidArgument,
         );
@@ -11252,7 +11247,7 @@ mod tests {
         };
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(built.session, &descriptor, &mut query, &mut diagnostics)
+                type_bridge_query_open(built.session, &descriptor, &mut query, &mut diagnostics)
             },
             TypeBridgeStatus::InvalidArgument,
         );
@@ -11271,7 +11266,7 @@ mod tests {
         let mut primary_query = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(
+                type_bridge_query_open(
                     built.session,
                     &descriptor,
                     &mut primary_query,
@@ -11289,7 +11284,7 @@ mod tests {
         let mut renamed_query = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(
+                type_bridge_query_open(
                     built.session,
                     &descriptor,
                     &mut renamed_query,
@@ -11307,7 +11302,7 @@ mod tests {
         let mut copied_reference_query = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(
+                type_bridge_query_open(
                     built.session,
                     &descriptor,
                     &mut copied_reference_query,
@@ -11362,7 +11357,7 @@ mod tests {
         let mut second_binding = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_binding_open_v1(
+                type_bridge_query_binding_open(
                     built.session,
                     &built.model,
                     MATCH_EXACT,
@@ -11388,7 +11383,7 @@ mod tests {
         let mut second_selection = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_selection_open_v1(
+                type_bridge_query_selection_open(
                     &second_descriptor,
                     &mut second_selection,
                     &mut diagnostics,
@@ -11419,7 +11414,7 @@ mod tests {
         query = std::ptr::NonNull::<TypeBridgeQuery>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(built.session, &descriptor, &mut query, &mut diagnostics)
+                type_bridge_query_open(built.session, &descriptor, &mut query, &mut diagnostics)
             },
             TypeBridgeStatus::InvalidArgument,
         );
@@ -11494,7 +11489,7 @@ mod tests {
             let mut result = ptr::null_mut();
             let mut diagnostics = ptr::null_mut();
             let status = unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -11759,7 +11754,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: retained branded handles and disjoint writable outputs are live.
                 unsafe {
-                    type_bridge_database_query_execute_v1(
+                    type_bridge_database_query_execute(
                         &*database.value,
                         built.terminal,
                         TERMINAL_FIRST,
@@ -11821,7 +11816,7 @@ mod tests {
         let mut page_result = ptr::null_mut();
         let mut diagnostics = ptr::null_mut();
         let status = unsafe {
-            type_bridge_database_query_execute_v1(
+            type_bridge_database_query_execute(
                 &*page_database.value,
                 page.terminal,
                 TERMINAL_PAGE,
@@ -11912,7 +11907,7 @@ mod tests {
         let mut metadata = std::mem::MaybeUninit::<TypeBridgeQueryPageMetadataV1>::uninit();
         assert_eq!(
             unsafe {
-                type_bridge_query_result_page_metadata_v1(
+                type_bridge_query_result_page_metadata(
                     page_result,
                     metadata.as_mut_ptr(),
                     ptr::null_mut(),
@@ -11928,7 +11923,7 @@ mod tests {
         diagnostics = std::ptr::NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_result_page_metadata_v1(
+                type_bridge_query_result_page_metadata(
                     page_result,
                     ptr::null_mut(),
                     &mut diagnostics,
@@ -11940,7 +11935,7 @@ mod tests {
         let mut metadata = std::mem::MaybeUninit::<TypeBridgeQueryPageMetadataV1>::uninit();
         assert_eq!(
             unsafe {
-                type_bridge_query_result_page_metadata_v1(
+                type_bridge_query_result_page_metadata(
                     page_result,
                     metadata.as_mut_ptr(),
                     &mut diagnostics,
@@ -11975,7 +11970,7 @@ mod tests {
         let mut count_result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*count_database.value,
                     count.terminal,
                     TERMINAL_COUNT,
@@ -12023,7 +12018,7 @@ mod tests {
             let mut result = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_database_query_execute_v1(
+                    type_bridge_database_query_execute(
                         &*database.value,
                         exists.terminal,
                         TERMINAL_EXISTS,
@@ -12062,7 +12057,7 @@ mod tests {
         let mut reduction_result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*reduction_database.value,
                     reduction.terminal,
                     TERMINAL_REDUCE,
@@ -12118,7 +12113,7 @@ mod tests {
             std::mem::MaybeUninit::<TypeBridgeQueryReducedValueMetadataV1>::uninit();
         assert_eq!(
             unsafe {
-                type_bridge_query_result_reduction_value_metadata_v1(
+                type_bridge_query_result_reduction_value_metadata(
                     reduction_result,
                     RESULT_REDUCTION,
                     0,
@@ -12138,7 +12133,7 @@ mod tests {
             std::mem::MaybeUninit::<TypeBridgeQueryReducedValueMetadataV1>::uninit();
         assert_eq!(
             unsafe {
-                type_bridge_query_result_reduction_value_metadata_v1(
+                type_bridge_query_result_reduction_value_metadata(
                     reduction_result,
                     RESULT_REDUCTION,
                     0,
@@ -12306,7 +12301,7 @@ mod tests {
             let mut result = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_database_query_execute_v1(
+                    type_bridge_database_query_execute(
                         &*database.value,
                         built.terminal,
                         terminal_kind,
@@ -12418,7 +12413,7 @@ mod tests {
                 std::mem::MaybeUninit::<TypeBridgeQueryReducedValueMetadataV1>::uninit();
             assert_eq!(
                 unsafe {
-                    type_bridge_query_result_reduction_value_metadata_v1(
+                    type_bridge_query_result_reduction_value_metadata(
                         result,
                         expected_result_kind,
                         0,
@@ -12518,7 +12513,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_binding_open_v1(
+                type_bridge_query_binding_open(
                     built.session,
                     &organization_model,
                     MATCH_EXACT,
@@ -12629,7 +12624,7 @@ mod tests {
         );
         let mut result = ptr::null_mut();
         let status = unsafe {
-            type_bridge_database_query_execute_v1(
+            type_bridge_database_query_execute(
                 &*database.value,
                 built.terminal,
                 TERMINAL_REDUCE,
@@ -12798,7 +12793,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12831,7 +12826,7 @@ mod tests {
         );
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12952,7 +12947,7 @@ mod tests {
         result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_REDUCE_FIELD,
@@ -13026,7 +13021,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13075,7 +13070,7 @@ mod tests {
         let deadline_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -13105,7 +13100,7 @@ mod tests {
         let cancelled_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -13130,7 +13125,7 @@ mod tests {
         assert_eq!(database.events.queries.load(Ordering::Acquire), 0);
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13149,7 +13144,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13194,7 +13189,7 @@ mod tests {
 
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13224,7 +13219,7 @@ mod tests {
         ));
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13264,7 +13259,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         // SAFETY: fixture owns every live handle and the writable outputs.
         let status = unsafe {
-            type_bridge_database_query_execute_v1(
+            type_bridge_database_query_execute(
                 &*database.value,
                 all.terminal,
                 TERMINAL_ROWS,
@@ -13370,7 +13365,7 @@ mod tests {
         limits.statements = 0;
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13435,7 +13430,7 @@ mod tests {
         }
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -13461,7 +13456,7 @@ mod tests {
         let cancelled_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -13488,7 +13483,7 @@ mod tests {
         let other = fake_database(&equivalent, Vec::new(), Vec::new());
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*other.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13512,7 +13507,7 @@ mod tests {
         limits = default_limits();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*accepted.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13557,7 +13552,7 @@ mod tests {
 
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13585,7 +13580,7 @@ mod tests {
         ));
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13625,7 +13620,7 @@ mod tests {
         let deadline_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*deadline_database.value,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -13659,7 +13654,7 @@ mod tests {
         let delayed_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*deadline_database.value,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -13691,7 +13686,7 @@ mod tests {
         QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| delay.set(20));
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*open_database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13736,7 +13731,7 @@ mod tests {
         );
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*statement_database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13798,7 +13793,7 @@ mod tests {
             let mut result = ptr::null_mut();
             let mut diagnostics = ptr::null_mut();
             let status = unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -13858,7 +13853,7 @@ mod tests {
             let mut result = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_read_transaction_query_execute_v1(
+                    type_bridge_read_transaction_query_execute(
                         transaction,
                         built.terminal,
                         TERMINAL_FIRST,
@@ -13873,7 +13868,7 @@ mod tests {
             let dispatched = database.events.queries.load(Ordering::Acquire);
             assert_eq!(
                 unsafe {
-                    type_bridge_read_transaction_query_execute_v1(
+                    type_bridge_read_transaction_query_execute(
                         transaction,
                         built.terminal,
                         TERMINAL_FIRST,
@@ -13955,7 +13950,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     other.terminal,
                     TERMINAL_COUNT,
@@ -13985,7 +13980,7 @@ mod tests {
         let cancelled_pending_failure = inject_failure(AllocationSite::QueryRemotePendingHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -14155,7 +14150,7 @@ mod tests {
         let mut result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -14200,7 +14195,7 @@ mod tests {
         let pending_failure = inject_failure(AllocationSite::QueryRemotePendingHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -14232,7 +14227,7 @@ mod tests {
         let delayed_pending_failure = inject_failure(AllocationSite::QueryRemotePendingHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -14277,7 +14272,7 @@ mod tests {
         };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_context_open_v1(
+                type_bridge_query_remote_context_open(
                     &package,
                     advertisement,
                     ptr::null(),
@@ -14293,7 +14288,7 @@ mod tests {
         let mut context = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_context_open_v1(
+                type_bridge_query_remote_context_open(
                     &package,
                     advertisement,
                     ptr::null(),
@@ -14309,7 +14304,7 @@ mod tests {
             inject_failure(AllocationSite::QueryRemoteAdvertisementBytes, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_context_open_v1(
+                type_bridge_query_remote_context_open(
                     &package,
                     advertisement,
                     ptr::null(),
@@ -14328,7 +14323,7 @@ mod tests {
         let mut pending = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     built.terminal,
                     TERMINAL_COUNT,
@@ -14439,7 +14434,7 @@ mod tests {
         };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -14456,7 +14451,7 @@ mod tests {
         let mut result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -14471,7 +14466,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -14535,7 +14530,7 @@ mod tests {
             let mut result = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_query_remote_claim_decode_v1(
+                    type_bridge_query_remote_claim_decode(
                         claim,
                         terminal_kind,
                         ptr::null(),
@@ -14583,7 +14578,7 @@ mod tests {
                         };
                         assert_eq!(
                             unsafe {
-                                type_bridge_query_result_page_metadata_v1(
+                                type_bridge_query_result_page_metadata(
                                     result,
                                     &mut metadata,
                                     &mut diagnostics,
@@ -14680,7 +14675,7 @@ mod tests {
         let mut result = std::ptr::NonNull::<TypeBridgeQueryResult>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_ROWS,
                     ptr::null(),
@@ -14703,7 +14698,7 @@ mod tests {
         let _result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -14717,7 +14712,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -14755,7 +14750,7 @@ mod tests {
         );
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     cancellation,
@@ -14769,7 +14764,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -14811,7 +14806,7 @@ mod tests {
         let oversized = vec![0x5a; limit + 1];
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -14832,7 +14827,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -14883,7 +14878,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     unsupported_context,
                     built.terminal,
                     TERMINAL_COUNT,
@@ -14961,7 +14956,7 @@ mod tests {
             let mut diagnostics = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_query_remote_claim_decode_v1(
+                    type_bridge_query_remote_claim_decode(
                         claim,
                         TERMINAL_COUNT,
                         ptr::null(),
@@ -15041,7 +15036,7 @@ mod tests {
             result = std::ptr::NonNull::<TypeBridgeQueryResult>::dangling().as_ptr();
             assert_eq!(
                 unsafe {
-                    type_bridge_query_remote_claim_decode_v1(
+                    type_bridge_query_remote_claim_decode(
                         claim,
                         TERMINAL_COUNT,
                         ptr::null(),
@@ -15283,7 +15278,7 @@ mod tests {
             let mut result = ptr::null_mut();
             let mut diagnostics = ptr::null_mut();
             let status = unsafe {
-                type_bridge_proxy_query_execute_v1(
+                type_bridge_proxy_query_execute(
                     &proxy,
                     built.terminal,
                     descriptor.kind,
@@ -15376,7 +15371,7 @@ mod tests {
             let mut diagnostics = ptr::null_mut();
             // SAFETY: every input is retained; outputs are independent.
             let status = unsafe {
-                type_bridge_proxy_query_execute_v1(
+                type_bridge_proxy_query_execute(
                     connection,
                     terminal,
                     TERMINAL_COUNT,

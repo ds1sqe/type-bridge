@@ -541,7 +541,7 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_close(
 
 /// Execute one reusable terminal on a TypeBridge server.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_proxy_query_execute_v1(
+pub unsafe extern "C" fn type_bridge_proxy_query_execute(
     proxy: *const TypeBridgeProxyConnection,
     terminal: *const TypeBridgeQueryTerminal,
     expected_terminal_kind: u32,

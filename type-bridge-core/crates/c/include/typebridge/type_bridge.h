@@ -1290,7 +1290,7 @@ typedef enum type_bridge_plan_answer_kind {
 } type_bridge_plan_answer_kind_t;
 
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_plan_v3_decode(
+type_bridge_plan_decode(
     const uint8_t *schema, size_t schema_len,
     const uint8_t *plan, size_t plan_len,
     type_bridge_plan_t **out_plan,
@@ -1298,7 +1298,7 @@ type_bridge_plan_v3_decode(
 /* Reports the canonical length in out_len; a null or short buffer returns
  * TYPE_BRIDGE_STATUS_RESOURCE_LIMIT without writing bytes. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_plan_v3_canonical_bytes(
+type_bridge_plan_canonical_bytes(
     const type_bridge_plan_t *plan, uint8_t *buffer, size_t capacity,
     size_t *out_len);
 TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
@@ -1306,18 +1306,18 @@ type_bridge_plan_free(type_bridge_plan_t **plan);
 
 /* Deferred commit policy. Null options: 60000 ms, collection off.
  * Otherwise size/version must be exact; timeout <= 0 disables the deadline. */
-#define TYPE_BRIDGE_STAGED_TRANSACTION_OPTIONS_V1 UINT32_C(1)
-typedef struct type_bridge_staged_transaction_options_v1 {
+#define TYPE_BRIDGE_STAGED_TRANSACTION_OPTIONS_VERSION UINT32_C(1)
+typedef struct type_bridge_staged_transaction_options {
     uint32_t struct_size;
     uint32_t version;
     int64_t timeout_milliseconds;
     uint32_t collect_phase_timestamps;
-} type_bridge_staged_transaction_options_v1_t;
+} type_bridge_staged_transaction_options_t;
 
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_transaction_with_options_v1(
+type_bridge_database_transaction_with_options(
     const type_bridge_database_t *database, uint32_t kind,
-    const type_bridge_staged_transaction_options_v1_t *options,
+    const type_bridge_staged_transaction_options_t *options,
     type_bridge_staged_transaction_t **out_transaction,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 
@@ -1475,27 +1475,27 @@ typedef struct type_bridge_plan_builder type_bridge_plan_builder_t;
  * for example shop_plan_open. It captures the verified package and limits once.
  * Generated initializers always check their projection brand; raw builder_new
  * stays unbound and is the explicit raw-build escape hatch. */
-#define TYPE_BRIDGE_PLAN_OPTIONS_V1 1u
-typedef struct type_bridge_plan_options_v1 {
+#define TYPE_BRIDGE_PLAN_OPTIONS_VERSION 1u
+typedef struct type_bridge_plan_options {
   uint32_t struct_size;
   uint32_t version;
   const type_bridge_query_limit_override_v1_t *query_limits;
   size_t query_limit_count;
   uint64_t reserved[4];
-} type_bridge_plan_options_v1_t;
-#define TYPE_BRIDGE_PLAN_OPTIONS_V1_INIT { \
-  (uint32_t)sizeof(type_bridge_plan_options_v1_t), TYPE_BRIDGE_PLAN_OPTIONS_V1, \
+} type_bridge_plan_options_t;
+#define TYPE_BRIDGE_PLAN_OPTIONS_VERSION_INIT { \
+  (uint32_t)sizeof(type_bridge_plan_options_t), TYPE_BRIDGE_PLAN_OPTIONS_VERSION, \
   NULL, 0u, {0u, 0u, 0u, 0u} }
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_plan_builder_new_with_package(const type_bridge_schema_package_t *package,
-                                          const type_bridge_plan_options_v1_t *options,
+                                          const type_bridge_plan_options_t *options,
                                           type_bridge_plan_builder_t **out_builder);
 /* Generated packages supply the shared view-layout digest. A mismatch returns
  * c_plan_view_layout_mismatch before a view can be allocated. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_plan_builder_new_with_layout(
     const type_bridge_schema_package_t *package,
-    const type_bridge_plan_options_v1_t *options, type_bridge_byte_view_t digest,
+    const type_bridge_plan_options_t *options, type_bridge_byte_view_t digest,
     type_bridge_plan_builder_t **out_builder,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
@@ -2202,7 +2202,7 @@ type_bridge_query_session_open(const type_bridge_schema_package_t *package,
  * value returns TYPE_BRIDGE_STATUS_INVALID_ARGUMENT and opens nothing.
  */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_session_open_with_limits_v1(
+type_bridge_query_session_open_with_limits(
     const type_bridge_schema_package_t *package,
     const type_bridge_query_limit_override_v1_t *overrides,
     size_t override_count,
@@ -2211,7 +2211,7 @@ type_bridge_query_session_open_with_limits_v1(
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_session_close(type_bridge_query_session_t **session);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_binding_open_v1(const type_bridge_query_session_t *session,
+type_bridge_query_binding_open(const type_bridge_query_session_t *session,
     const type_bridge_projected_token_v1_t *model,
     type_bridge_query_match_mode_t mode, type_bridge_query_binding_t **out_binding,
     type_bridge_execution_diagnostics_t **out_diagnostics);
@@ -2248,7 +2248,7 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_function_value_close(
     type_bridge_query_function_value_t **value);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_function_call_open_v1(
+type_bridge_query_function_call_open(
     const type_bridge_query_function_t *function,
     const type_bridge_projected_token_v1_t *expected_function,
     const type_bridge_query_function_arguments_graph_v1_t *arguments,
@@ -2287,13 +2287,13 @@ type_bridge_query_field_compare_function(
     type_bridge_query_predicate_t **out_predicate,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_binding_iid_v1(const type_bridge_query_binding_t *binding,
+type_bridge_query_binding_iid(const type_bridge_query_binding_t *binding,
     const type_bridge_projected_token_v1_t *expected_model,
     type_bridge_query_match_mode_t expected_mode, type_bridge_byte_view_t iid,
     type_bridge_query_predicate_t **out_predicate,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_binding_iid_in_v1(const type_bridge_query_binding_t *binding,
+type_bridge_query_binding_iid_in(const type_bridge_query_binding_t *binding,
     const type_bridge_projected_token_v1_t *expected_model,
     type_bridge_query_match_mode_t expected_mode,
     const type_bridge_byte_view_t *iids, size_t iid_count,
@@ -2349,21 +2349,21 @@ type_bridge_query_predicate_combine(type_bridge_query_predicate_combine_t operat
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_predicate_close(type_bridge_query_predicate_t **predicate);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_order_open_v1(
+type_bridge_query_order_open(
     const type_bridge_query_order_descriptor_v1_t *descriptor,
     type_bridge_query_order_t **out_order,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_order_close(type_bridge_query_order_t **order);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_selection_open_v1(
+type_bridge_query_selection_open(
     const type_bridge_query_selection_descriptor_v1_t *descriptor,
     type_bridge_query_selection_t **out_selection,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_selection_close(type_bridge_query_selection_t **selection);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_open_v1(const type_bridge_query_session_t *session,
+type_bridge_query_open(const type_bridge_query_session_t *session,
     const type_bridge_query_descriptor_v1_t *descriptor,
     type_bridge_query_t **out_query,
     type_bridge_execution_diagnostics_t **out_diagnostics);
@@ -2391,7 +2391,7 @@ type_bridge_query_allow_cross_join(const type_bridge_query_t *query,
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_close(type_bridge_query_t **query);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_terminal_open_v1(const type_bridge_query_t *query,
+type_bridge_query_terminal_open(const type_bridge_query_t *query,
     const type_bridge_query_terminal_descriptor_v1_t *descriptor,
     type_bridge_query_terminal_t **out_terminal,
     type_bridge_execution_diagnostics_t **out_diagnostics);
@@ -2419,7 +2419,7 @@ type_bridge_pending_query_result(const type_bridge_pending_t *pending,
     type_bridge_query_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_query_execute_v1(const type_bridge_database_t *database,
+type_bridge_database_query_execute(const type_bridge_database_t *database,
     const type_bridge_query_terminal_t *terminal,
     type_bridge_query_terminal_kind_t expected_terminal_kind,
     const type_bridge_query_execution_limits_v1_t *limits,
@@ -2427,7 +2427,7 @@ type_bridge_database_query_execute_v1(const type_bridge_database_t *database,
     type_bridge_query_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_read_transaction_query_execute_v1(
+type_bridge_read_transaction_query_execute(
     const type_bridge_read_transaction_t *transaction,
     const type_bridge_query_terminal_t *terminal,
     type_bridge_query_terminal_kind_t expected_terminal_kind,
@@ -2510,9 +2510,9 @@ type_bridge_proxy_connection_close(type_bridge_proxy_connection_t **connection);
  * rollback and close are those of
  * type_bridge_database_transaction. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_proxy_connection_transaction_with_options_v1(
+type_bridge_proxy_connection_transaction_with_options(
     const type_bridge_proxy_connection_t *proxy, uint32_t kind,
-    const type_bridge_staged_transaction_options_v1_t *options,
+    const type_bridge_staged_transaction_options_t *options,
     type_bridge_staged_transaction_t **out_transaction,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 
@@ -2522,7 +2522,7 @@ type_bridge_proxy_connection_transaction(
     type_bridge_staged_transaction_t **out_transaction,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_proxy_query_execute_v1(const type_bridge_proxy_connection_t *proxy,
+type_bridge_proxy_query_execute(const type_bridge_proxy_connection_t *proxy,
     const type_bridge_query_terminal_t *terminal,
     type_bridge_query_terminal_kind_t expected_terminal_kind,
     const type_bridge_query_execution_limits_v1_t *limits,
@@ -2550,7 +2550,7 @@ type_bridge_proxy_query_execute_v1(const type_bridge_proxy_connection_t *proxy,
  * caller-owned transport cancellation remains the caller's responsibility.
  */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_remote_context_open_v1(
+type_bridge_query_remote_context_open(
     const type_bridge_schema_package_t *package,
     type_bridge_byte_view_t advertisement,
     const type_bridge_query_execution_limits_v1_t *limits,
@@ -2560,7 +2560,7 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_remote_context_close(
     type_bridge_query_remote_context_t **context);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_remote_prepare_v1(
+type_bridge_query_remote_prepare(
     const type_bridge_query_remote_context_t *context,
     const type_bridge_query_terminal_t *terminal,
     type_bridge_query_terminal_kind_t expected_terminal_kind,
@@ -2584,7 +2584,7 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_remote_pending_response_snapshot_limit(
     const type_bridge_query_remote_pending_t *pending, size_t *out_limit);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_remote_claim_decode_v1(
+type_bridge_query_remote_claim_decode(
     const type_bridge_query_remote_claim_t *claim,
     type_bridge_query_terminal_kind_t expected_terminal_kind,
     const type_bridge_cancellation_t *cancellation,
@@ -2619,7 +2619,7 @@ type_bridge_query_result_row_slot_thing_at(
     type_bridge_projected_thing_t **out_thing,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_result_page_metadata_v1(
+type_bridge_query_result_page_metadata(
     const type_bridge_query_result_t *result,
     type_bridge_query_page_metadata_v1_t *out_metadata,
     type_bridge_execution_diagnostics_t **out_diagnostics);
@@ -2662,7 +2662,7 @@ type_bridge_query_result_reduction_group_field_at(
     type_bridge_projected_value_t **out_value,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_query_result_reduction_value_metadata_v1(
+type_bridge_query_result_reduction_value_metadata(
     const type_bridge_query_result_t *result,
     type_bridge_query_result_kind_t expected_result_kind, size_t row_index,
     size_t value_index,

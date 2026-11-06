@@ -793,7 +793,7 @@ static type_bridge_status_t binding_op(size_t op, const type_bridge_schema_packa
     plan_args_t args = {"batch-", NULL, 0u, BATCH_ROWS};
     CHECK(build(package, insert_items, &args, &plan));
   } else {
-    CHECK(type_bridge_plan_v3_canonical_bytes(rows, buffer, capacity, &length));
+    CHECK(type_bridge_plan_canonical_bytes(rows, buffer, capacity, &length));
   }
 done:
   type_bridge_plan_free(&plan);
@@ -813,7 +813,7 @@ static type_bridge_status_t run_binding(const config_t *config,
   if (samples == NULL) fail("out of memory");
   CHECK(build(package, insert_items, &args, &rows));
   /* A null buffer only reports the canonical length. */
-  status = type_bridge_plan_v3_canonical_bytes(rows, NULL, 0u, &capacity);
+  status = type_bridge_plan_canonical_bytes(rows, NULL, 0u, &capacity);
   if (status != TYPE_BRIDGE_STATUS_RESOURCE_LIMIT && status != TYPE_BRIDGE_STATUS_OK) goto done;
   buffer = malloc(capacity);
   if (buffer == NULL) fail("out of memory");

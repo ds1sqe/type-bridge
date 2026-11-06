@@ -449,13 +449,13 @@ fn render_manager_definitions(
             "database",
             "type_bridge_database_t",
             "TYPE_BRIDGE_GENERATED_INPUT_DATABASE",
-            "type_bridge_database_query_execute_v1",
+            "type_bridge_database_query_execute",
         ),
         (
             "read_transaction",
             "type_bridge_read_transaction_t",
             "TYPE_BRIDGE_GENERATED_INPUT_READ_TRANSACTION",
-            "type_bridge_read_transaction_query_execute_v1",
+            "type_bridge_read_transaction_query_execute",
         ),
     ] {
         render_terminal_definitions(
@@ -703,7 +703,7 @@ fn render_terminal_definitions(
                    out_diagnostics == NULL || binding == NULL || root_query == NULL ||\n\
                    filter.query == NULL) {{ return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; }}\n\
                descriptor.root = (const type_bridge_query_binding_t *)binding;\n\
-               status = type_bridge_query_terminal_open_v1(\n\
+               status = type_bridge_query_terminal_open(\n\
                    (const type_bridge_query_t *)filter.query, &descriptor,\n\
                    &terminal, &diagnostics);\n\
                if (status != TYPE_BRIDGE_STATUS_OK) {{ goto cleanup; }}\n\

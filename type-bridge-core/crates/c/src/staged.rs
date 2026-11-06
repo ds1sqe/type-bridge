@@ -373,7 +373,7 @@ unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
 
 /// Decode canonical `query-plan/v3` bytes under declared schema bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_plan_v3_decode(
+pub unsafe extern "C" fn type_bridge_plan_decode(
     schema: *const u8,
     schema_len: usize,
     plan: *const u8,
@@ -482,7 +482,7 @@ pub unsafe extern "C" fn type_bridge_plan_explain(
 /// Write the canonical bytes of `plan` into a caller buffer. With a null or
 /// short buffer, only the required length is reported.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_plan_v3_canonical_bytes(
+pub unsafe extern "C" fn type_bridge_plan_canonical_bytes(
     plan: *const TypeBridgePlan,
     buffer: *mut u8,
     capacity: usize,
@@ -562,7 +562,7 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
 ) -> TypeBridgeStatus {
     // SAFETY: forwards the same handle/output contracts with default options.
     unsafe {
-        type_bridge_database_transaction_with_options_v1(
+        type_bridge_database_transaction_with_options(
             database,
             kind,
             ptr::null(),
@@ -575,7 +575,7 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
 /// Open a deferred transaction with an explicit timeout and phase collection policy.
 /// A null options pointer preserves the default 60000 ms and collection off.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_transaction_with_options_v1(
+pub unsafe extern "C" fn type_bridge_database_transaction_with_options(
     database: *const TypeBridgeDatabase,
     kind: u32,
     options: *const TypeBridgeStagedTransactionOptionsV1,
@@ -647,7 +647,7 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
 ) -> TypeBridgeStatus {
     // SAFETY: forwards the same handle/output contracts with default options.
     unsafe {
-        type_bridge_proxy_connection_transaction_with_options_v1(
+        type_bridge_proxy_connection_transaction_with_options(
             proxy,
             kind,
             ptr::null(),
@@ -660,7 +660,7 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
 /// Open a deferred transaction with an explicit timeout and phase collection policy.
 /// A null options pointer preserves the default 60000 ms and collection off.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_proxy_connection_transaction_with_options_v1(
+pub unsafe extern "C" fn type_bridge_proxy_connection_transaction_with_options(
     proxy: *const TypeBridgeProxyConnection,
     kind: u32,
     options: *const TypeBridgeStagedTransactionOptionsV1,
@@ -1103,7 +1103,7 @@ mod tests {
         let mut handle = ptr::dangling_mut();
         let mut diagnostics = ptr::dangling_mut();
         let status = unsafe {
-            type_bridge_plan_v3_decode(
+            type_bridge_plan_decode(
                 SCHEMA.as_ptr(),
                 SCHEMA.len(),
                 plan.as_ptr(),
@@ -1339,19 +1339,14 @@ mod tests {
         let mut plan = decode(PURCHASE);
         let mut length = usize::MAX;
         assert_eq!(
-            unsafe { type_bridge_plan_v3_canonical_bytes(plan, ptr::null_mut(), 0, &mut length) },
+            unsafe { type_bridge_plan_canonical_bytes(plan, ptr::null_mut(), 0, &mut length) },
             TypeBridgeStatus::ResourceLimit
         );
         assert_eq!(length, PURCHASE.len());
         let mut short = vec![0xa5; PURCHASE.len() - 1];
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_canonical_bytes(
-                    plan,
-                    short.as_mut_ptr(),
-                    short.len(),
-                    &mut length,
-                )
+                type_bridge_plan_canonical_bytes(plan, short.as_mut_ptr(), short.len(), &mut length)
             },
             TypeBridgeStatus::ResourceLimit
         );
@@ -1363,27 +1358,20 @@ mod tests {
         let mut exact = vec![0; PURCHASE.len()];
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_canonical_bytes(
-                    plan,
-                    exact.as_mut_ptr(),
-                    exact.len(),
-                    &mut length,
-                )
+                type_bridge_plan_canonical_bytes(plan, exact.as_mut_ptr(), exact.len(), &mut length)
             },
             TypeBridgeStatus::Ok
         );
         assert_eq!(exact, PURCHASE, "the contract fixture bytes round-trip");
         // Null handles and outputs.
         assert_eq!(
-            unsafe {
-                type_bridge_plan_v3_canonical_bytes(plan, ptr::null_mut(), 0, ptr::null_mut())
-            },
+            unsafe { type_bridge_plan_canonical_bytes(plan, ptr::null_mut(), 0, ptr::null_mut()) },
             TypeBridgeStatus::InvalidArgument
         );
         length = usize::MAX;
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_canonical_bytes(ptr::null(), ptr::null_mut(), 0, &mut length)
+                type_bridge_plan_canonical_bytes(ptr::null(), ptr::null_mut(), 0, &mut length)
             },
             TypeBridgeStatus::InvalidArgument
         );
@@ -1400,7 +1388,7 @@ mod tests {
             let mut handle = ptr::dangling_mut();
             let mut diagnostics = ptr::dangling_mut();
             let status = unsafe {
-                type_bridge_plan_v3_decode(
+                type_bridge_plan_decode(
                     schema.as_ptr(),
                     schema.len(),
                     bytes.as_ptr(),
@@ -1422,7 +1410,7 @@ mod tests {
         let mut diagnostics = ptr::dangling_mut();
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_decode(
+                type_bridge_plan_decode(
                     ptr::null(),
                     1,
                     PURCHASE.as_ptr(),
@@ -1448,7 +1436,7 @@ mod tests {
         let sentinel = shared;
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_decode(
+                type_bridge_plan_decode(
                     SCHEMA.as_ptr(),
                     SCHEMA.len(),
                     PURCHASE.as_ptr(),
@@ -1465,7 +1453,7 @@ mod tests {
         let inside = unsafe { input.as_mut_ptr().add(3) }.cast::<*mut TypeBridgePlan>();
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_decode(
+                type_bridge_plan_decode(
                     SCHEMA.as_ptr(),
                     SCHEMA.len(),
                     input.as_ptr(),
@@ -1486,7 +1474,7 @@ mod tests {
             unsafe { slots.as_mut_ptr().add(1 + size_of::<usize>()) }.cast::<Diagnostics>();
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_decode(
+                type_bridge_plan_decode(
                     SCHEMA.as_ptr(),
                     SCHEMA.len(),
                     PURCHASE.as_ptr(),
@@ -1506,12 +1494,7 @@ mod tests {
         let out_len = storage.as_mut_ptr().cast::<usize>();
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_canonical_bytes(
-                    plan,
-                    storage.as_mut_ptr(),
-                    storage.len(),
-                    out_len,
-                )
+                type_bridge_plan_canonical_bytes(plan, storage.as_mut_ptr(), storage.len(), out_len)
             },
             TypeBridgeStatus::InvalidArgument
         );
@@ -1519,13 +1502,13 @@ mod tests {
         let own = unsafe { &*plan }.source.canonical.as_ptr().cast_mut();
         let mut length = usize::MAX;
         assert_eq!(
-            unsafe { type_bridge_plan_v3_canonical_bytes(plan, own, PURCHASE.len(), &mut length) },
+            unsafe { type_bridge_plan_canonical_bytes(plan, own, PURCHASE.len(), &mut length) },
             TypeBridgeStatus::InvalidArgument
         );
         assert_eq!(length, usize::MAX);
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_canonical_bytes(
+                type_bridge_plan_canonical_bytes(
                     plan,
                     plan.cast(),
                     size_of::<TypeBridgePlan>(),
@@ -2414,7 +2397,7 @@ mod policy_tests {
         let alias = (&mut value as *mut TypeBridgeStagedTransactionOptionsV1).cast();
         // SAFETY: the call must refuse the output overlapping the complete options.
         let status = unsafe {
-            type_bridge_database_transaction_with_options_v1(
+            type_bridge_database_transaction_with_options(
                 ptr::null(),
                 TYPE_BRIDGE_TRANSACTION_WRITE,
                 &value,

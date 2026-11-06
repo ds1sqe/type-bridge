@@ -173,7 +173,7 @@ fn render_header(
     let opener = generated_symbol(prefix, "plan_open")?;
     let _ = writeln!(
         output,
-        "type_bridge_status_t TYPE_BRIDGE_CALL {opener}(const type_bridge_plan_options_v1_t *options, type_bridge_plan_builder_t **out_builder, type_bridge_execution_diagnostics_t **out_diagnostics);"
+        "type_bridge_status_t TYPE_BRIDGE_CALL {opener}(const type_bridge_plan_options_t *options, type_bridge_plan_builder_t **out_builder, type_bridge_execution_diagnostics_t **out_diagnostics);"
     );
     if ordered {
         let _ = write!(

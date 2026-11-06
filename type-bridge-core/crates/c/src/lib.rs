@@ -123,5 +123,5 @@ pub use plan_builder::bulk::{
     TypeBridgePlanBulkLiteral,
 };
 
-pub use plan_builder::context::{TYPE_BRIDGE_PLAN_OPTIONS_V1, TypeBridgePlanOptionsV1};
+pub use plan_builder::context::{TYPE_BRIDGE_PLAN_OPTIONS_VERSION, TypeBridgePlanOptionsV1};
 pub use query::TypeBridgeQueryLimitOverrideV1;

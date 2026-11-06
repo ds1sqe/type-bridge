@@ -35,14 +35,14 @@ int main(int argc, char **argv) {
     uint8_t *schema = read_bytes(argv[6], &schema_len), *bytes = read_bytes(argv[7], &plan_len);
     CHECK(schema != NULL && bytes != NULL);
     type_bridge_plan_t *plan = NULL;
-    CHECK(type_bridge_plan_v3_decode(schema, schema_len, bytes, plan_len, &plan, &errors) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(type_bridge_plan_decode(schema, schema_len, bytes, plan_len, &plan, &errors) == TYPE_BRIDGE_STATUS_OK);
     free(schema); free(bytes);
     type_bridge_runtime_config_v1_t config = {sizeof(config), TYPE_BRIDGE_RUNTIME_CONFIG_VERSION, TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN, 0u, {0u,0u,0u,0u}};
     type_bridge_runtime_t *runtime = NULL;
     CHECK(type_bridge_runtime_open_v1(&config, &runtime, &errors) == TYPE_BRIDGE_STATUS_OK);
     for (int attempt = 0; attempt < 2; ++attempt) {
         const int64_t timeout = attempt == 0 ? 1000 : 0;
-        type_bridge_staged_transaction_options_v1_t options = {sizeof(options), TYPE_BRIDGE_STAGED_TRANSACTION_OPTIONS_V1, timeout, 1};
+        type_bridge_staged_transaction_options_t options = {sizeof(options), TYPE_BRIDGE_STAGED_TRANSACTION_OPTIONS_VERSION, timeout, 1};
         type_bridge_database_t *database = NULL;
         type_bridge_proxy_connection_t *proxy = NULL;
         type_bridge_staged_transaction_t *tx = NULL;
@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
             connection.struct_size = sizeof(connection); connection.version = TYPE_BRIDGE_PROXY_CONNECTION_OPTIONS_VERSION;
             connection.endpoint = view(argv[4]); connection.tls_mode = TYPE_BRIDGE_TLS_DISABLED; connection.answer_limits = &limits;
             CHECK(type_bridge_proxy_connection_open_v1(package, &connection, NULL, &proxy, &errors) == TYPE_BRIDGE_STATUS_OK);
-            CHECK(type_bridge_proxy_connection_transaction_with_options_v1(proxy, TYPE_BRIDGE_TRANSACTION_WRITE, &options, &tx, &errors) == TYPE_BRIDGE_STATUS_OK);
+            CHECK(type_bridge_proxy_connection_transaction_with_options(proxy, TYPE_BRIDGE_TRANSACTION_WRITE, &options, &tx, &errors) == TYPE_BRIDGE_STATUS_OK);
         } else {
             type_bridge_database_config_v1_t connection = {0};
             connection.struct_size = sizeof(connection); connection.version = TYPE_BRIDGE_DATABASE_CONFIG_VERSION;
@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
             connection.username = view("admin"); connection.password = view("password");
             connection.http_port = 43131; connection.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
             CHECK(type_bridge_database_open_v1(runtime, package, &connection, NULL, &database, &errors) == TYPE_BRIDGE_STATUS_OK);
-            CHECK(type_bridge_database_transaction_with_options_v1(database, TYPE_BRIDGE_TRANSACTION_WRITE, &options, &tx, &errors) == TYPE_BRIDGE_STATUS_OK);
+            CHECK(type_bridge_database_transaction_with_options(database, TYPE_BRIDGE_TRANSACTION_WRITE, &options, &tx, &errors) == TYPE_BRIDGE_STATUS_OK);
         }
         type_bridge_pending_t *pending = NULL;
         CHECK(type_bridge_staged_transaction_stage(tx, plan, &pending, &errors) == TYPE_BRIDGE_STATUS_OK);

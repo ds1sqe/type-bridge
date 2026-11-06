@@ -13,7 +13,7 @@ pub(super) struct ModelRegistration {
 }
 
 /// Version of the generated recording options layout.
-pub const TYPE_BRIDGE_PLAN_OPTIONS_V1: u32 = 1;
+pub const TYPE_BRIDGE_PLAN_OPTIONS_VERSION: u32 = 1;
 
 /// Optional named limit overrides, captured when a generated recording opens.
 #[repr(C)]
@@ -21,7 +21,7 @@ pub const TYPE_BRIDGE_PLAN_OPTIONS_V1: u32 = 1;
 pub struct TypeBridgePlanOptionsV1 {
     /// Exact size of this structure.
     pub struct_size: u32,
-    /// TYPE_BRIDGE_PLAN_OPTIONS_V1.
+    /// TYPE_BRIDGE_PLAN_OPTIONS_VERSION.
     pub version: u32,
     /// Borrowed overrides, read only for the open call.
     pub query_limits: *const TypeBridgeQueryLimitOverrideV1,
@@ -102,7 +102,7 @@ pub unsafe extern "C" fn type_bridge_plan_builder_new_with_package(
             // SAFETY: options are caller-readable and were fenced above.
             let options = unsafe { options.read_unaligned() };
             if options.struct_size as usize != size_of::<TypeBridgePlanOptionsV1>()
-                || options.version != TYPE_BRIDGE_PLAN_OPTIONS_V1
+                || options.version != TYPE_BRIDGE_PLAN_OPTIONS_VERSION
                 || options.reserved != [0; 4]
             {
                 return TypeBridgeStatus::InvalidArgument;

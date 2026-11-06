@@ -499,7 +499,7 @@ type_bridge_status_t type_bridge_query_where(
   return TYPE_BRIDGE_STATUS_PANIC;
 }
 
-type_bridge_status_t type_bridge_query_terminal_open_v1(
+type_bridge_status_t type_bridge_query_terminal_open(
     const type_bridge_query_t *query,
     const type_bridge_query_terminal_descriptor_v1_t *descriptor,
     type_bridge_query_terminal_t **out_terminal,
@@ -519,7 +519,7 @@ type_bridge_status_t type_bridge_query_terminal_close(
   return TYPE_BRIDGE_STATUS_PANIC;
 }
 
-type_bridge_status_t type_bridge_database_query_execute_v1(
+type_bridge_status_t type_bridge_database_query_execute(
     const type_bridge_database_t *database,
     const type_bridge_query_terminal_t *terminal,
     type_bridge_query_terminal_kind_t expected_terminal_kind,

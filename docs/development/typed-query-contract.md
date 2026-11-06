@@ -995,7 +995,7 @@ and `collect_phase_timestamps`. Node's `Database.stagedTransaction(kind, options
 accepts `timeoutMilliseconds` (a signed bigint) and `collectPhaseTimestamps`.
 Omitting these options preserves 60000 ms and collection off; zero or a negative
 timeout disables the deadline. C's `*_transaction_with_options_v1` factories
-accept `type_bridge_staged_transaction_options_v1_t`; a null options pointer
+accept `type_bridge_staged_transaction_options_t`; a null options pointer
 keeps those defaults. Explicit options require version 1 and the exact struct
 size, a signed timeout, and collection 0 or 1.
 This is a diagnostic option, not another resource ceiling or deadline.

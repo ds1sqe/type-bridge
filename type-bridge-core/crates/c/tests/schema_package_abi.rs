@@ -6976,7 +6976,7 @@ static int decode(const bytes_t *schema, const char *name,
   if (!read_fixture(name, &source)) {
     return 0;
   }
-  if (type_bridge_plan_v3_decode(schema->data, schema->length, source.data,
+  if (type_bridge_plan_decode(schema->data, schema->length, source.data,
                                  source.length, plan, &diagnostics) !=
           TYPE_BRIDGE_STATUS_OK ||
       *plan == NULL || diagnostics != NULL) {
@@ -6986,7 +6986,7 @@ static int decode(const bytes_t *schema, const char *name,
   /* The decoded plan reproduces the contract bytes exactly. */
   echo = (uint8_t *)malloc(source.length);
   same = echo != NULL &&
-         type_bridge_plan_v3_canonical_bytes(*plan, echo, source.length,
+         type_bridge_plan_canonical_bytes(*plan, echo, source.length,
                                              &length) == TYPE_BRIDGE_STATUS_OK &&
          length == source.length && memcmp(echo, source.data, length) == 0;
   free(echo);

@@ -295,7 +295,7 @@ void type_bridge_query_diagnostic_function_probe(void) {
       const type_bridge_query_execution_limits_v1_t *,
       const type_bridge_cancellation_t *, type_bridge_query_result_t **,
       type_bridge_execution_diagnostics_t **) =
-      &type_bridge_database_query_execute_v1;
+      &type_bridge_database_query_execute;
   (void)count;
   (void)get;
   (void)path_get;
@@ -384,12 +384,12 @@ int main(void) {
   PRINT_VALUE(offsetof(type_bridge_execution_phase_view_v1_t, reserved0));
   PRINT_VALUE(offsetof(type_bridge_execution_phase_view_v1_t, phase));
   PRINT_VALUE(offsetof(type_bridge_execution_phase_view_v1_t, failing_phase));
-  PRINT_VALUE(sizeof(type_bridge_staged_transaction_options_v1_t));
-  PRINT_VALUE(TYPE_BRIDGE_ALIGNOF(type_bridge_staged_transaction_options_v1_t));
-  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_v1_t, struct_size));
-  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_v1_t, version));
-  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_v1_t, timeout_milliseconds));
-  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_v1_t, collect_phase_timestamps));
+  PRINT_VALUE(sizeof(type_bridge_staged_transaction_options_t));
+  PRINT_VALUE(TYPE_BRIDGE_ALIGNOF(type_bridge_staged_transaction_options_t));
+  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_t, struct_size));
+  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_t, version));
+  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_t, timeout_milliseconds));
+  PRINT_VALUE(offsetof(type_bridge_staged_transaction_options_t, collect_phase_timestamps));
   PRINT_VALUE(sizeof(type_bridge_query_execution_limits_v1_t));
   PRINT_VALUE(TYPE_BRIDGE_ALIGNOF(type_bridge_query_execution_limits_v1_t));
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, struct_size));

@@ -285,7 +285,7 @@ void type_bridge_query_function_probe(void) {
       const type_bridge_query_function_arguments_graph_v1_t *,
       type_bridge_query_function_call_t **,
       type_bridge_execution_diagnostics_t **) =
-      &type_bridge_query_function_call_open_v1;
+      &type_bridge_query_function_call_open;
   type_bridge_status_t (*call_close)(type_bridge_query_function_call_t **) =
       &type_bridge_query_function_call_close;
   type_bridge_status_t (*call_field)(const type_bridge_query_function_call_t *,

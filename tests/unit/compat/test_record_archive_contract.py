@@ -94,7 +94,13 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"
     )
     previous_exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", previous.read_text()))
-    # The current ABI remains additive to the frozen ABI 1.6 header.
+    # ABI 2.0 renames the typed query entry points retained from ABI 1.6.
+    previous_exports = {
+        name.removesuffix("_v1")
+        if name.startswith("type_bridge_query_") or "_query_execute_" in name
+        else name
+        for name in previous_exports
+    }
     builder = {
         f"type_bridge_plan_builder_{name}"
         for name in (
@@ -138,8 +144,8 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         | cursors
         | {
             "type_bridge_write_transaction_rollback_keep",
-            "type_bridge_plan_v3_decode",
-            "type_bridge_plan_v3_canonical_bytes",
+            "type_bridge_plan_decode",
+            "type_bridge_plan_canonical_bytes",
             "type_bridge_plan_explain",
             "type_bridge_plan_free",
             "type_bridge_database_transaction",
@@ -156,8 +162,8 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
             "type_bridge_database_open_with_query_limits_v2",
             "type_bridge_proxy_connection_open_with_query_limits_v1",
             "type_bridge_proxy_connection_close",
-            "type_bridge_proxy_query_execute_v1",
-            "type_bridge_query_session_open_with_limits_v1",
+            "type_bridge_proxy_query_execute",
+            "type_bridge_query_session_open_with_limits",
         }
     )
     assert retained <= exports

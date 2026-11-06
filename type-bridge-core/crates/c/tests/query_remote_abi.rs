@@ -38,7 +38,7 @@ void type_bridge_query_remote_function_probe(void) {
       const type_bridge_query_execution_limits_v1_t *,
       type_bridge_query_remote_context_t **,
       type_bridge_execution_diagnostics_t **) =
-      &type_bridge_query_remote_context_open_v1;
+      &type_bridge_query_remote_context_open;
   type_bridge_status_t (*context_close)(
       type_bridge_query_remote_context_t **) =
       &type_bridge_query_remote_context_close;
@@ -47,7 +47,7 @@ void type_bridge_query_remote_function_probe(void) {
       const type_bridge_query_terminal_t *, type_bridge_query_terminal_kind_t,
       const type_bridge_cancellation_t *, type_bridge_query_remote_pending_t **,
       type_bridge_execution_diagnostics_t **) =
-      &type_bridge_query_remote_prepare_v1;
+      &type_bridge_query_remote_prepare;
   type_bridge_status_t (*request_bytes)(
       const type_bridge_query_remote_pending_t *, type_bridge_byte_view_t *) =
       &type_bridge_query_remote_pending_request_bytes;
@@ -67,7 +67,7 @@ void type_bridge_query_remote_function_probe(void) {
       type_bridge_query_terminal_kind_t,
       const type_bridge_cancellation_t *, type_bridge_byte_view_t,
       type_bridge_query_result_t **, type_bridge_execution_diagnostics_t **) =
-      &type_bridge_query_remote_claim_decode_v1;
+      &type_bridge_query_remote_claim_decode;
   type_bridge_status_t (*claim_close)(type_bridge_query_remote_claim_t **) =
       &type_bridge_query_remote_claim_close;
   (void)context_open;

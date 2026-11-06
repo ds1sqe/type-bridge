@@ -95,13 +95,13 @@ diagnostics:
 
 | Connection | Execute call |
 | --- | --- |
-| `type_bridge_database_t` | `type_bridge_database_query_execute_v1` |
-| `type_bridge_read_transaction_t` | `type_bridge_read_transaction_query_execute_v1` |
-| `type_bridge_proxy_connection_t` | `type_bridge_proxy_query_execute_v1` |
+| `type_bridge_database_t` | `type_bridge_database_query_execute` |
+| `type_bridge_read_transaction_t` | `type_bridge_read_transaction_query_execute` |
+| `type_bridge_proxy_connection_t` | `type_bridge_proxy_query_execute` |
 
 So one program runs unchanged against TypeDB directly or through a
 TypeBridge server; only the connection it opens differs. The proxy
-connection, `type_bridge_query_session_open_with_limits_v1`, and their types
+connection, `type_bridge_query_session_open_with_limits`, and their types
 are ABI 1.7; the ABI 1.6 header of 2.2.6 does not declare them. The proxy connection
 is synchronous and blocks the calling thread:
 
@@ -124,7 +124,7 @@ type_bridge_execution_diagnostics_t *diagnostics = NULL;
 status = type_bridge_proxy_connection_open_v1(
     package, &options, NULL, &proxy, &diagnostics);
 /* ... */
-status = type_bridge_proxy_query_execute_v1(
+status = type_bridge_proxy_query_execute(
     proxy, terminal, kind, NULL, NULL, &result, &diagnostics);
 /* ... */
 type_bridge_proxy_connection_close(&proxy);
@@ -192,11 +192,11 @@ mode.
 A host that owns the route to the server (its own HTTP stack, a message bus,
 or an in-process server) uses the remote context instead of the built-in
 proxy connection. It is the exchange extension point, not a second session:
-`type_bridge_query_remote_context_open_v1` validates the advertisement,
-`type_bridge_query_remote_prepare_v1` returns a pending request whose bytes
+`type_bridge_query_remote_context_open` validates the advertisement,
+`type_bridge_query_remote_prepare` returns a pending request whose bytes
 (`type_bridge_query_remote_pending_request_bytes`) the host sends, and the
 reply goes through the one-shot `type_bridge_query_remote_pending_claim` and
-`type_bridge_query_remote_claim_decode_v1`. Both paths prepare and validate
+`type_bridge_query_remote_claim_decode`. Both paths prepare and validate
 requests through the same Rust proxy connection.
 
 The release evidence covers relocated installation, strict C17/C++17 headers,
@@ -218,7 +218,7 @@ count and read; see [Typed failures](#typed-failures).
 
 ABI 1.7 adds deferred transactions over `query-plan/v3` plans. A plan comes
 from the plan builder or from canonical plan bytes
-(`type_bridge_plan_v3_decode`); C never serializes plans itself. Staging sends
+(`type_bridge_plan_decode`); C never serializes plans itself. Staging sends
 nothing: `type_bridge_staged_transaction_commit` runs every staged plan in one
 provider transaction, and each pending answer is read after the commit.
 

@@ -552,12 +552,12 @@ done:
 static int print_hex(const type_bridge_plan_t *plan) {
   size_t length = 0u, index;
   uint8_t *bytes;
-  if (type_bridge_plan_v3_canonical_bytes(plan, NULL, 0u, &length) !=
+  if (type_bridge_plan_canonical_bytes(plan, NULL, 0u, &length) !=
       TYPE_BRIDGE_STATUS_RESOURCE_LIMIT)
     return 0;
   bytes = (uint8_t *)malloc(length);
   if (bytes == NULL) return 0;
-  if (type_bridge_plan_v3_canonical_bytes(plan, bytes, length, &length) != TYPE_BRIDGE_STATUS_OK) {
+  if (type_bridge_plan_canonical_bytes(plan, bytes, length, &length) != TYPE_BRIDGE_STATUS_OK) {
     free(bytes);
     return 0;
   }

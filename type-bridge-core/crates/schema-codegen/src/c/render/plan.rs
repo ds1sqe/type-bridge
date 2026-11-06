@@ -623,7 +623,7 @@ pub(super) fn render_open(
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let _ = writeln!(output, "type_bridge_status_t TYPE_BRIDGE_CALL {opener}(const type_bridge_plan_options_v1_t *options, type_bridge_plan_builder_t **out, type_bridge_execution_diagnostics_t **out_diagnostics) {{
+    let _ = writeln!(output, "type_bridge_status_t TYPE_BRIDGE_CALL {opener}(const type_bridge_plan_options_t *options, type_bridge_plan_builder_t **out, type_bridge_execution_diagnostics_t **out_diagnostics) {{
         type_bridge_generated_opaque_input_v1_t inputs[1]; size_t count = 0u;
         type_bridge_status_t status; type_bridge_schema_package_t *package = NULL;
         {diagnostics} *package_diagnostics = NULL; type_bridge_plan_builder_t *empty = NULL; type_bridge_execution_diagnostics_t *empty_diagnostics = NULL;

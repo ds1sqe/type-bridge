@@ -69,12 +69,12 @@ static int same_plan(const type_bridge_plan_t *a, const type_bridge_plan_t *b) {
   size_t an = 0u, bn = 0u;
   uint8_t *ab, *bb;
   int equal = 0;
-  if (type_bridge_plan_v3_canonical_bytes(a, NULL, 0u, &an) != TYPE_BRIDGE_STATUS_RESOURCE_LIMIT ||
-      type_bridge_plan_v3_canonical_bytes(b, NULL, 0u, &bn) != TYPE_BRIDGE_STATUS_RESOURCE_LIMIT || an != bn) return 0;
+  if (type_bridge_plan_canonical_bytes(a, NULL, 0u, &an) != TYPE_BRIDGE_STATUS_RESOURCE_LIMIT ||
+      type_bridge_plan_canonical_bytes(b, NULL, 0u, &bn) != TYPE_BRIDGE_STATUS_RESOURCE_LIMIT || an != bn) return 0;
   ab = (uint8_t *)malloc(an); bb = (uint8_t *)malloc(bn);
   if (ab != NULL && bb != NULL &&
-      type_bridge_plan_v3_canonical_bytes(a, ab, an, &an) == TYPE_BRIDGE_STATUS_OK &&
-      type_bridge_plan_v3_canonical_bytes(b, bb, bn, &bn) == TYPE_BRIDGE_STATUS_OK) equal = memcmp(ab, bb, an) == 0;
+      type_bridge_plan_canonical_bytes(a, ab, an, &an) == TYPE_BRIDGE_STATUS_OK &&
+      type_bridge_plan_canonical_bytes(b, bb, bn, &bn) == TYPE_BRIDGE_STATUS_OK) equal = memcmp(ab, bb, an) == 0;
   free(ab); free(bb);
   return equal;
 }

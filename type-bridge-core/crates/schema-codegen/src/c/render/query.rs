@@ -1363,7 +1363,7 @@ fn render_package_definitions(
            const type_bridge_query_limit_override_v1_t *overrides, size_t override_count,\n\
            {session} **out_session,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-           return type_bridge_query_session_open_with_limits_v1(\n\
+           return type_bridge_query_session_open_with_limits(\n\
                package, overrides, override_count,\n\
                (type_bridge_query_session_t **)out_session, out_diagnostics);\n\
          }}\n\n\
@@ -1565,7 +1565,7 @@ fn render_package_definitions(
                  NULL, NULL, 0u, 0u, NULL, 0u, NULL, 0u,\n\
                  {{ 0u, 0u, 0u, 0u }}\n\
                }};\n\
-               return type_bridge_query_terminal_open_v1(\n\
+               return type_bridge_query_terminal_open(\n\
                    root.query, &descriptor,\n\
                    (type_bridge_query_terminal_t **)out_terminal, out_diagnostics);\n\
              }}\n\n",
@@ -1592,17 +1592,17 @@ fn render_package_definitions(
         (
             "database",
             "type_bridge_database_t",
-            "type_bridge_database_query_execute_v1",
+            "type_bridge_database_query_execute",
         ),
         (
             "read_transaction",
             "type_bridge_read_transaction_t",
-            "type_bridge_read_transaction_query_execute_v1",
+            "type_bridge_read_transaction_query_execute",
         ),
         (
             "proxy",
             "type_bridge_proxy_connection_t",
-            "type_bridge_proxy_query_execute_v1",
+            "type_bridge_proxy_query_execute",
         ),
     ] {
         for (kind, terminal, result, terminal_kind) in [
@@ -1682,7 +1682,7 @@ fn render_package_definitions(
            const {page_result} *result,\n\
            type_bridge_query_page_metadata_v1_t *out_metadata,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-           return type_bridge_query_result_page_metadata_v1(\n\
+           return type_bridge_query_result_page_metadata(\n\
                (const type_bridge_query_result_t *)result, out_metadata,\n\
                out_diagnostics);\n\
          }}\n\n\
@@ -1727,7 +1727,7 @@ fn render_remote_definitions(output: &mut String, prefix: &str) -> Result<(), Di
   const type_bridge_query_execution_limits_v1_t *limits,
   {context} **out_context,
   type_bridge_execution_diagnostics_t **out_diagnostics) {{
-  return type_bridge_query_remote_context_open_v1(
+  return type_bridge_query_remote_context_open(
       package, advertisement, limits,
       (type_bridge_query_remote_context_t **)out_context, out_diagnostics);
 }}
@@ -1756,7 +1756,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_remote_context_close(
   const type_bridge_cancellation_t *cancellation,
   {pending} **out_pending,
   type_bridge_execution_diagnostics_t **out_diagnostics) {{
-  return type_bridge_query_remote_prepare_v1(
+  return type_bridge_query_remote_prepare(
       (const type_bridge_query_remote_context_t *)context,
       (const type_bridge_query_terminal_t *)terminal, {terminal_kind},
       cancellation, (type_bridge_query_remote_pending_t **)out_pending,
@@ -1796,7 +1796,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_{family}_remote_claim_decod
   const type_bridge_cancellation_t *cancellation,
   type_bridge_byte_view_t response, {result} **out_result,
   type_bridge_execution_diagnostics_t **out_diagnostics) {{
-  return type_bridge_query_remote_claim_decode_v1(
+  return type_bridge_query_remote_claim_decode(
       (const type_bridge_query_remote_claim_t *)claim, {terminal_kind}, cancellation,
       response, (type_bridge_query_result_t **)out_result, out_diagnostics);
 }}
@@ -1845,7 +1845,7 @@ fn render_model_definitions(
             "type_bridge_status_t TYPE_BRIDGE_CALL {open}(\n\
                const {session} *session, {binding} **out_binding,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-               return type_bridge_query_binding_open_v1(\n\
+               return type_bridge_query_binding_open(\n\
                    (const type_bridge_query_session_t *)session, &{model_token},\n\
                    {mode_constant}, (type_bridge_query_binding_t **)out_binding,\n\
                    out_diagnostics);\n\
@@ -1870,7 +1870,7 @@ fn render_model_definitions(
                const {binding} *binding, type_bridge_byte_view_t iid,\n\
                {predicate} **out_predicate,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-               return type_bridge_query_binding_iid_v1(\n\
+               return type_bridge_query_binding_iid(\n\
                    (const type_bridge_query_binding_t *)binding, &{model_token},\n\
                    {mode_constant}, iid,\n\
                    (type_bridge_query_predicate_t **)out_predicate, out_diagnostics);\n\
@@ -1879,7 +1879,7 @@ fn render_model_definitions(
                const {binding} *binding, const type_bridge_byte_view_t *iids,\n\
                size_t iid_count, {predicate} **out_predicate,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-               return type_bridge_query_binding_iid_in_v1(\n\
+               return type_bridge_query_binding_iid_in(\n\
                    (const type_bridge_query_binding_t *)binding, &{model_token},\n\
                    {mode_constant}, iids, iid_count,\n\
                    (type_bridge_query_predicate_t **)out_predicate, out_diagnostics);\n\
@@ -1920,7 +1920,7 @@ fn render_model_definitions(
                      {{ 0u, 0u, 0u, 0u, 0u, 0u, 0u }},\n\
                      {orders}, {order_count}, {{ 0u, 0u, 0u, 0u }}\n\
                    }};\n\
-                   return type_bridge_query_selection_open_v1(\n\
+                   return type_bridge_query_selection_open(\n\
                        &descriptor, (type_bridge_query_selection_t **)out_selection,\n\
                        out_diagnostics);\n\
                  }}\n\n\
@@ -2008,7 +2008,7 @@ fn render_model_definitions(
                  (const type_bridge_query_field_t *)field, &{token}, direction,\n\
                  missing, 0u, {{ 0u, 0u, 0u, 0u }}\n\
                }};\n\
-               return type_bridge_query_order_open_v1(\n\
+               return type_bridge_query_order_open(\n\
                    &descriptor, (type_bridge_query_order_t **)out_order,\n\
                    out_diagnostics);\n\
              }}\n\n\
@@ -2401,7 +2401,7 @@ fn render_shape_definition(
            descriptor.reserved[1] = 0u;\n\
            descriptor.reserved[2] = 0u;\n\
            descriptor.reserved[3] = 0u;\n\
-           return type_bridge_query_open_v1(\n\
+           return type_bridge_query_open(\n\
                (const type_bridge_query_session_t *)session, &descriptor,\n\
                (type_bridge_query_t **)out_query, out_diagnostics);\n\
          }}\n\n",
@@ -2471,7 +2471,7 @@ fn render_terminal_definition(
              NULL, NULL, 0u, 0u, NULL, 0u, NULL, 0u,\n\
              {{ 0u, 0u, 0u, 0u }}\n\
            }};\n\
-           return type_bridge_query_terminal_open_v1(\n\
+           return type_bridge_query_terminal_open(\n\
                {query_handle}, &descriptor,\n\
                (type_bridge_query_terminal_t **)out_terminal, out_diagnostics);\n\
          }}\n\n",

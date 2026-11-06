@@ -731,7 +731,7 @@ fn render_function_definitions(
              TYPE_BRIDGE_QUERY_DESCRIPTOR_VERSION, arguments, sizeof(*arguments),\n\
              {members_pointer}, {member_count}, {{ 0u, 0u, 0u }}\n\
            }};\n\
-           return type_bridge_query_function_call_open_v1(\n\
+           return type_bridge_query_function_call_open(\n\
                (const type_bridge_query_function_t *)function, &{token}, &graph,\n\
                (type_bridge_query_function_call_t **)out_call, out_diagnostics);\n\
          }}\n\n\

@@ -3604,7 +3604,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_session_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_binding_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_binding_open(
     const type_bridge_query_session_t *session,
     const type_bridge_projected_token_v1_t *model,
     type_bridge_query_match_mode_t mode,
@@ -3732,7 +3732,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_predicate_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_selection_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_selection_open(
     const type_bridge_query_selection_descriptor_v1_t *descriptor,
     type_bridge_query_selection_t **out_selection,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
@@ -3763,7 +3763,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_selection_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_open(
     const type_bridge_query_session_t *session,
     const type_bridge_query_descriptor_v1_t *descriptor,
     type_bridge_query_t **out_query,
@@ -3837,7 +3837,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_terminal_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_terminal_open(
     const type_bridge_query_t *query,
     const type_bridge_query_terminal_descriptor_v1_t *descriptor,
     type_bridge_query_terminal_t **out_terminal,
@@ -4265,7 +4265,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_session_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_binding_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_binding_open(
     const type_bridge_query_session_t *session,
     const type_bridge_projected_token_v1_t *model,
     type_bridge_query_match_mode_t mode,
@@ -4372,7 +4372,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_function_value_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_function_call_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_function_call_open(
     const type_bridge_query_function_t *function,
     const type_bridge_projected_token_v1_t *expected_function,
     const type_bridge_query_function_arguments_graph_v1_t *graph,

@@ -460,16 +460,16 @@ static int check_manager_terminal_twins(
   descriptor.root = root.handle;
   descriptor.expected_root_model = root.expected_model;
   descriptor.expected_root_mode = root.expected_mode;
-  CHECK(type_bridge_query_terminal_open_v1(
+  CHECK(type_bridge_query_terminal_open(
             (const type_bridge_query_t *)query, &descriptor, &terminal,
             diagnostics) == TYPE_BRIDGE_STATUS_OK);
   for (target = 0u; target < 2u; ++target) {
     type_bridge_query_result_t *result = NULL;
     const long offset = target == 1u ? manager_trace_offset() : -1;
     CHECK((target == 0u
-        ? type_bridge_database_query_execute_v1(database, terminal, kind,
+        ? type_bridge_database_query_execute(database, terminal, kind,
               NULL, NULL, &result, diagnostics)
-        : type_bridge_proxy_query_execute_v1(proxy, terminal, kind,
+        : type_bridge_proxy_query_execute(proxy, terminal, kind,
               NULL, NULL, &result, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_manager_trace(offset) == 0);
     if (kind == TYPE_BRIDGE_QUERY_TERMINAL_COUNT) {

@@ -182,7 +182,7 @@ unsafe extern "C" {
     fn type_bridge_execution_diagnostics_close(
         diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
-    fn type_bridge_plan_v3_canonical_bytes(
+    fn type_bridge_plan_canonical_bytes(
         plan: *const Plan,
         buffer: *mut u8,
         capacity: usize,
@@ -480,11 +480,11 @@ impl B {
         assert!(diagnostics.is_null());
         let mut length = 0;
         // SAFETY: a live plan; a length query writes no bytes.
-        unsafe { type_bridge_plan_v3_canonical_bytes(plan, ptr::null_mut(), 0, &mut length) };
+        unsafe { type_bridge_plan_canonical_bytes(plan, ptr::null_mut(), 0, &mut length) };
         let mut bytes = vec![0; length];
         // SAFETY: the buffer holds `length` writable bytes.
         let status = unsafe {
-            type_bridge_plan_v3_canonical_bytes(plan, bytes.as_mut_ptr(), length, &mut length)
+            type_bridge_plan_canonical_bytes(plan, bytes.as_mut_ptr(), length, &mut length)
         };
         assert_eq!(status, TypeBridgeStatus::Ok);
         // SAFETY: the plan handle is owned here.
@@ -898,9 +898,9 @@ int main(void) {{
   size_t length = 0u, index;
   if ({PREFIX}_schema_package_open(&package, &package_diagnostics) != TYPE_BRIDGE_STATUS_OK) return 2;
   if (purchase_build(package, "O1", "I1", "A1", &plan, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 3;
-  (void)type_bridge_plan_v3_canonical_bytes(plan, NULL, 0u, &length);
+  (void)type_bridge_plan_canonical_bytes(plan, NULL, 0u, &length);
   bytes = (uint8_t *)malloc(length);
-  if (bytes == NULL || type_bridge_plan_v3_canonical_bytes(plan, bytes, length, &length) != TYPE_BRIDGE_STATUS_OK) return 4;
+  if (bytes == NULL || type_bridge_plan_canonical_bytes(plan, bytes, length, &length) != TYPE_BRIDGE_STATUS_OK) return 4;
   for (index = 0u; index < length; ++index) putchar(bytes[index]);
   free(bytes);
   type_bridge_plan_free(&plan);
@@ -1824,9 +1824,9 @@ int main(int argc, char **argv) {
   }
 emit_plan:
   OK(type_bridge_plan_builder_build(p, package, &plan, &diagnostics));
-  if (type_bridge_plan_v3_canonical_bytes(plan, NULL, 0u, &length) != TYPE_BRIDGE_STATUS_RESOURCE_LIMIT || length == 0u) return 4;
+  if (type_bridge_plan_canonical_bytes(plan, NULL, 0u, &length) != TYPE_BRIDGE_STATUS_RESOURCE_LIMIT || length == 0u) return 4;
   bytes = (uint8_t *)malloc(length); if (bytes == NULL) return 3;
-  OK(type_bridge_plan_v3_canonical_bytes(plan, bytes, length, &length));
+  OK(type_bridge_plan_canonical_bytes(plan, bytes, length, &length));
   for (index = 0; index < length; ++index) printf("%02x", bytes[index]);
   free(bytes); type_bridge_plan_free(&plan); type_bridge_plan_builder_free(&p);
   OK(type_bridge_schema_package_close(&package)); return 0;
@@ -2362,9 +2362,9 @@ int main(int argc, char **argv) {
     if (mode == 4 || mode == 6 || mode == 7) { OK(type_bridge_plan_builder_count(p)); }
   }
   OK(type_bridge_plan_builder_build(p, package, &plan, &diagnostics));
-  if (type_bridge_plan_v3_canonical_bytes(plan, NULL, 0u, &length) != TYPE_BRIDGE_STATUS_RESOURCE_LIMIT || length == 0u) return 7;
+  if (type_bridge_plan_canonical_bytes(plan, NULL, 0u, &length) != TYPE_BRIDGE_STATUS_RESOURCE_LIMIT || length == 0u) return 7;
   bytes = (uint8_t *)malloc(length); if (bytes == NULL) return 8;
-  OK(type_bridge_plan_v3_canonical_bytes(plan, bytes, length, &length));
+  OK(type_bridge_plan_canonical_bytes(plan, bytes, length, &length));
   for (index = 0; index < length; ++index) printf("%02x", bytes[index]);
   free(bytes); type_bridge_plan_free(&plan); type_bridge_plan_builder_free(&p); OK(type_bridge_schema_package_close(&package)); return 0;
 }
