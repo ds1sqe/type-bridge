@@ -537,7 +537,7 @@ async fn native_typed_read_stacks_match_live_rows_pages_counts_and_subtype_roles
             let result = stack.resolve(&models, &answers, policy).unwrap();
             assert_eq!(result.model_rows().len(), expected);
             assert_eq!(result.validation_count(), stack.plans().len());
-            let type_bridge_contract::query_remote::StagedAnswer::Rows {rows} = result.selection().to_staged_v3(stack.selection_plan()).unwrap() else { panic!("generic selection rows"); };
+            let type_bridge_contract::query_remote::StagedAnswer::Rows {rows} = result.selection().to_staged(stack.selection_plan()).unwrap() else { panic!("generic selection rows"); };
             assert!(rows.iter().all(|row| row.iter().any(|value| matches!(value,type_bridge_contract::query_remote::RemoteValue::Value {value:type_bridge_contract::value::CanonicalValue::Long(7)}))));
             println!("GENERIC_NATIVE_READ_OK given={given} models={} rows={expected} plans={}",slots.len(),stack.plans().len());
         }

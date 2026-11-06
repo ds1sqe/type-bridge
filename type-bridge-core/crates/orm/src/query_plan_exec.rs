@@ -104,7 +104,7 @@ impl PlanAnswer {
     ///
     /// Rows carry one provider concept per output binding, keyed by the
     /// binding's variable. Fetch scalars use the validated schema domains.
-    pub fn to_staged_v3(&self, plan: &QueryPlan) -> Result<StagedAnswer, Diagnostic> {
+    pub fn to_staged(&self, plan: &QueryPlan) -> Result<StagedAnswer, Diagnostic> {
         Ok(match self {
             Self::Count(value) => StagedAnswer::Count { value: *value },
             Self::Exists(value) => StagedAnswer::Exists { value: *value },
@@ -145,12 +145,12 @@ impl PlanAnswer {
     /// Resolve one answer of a verified staged V3 reply. Rows become
     /// objects keyed by the projected variable, holding the typed remote
     /// value; fetched documents retain their validated scalar domains.
-    pub fn from_staged_v3(answer: &StagedAnswer, plan: &QueryPlan) -> Result<Self, Diagnostic> {
+    pub fn from_staged(answer: &StagedAnswer, plan: &QueryPlan) -> Result<Self, Diagnostic> {
         answer.validate_for(plan)?;
-        Self::from_verified_staged_v3(answer, plan)
+        Self::from_verified_staged(answer, plan)
     }
 
-    pub(crate) fn from_verified_staged_v3(
+    pub(crate) fn from_verified_staged(
         answer: &StagedAnswer,
         plan: &QueryPlan,
     ) -> Result<Self, Diagnostic> {
@@ -497,7 +497,7 @@ pub(crate) fn execute_plan_stack_counted<const ALLOW_WRITES: bool>(
                 resolve_plan_with_wire(plan.as_ref(), result).map_err(plan_diagnostic_error)?;
             semantic.accept(&wire)?;
             answers.push(
-                PlanAnswer::from_verified_staged_v3(&wire, plan.as_ref())
+                PlanAnswer::from_verified_staged(&wire, plan.as_ref())
                     .map_err(plan_diagnostic_error)?,
             );
             if retain_wire {
@@ -1306,7 +1306,7 @@ pub(crate) fn resolve_plan_with_wire(
             .validate_standalone_entity_row_count(u64::try_from(rows.len()).unwrap_or(u64::MAX))?,
         _ => {}
     }
-    let wire = answer.to_staged_v3(plan)?;
+    let wire = answer.to_staged(plan)?;
     wire.validate_for(plan)?;
     Ok(ResolvedPlanAnswer {
         answer,
@@ -2249,8 +2249,7 @@ mod tests {
             .collect(),
         );
         let direct = PlanAnswer::Rows(vec![row]);
-        let proxy =
-            PlanAnswer::from_staged_v3(&direct.to_staged_v3(&plan).unwrap(), &plan).unwrap();
+        let proxy = PlanAnswer::from_staged(&direct.to_staged(&plan).unwrap(), &plan).unwrap();
         let expected = vec![vec![CanonicalValue::Long(7)]];
         assert_eq!(direct.scalar_rows(&plan).unwrap(), expected);
         assert_eq!(proxy.scalar_rows(&plan).unwrap(), expected);

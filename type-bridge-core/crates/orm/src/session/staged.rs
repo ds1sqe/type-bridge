@@ -865,7 +865,7 @@ impl StagedProgram for MatchProgram {
         let answers = answers
             .iter()
             .zip(&stack.plans)
-            .map(|(answer, plan)| PlanAnswer::from_staged_v3(answer, plan))
+            .map(|(answer, plan)| PlanAnswer::from_staged(answer, plan))
             .collect::<Result<Vec<_>, _>>()
             .map_err(plan_answer_error)?;
         self.answer = Some(
@@ -2534,7 +2534,7 @@ impl Transaction {
                                     bound
                                         .and_then(|()| plan.plan())
                                         .and_then(|plan| {
-                                            PlanAnswer::from_verified_staged_v3(&answers[0], plan)
+                                            PlanAnswer::from_verified_staged(&answers[0], plan)
                                         })
                                         .map(|answer| Resolved::Plan {
                                             answer: Arc::new(answer),
@@ -2818,7 +2818,7 @@ mod tests {
                             .iter()
                             .map(|entry| if entry.plan().fetch_document_shape().is_some() {
                                 PlanAnswer::Documents(vec![serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{}})])
-                                    .to_staged_v3(entry.plan()).unwrap()
+                                    .to_staged(entry.plan()).unwrap()
                             } else { StagedAnswer::Rows {
                                 rows: vec![vec![
                                     type_bridge_contract::query_remote::RemoteValue::Value {

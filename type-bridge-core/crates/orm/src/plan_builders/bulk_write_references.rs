@@ -1248,7 +1248,7 @@ mod tests {
                 });
                 answers.push((ordinal, iid));
             }
-            let answer = PlanAnswer::from_staged_v3(
+            let answer = PlanAnswer::from_staged(
                 &StagedAnswer::Rows { rows: vec![cells] },
                 step.plan.local(),
             )
@@ -1291,7 +1291,7 @@ mod tests {
         );
         let lookup = program.next().unwrap().unwrap();
         let model = TypeId::new(TypeKind::Relation, "r").unwrap();
-        let answer = PlanAnswer::from_staged_v3(
+        let answer = PlanAnswer::from_staged(
             &StagedAnswer::Rows {
                 rows: vec![vec![
                     RemoteValue::Value {
@@ -1321,7 +1321,7 @@ mod tests {
             snapshot[&0][&RoleId::new("r", "prior").unwrap()],
             vec!["0x02".to_owned()]
         );
-        let answer = PlanAnswer::from_staged_v3(
+        let answer = PlanAnswer::from_staged(
             &StagedAnswer::Rows {
                 rows: vec![vec![
                     RemoteValue::Value {

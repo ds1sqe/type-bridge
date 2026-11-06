@@ -273,13 +273,7 @@ async fn staged_purchase_matches_direct_transaction_answers_and_state() {
         .expect("stage");
     tx.commit().await.expect("commit");
     let first = race::purchase_template();
-    direct_answers.push(
-        bought
-            .get()
-            .expect("answer")
-            .to_staged_v3(&first)
-            .expect("v3"),
-    );
+    direct_answers.push(bought.get().expect("answer").to_staged(&first).expect("v3"));
     let refused = tx
         .stage_plan(&race::purchase("O2", "I1", "A1"))
         .expect("stage");
@@ -292,17 +286,11 @@ async fn staged_purchase_matches_direct_transaction_answers_and_state() {
         refused
             .get()
             .expect("answer")
-            .to_staged_v3(&first)
+            .to_staged(&first)
             .expect("v3"),
     );
     for (answer, plan) in pending.iter().zip(&reads) {
-        direct_answers.push(
-            answer
-                .get()
-                .expect("answer")
-                .to_staged_v3(plan)
-                .expect("v3"),
-        );
+        direct_answers.push(answer.get().expect("answer").to_staged(plan).expect("v3"));
     }
 
     let mut proxy_answers: Vec<StagedAnswer> = Vec::new();
@@ -1180,7 +1168,7 @@ async fn staged_fetch_documents_equal_direct_answers_with_role_evidence() {
     for plan in [race::touch_fetch(), race::purchase_fetch()] {
         let pending = tx.stage_plan(&plan).unwrap();
         tx.commit().await.unwrap();
-        let expected = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+        let expected = pending.get().unwrap().to_staged(&plan).unwrap();
         assert!(
             matches!(&expected, StagedAnswer::Documents { documents } if !documents.is_empty())
         );
@@ -1198,7 +1186,7 @@ async fn staged_fetch_documents_equal_direct_answers_with_role_evidence() {
     let plan = race::purchase_fetch();
     let pending = tx.stage_plan(&plan).unwrap();
     tx.commit().await.unwrap();
-    let expected = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+    let expected = pending.get().unwrap().to_staged(&plan).unwrap();
     let optional_request = request(&proxy, vec![plain_entry(&proxy, &plan)]);
     let reply = verify(
         &proxy,
@@ -1259,7 +1247,7 @@ async fn staged_deletion_snapshots_equal_direct_pre_images() {
     let mut direct = db.transaction(TransactionOptions::default().with_never_commit(true));
     let pending = direct.stage_plan(&plan).unwrap();
     direct.commit().await.unwrap();
-    let expected = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+    let expected = pending.get().unwrap().to_staged(&plan).unwrap();
     assert!(matches!(&expected, StagedAnswer::Documents { documents } if !documents.is_empty()));
     let deletion = request(&proxy, vec![plain_entry(&proxy, &plan)]);
     let reply = verify(&proxy, &deletion, &post(&proxy, &deletion).await);
@@ -1311,7 +1299,7 @@ async fn deletion_snapshot_cost_direct_and_staged() {
                     let pending = transaction.stage_plan(plan).unwrap();
                     let started = Instant::now();
                     transaction.commit().await.unwrap();
-                    let answer = pending.get().unwrap().to_staged_v3(plan).unwrap();
+                    let answer = pending.get().unwrap().to_staged(plan).unwrap();
                     (started.elapsed().as_secs_f64(), answer)
                 } else {
                     let request = request(&proxy, vec![plain_entry(&proxy, plan)]);
@@ -1400,7 +1388,7 @@ async fn deletion_snapshots_preserve_subtypes_and_players_across_routes() {
     let mut expected = pending
         .iter()
         .zip(&plans)
-        .map(|(pending, plan)| pending.get().unwrap().to_staged_v3(plan).unwrap())
+        .map(|(pending, plan)| pending.get().unwrap().to_staged(plan).unwrap())
         .collect::<Vec<_>>();
     let StagedAnswer::Documents { documents } = &expected[0] else {
         panic!("expected subtype snapshots")
@@ -1569,7 +1557,7 @@ async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
                 .unwrap()
                 .statements
         );
-        let direct = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+        let direct = pending.get().unwrap().to_staged(&plan).unwrap();
         let entry =
             StagedPlan::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap();
         let staged = request(&proxy, vec![entry]);
@@ -1596,7 +1584,7 @@ async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
         let mut tx = db.transaction(TransactionOptions::default());
         let pending = tx.stage_plan(&plan).unwrap();
         tx.commit().await.unwrap();
-        let direct = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+        let direct = pending.get().unwrap().to_staged(&plan).unwrap();
         assert!(matches!(&direct, StagedAnswer::Documents { documents } if documents.len() == 1));
         let entry =
             StagedPlan::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap();
@@ -1608,7 +1596,7 @@ async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
     let mut tx = db.transaction(TransactionOptions::default());
     let pending = tx.stage_plan(&plan).unwrap();
     tx.commit().await.unwrap();
-    let direct = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+    let direct = pending.get().unwrap().to_staged(&plan).unwrap();
     assert!(matches!(&direct, StagedAnswer::Documents { documents } if documents.len() == 1));
     let entry = StagedPlan::new(&plan, vec![], &proxy.declared).unwrap();
     let staged = request(&proxy, vec![entry]);
@@ -1732,7 +1720,7 @@ async fn one_shot_read_stack_matches_borrowed_and_staged_answers() {
         .iter()
         .zip(&plans)
         .map(|(answer, plan)| {
-            type_bridge_orm::session::staged::PlanAnswer::from_staged_v3(answer, plan).unwrap()
+            type_bridge_orm::session::staged::PlanAnswer::from_staged(answer, plan).unwrap()
         })
         .collect::<Vec<_>>();
     assert_eq!(direct, remote);
@@ -1803,7 +1791,7 @@ async fn explicitly_raised_string_limits_round_trip_large_values_direct_and_stag
     .unwrap();
     let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
     assert!(reply.committed(), "{:?}", reply.diagnostic());
-    assert_eq!(reply.answers(), [direct.to_staged_v3(&plan).unwrap()]);
+    assert_eq!(reply.answers(), [direct.to_staged(&plan).unwrap()]);
     drop_database(db).await;
 }
 

@@ -830,7 +830,7 @@ async fn execute_staged(
         .zip(plans)
         .map(|(answer, plan)| {
             let answer = answer.get().map_err(pending_diagnostic)?;
-            answer.to_staged_v3(plan).map_err(lower)
+            answer.to_staged(plan).map_err(lower)
         })
         .collect::<Result<_, _>>()
         .map_err(|diagnostic| match kind {

@@ -2534,7 +2534,7 @@ fn plan_read_count(
         let mut answers = target.read_plan(&program).await?;
         let answer = answers.pop().ok_or_else(|| snapshot_error(name))?;
         let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } = answer
-            .to_staged_v3(&program.plans()[0])
+            .to_staged(&program.plans()[0])
             .map_err(crate::plan_builders::manager::diagnostic)?
         else {
             return Err(snapshot_error(name));
@@ -2605,7 +2605,7 @@ async fn plan_identity_rows(
         return Err(snapshot_error("identity"));
     };
     let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } = answer
-        .to_staged_v3(&program.plans()[0])
+        .to_staged(&program.plans()[0])
         .map_err(crate::plan_builders::manager::diagnostic)?
     else {
         return Err(snapshot_error("identity"));
@@ -2790,7 +2790,7 @@ async fn plan_aggregate(
         return Err(snapshot_error("aggregate"));
     };
     let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } = answer
-        .to_staged_v3(plan.local())
+        .to_staged(plan.local())
         .map_err(crate::plan_builders::manager::diagnostic)?
     else {
         return Err(snapshot_error("aggregate"));

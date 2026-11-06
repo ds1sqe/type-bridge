@@ -728,3 +728,13 @@ In Python, replace `PlanBuilder.where_` with `where` and `PlanBuilder.let_` with
 In TypeScript, import `Pending` instead of `PendingPlanAnswer` and resolve it with
 `result()` instead of `get()`. This is the same staged answer and lifecycle.
 Rust's borrowed `Pending.get()` and owned `Pending.result()` remain distinct.
+
+### Staged answer conversions
+
+Use these unversioned Rust names; conversion behavior and wire bytes are unchanged.
+
+| Removed name | Replacement |
+| --- | --- |
+| `to_staged_v3` | `to_staged` |
+| `from_staged_v3` | `from_staged` |
+| `QueryV2RuntimeAnswerLimits` | `QueryRuntimeAnswerLimits` |

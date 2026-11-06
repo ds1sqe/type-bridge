@@ -523,7 +523,7 @@ impl StaticProgram {
         answer: &PlanAnswer,
     ) -> Result<(), Diagnostic> {
         if self.records_answers() {
-            let answer = answer.to_staged_v3(step.plan.local())?;
+            let answer = answer.to_staged(step.plan.local())?;
             if !step.complete && step.reference_resolution.is_none() {
                 let StagedAnswer::Rows { rows } = &answer else {
                     return Err(identity_error());
@@ -1466,7 +1466,7 @@ plays:
                             )))
                 );
             }
-            let answer = PlanAnswer::from_staged_v3(&wire, step.plan.local()).unwrap();
+            let answer = PlanAnswer::from_staged(&wire, step.plan.local()).unwrap();
             program.record_answer(&step, &answer).unwrap();
             if !step.complete {
                 program
@@ -1547,7 +1547,7 @@ plays:
                 );
                 StagedAnswer::Rows { rows: vec![] }
             };
-            let answer = PlanAnswer::from_staged_v3(&wire, step.plan.local()).unwrap();
+            let answer = PlanAnswer::from_staged(&wire, step.plan.local()).unwrap();
             program.record_answer(&step, &answer).unwrap();
             if !step.complete {
                 program
@@ -1647,7 +1647,7 @@ plays:
                     },
                 ]],
             };
-            let answer = PlanAnswer::from_staged_v3(&wire, step.plan.local()).unwrap();
+            let answer = PlanAnswer::from_staged(&wire, step.plan.local()).unwrap();
             program.record_answer(&step, &answer).unwrap();
             if !step.complete {
                 program
@@ -1841,7 +1841,7 @@ plays:
                                 }
                             }
                         };
-                        let answer = crate::query_plan_exec::PlanAnswer::from_staged_v3(
+                        let answer = crate::query_plan_exec::PlanAnswer::from_staged(
                             &StagedAnswer::Rows { rows },
                             step.plan.local(),
                         )

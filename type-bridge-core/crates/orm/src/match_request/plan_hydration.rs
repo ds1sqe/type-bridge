@@ -1685,7 +1685,7 @@ pub(crate) fn validate_plan_documents(
         ));
     }
     let answer = crate::query_plan_exec::PlanAnswer::Documents(documents.to_vec())
-        .to_staged_v3(plan)
+        .to_staged(plan)
         .map_err(PlanExecutionError::Validation)?;
     answer
         .validate_for(plan)

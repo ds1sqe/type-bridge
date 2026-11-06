@@ -1741,8 +1741,8 @@ async fn fetch_documents_resolve_and_enforce_answer_limits_before_commit() {
         documents[0]["attributes"]["name"],
         serde_json::json!("alice")
     );
-    let wire = answer.to_staged_v3(&plan).unwrap();
-    assert_eq!(PlanAnswer::from_staged_v3(&wire, &plan).unwrap(), *answer);
+    let wire = answer.to_staged(&plan).unwrap();
+    assert_eq!(PlanAnswer::from_staged(&wire, &plan).unwrap(), *answer);
     for (max_items, max_bytes, code) in [
         (0, 4096, "processed_item_limit"),
         (10, 1, "response_byte_limit"),
@@ -2145,7 +2145,7 @@ async fn native_batches_keep_key_identity_replace_players_and_collect_without_ca
         panic!("documents")
     };
     assert_eq!(documents.len(), 1);
-    let wire = answer.to_staged_v3(&plan).unwrap();
+    let wire = answer.to_staged(&plan).unwrap();
     assert_eq!(wire.item_count(), 7);
     assert_eq!(wire.resource_counts(), [7, 7, 13, 6]);
     println!("collected role items: 7 (1 root + 6 players); Cartesian triples: 9 root documents");

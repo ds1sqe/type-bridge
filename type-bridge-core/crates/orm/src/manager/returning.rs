@@ -304,7 +304,7 @@ async fn delete_chunks_on_lease<T>(
             .map_err(query_plan_exec::plan_diagnostic_error)?;
         semantic.accept(
             &answer
-                .to_staged_v3(capture.local())
+                .to_staged(capture.local())
                 .map_err(query_plan_exec::plan_diagnostic_error)?,
         )?;
         let PlanAnswer::Documents(documents) = answer else {

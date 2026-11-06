@@ -325,7 +325,7 @@ mod tests {
                     },
                 };
                 let answer =
-                    crate::query_plan_exec::PlanAnswer::from_staged_v3(&wire, step.plan.local())
+                    crate::query_plan_exec::PlanAnswer::from_staged(&wire, step.plan.local())
                         .unwrap();
                 program.record_answer(&step, &answer).unwrap();
                 if !step.complete {
@@ -578,8 +578,7 @@ mod tests {
                         vec![]
                     },
                 };
-                let answer =
-                    crate::query_plan_exec::PlanAnswer::from_staged_v3(&wire, plan).unwrap();
+                let answer = crate::query_plan_exec::PlanAnswer::from_staged(&wire, plan).unwrap();
                 program.record_answer(&step, &answer).unwrap();
                 if step.complete {
                     completed += 1;
@@ -1859,7 +1858,7 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
                             ]
                         })
                         .collect();
-                    let answer = crate::query_plan_exec::PlanAnswer::from_staged_v3(
+                    let answer = crate::query_plan_exec::PlanAnswer::from_staged(
                         &StagedAnswer::Rows { rows: vec![cells] },
                         step.plan.local(),
                     )

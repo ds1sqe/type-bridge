@@ -581,14 +581,14 @@ impl RuntimeAnswerLimits {
 /// The wrapper keeps [`RuntimeAnswerLimits`] exhaustively constructible by
 /// released 1.5.x callers while carrying the additive document-list budget.
 #[derive(Debug, Clone)]
-pub struct QueryV2RuntimeAnswerLimits {
+pub struct QueryRuntimeAnswerLimits {
     /// Released item, byte, deadline, and cancellation limits.
     pub answer: RuntimeAnswerLimits,
     /// Maximum aggregate list members converted across fetched documents.
     pub max_collection_members: u64,
 }
 
-impl Default for QueryV2RuntimeAnswerLimits {
+impl Default for QueryRuntimeAnswerLimits {
     fn default() -> Self {
         Self {
             answer: RuntimeAnswerLimits {
@@ -2686,7 +2686,7 @@ impl RuntimeTransaction {
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
         self.query_bounded_with_scalar_encoding(
             typeql,
-            QueryV2RuntimeAnswerLimits {
+            QueryRuntimeAnswerLimits {
                 answer: limits,
                 max_collection_members: u64::MAX,
             },
@@ -2699,7 +2699,7 @@ impl RuntimeTransaction {
     pub fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
-        limits: QueryV2RuntimeAnswerLimits,
+        limits: QueryRuntimeAnswerLimits,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
         self.query_bounded_with_scalar_encoding(
@@ -2715,7 +2715,7 @@ impl RuntimeTransaction {
     pub async fn query_v2_materialized(
         &mut self,
         typeql: &str,
-        limits: QueryV2RuntimeAnswerLimits,
+        limits: QueryRuntimeAnswerLimits,
     ) -> Result<QueryResult> {
         let mut items = Vec::new();
         let mut consumer = |item: RuntimeAnswerItem| {
@@ -2734,7 +2734,7 @@ impl RuntimeTransaction {
         &mut self,
         typeql: &str,
         rows: Option<GivenRowsSpec>,
-        limits: QueryV2RuntimeAnswerLimits,
+        limits: QueryRuntimeAnswerLimits,
         canonical: bool,
         statement_display: Option<&str>,
     ) -> Result<QueryResult> {
@@ -2776,11 +2776,11 @@ impl RuntimeTransaction {
     fn query_bounded_with_scalar_encoding<'a>(
         &'a mut self,
         typeql: &'a str,
-        limits: QueryV2RuntimeAnswerLimits,
+        limits: QueryRuntimeAnswerLimits,
         scalar_encoding: ScalarJsonEncoding,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
-        let QueryV2RuntimeAnswerLimits {
+        let QueryRuntimeAnswerLimits {
             answer: limits,
             max_collection_members,
         } = limits;
@@ -2866,7 +2866,7 @@ impl RuntimeTransaction {
         self.query_with_rows_bounded_with_scalar_encoding(
             typeql,
             rows,
-            QueryV2RuntimeAnswerLimits {
+            QueryRuntimeAnswerLimits {
                 answer: limits,
                 max_collection_members: u64::MAX,
             },
@@ -2880,7 +2880,7 @@ impl RuntimeTransaction {
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,
-        limits: QueryV2RuntimeAnswerLimits,
+        limits: QueryRuntimeAnswerLimits,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
         self.query_with_rows_bounded_with_scalar_encoding(
@@ -2896,11 +2896,11 @@ impl RuntimeTransaction {
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,
-        limits: QueryV2RuntimeAnswerLimits,
+        limits: QueryRuntimeAnswerLimits,
         scalar_encoding: ScalarJsonEncoding,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
-        let QueryV2RuntimeAnswerLimits {
+        let QueryRuntimeAnswerLimits {
             answer: limits,
             max_collection_members,
         } = limits;

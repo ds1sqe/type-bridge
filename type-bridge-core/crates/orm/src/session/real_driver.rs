@@ -422,7 +422,7 @@ impl TransactionOps for RealTransaction {
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         Box::pin(async move {
             self.observe_dispatch();
-            let limits = runtime::QueryV2RuntimeAnswerLimits {
+            let limits = runtime::QueryRuntimeAnswerLimits {
                 max_collection_members: limits.max_collection_members,
                 answer: runtime::RuntimeAnswerLimits {
                     max_items: limits.answer.max_items,
@@ -513,7 +513,7 @@ impl TransactionOps for RealTransaction {
         let rows = runtime_given_rows(rows);
         Box::pin(async move {
             self.observe_dispatch();
-            let runtime_limits = runtime::QueryV2RuntimeAnswerLimits {
+            let runtime_limits = runtime::QueryRuntimeAnswerLimits {
                 answer: runtime::RuntimeAnswerLimits {
                     max_items: limits.max_items,
                     max_bytes: limits.max_bytes,
@@ -619,7 +619,7 @@ impl TransactionOps for RealTransaction {
         } = limits;
         Box::pin(async move {
             self.observe_dispatch();
-            let runtime_limits = runtime::QueryV2RuntimeAnswerLimits {
+            let runtime_limits = runtime::QueryRuntimeAnswerLimits {
                 answer: runtime::RuntimeAnswerLimits {
                     max_items: limits.max_items,
                     max_bytes: limits.max_bytes,
@@ -670,7 +670,7 @@ impl TransactionOps for RealTransaction {
         let typeql = typeql.to_owned();
         Box::pin(async move {
             self.observe_dispatch();
-            let limits = runtime::QueryV2RuntimeAnswerLimits {
+            let limits = runtime::QueryRuntimeAnswerLimits {
                 answer: runtime::RuntimeAnswerLimits {
                     max_items: u64::MAX,
                     max_bytes: u64::MAX,

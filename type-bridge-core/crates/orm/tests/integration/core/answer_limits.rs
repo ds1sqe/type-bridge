@@ -135,7 +135,7 @@ async fn execute_staged(
             pending
                 .iter()
                 .zip(&plans)
-                .map(|(answer, plan)| answer.get().unwrap().to_staged_v3(plan).unwrap())
+                .map(|(answer, plan)| answer.get().unwrap().to_staged(plan).unwrap())
                 .collect(),
         ),
         Err(error) => (

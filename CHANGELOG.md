@@ -338,6 +338,14 @@ All notable changes to TypeBridge will be documented in this file.
 
 <!-- --8<-- [start:breaking-3-0] -->
 
+Staged answer conversion and runtime limit names are unversioned:
+
+| Removed name | Replacement |
+| --- | --- |
+| `to_staged_v3` | `to_staged` |
+| `from_staged_v3` | `from_staged` |
+| `QueryV2RuntimeAnswerLimits` | `QueryRuntimeAnswerLimits` |
+
 Plan authoring uses Python `PlanBuilder.where` and `PlanBuilder.let` in place of
 `where_` and `let_`. Rust typed `Bound.filter` and generated
 `<Model>Handle.filter` become `where_`; manager

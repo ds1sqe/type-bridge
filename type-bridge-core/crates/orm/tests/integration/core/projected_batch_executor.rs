@@ -5365,7 +5365,7 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
                 result.unwrap();
                 assert_eq!(roots.len(), 1);
                 let StagedAnswer::Rows { rows } =
-                    pending[0].get().unwrap().to_staged_v3(&source).unwrap()
+                    pending[0].get().unwrap().to_staged(&source).unwrap()
                 else {
                     panic!("allocated IID")
                 };
@@ -5374,7 +5374,7 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
                 };
                 assert_eq!(roots[0]["iid"], iid.as_str());
                 let StagedAnswer::Documents { documents } =
-                    pending[1].get().unwrap().to_staged_v3(&target).unwrap()
+                    pending[1].get().unwrap().to_staged(&target).unwrap()
                 else {
                     panic!("final document")
                 };
@@ -5431,8 +5431,7 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
             } else {
                 let answers = answers.unwrap();
                 assert_eq!(answers.len(), 2);
-                let StagedAnswer::Documents { documents } =
-                    answers[1].to_staged_v3(&target).unwrap()
+                let StagedAnswer::Documents { documents } = answers[1].to_staged(&target).unwrap()
                 else {
                     panic!("borrowed final document")
                 };
@@ -5603,15 +5602,14 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
                 .stage_plan_stack(gates.clone(), Arc::clone(&declared))
                 .unwrap();
             transaction.commit().await.unwrap();
-            let StagedAnswer::Rows { rows } =
-                pending[1].get().unwrap().to_staged_v3(&gate).unwrap()
+            let StagedAnswer::Rows { rows } = pending[1].get().unwrap().to_staged(&gate).unwrap()
             else {
                 panic!("conditional allocation rows")
             };
             assert_eq!(rows.len(), usize::from(!existing));
             // Matching the captured IID cannot observe the root allocated on a miss.
             let StagedAnswer::Rows { rows } =
-                pending[2].get().unwrap().to_staged_v3(&present).unwrap()
+                pending[2].get().unwrap().to_staged(&present).unwrap()
             else {
                 panic!("captured present rows")
             };
@@ -5863,7 +5861,7 @@ async fn reduced_full_match_equals_stepwise_candidates_live() {
             )
             .await
             .unwrap();
-        let StagedAnswer::Rows { rows } = answers[0].to_staged_v3(&plan).unwrap() else {
+        let StagedAnswer::Rows { rows } = answers[0].to_staged(&plan).unwrap() else {
             panic!("typed rows")
         };
         let actual = rows

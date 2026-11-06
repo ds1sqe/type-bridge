@@ -130,11 +130,8 @@ async fn direct_rows_documents_counts_exists_and_reductions_use_staged_normaliza
             .await
             .unwrap();
         assert_eq!(answers.len(), 1);
-        let staged = answers[0].to_staged_v3(&plan).unwrap();
-        assert_eq!(
-            answers[0],
-            PlanAnswer::from_staged_v3(&staged, &plan).unwrap()
-        );
+        let staged = answers[0].to_staged(&plan).unwrap();
+        assert_eq!(answers[0], PlanAnswer::from_staged(&staged, &plan).unwrap());
         assert_eq!(state.lock().unwrap().events, ["open", "query", "close"]);
         if let PlanAnswer::Rows(rows) = &answers[0] {
             let object = rows[0].as_object().unwrap();

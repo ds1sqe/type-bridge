@@ -721,7 +721,7 @@ impl ProxyQueryConnection {
             .iter()
             .zip(plans)
             .map(|(answer, plan)| {
-                crate::query_plan_exec::PlanAnswer::from_staged_v3(answer, plan)
+                crate::query_plan_exec::PlanAnswer::from_staged(answer, plan)
                     .map_err(|error| QueryTargetError::Reply(error.into()))
             })
             .collect()

@@ -710,11 +710,7 @@ async fn benchmark_count(
             .stage_plan_stack(entries.clone(), Arc::clone(&schema))
             .unwrap();
         transaction.commit().await.unwrap();
-        let answer = pending[0]
-            .get()
-            .unwrap()
-            .to_staged_v3(plan.local())
-            .unwrap();
+        let answer = pending[0].get().unwrap().to_staged(plan.local()).unwrap();
         let manual_elapsed = start.elapsed();
         assert_eq!(
             answer,

@@ -1238,7 +1238,7 @@ fn validate_stages(
                     "write stages require select/distinct or an initial sort/limit before attach/delete",
                 ));
             }
-            (mandatory, optional) = validate_v3_read_tail(
+            (mandatory, optional) = validate_read_tail(
                 &read_tail,
                 mandatory,
                 optional,
@@ -1291,7 +1291,7 @@ fn validate_stages(
                             "match occurs only at the start, after a selected window, or after a read-only reduce",
                         ));
                     }
-                    let visible = validate_v3_read_tail(
+                    let visible = validate_read_tail(
                         &read_tail,
                         std::mem::take(&mut mandatory),
                         std::mem::take(&mut optional),
@@ -1832,7 +1832,7 @@ fn validate_stages(
             }
         }
     }
-    let (mandatory, optional) = validate_v3_read_tail(
+    let (mandatory, optional) = validate_read_tail(
         &read_tail,
         mandatory,
         optional,
@@ -1922,7 +1922,7 @@ fn validate_stages(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn validate_v3_read_tail(
+fn validate_read_tail(
     read_tail: &[ReadStage],
     mandatory: BTreeSet<BindingId>,
     optional: BTreeSet<BindingId>,

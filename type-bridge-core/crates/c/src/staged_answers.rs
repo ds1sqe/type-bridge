@@ -963,7 +963,7 @@ plays:
     fn document_cursors_read_every_kind_and_optional_players_and_fence_aliases() {
         let plan = plan();
         let answer = Arc::new(PlanAnswer::Documents(vec![answer()]));
-        answer.to_staged_v3(&plan).unwrap();
+        answer.to_staged(&plan).unwrap();
         let views = AnswerViews::new(
             answer,
             plan.fetch_document_shape().cloned().map(Arc::new),

@@ -1005,7 +1005,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         answer: crate::query_plan_exec::PlanAnswer,
     ) -> Result<u64, crate::QueryTargetError> {
         let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } =
-            answer.to_staged_v3(&program.plans()[0]).map_err(|error| {
+            answer.to_staged(&program.plans()[0]).map_err(|error| {
                 crate::QueryTargetError::Direct(crate::plan_builders::manager::diagnostic(error))
             })?
         else {

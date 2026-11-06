@@ -380,7 +380,7 @@ impl WriteStep {
         &self,
         answer: &PlanAnswer,
     ) -> Result<Vec<(usize, String)>, Diagnostic> {
-        let StagedAnswer::Rows { rows } = answer.to_staged_v3(self.plan.local())? else {
+        let StagedAnswer::Rows { rows } = answer.to_staged(self.plan.local())? else {
             return Err(identity_error());
         };
         let QueryOutput::Rows { columns } = self.plan.local().output() else {
@@ -426,7 +426,7 @@ impl WriteStep {
     }
 
     pub(crate) fn identity(&self, answer: &PlanAnswer) -> Result<Option<String>, Diagnostic> {
-        let StagedAnswer::Rows { rows } = answer.to_staged_v3(self.plan.local())? else {
+        let StagedAnswer::Rows { rows } = answer.to_staged(self.plan.local())? else {
             return Err(identity_error());
         };
         if (self.reference_guard || self.missing_iid_noop) && rows.is_empty() {

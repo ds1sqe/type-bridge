@@ -87,7 +87,7 @@ impl MatchProgram {
         step: &WriteStep,
         answer: &PlanAnswer,
     ) -> Result<(), Diagnostic> {
-        let StagedAnswer::Rows { rows } = answer.to_staged_v3(step.plan.local())? else {
+        let StagedAnswer::Rows { rows } = answer.to_staged(step.plan.local())? else {
             return Err(identity_error());
         };
         let mut matched = std::collections::BTreeSet::new();

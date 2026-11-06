@@ -267,7 +267,7 @@ impl ClaimedRemoteModelReply {
             .answers()
             .iter()
             .zip(&stack.plans)
-            .map(|(answer, plan)| PlanAnswer::from_staged_v3(answer, plan))
+            .map(|(answer, plan)| PlanAnswer::from_staged(answer, plan))
             .collect::<Result<Vec<_>, _>>()?;
         let result = validated_match_result_from_plan_stack(
             &self.state.registry,

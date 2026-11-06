@@ -743,7 +743,7 @@ impl PlanFetchStack {
             .iter()
             .zip(answers)
             .map(|(plan, answer)| {
-                let wire = answer.to_staged_v3(plan)?;
+                let wire = answer.to_staged(plan)?;
                 if let type_bridge_contract::query_remote::StagedAnswer::Documents { documents } =
                     &wire
                 {

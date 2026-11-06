@@ -3436,7 +3436,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
     ) -> Result<u64, SdkExecutionDiagnostic> {
         let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } =
-            answer.to_staged_v3(plan).map_err(|error| {
+            answer.to_staged(plan).map_err(|error| {
                 orm_at_type(
                     crate::plan_builders::manager::diagnostic(error),
                     SdkProviderOperation::Read,

@@ -57,7 +57,7 @@ fn rows(
                 "read plan has no corresponding answer",
             )
         })?
-        .to_staged_v3(plan)?;
+        .to_staged(plan)?;
     answer.validate_for(plan)?;
     let (StagedAnswer::Rows { rows }, QueryOutput::Rows { columns }) = (answer, plan.output())
     else {
@@ -182,7 +182,7 @@ fn count(
     let answer = answers
         .get(index)
         .ok_or_else(|| failure("query_plan_result_stack", "count answer is missing"))?
-        .to_staged_v3(&stack.plans[index])?;
+        .to_staged(&stack.plans[index])?;
     let StagedAnswer::Rows { rows } = answer else {
         return Err(failure(
             "query_plan_result_count",
@@ -682,7 +682,7 @@ fn scalar_rows(
     let answer = answers
         .get(index)
         .ok_or_else(|| failure("query_plan_result_stack", "reduction answer is missing"))?
-        .to_staged_v3(plan)?;
+        .to_staged(plan)?;
     answer.validate_for(plan)?;
     match answer {
         StagedAnswer::Rows { rows } => Ok(rows
