@@ -9,7 +9,8 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
 use type_bridge_orm::{
-    AnswerCancellation, AnswerTransport, ProjectedManagerFilterInvocationControl, QueryTarget,
+    AnswerCancellation, AnswerTransport, ProjectedBatchInvocationControl,
+    ProjectedManagerFilterInvocationControl, QueryTarget,
 };
 
 use crate::abi::{SchemaPackageState, TypeBridgeStatus};
@@ -156,6 +157,21 @@ impl<'a> Target<'a> {
         limits: *const TypeBridgeQueryExecutionLimitsV1,
         cancellation: *const TypeBridgeCancellation,
     ) -> Result<ProjectedManagerFilterInvocationControl, SdkExecutionDiagnostic> {
+        // SAFETY: caller retains the preflighted optional policy owners.
+        let control = unsafe { self.batch_control(limits, cancellation) }?;
+        let (limits, deadline, cancellation) = control.into_parts();
+        Ok(ProjectedManagerFilterInvocationControl::from_parts(
+            limits,
+            deadline,
+            cancellation,
+        ))
+    }
+
+    pub(crate) unsafe fn batch_control(
+        self,
+        limits: *const TypeBridgeQueryExecutionLimitsV1,
+        cancellation: *const TypeBridgeCancellation,
+    ) -> Result<ProjectedBatchInvocationControl, SdkExecutionDiagnostic> {
         let transport = if matches!(self, Self::Proxy(_)) {
             AnswerTransport::Proxy
         } else {
@@ -173,7 +189,7 @@ impl<'a> Target<'a> {
         } else {
             unsafe { &*cancellation }.answer_cancellation()
         };
-        Ok(ProjectedManagerFilterInvocationControl::capture(
+        Ok(ProjectedBatchInvocationControl::capture(
             limits,
             cancellation,
         ))

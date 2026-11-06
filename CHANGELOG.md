@@ -11,6 +11,9 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C canonical manager `insert` and `put` terminals accept database, borrowed
+  write, and proxy targets and return complete write results through the
+  shared single-write executor.
 - C canonical filter `update` and `delete` terminals support database, borrowed
   write, and proxy targets. Updates return every root through the common write
   result; direct result mapping finishes before commit. Empty IID filters

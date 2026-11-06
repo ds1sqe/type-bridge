@@ -13,6 +13,7 @@ mod entity_crud;
 mod execution_diagnostic;
 mod generated_preflight;
 mod iid;
+mod manager_create;
 mod manager_filter;
 mod manager_read;
 mod manager_target;

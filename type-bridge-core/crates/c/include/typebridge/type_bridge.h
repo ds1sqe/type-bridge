@@ -3798,6 +3798,61 @@ type_bridge_manager_result_close(type_bridge_manager_result_t **result);
 /* Filter mutations execute one shared atomic operation. Update returns every
  * written root; delete has no returned objects and performs no prefetch. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_manager_insert(
+    const type_bridge_database_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *input,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_manager_put(
+    const type_bridge_database_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *input,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_manager_insert(
+    const type_bridge_write_transaction_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *input,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_manager_put(
+    const type_bridge_write_transaction_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *input,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_manager_insert(
+    const type_bridge_proxy_connection_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *input,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_manager_put(
+    const type_bridge_proxy_connection_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *input,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_database_manager_update(
     const type_bridge_database_t *owner, const type_bridge_manager_filter_t *filter,
     const type_bridge_projected_create_t *replacement,
