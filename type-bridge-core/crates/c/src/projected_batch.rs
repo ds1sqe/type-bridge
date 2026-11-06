@@ -80,6 +80,7 @@ pub struct TypeBridgeProjectedBatchResult {
     model: TypeId,
     operation: ProjectedBatchOperation,
     count: usize,
+    returns_things: bool,
     things: Vec<Arc<ProjectedThing>>,
 }
 
@@ -310,6 +311,7 @@ impl TypeBridgeProjectedBatchResult {
             model,
             operation,
             count,
+            returns_things: true,
             things,
         })
     }
@@ -622,15 +624,23 @@ fn map_result(
     input_count: usize,
     mut reserved_things: Vec<Arc<MaybeUninit<ProjectedThing>>>,
     result: ProjectedBatchResult,
+    return_deleted: bool,
 ) -> Result<TypeBridgeProjectedBatchResult, SdkExecutionDiagnostic> {
     let values = match (operation, result) {
-        (ProjectedBatchOperation::Delete, ProjectedBatchResult::Deleted) => Default::default(),
+        (ProjectedBatchOperation::Delete, ProjectedBatchResult::Things(values))
+            if return_deleted =>
+        {
+            values
+        }
+        (ProjectedBatchOperation::Delete, ProjectedBatchResult::Deleted) if !return_deleted => {
+            Default::default()
+        }
         (ProjectedBatchOperation::Delete, ProjectedBatchResult::Things(_))
         | (_, ProjectedBatchResult::Deleted) => return Err(result_shape_invalid()),
         (_, ProjectedBatchResult::Things(values)) => values,
         _ => return Err(result_shape_invalid()),
     };
-    let count = if operation == ProjectedBatchOperation::Delete {
+    let count = if operation == ProjectedBatchOperation::Delete && !return_deleted {
         input_count
     } else {
         values.count()
@@ -677,16 +687,22 @@ fn map_result(
         model,
         operation,
         count,
+        returns_things: operation != ProjectedBatchOperation::Delete || return_deleted,
         things,
     })
 }
 
-fn empty_result(batch: &TypeBridgeProjectedBatch) -> TypeBridgeProjectedBatchResult {
+fn empty_result(
+    batch: &TypeBridgeProjectedBatch,
+    return_deleted: bool,
+) -> TypeBridgeProjectedBatchResult {
     TypeBridgeProjectedBatchResult {
         package: Arc::clone(&batch.package),
         model: batch.value.model().clone(),
         operation: batch.value.operation(),
         count: 0,
+        returns_things: batch.value.operation() != ProjectedBatchOperation::Delete
+            || return_deleted,
         things: Vec::new(),
     }
 }
@@ -982,6 +998,7 @@ unsafe fn execute_impl(
     cancellation: *const TypeBridgeCancellation,
     out_result: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    return_deleted: bool,
 ) -> TypeBridgeStatus {
     guarded(|| {
         if batch.is_null() {
@@ -991,6 +1008,10 @@ unsafe fn execute_impl(
         let batch = unsafe { &*batch };
         if let Err(diagnostic) = validate_batch_target(target.package_state(), batch) {
             return return_execution_error(diagnostic, out_diagnostics);
+        }
+
+        if return_deleted && batch.value.operation() != ProjectedBatchOperation::Delete {
+            return return_execution_error(invalid_operation(), out_diagnostics);
         }
 
         if batch.value.is_empty() {
@@ -1005,7 +1026,7 @@ unsafe fn execute_impl(
                 Ok(value) => value,
                 Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
             };
-            let result = reservation.initialize(empty_result(batch));
+            let result = reservation.initialize(empty_result(batch, return_deleted));
             // SAFETY: initialized result output remains caller-writable.
             unsafe { out_result.write_unaligned(Box::into_raw(result)) };
             return TypeBridgeStatus::Ok;
@@ -1056,6 +1077,11 @@ unsafe fn execute_impl(
                 Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
             };
         let executor = ProjectedBatchExecutor::new(&target.package_state().installed_projection);
+        let executor = if return_deleted {
+            executor.returning_deleted()
+        } else {
+            executor
+        };
         let executed = match target {
             BatchExecutionTarget::Database(database) => database.block_on(executor.execute_mapped(
                 database.orm_database(),
@@ -1070,6 +1096,7 @@ unsafe fn execute_impl(
                         input_count,
                         reserved_things,
                         value,
+                        return_deleted,
                     )
                     .map(Some)
                 },
@@ -1091,6 +1118,7 @@ unsafe fn execute_impl(
                             input_count,
                             reserved_things,
                             value,
+                            return_deleted,
                         )
                         .map(Some)
                     },
@@ -1131,6 +1159,52 @@ pub(crate) unsafe extern "C" fn type_bridge_database_projected_batch_execute_v1_
     cancellation: *const TypeBridgeCancellation,
     out_result: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: helper fences all caller-owned inputs and outputs before use.
+    unsafe {
+        database_execute(
+            database,
+            batch,
+            limits,
+            cancellation,
+            out_result,
+            out_diagnostics,
+            false,
+        )
+    }
+}
+
+#[unsafe(export_name = "type_bridge_database_projected_batch_delete_returning")]
+pub(crate) unsafe extern "C" fn type_bridge_database_projected_batch_delete_returning_impl(
+    database: *const TypeBridgeDatabase,
+    batch: *const TypeBridgeProjectedBatch,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_result: *mut *mut TypeBridgeProjectedBatchResult,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: helper fences all caller-owned inputs and outputs before use.
+    unsafe {
+        database_execute(
+            database,
+            batch,
+            limits,
+            cancellation,
+            out_result,
+            out_diagnostics,
+            true,
+        )
+    }
+}
+
+unsafe fn database_execute(
+    database: *const TypeBridgeDatabase,
+    batch: *const TypeBridgeProjectedBatch,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_result: *mut *mut TypeBridgeProjectedBatchResult,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    return_deleted: bool,
 ) -> TypeBridgeStatus {
     let preflight = match preflight_outputs(&[
         (
@@ -1175,6 +1249,7 @@ pub(crate) unsafe extern "C" fn type_bridge_database_projected_batch_execute_v1_
             cancellation,
             out_result,
             out_diagnostics,
+            return_deleted,
         )
     }
 }
@@ -1188,6 +1263,52 @@ pub(crate) unsafe extern "C" fn type_bridge_write_transaction_projected_batch_ex
     cancellation: *const TypeBridgeCancellation,
     out_result: *mut *mut TypeBridgeProjectedBatchResult,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: helper fences all caller-owned inputs and outputs before use.
+    unsafe {
+        write_transaction_execute(
+            transaction,
+            batch,
+            limits,
+            cancellation,
+            out_result,
+            out_diagnostics,
+            false,
+        )
+    }
+}
+
+#[unsafe(export_name = "type_bridge_write_transaction_projected_batch_delete_returning")]
+pub(crate) unsafe extern "C" fn type_bridge_write_transaction_projected_batch_delete_returning_impl(
+    transaction: *const TypeBridgeWriteTransaction,
+    batch: *const TypeBridgeProjectedBatch,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_result: *mut *mut TypeBridgeProjectedBatchResult,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: helper fences all caller-owned inputs and outputs before use.
+    unsafe {
+        write_transaction_execute(
+            transaction,
+            batch,
+            limits,
+            cancellation,
+            out_result,
+            out_diagnostics,
+            true,
+        )
+    }
+}
+
+unsafe fn write_transaction_execute(
+    transaction: *const TypeBridgeWriteTransaction,
+    batch: *const TypeBridgeProjectedBatch,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_result: *mut *mut TypeBridgeProjectedBatchResult,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    return_deleted: bool,
 ) -> TypeBridgeStatus {
     let preflight = match preflight_outputs(&[
         (
@@ -1236,6 +1357,7 @@ pub(crate) unsafe extern "C" fn type_bridge_write_transaction_projected_batch_ex
             cancellation,
             out_result,
             out_diagnostics,
+            return_deleted,
         )
     }
 }
@@ -1368,7 +1490,7 @@ unsafe fn result_thing(
         if index.is_none() && (result.count != 1 || result.things.len() != 1) {
             return TypeBridgeStatus::Ok;
         }
-        if result.operation == ProjectedBatchOperation::Delete {
+        if !result.returns_things {
             return return_execution_error(delete_result_has_no_thing(), out_diagnostics);
         }
         let Some(value) = result.things.get(index.unwrap_or(0)) else {
@@ -2079,6 +2201,7 @@ plays:
                 model: original.model.clone(),
                 operation,
                 count: length,
+                returns_things: original.returns_things,
                 things: original.things[..length].to_vec(),
             }));
             let mut item = ptr::dangling_mut();
@@ -3003,6 +3126,7 @@ plays:
             2,
             reserve_result_things(2).unwrap(),
             ProjectedBatchResult::Deleted,
+            false,
         ) {
             Ok(_) => panic!("insert mapper accepted a delete-shaped result"),
             Err(diagnostic) => diagnostic,
@@ -3031,6 +3155,7 @@ plays:
                         )
                     }),
                 )),
+                false,
             )
         };
         for indexes in [&[][..], &[1][..], &[0, 0, 1][..]] {
@@ -3067,6 +3192,7 @@ plays:
                 2,
                 reserved,
                 ProjectedBatchResult::Things(values),
+                false,
             )
             .err()
             .unwrap()
@@ -3074,6 +3200,165 @@ plays:
             .as_str(),
             "c_allocation_exhausted"
         );
+    }
+
+    #[test]
+    fn returning_delete_mapping_allocation_failure_rolls_back_before_commit() {
+        let package = make_package("batchreturnalloc");
+        let kind = TypeKind::Entity;
+        let token = model_token(&package, type_id(kind));
+        let creates = [create(&package, kind, "alpha", "0x10")];
+        let mut batch = build_batch(
+            &package,
+            &token,
+            kind,
+            ProjectedBatchOperation::Delete,
+            &creates,
+        );
+        let (database, state) = make_database(
+            &package,
+            vec![
+                Response::Documents(vec![hydration(kind, 0)]),
+                Response::Documents(vec![]),
+            ],
+            CommitBehavior::Success,
+            None,
+        );
+        let mut result = ptr::dangling_mut();
+        let mut diagnostics = ptr::null_mut();
+        {
+            let _failure = inject_failure(AllocationSite::ProjectedBatchResultThingStorage, 0);
+            // SAFETY: live input owners and independent output slots.
+            assert_eq!(
+                unsafe {
+                    type_bridge_database_projected_batch_delete_returning_impl(
+                        &*database,
+                        batch,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::ResourceLimit
+            );
+        }
+        assert!(result.is_null());
+        assert_eq!(diagnostic_code(diagnostics), "c_allocation_exhausted");
+        assert_eq!(state.lock().unwrap().commits, 0);
+        assert_eq!(state.lock().unwrap().rollbacks, 1);
+        assert_eq!(state.lock().unwrap().calls.len(), 2);
+        close_diagnostics(&mut diagnostics);
+        close_batch(&mut batch);
+    }
+
+    #[test]
+    fn returning_delete_retains_only_present_roots_on_owned_and_borrowed_targets() {
+        let package = make_package("batchreturning");
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            let token = model_token(&package, type_id(kind));
+            let creates = [
+                create(&package, kind, "alpha", "0x10"),
+                create(&package, kind, "beta", "0x10"),
+            ];
+            let mut batch = build_batch(
+                &package,
+                &token,
+                kind,
+                ProjectedBatchOperation::Delete,
+                &creates,
+            );
+            for borrowed in [false, true] {
+                for count in 0..=2 {
+                    let mut answers = vec![Response::Documents(
+                        (0..count).map(|index| hydration(kind, index)).collect(),
+                    )];
+                    answers.push(Response::Documents(vec![]));
+                    let (database, state) =
+                        make_database(&package, answers, CommitBehavior::Success, None);
+                    let mut result = ptr::null_mut();
+                    let mut diagnostics = ptr::null_mut();
+                    let mut transaction = if borrowed {
+                        let context = database.open_transaction_context(TxType::Write).unwrap();
+                        Box::into_raw(Box::new(TypeBridgeWriteTransaction::from_test_context(
+                            &database, context,
+                        )))
+                    } else {
+                        ptr::null_mut()
+                    };
+                    // SAFETY: retained owners and independent writable output slots.
+                    let status = unsafe {
+                        if borrowed {
+                            type_bridge_write_transaction_projected_batch_delete_returning_impl(
+                                transaction,
+                                batch,
+                                ptr::null(),
+                                ptr::null(),
+                                &mut result,
+                                &mut diagnostics,
+                            )
+                        } else {
+                            type_bridge_database_projected_batch_delete_returning_impl(
+                                &*database,
+                                batch,
+                                ptr::null(),
+                                ptr::null(),
+                                &mut result,
+                                &mut diagnostics,
+                            )
+                        }
+                    };
+                    assert_eq!(
+                        status,
+                        TypeBridgeStatus::Ok,
+                        "kind={kind:?} count={count} borrowed={borrowed}: {:?}",
+                        (!diagnostics.is_null()).then(|| diagnostic(diagnostics))
+                    );
+                    // SAFETY: successful call returned the uniquely retained result.
+                    let value = unsafe { &*result };
+                    assert_eq!(value.count, count);
+                    assert_eq!(value.things.len(), count);
+                    assert!(value.things.iter().all(|thing| thing.is_deleted()));
+                    for (index, thing) in value.things.iter().enumerate() {
+                        assert_eq!(thing.iid(), target_iid(kind, index));
+                    }
+                    let mut item = ptr::null_mut();
+                    assert_eq!(
+                        unsafe {
+                            type_bridge_projected_batch_result_item_impl(
+                                result,
+                                &token,
+                                4,
+                                &mut item,
+                                &mut diagnostics,
+                            )
+                        },
+                        TypeBridgeStatus::Ok
+                    );
+                    close_result(&mut result);
+                    if count == 1 {
+                        assert!(unsafe { &*item }.value.is_deleted());
+                        close_thing(&mut item);
+                    } else {
+                        assert!(item.is_null());
+                    }
+                    assert_eq!(state.lock().unwrap().commits, usize::from(!borrowed));
+                    if borrowed {
+                        assert_eq!(
+                            unsafe {
+                                type_bridge_write_transaction_close(
+                                    &mut transaction,
+                                    &mut diagnostics,
+                                )
+                            },
+                            TypeBridgeStatus::Ok
+                        );
+                        assert_eq!(state.lock().unwrap().rollbacks, 1);
+                    }
+                }
+            }
+            close_batch(&mut batch);
+        }
     }
 
     #[test]
@@ -3555,7 +3840,7 @@ plays:
     }
 
     #[test]
-    fn source_activates_exactly_the_eleven_compiler_anchored_batch_entries() {
+    fn source_activates_exactly_the_thirteen_compiler_anchored_batch_entries() {
         let source = include_str!("projected_batch.rs");
         for name in [
             "type_bridge_projected_batch_builder_open_v1",
@@ -3565,6 +3850,8 @@ plays:
             "type_bridge_projected_batch_close",
             "type_bridge_database_projected_batch_execute_v1",
             "type_bridge_write_transaction_projected_batch_execute_v1",
+            "type_bridge_database_projected_batch_delete_returning",
+            "type_bridge_write_transaction_projected_batch_delete_returning",
             "type_bridge_projected_batch_result_count",
             "type_bridge_projected_batch_result_thing_at",
             "type_bridge_projected_batch_result_item",
@@ -3579,13 +3866,13 @@ plays:
             source
                 .matches("#[unsafe(export_name = \"type_bridge_")
                 .count(),
-            11
+            13
         );
         assert_eq!(
             source
                 .matches("pub(crate) unsafe extern \"C\" fn type_bridge_")
                 .count(),
-            11
+            13
         );
     }
 }

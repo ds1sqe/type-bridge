@@ -11,6 +11,10 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C `type_bridge_database_projected_batch_delete_returning` and
+  `type_bridge_write_transaction_projected_batch_delete_returning` return
+  complete deleted roots from entity or relation delete batches, omitting
+  missing IIDs. The common result accessors retain the deleted objects.
 - C projected write results expose `type_bridge_projected_batch_result_item`
   and generated `*_batch_result_item` accessors: an independently owned item
   for exactly one root, otherwise a successful null result.

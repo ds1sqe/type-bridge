@@ -72,7 +72,7 @@ fn aggregate_header_compiles_exact_prototypes_and_hosted_layouts() {
         return;
     }
 
-    assert_eq!(ABI_COMPILER_PROBE.matches("  TAKE(").count(), 48);
+    assert_eq!(ABI_COMPILER_PROBE.matches("  TAKE(").count(), 50);
     assert!(ABI_COMPILER_PROBE.contains("#if UINTPTR_MAX == UINT64_MAX"));
     assert!(ABI_COMPILER_PROBE.contains("#elif UINTPTR_MAX == UINT32_MAX"));
     let stage = TempDirectory::new("compiler");

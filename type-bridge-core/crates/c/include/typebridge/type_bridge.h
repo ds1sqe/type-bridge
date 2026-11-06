@@ -3656,6 +3656,25 @@ type_bridge_write_transaction_projected_batch_execute_v1(
     const type_bridge_cancellation_t *cancellation,
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
+/* Capture and return complete deleted roots, omitting missing IIDs. Only delete
+ * batches are admitted. Database calls map before commit; borrowed calls keep
+ * the caller's transaction. Use count/thing_at/item and close the result. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_projected_batch_delete_returning(
+    const type_bridge_database_t *target,
+    const type_bridge_projected_batch_t *batch,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out_result,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_projected_batch_delete_returning(
+    const type_bridge_write_transaction_t *target,
+    const type_bridge_projected_batch_t *batch,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out_result,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_projected_batch_result_count(
     const type_bridge_projected_batch_result_t *result,

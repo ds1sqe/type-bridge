@@ -304,6 +304,8 @@ void type_bridge_abi_probe(void) {
   TAKE(batch_close_fn, type_bridge_projected_batch_close);
   TAKE(database_batch_execute_fn, type_bridge_database_projected_batch_execute_v1);
   TAKE(write_batch_execute_fn, type_bridge_write_transaction_projected_batch_execute_v1);
+  TAKE(database_batch_execute_fn, type_bridge_database_projected_batch_delete_returning);
+  TAKE(write_batch_execute_fn, type_bridge_write_transaction_projected_batch_delete_returning);
   TAKE(batch_result_count_fn, type_bridge_projected_batch_result_count);
   TAKE(batch_result_item_fn, type_bridge_projected_batch_result_item);
   TAKE(batch_result_thing_fn, type_bridge_projected_batch_result_thing_at);
