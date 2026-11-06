@@ -211,6 +211,32 @@ pub struct TypeBridgeCancellation {
 }
 
 impl TypeBridgeDatabase {
+    pub(crate) fn raw_transaction(
+        &self,
+        kind: TxType,
+    ) -> Result<
+        (
+            type_bridge_orm::session::raw::RawTransaction,
+            StagedDatabaseGuard,
+        ),
+        type_bridge_orm::session::raw::RawQueryError,
+    > {
+        increment_child(&self.state.transaction_children).map_err(|error| {
+            type_bridge_orm::session::raw::RawQueryError {
+                code: error.code().as_str().to_owned(),
+                message: error.message().as_str().to_owned(),
+                status: 500,
+                provider_code: None,
+                commit_outcome: None,
+            }
+        })?;
+        let guard = StagedDatabaseGuard {
+            database: Arc::clone(&self.state),
+        };
+        let transaction = self.block_on(self.state.database.raw_transaction(kind))?;
+        Ok((transaction, guard))
+    }
+
     pub(crate) fn runtime_handle(&self) -> tokio::runtime::Handle {
         self.state.runtime.runtime.handle().clone()
     }

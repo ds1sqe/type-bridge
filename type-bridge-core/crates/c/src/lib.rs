@@ -24,6 +24,7 @@ mod projected_model;
 mod projected_token;
 mod projected_value;
 mod query;
+mod raw;
 mod relation_crud;
 mod runtime;
 mod schema_package;
@@ -125,3 +126,5 @@ pub use plan_builder::bulk::{
 
 pub use plan_builder::context::{TYPE_BRIDGE_PLAN_OPTIONS_VERSION, TypeBridgePlanOptionsV1};
 pub use query::TypeBridgeQueryLimitOverrideV1;
+
+pub use raw::{TypeBridgeRawResult, TypeBridgeRawTransaction};

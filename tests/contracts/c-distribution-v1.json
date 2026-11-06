@@ -15,7 +15,7 @@
     "package_metadata_version": "2.0.0",
     "package_metadata_description": "CMake and pkg-config require ABI 2.0.0; regenerate all ABI 1.x schema packages.",
     "contract_path": "tests/contracts/c-abi.json",
-    "contract_sha256": "3bfaedd9a47046882e84102cba854eaea975c98d54142b99e1f507e1d8ba87bb",
+    "contract_sha256": "9f837b58b88580be362894d2149b956aa3bc5e64255f5f7afd356b9f0de41479",
     "static_linkage": "unsupported",
     "shared_linkage": "artifact",
     "accepted_descriptor_minors": [
@@ -23,8 +23,10 @@
     ],
     "added_exports": [
       "type_bridge_count_pending_result",
+      "type_bridge_database_execute_query",
       "type_bridge_database_open_with_query_limits_v2",
       "type_bridge_database_query_execute",
+      "type_bridge_database_raw_transaction",
       "type_bridge_database_transaction",
       "type_bridge_database_transaction_with_options",
       "type_bridge_debug_listener_set",
@@ -240,8 +242,10 @@
       "type_bridge_plan_string_set",
       "type_bridge_plan_string_starts_with",
       "type_bridge_proxy_connection_close",
+      "type_bridge_proxy_connection_execute_query",
       "type_bridge_proxy_connection_open_v1",
       "type_bridge_proxy_connection_open_with_query_limits_v1",
+      "type_bridge_proxy_connection_raw_transaction",
       "type_bridge_proxy_connection_transaction",
       "type_bridge_proxy_connection_transaction_with_options",
       "type_bridge_proxy_query_execute",
@@ -259,6 +263,12 @@
       "type_bridge_query_selection_open",
       "type_bridge_query_session_open_with_limits",
       "type_bridge_query_terminal_open",
+      "type_bridge_raw_result_close",
+      "type_bridge_raw_result_json",
+      "type_bridge_raw_transaction_close",
+      "type_bridge_raw_transaction_commit",
+      "type_bridge_raw_transaction_execute_query",
+      "type_bridge_raw_transaction_rollback",
       "type_bridge_read_transaction_query_execute",
       "type_bridge_row_value_boolean",
       "type_bridge_row_value_date",
@@ -474,7 +484,7 @@
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-      "sha256": "6a9ad86d13da1df2fc7229eed774179181cd9426537f4b0d85e9c91dbd69868d"
+      "sha256": "72c4100eb5209c9be1b5d6443ba268cf10db970d07453c480dfd71a94751efd9"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",

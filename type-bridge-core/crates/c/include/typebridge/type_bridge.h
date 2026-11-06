@@ -4120,6 +4120,89 @@ type_bridge_canonical_bytes_view(
     type_bridge_byte_view_t *out_view);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_canonical_bytes_close(type_bridge_canonical_bytes_t **bytes);
+/* Raw results own provider JSON bytes. The view returned by raw_result_json
+ * stays valid until raw_result_close. Numeric JSON tokens retain full precision.
+ * Raw errors reuse diagnostics_json/diagnostics_close: an array containing code,
+ * verbatim message, category "provider", path [], and details with status,
+ * provider_code (nullable) and commit_outcome (nullable, "unknown" or
+ * "definitely_aborted"). These provider fields are not redacted or bounded by
+ * the typed diagnostic policy. All outputs must be disjoint from live inputs.
+ * Raw transaction handles require exclusive access. Close never commits;
+ * commit/rollback keep the handle, and close consumes and clears its slot.
+ * Proxy contexts dispatch one query; a second call refuses before any request.
+ * A completed proxy write cannot be rolled back. Decode failure after a proxy
+ * write reports commit_outcome_unknown. */
+typedef struct type_bridge_raw_result type_bridge_raw_result_t;
+typedef struct type_bridge_raw_transaction type_bridge_raw_transaction_t;
+#define TYPE_BRIDGE_TRANSACTION_SCHEMA 3u
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_raw_transaction(const type_bridge_database_t *database,
+    uint32_t kind, type_bridge_raw_transaction_t **out_transaction,
+    type_bridge_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_raw_transaction(const type_bridge_proxy_connection_t *proxy,
+    uint32_t kind, type_bridge_raw_transaction_t **out_transaction,
+    type_bridge_diagnostics_t **out_diagnostics);
+/*
+ * Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+ * to TypeDB as written, and TypeDB's output comes back as it
+ * answered, in this SDK's native data types. TypeBridge adds no
+ * validation, rewriting, hydration, hooks, limits or extra
+ * queries. It runs in read, write and schema transactions and
+ * accepts any TypeQL, schema-breaking changes included. The caller
+ * owns its correctness; TypeBridge makes no promise about its
+ * effects. On a proxy connection it posts to the server's opt-in
+ * `/v3/raw` endpoint, which is off by default.
+ */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_execute_query(const type_bridge_database_t *database,
+    type_bridge_byte_view_t query, uint32_t kind, type_bridge_raw_result_t **out_result,
+    type_bridge_diagnostics_t **out_diagnostics);
+/*
+ * Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+ * to TypeDB as written, and TypeDB's output comes back as it
+ * answered, in this SDK's native data types. TypeBridge adds no
+ * validation, rewriting, hydration, hooks, limits or extra
+ * queries. It runs in read, write and schema transactions and
+ * accepts any TypeQL, schema-breaking changes included. The caller
+ * owns its correctness; TypeBridge makes no promise about its
+ * effects. On a proxy connection it posts to the server's opt-in
+ * `/v3/raw` endpoint, which is off by default.
+ */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_execute_query(const type_bridge_proxy_connection_t *proxy,
+    type_bridge_byte_view_t query, uint32_t kind, type_bridge_raw_result_t **out_result,
+    type_bridge_diagnostics_t **out_diagnostics);
+/*
+ * Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+ * to TypeDB as written, and TypeDB's output comes back as it
+ * answered, in this SDK's native data types. TypeBridge adds no
+ * validation, rewriting, hydration, hooks, limits or extra
+ * queries. It runs in read, write and schema transactions and
+ * accepts any TypeQL, schema-breaking changes included. The caller
+ * owns its correctness; TypeBridge makes no promise about its
+ * effects. On a proxy connection it posts to the server's opt-in
+ * `/v3/raw` endpoint, which is off by default.
+ */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_raw_transaction_execute_query(type_bridge_raw_transaction_t *transaction,
+    type_bridge_byte_view_t query, type_bridge_raw_result_t **out_result,
+    type_bridge_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_raw_transaction_commit(type_bridge_raw_transaction_t *transaction,
+    type_bridge_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_raw_transaction_rollback(type_bridge_raw_transaction_t *transaction,
+    type_bridge_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_raw_transaction_close(type_bridge_raw_transaction_t **transaction,
+    type_bridge_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_raw_result_json(const type_bridge_raw_result_t *result,
+    type_bridge_byte_view_t *out_json);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_raw_result_close(type_bridge_raw_result_t **result);
+
 #ifdef __cplusplus
 }
 #endif

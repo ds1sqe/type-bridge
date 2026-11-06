@@ -105,7 +105,7 @@ pub struct TypeBridgeStagedTransaction {
 
 /// What a staged transaction runs on: a direct database, or a proxy
 /// connection's I/O runtime.
-enum StagedOwner {
+pub(crate) enum StagedOwner {
     Database(StagedDatabaseGuard),
     Proxy(StagedProxyGuard),
 }
@@ -131,14 +131,14 @@ impl StagedOwner {
             Self::Proxy(_) => None,
         }
     }
-    fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+    pub(crate) fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         match self {
             Self::Database(guard) => guard.block_on(future),
             Self::Proxy(guard) => guard.block_on(future),
         }
     }
 
-    fn check_borrowed_ranges(
+    pub(crate) fn check_borrowed_ranges(
         &self,
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {

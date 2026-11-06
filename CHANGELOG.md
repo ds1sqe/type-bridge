@@ -11,6 +11,10 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C unchecked TypeQL supports database/proxy `execute_query` and owned raw
+  transactions for read, write, and schema work. Results retain exact provider
+  JSON bytes; diagnostics retain provider details and commit certainty. Direct
+  transactions support multiple queries, while proxy contexts accept one.
 - C execution policies accept signed millisecond timeouts: nonpositive values
   disable the deadline, and omitted policies now default to 60 seconds. Proxy
   admission windows are independent; query and staged policies can collect

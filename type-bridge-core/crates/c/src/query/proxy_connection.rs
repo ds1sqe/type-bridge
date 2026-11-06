@@ -109,6 +109,25 @@ impl TypeBridgeProxyConnection {
         preflight.check_package_borrowed_ranges(&self.package)
     }
 
+    pub(crate) fn raw_transaction(
+        &self,
+        kind: type_bridge_orm::TxType,
+    ) -> Result<
+        (
+            type_bridge_orm::session::raw::RawTransaction,
+            StagedProxyGuard,
+        ),
+        type_bridge_orm::session::raw::RawQueryError,
+    > {
+        Ok((
+            self.connection.raw_transaction(kind)?,
+            StagedProxyGuard {
+                runtime: Arc::clone(&self.runtime),
+                package: Arc::clone(&self.package),
+            },
+        ))
+    }
+
     /// Open a staged transaction whose commit is one signed exchange with
     /// the server; the staged advertisement is fetched now.
     pub(crate) fn staged_transaction(
