@@ -119,7 +119,7 @@ async fn entity_insert_returns_ok_instead_of_documents() {
         error.category(),
         type_bridge_orm::match_request::MatchErrorCategory::ResultDecode
     );
-    assert_eq!(error.code().as_str(), "query_remote_v3_answer_kind");
+    assert_eq!(error.code().as_str(), "query_remote_answer_kind");
 }
 
 #[tokio::test]
@@ -141,7 +141,7 @@ async fn entity_insert_returns_rows_instead_of_documents() {
         error.category(),
         type_bridge_orm::match_request::MatchErrorCategory::ResultDecode
     );
-    assert_eq!(error.code().as_str(), "query_remote_v3_answer_kind");
+    assert_eq!(error.code().as_str(), "query_remote_answer_kind");
 }
 
 #[tokio::test]
@@ -178,7 +178,7 @@ async fn entity_count_wrong_response_type() {
         error.category(),
         type_bridge_orm::match_request::MatchErrorCategory::ResultDecode
     );
-    assert_eq!(error.code().as_str(), "query_remote_v3_answer_kind");
+    assert_eq!(error.code().as_str(), "query_remote_answer_kind");
 }
 
 #[tokio::test]

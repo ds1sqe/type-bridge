@@ -134,7 +134,7 @@ test("the native staged transaction takes Uint8Array bytes and refuses shared st
   shared.set(plan);
   assert.throws(
     () => tx.stagePlan(shared, new Uint8Array(declared)),
-    /query_v2_shared_buffer_unsupported/,
+    /query_shared_buffer_unsupported/,
   );
   tx.close();
   db.close();

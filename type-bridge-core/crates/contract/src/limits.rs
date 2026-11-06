@@ -662,8 +662,8 @@ const LIMIT_BY_DIAGNOSTIC_CODE: &[(&str, &str)] = &[
     ("query_plan_role_player_limit", "boolean_terms"),
     ("query_plan_sort_term_limit", "order_terms"),
     ("query_plan_try_term_limit", "boolean_terms"),
-    ("query_plan_v2_compatibility_value_limit", "canonical_bytes"),
-    ("query_v2_adapter_literal_byte_limit", "canonical_bytes"),
+    ("query_plan_compatibility_value_limit", "canonical_bytes"),
+    ("query_adapter_literal_byte_limit", "canonical_bytes"),
 ];
 
 impl QueryLimits {

@@ -801,7 +801,7 @@ pub(crate) fn adapter_match_error(diagnostic: Diagnostic) -> MatchError {
 fn plan_execution_error(error: OrmError) -> OrmError {
     if let OrmError::Match(ref matched) = error {
         if matched.code().as_str().starts_with("query_plan_")
-            || matched.code().as_str().starts_with("query_remote_v3_")
+            || matched.code().as_str().starts_with("query_remote_")
         {
             let Ok(code) =
                 type_bridge_contract::diagnostic::DiagnosticCode::new(matched.code().as_str())
@@ -1559,7 +1559,7 @@ mod tests {
         );
         let emitted = source
             .split('"')
-            .filter(|value| value.starts_with("query_v2_model_"))
+            .filter(|value| value.starts_with("query_model_"))
             .collect::<BTreeSet<_>>();
         assert!(
             !emitted.is_empty(),
@@ -1568,7 +1568,7 @@ mod tests {
         for code in emitted {
             // Exactly-one carries a dynamic cardinality detail and is mapped by
             // the dedicated compatibility arm before the static mapper.
-            if code == "query_v2_model_exactly_one" {
+            if code == "query_model_exactly_one" {
                 continue;
             }
             let diagnostic =
@@ -1582,7 +1582,7 @@ mod tests {
 
         let future = crate::plan_lowering::failure(
             DiagnosticCategory::Integrity,
-            "query_v2_model_future_unmapped_code",
+            "query_model_future_unmapped_code",
             "mapping probe",
         );
         assert_eq!(
@@ -1592,7 +1592,7 @@ mod tests {
 
         let role_players = crate::plan_lowering::failure(
             DiagnosticCategory::ResourceLimit,
-            "query_v2_model_role_player_limit",
+            "query_model_role_player_limit",
             "mapping probe",
         );
         assert_eq!(
@@ -1641,10 +1641,10 @@ mod tests {
         };
 
         for code in [
-            "query_v2_model_contract_missing",
-            "query_v2_model_provider_plan_missing",
-            "query_v2_model_provider_plan_mismatch",
-            "query_v2_model_tuple_plan",
+            "query_model_contract_missing",
+            "query_model_provider_plan_missing",
+            "query_model_provider_plan_mismatch",
+            "query_model_tuple_plan",
         ] {
             assert_surface(
                 invalid(code),
@@ -1655,29 +1655,29 @@ mod tests {
             );
         }
         assert_surface(
-            invalid("query_v2_model_page_total_plan"),
+            invalid("query_model_page_total_plan"),
             MatchErrorCategory::ResultDecode,
             "page_operation_mismatch",
             "typed page plan does not belong to a PageBy operation",
             vec![MatchErrorPathSegment::Result],
         );
         assert_surface(
-            invalid("query_v2_model_rows_collection"),
+            invalid("query_model_rows_collection"),
             MatchErrorCategory::InvalidPlan,
             "unsupported_collection_slot",
             "selected-row execution does not support collected output slots",
             vec![MatchErrorPathSegment::Operation],
         );
         assert_surface(
-            resource("query_v2_model_count_overflow"),
+            resource("query_model_count_overflow"),
             MatchErrorCategory::ResourceLimit,
             "processed_item_counter_overflow",
             "provider resource limits prevented complete typed match evidence",
             vec![MatchErrorPathSegment::ProviderEvidence],
         );
         for code in [
-            "query_v2_model_hydration_authority",
-            "query_v2_model_hydration_state",
+            "query_model_hydration_authority",
+            "query_model_hydration_state",
         ] {
             assert_surface(
                 invalid(code),
@@ -1690,15 +1690,15 @@ mod tests {
 
         for (code, message) in [
             (
-                "query_v2_model_predicate_equal_type",
+                "query_model_predicate_equal_type",
                 "provider predicate values do not have the same validated type",
             ),
             (
-                "query_v2_model_predicate_order_type",
+                "query_model_predicate_order_type",
                 "provider predicate values are not order-compatible",
             ),
             (
-                "query_v2_model_predicate_string_type",
+                "query_model_predicate_string_type",
                 "provider predicate values do not support the validated string operator",
             ),
         ] {
@@ -1711,7 +1711,7 @@ mod tests {
             );
         }
         assert_surface(
-            invalid("query_v2_model_regex"),
+            invalid("query_model_regex"),
             MatchErrorCategory::InvalidPlan,
             "invalid_regex_pattern",
             "validated request contains an invalid regular expression",
@@ -1724,17 +1724,17 @@ mod tests {
         ];
         for (code, released_code, message) in [
             (
-                "query_v2_model_order_non_scalar",
+                "query_model_order_non_scalar",
                 "non_scalar_order_evidence",
                 "provider returned multiple values for a validated scalar order field",
             ),
             (
-                "query_v2_model_order_missing",
+                "query_model_order_missing",
                 "missing_order_value",
                 "provider omitted a value required by stable ordering",
             ),
             (
-                "query_v2_model_order_value_type",
+                "query_model_order_value_type",
                 "order_value_type_mismatch",
                 "provider order values are not mutually comparable",
             ),

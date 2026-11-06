@@ -955,7 +955,7 @@ functions:
     fn database_owned_write_rolls_back_errors_and_classifies_commit_certainty() {
         for (responses, expected_code) in [
             // Shared precommit proof rejects an empty document answer before materialisation.
-            (vec![documents(vec![])], "query_remote_v3_document_value"),
+            (vec![documents(vec![])], "query_remote_document_value"),
             (vec![Response::Error], "provider_operation_failed"),
         ] {
             let fixture = fixture(responses, COMMIT_SUCCESS);

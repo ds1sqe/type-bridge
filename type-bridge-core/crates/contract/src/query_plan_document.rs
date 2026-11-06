@@ -449,11 +449,11 @@ fn validate_thing(
 
 fn document_error(kind: &str) -> Diagnostic {
     let code = match kind {
-        "key" => "query_remote_v3_document_key",
-        "type" => "query_remote_v3_document_type",
-        "attribute" => "query_remote_v3_document_attribute",
-        "role" => "query_remote_v3_document_role",
-        _ => "query_remote_v3_document_value",
+        "key" => "query_remote_document_key",
+        "type" => "query_remote_document_type",
+        "attribute" => "query_remote_document_attribute",
+        "role" => "query_remote_document_role",
+        _ => "query_remote_document_value",
     };
     invalid(
         code,

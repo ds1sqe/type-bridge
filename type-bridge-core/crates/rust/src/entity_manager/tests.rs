@@ -622,7 +622,7 @@ fn assert_precommit_insert_correlation_error(error: &crate::Error) {
         error.category(),
         crate::error::ErrorCategory::ModelValidation
     );
-    assert_eq!(error.code(), Some("query_remote_v3_document_value"));
+    assert_eq!(error.code(), Some("query_remote_document_value"));
     assert_eq!(
         error.model_validation_phase(),
         Some(crate::error::ModelValidationPhase::Input)
@@ -669,7 +669,7 @@ async fn public_insert_wrong_concrete_provider_row_rolls_back() {
         .await
         .unwrap_err();
     // The exact-type plan rejects attributes of an undeclared result type before hydration.
-    assert_eq!(error.code(), Some("query_remote_v3_answer_kind"));
+    assert_eq!(error.code(), Some("query_remote_answer_kind"));
     assert_post_write_events(&state.lock().unwrap().events, "\"v\"");
 }
 
@@ -1002,21 +1002,21 @@ async fn public_subtypes_reject_invalid_evidence_before_materialization() {
     for (documents, code) in [
         (
             vec![serde_json::json!({"_iid":"0x1","_type":"unknown","attributes":{}})],
-            "query_remote_v3_document_type",
+            "query_remote_document_type",
         ),
         (
             vec![serde_json::json!({"_iid":"0x1","_type":"base","attributes":{}})],
-            "query_remote_v3_document_type",
+            "query_remote_document_type",
         ),
         (
             vec![
                 serde_json::json!({"_iid":"0x1","_type":"outside","attributes":{"name":["n1"],"text":["v"]}}),
             ],
-            "query_remote_v3_answer_kind",
+            "query_remote_answer_kind",
         ),
         (
             vec![serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"]}})],
-            "query_remote_v3_document_value",
+            "query_remote_document_value",
         ),
         (vec![row, conflicting], "query_plan_hydration_conflict"),
     ] {
@@ -1055,7 +1055,7 @@ async fn public_leaf_subtypes_reject_wrong_identity_before_materializer() {
         serde_json::json!({"_iid":"0x1","_type":"outside","attributes":{"name":["n1"],"text":["v"]}}),
     ]))]);
     let error = db.entities::<Leaf>().subtypes().all().await.unwrap_err();
-    assert_eq!(error.code(), Some("query_remote_v3_answer_kind"));
+    assert_eq!(error.code(), Some("query_remote_answer_kind"));
     assert_eq!(error.sdk_category(), Some("integrity"));
     assert_eq!(LEAF_MATERIALIZE_CALLS.load(Ordering::SeqCst), 0);
     let guard = state.lock().unwrap();
@@ -1264,7 +1264,7 @@ async fn public_insert_noncanonical_iid_rolls_back_without_refetch() {
         })
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Some("query_remote_v3_document_value"));
+    assert_eq!(err.code(), Some("query_remote_document_value"));
     assert_insert_failure_events(&state.lock().unwrap().events);
 }
 
@@ -1769,9 +1769,9 @@ async fn iid_lookup_preserves_provider_errors_and_classifies_bad_documents_as_hy
                 assert_eq!(
                     error.code(),
                     Some(if case == 2 {
-                        "query_remote_v3_answer_kind"
+                        "query_remote_answer_kind"
                     } else {
-                        "query_remote_v3_document_value"
+                        "query_remote_document_value"
                     })
                 );
             }

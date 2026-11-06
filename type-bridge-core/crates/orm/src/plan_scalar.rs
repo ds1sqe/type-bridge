@@ -111,7 +111,7 @@ pub fn plan_scalar_unicode_error() -> Diagnostic {
 pub fn host_string_unicode_error() -> Diagnostic {
     failure(
         DiagnosticCategory::InvalidContract,
-        "query_v2_host_string_unicode",
+        "query_host_string_unicode",
         "host string input must be valid Unicode without surrogate code points",
     )
 }
@@ -122,7 +122,7 @@ pub fn host_string_unicode_error() -> Diagnostic {
 pub fn host_string_type_error() -> Diagnostic {
     failure(
         DiagnosticCategory::InvalidContract,
-        "query_v2_host_string_type",
+        "query_host_string_type",
         "host string input must be a string value",
     )
 }

@@ -2098,7 +2098,7 @@ mod tests {
         );
         assert_eq!(
             context.rollback_only_cause().await.unwrap().code().as_str(),
-            "query_remote_v3_answer_kind"
+            "query_remote_answer_kind"
         );
         assert!(context.commit().await.is_err());
         assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 0);

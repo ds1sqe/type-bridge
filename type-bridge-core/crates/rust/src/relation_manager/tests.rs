@@ -844,7 +844,7 @@ async fn public_relation_document_validation_failure_rolls_back() {
         .await
         .unwrap_err();
     // The shared plan decoder rejects an undeclared player attribute before hydration.
-    assert_eq!(error.code(), Some("query_remote_v3_answer_kind"));
+    assert_eq!(error.code(), Some("query_remote_answer_kind"));
     let guard = state.lock().unwrap();
     assert!(matches!(
         guard.events.as_slice(),
@@ -1239,17 +1239,17 @@ async fn public_relation_subtypes_reject_invalid_evidence_before_materialization
     for (rows, code) in [
         (
             vec![serde_json::json!({"_iid":"0x1","_type":"unknown","attributes":{}})],
-            "query_remote_v3_document_type",
+            "query_remote_document_type",
         ),
         (
             vec![serde_json::json!({"_iid":"0x1","_type":"engagement","attributes":{}})],
-            "query_remote_v3_document_type",
+            "query_remote_document_type",
         ),
         (
             vec![serde_json::json!({"_iid":"0x1","_type":"sidework","attributes":{}})],
-            "query_remote_v3_document_type",
+            "query_remote_document_type",
         ),
-        (vec![missing], "query_remote_v3_document_value"),
+        (vec![missing], "query_remote_document_value"),
         (vec![valid, conflicting], "query_plan_hydration_conflict"),
     ] {
         let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(rows))]);

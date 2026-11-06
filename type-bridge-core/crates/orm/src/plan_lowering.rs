@@ -63,7 +63,7 @@ pub(crate) fn given_rows_spec(
             if given_type_keyword(column.value_type()).is_none() {
                 return Err(failure(
                     DiagnosticCategory::InvalidContract,
-                    "query_v2_given_value_unsupported",
+                    "query_given_value_unsupported",
                     "this input value type has no proven given transport",
                 ));
             }
@@ -80,7 +80,7 @@ pub(crate) fn given_rows_spec(
                     Some(value) => given_value(value).ok_or_else(|| {
                         failure(
                             DiagnosticCategory::InvalidContract,
-                            "query_v2_given_value_unsupported",
+                            "query_given_value_unsupported",
                             "this input value has no lossless given transport",
                         )
                     }),
@@ -155,7 +155,7 @@ pub(crate) fn ast<T>(result: Result<T, tql::TqlError>) -> Result<T, Diagnostic> 
     result.map_err(|_| {
         failure(
             DiagnosticCategory::Integrity,
-            "query_v2_ast_lowering",
+            "query_ast_lowering",
             "validated query cannot be represented by the TypeQL adapter",
         )
     })
@@ -412,14 +412,14 @@ fn lower_scoped_patterns_inner(
                 for length in usize::from(*min_depth)..=usize::from(*max_depth) {
                     if length == 0 {
                         // TypeDB requires an exact typed witness in each identity branch.
-                        let validated = validated.ok_or_else(|| failure(DiagnosticCategory::Integrity, "query_v2_reachable_scope", "a validated reachable pattern appears outside the root query scope"))?;
+                        let validated = validated.ok_or_else(|| failure(DiagnosticCategory::Integrity, "query_reachable_scope", "a validated reachable pattern appears outside the root query scope"))?;
                         let domain = validated
                             .binding_types(source_id)
                             .filter(|domain| !domain.is_empty())
                             .ok_or_else(|| {
                                 failure(
                                     DiagnosticCategory::Integrity,
-                                    "query_v2_reachable_source_domain",
+                                    "query_reachable_source_domain",
                                     "a validated reachable source has no schema-derived domain",
                                 )
                             })?;
@@ -503,7 +503,7 @@ pub(crate) fn lower_operand(
                     .ok_or_else(|| {
                         failure(
                             DiagnosticCategory::InvalidContract,
-                            "query_v2_missing_input_value",
+                            "query_missing_input_value",
                             "pattern reads an input column absent from the bound row",
                         )
                     })?,
@@ -514,7 +514,7 @@ pub(crate) fn lower_operand(
                     .ok_or_else(|| {
                         failure(
                             DiagnosticCategory::InvalidContract,
-                            "query_v2_missing_input_value",
+                            "query_missing_input_value",
                             "pattern reads an undeclared input column",
                         )
                     })?
@@ -535,7 +535,7 @@ pub(crate) fn local_variable(
         .ok_or_else(|| {
             failure(
                 DiagnosticCategory::Integrity,
-                "query_v2_unknown_binding",
+                "query_unknown_binding",
                 "validated plan references an unknown binding",
             )
         })

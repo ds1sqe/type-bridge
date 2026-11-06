@@ -223,7 +223,7 @@ async fn mismatching_bulk_documents_roll_back_direct_and_signed_proxy_writes() {
             let request = request(&proxy, vec![entry]);
             let reply = verify(&proxy, &request, &post(&proxy, &request).await);
             assert!(!reply.committed());
-            assert_eq!(failure_code(&reply), "query_remote_v3_document_value");
+            assert_eq!(failure_code(&reply), "query_remote_document_value");
         } else {
             let mut transaction = database.transaction(TransactionOptions::default());
             let pending = transaction.stage_plan(plan).unwrap();
@@ -235,7 +235,7 @@ async fn mismatching_bulk_documents_roll_back_direct_and_signed_proxy_writes() {
                     .diagnostic()
                     .code()
                     .as_str(),
-                "query_remote_v3_document_value"
+                "query_remote_document_value"
             );
             assert!(pending.get().is_err());
         }

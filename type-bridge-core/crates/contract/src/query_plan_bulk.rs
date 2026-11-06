@@ -35,7 +35,7 @@ impl Ord for ScalarKey<'_> {
 fn result_error() -> Diagnostic {
     failure(
         DiagnosticCategory::Integrity,
-        "query_remote_v3_document_value",
+        "query_remote_document_value",
         "bulk documents do not match their input rows",
     )
 }
@@ -692,7 +692,7 @@ mod correlation_tests {
         ] {
             assert_eq!(
                 group.correlate(&wrong).unwrap_err().code().as_str(),
-                "query_remote_v3_document_value"
+                "query_remote_document_value"
             );
         }
     }

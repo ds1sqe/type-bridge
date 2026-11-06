@@ -470,7 +470,7 @@ async fn execute_inner(
         StagedKind::Write => TransactionKind::Write,
         StagedKind::Schema => {
             let failure = sdk_invalid(
-                "query_remote_v3_kind",
+                "query_remote_kind",
                 "staged requests never open a schema transaction",
             );
             return finish_failed(state, deadline, &ctx, &staged, failure).await;

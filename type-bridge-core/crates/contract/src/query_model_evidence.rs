@@ -333,8 +333,7 @@ impl HydratedRow {
 pub(crate) fn remote_evidence_mismatch(message: &'static str) -> Diagnostic {
     Diagnostic::new(
         DiagnosticCategory::Integrity,
-        DiagnosticCode::new("query_remote_v2_evidence_mismatch")
-            .expect("fixed evidence diagnostic"),
+        DiagnosticCode::new("query_remote_evidence_mismatch").expect("fixed evidence diagnostic"),
         message,
     )
 }

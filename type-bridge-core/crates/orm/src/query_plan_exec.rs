@@ -567,7 +567,7 @@ pub(crate) fn plan_diagnostic_error(diagnostic: Diagnostic) -> crate::error::Orm
 fn staged_value_unserializable() -> Diagnostic {
     failure(
         DiagnosticCategory::InvalidContract,
-        "query_remote_v3_answer_invalid",
+        "query_remote_answer_invalid",
         "a staged reply row value cannot be represented",
     )
 }
@@ -587,7 +587,7 @@ pub fn merge_plan_answers(
     let bad = || {
         failure(
             DiagnosticCategory::Integrity,
-            "query_remote_v3_document_value",
+            "query_remote_document_value",
             "bulk answers do not match their input rows",
         )
     };
@@ -669,7 +669,7 @@ pub fn merge_plan_answers(
 fn staged_answer_shape() -> Diagnostic {
     failure(
         DiagnosticCategory::Integrity,
-        "query_remote_v3_answer_kind",
+        "query_remote_answer_kind",
         "answer kind does not match its validated plan",
     )
 }
@@ -703,7 +703,7 @@ pub(crate) fn remote_value(
     let bad = || {
         failure(
             DiagnosticCategory::Integrity,
-            "query_remote_v3_answer_concept",
+            "query_remote_answer_concept",
             "provider row evidence is not a typed concept",
         )
     };
@@ -2367,7 +2367,7 @@ mod tests {
                 .unwrap()
                 .code()
                 .as_str(),
-            "query_remote_v3_document_value"
+            "query_remote_document_value"
         );
     }
 

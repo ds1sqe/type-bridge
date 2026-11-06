@@ -44,7 +44,7 @@ const nativeDiagnostic = Object.freeze({
   category: "cardinality",
   sdk_category: "invalid_input",
   query_category: "cardinality",
-  code: "query_v2_expected_one",
+  code: "query_expected_one",
   message: "the query returned more than one row",
   path: [{ kind: "operation" }],
   details: { actual: { kind: "count", value: "2" } },

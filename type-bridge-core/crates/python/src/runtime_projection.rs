@@ -14527,7 +14527,7 @@ def public_state(value):
                         .unwrap()
                         .extract::<String>()
                         .unwrap(),
-                    "query_remote_v3_document_value"
+                    "query_remote_document_value"
                 );
                 assert!(instance.getattr("iid").unwrap().is_none());
                 assert!(package.facade_origins.proof(&instance).is_none());

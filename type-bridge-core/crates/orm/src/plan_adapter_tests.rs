@@ -384,7 +384,7 @@ fn native_selected_relation_roles_recheck_correlated_hidden_player_identity() {
             .unwrap_err()
             .code()
             .as_str(),
-        "query_v2_model_predicate_evidence"
+        "query_model_predicate_evidence"
     );
 }
 

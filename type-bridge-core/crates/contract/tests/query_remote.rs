@@ -358,7 +358,7 @@ fn capability_admission_and_aggregate_answer_budgets_fail_closed() {
     spec.limits.max_items = 2;
     let request = StagedRequest::new(spec, &support::schema(), &advertisement()).unwrap();
     let refusal = StagedReply::new(&request, StagedOutcome::Committed, answers()).unwrap_err();
-    assert_eq!(refusal.code().as_str(), "query_remote_v3_answer_items");
+    assert_eq!(refusal.code().as_str(), "query_remote_answer_items");
     assert_eq!(
         refusal.details()["maximum"],
         type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(2)
@@ -520,7 +520,7 @@ fn authenticated_payload_preflights_budgets_before_owned_evidence() {
         &Accept,
     )
     .unwrap_err();
-    assert_eq!(error.code().as_str(), "query_remote_v3_reply_bytes");
+    assert_eq!(error.code().as_str(), "query_remote_reply_bytes");
     wire["payload"]["outcome"] =
         json!({"kind":"failed","diagnostic":{"message":"x".repeat(65_537)}});
     wire["payload"]["answers"] = json!([]);
@@ -532,7 +532,7 @@ fn authenticated_payload_preflights_budgets_before_owned_evidence() {
         &Accept,
     )
     .unwrap_err();
-    assert_eq!(error.code().as_str(), "query_remote_v3_diagnostic_limit");
+    assert_eq!(error.code().as_str(), "query_remote_diagnostic_limit");
     wire["payload"]["outcome"] = json!({"kind":"failed"});
     let error = VerifiedStagedReply::decode(
         &to_canonical_json(&wire).unwrap(),
@@ -542,7 +542,7 @@ fn authenticated_payload_preflights_budgets_before_owned_evidence() {
         &Accept,
     )
     .unwrap_err();
-    assert_eq!(error.code().as_str(), "query_remote_v3_reply_shape");
+    assert_eq!(error.code().as_str(), "query_remote_reply_shape");
 }
 
 #[test]
@@ -700,7 +700,7 @@ fn fetch_document_refusals_name_the_invalid_evidence() {
         .unwrap_err();
         assert_eq!(
             error.code().as_str(),
-            format!("query_remote_v3_document_{code}")
+            format!("query_remote_document_{code}")
         );
     }
     let (request, mut documents) = fetch_documents(true);
@@ -711,7 +711,7 @@ fn fetch_document_refusals_name_the_invalid_evidence() {
         vec![StagedAnswer::Documents { documents }],
     )
     .unwrap_err();
-    assert_eq!(error.code().as_str(), "query_remote_v3_document_role");
+    assert_eq!(error.code().as_str(), "query_remote_document_role");
 }
 
 #[test]
@@ -744,7 +744,7 @@ fn fetch_document_optional_roles_require_complete_evidence() {
     document.insert("_role_0_iid".into(), RemoteFieldValue::Absent);
     assert_eq!(
         shape.validate(document).unwrap_err().code().as_str(),
-        "query_remote_v3_document_role"
+        "query_remote_document_role"
     );
     for suffix in ["iid", "type", "attributes"] {
         document.insert(format!("_role_0_{suffix}"), RemoteFieldValue::Absent);
@@ -759,7 +759,7 @@ fn fetch_document_optional_roles_require_complete_evidence() {
     );
     assert_eq!(
         shape.validate(document).unwrap_err().code().as_str(),
-        "query_remote_v3_document_role"
+        "query_remote_document_role"
     );
 }
 
@@ -784,7 +784,7 @@ fn fetch_document_inherited_attributes_require_an_admitted_exact_type() {
     let document = &mut documents[0];
     assert_eq!(
         shape.validate(document).unwrap_err().code().as_str(),
-        "query_remote_v3_document_type"
+        "query_remote_document_type"
     );
     document.insert(
         "_type".into(),
@@ -800,7 +800,7 @@ fn fetch_document_inherited_attributes_require_an_admitted_exact_type() {
     fields.remove("id");
     assert_eq!(
         shape.validate(document).unwrap_err().code().as_str(),
-        "query_remote_v3_document_value"
+        "query_remote_document_value"
     );
 }
 
@@ -856,7 +856,7 @@ fn fetch_documents_distinguish_scalar_and_collection_ownerships() {
     let (_, mut documents) = fetch_documents(false);
     assert_eq!(
         shape.validate(&documents[0]).unwrap_err().code().as_str(),
-        "query_remote_v3_document_value"
+        "query_remote_document_value"
     );
     let RemoteFieldValue::Document { fields } = documents[0].get_mut("attributes").unwrap() else {
         panic!()
@@ -872,7 +872,7 @@ fn fetch_documents_distinguish_scalar_and_collection_ownerships() {
     values.push(type_bridge_contract::value::CanonicalValue::Long(9));
     assert_eq!(
         shape.validate(&documents[0]).unwrap_err().code().as_str(),
-        "query_remote_v3_document_value"
+        "query_remote_document_value"
     );
 }
 
@@ -962,7 +962,7 @@ fn deletion_snapshot_capture_consumes_the_read_statement_budget() {
         } else {
             assert_eq!(
                 result.unwrap_err().code().as_str(),
-                "query_remote_v3_statement_limit"
+                "query_remote_statement_limit"
             );
         }
     }
@@ -1071,7 +1071,7 @@ fn signed_fetch_evidence_cannot_exceed_requested_semantic_dimensions() {
             }],
         )
         .unwrap_err();
-        assert_eq!(error.code().as_str(), "query_remote_v3_answer_dimensions");
+        assert_eq!(error.code().as_str(), "query_remote_answer_dimensions");
     }
 }
 
@@ -1143,7 +1143,7 @@ fn wide_scalars_require_explicit_caller_and_receiver_limits_and_capability() {
         .unwrap_err()
         .code()
         .as_str(),
-        "query_remote_v3_query_limits"
+        "query_remote_query_limits"
     );
     use type_bridge_contract::query_plan::{Expr, Pattern, QueryOperand, Stage};
     use type_bridge_contract::value::{CanonicalString, CanonicalValue};
@@ -1362,7 +1362,7 @@ fn explicitly_advertised_statement_limits_remain_strict_at_the_default_value() {
         .with_answer_limits(BTreeMap::from([("statements".to_owned(), 3)]))
         .unwrap();
     let error = StagedRequest::new(make_spec(), &support::schema(), &explicit).unwrap_err();
-    assert_eq!(error.code().as_str(), "query_remote_v3_statement_limit");
+    assert_eq!(error.code().as_str(), "query_remote_statement_limit");
     assert_eq!(
         error.details().get("maximum"),
         Some(&type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(3))
@@ -1501,7 +1501,7 @@ fn execution_deadline_is_independent_of_finite_request_freshness() {
             .unwrap_err()
             .code()
             .as_str(),
-        "query_remote_v3_expired"
+        "query_remote_expired"
     );
     let bytes = request.encode().unwrap();
     assert_eq!(
@@ -1953,6 +1953,6 @@ fn pre_request_failure_rejects_invalid_payloads_and_fallback_is_bounded() {
             .unwrap();
     assert_eq!(
         fallback.diagnostic().unwrap().code().as_str(),
-        "query_remote_v3_internal_failure"
+        "query_remote_internal_failure"
     );
 }

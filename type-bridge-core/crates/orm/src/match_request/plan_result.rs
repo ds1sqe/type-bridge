@@ -153,7 +153,7 @@ fn rows(
                         Some(RemoteValue::Absent) => {}
                         _ => {
                             return Err(failure(
-                                "query_v2_model_predicate_evidence",
+                                "query_model_predicate_evidence",
                                 "predicate witness is not a scalar or explicit absence",
                             ));
                         }
@@ -470,7 +470,7 @@ pub(crate) fn resolve(
     for ((binding, iid, attribute), values) in &witnesses {
         let concrete = types.get(&(*binding, iid.clone())).ok_or_else(|| {
             failure(
-                "query_v2_model_predicate_evidence",
+                "query_model_predicate_evidence",
                 "predicate witness has no correlated identity",
             )
         })?;
@@ -487,13 +487,13 @@ pub(crate) fn resolve(
             })
             .ok_or_else(|| {
                 failure(
-                    "query_v2_model_predicate_evidence",
+                    "query_model_predicate_evidence",
                     "predicate witness has no schema field",
                 )
             })?;
         if values.is_empty() && field.cardinality().min() > 0 {
             return Err(failure(
-                "query_v2_model_predicate_evidence",
+                "query_model_predicate_evidence",
                 "required predicate operand is absent",
             ));
         }
@@ -508,7 +508,7 @@ pub(crate) fn resolve(
                 || values.iter().any(|value| !actual.contains(value))
             {
                 return Err(failure(
-                    "query_v2_model_predicate_evidence",
+                    "query_model_predicate_evidence",
                     "predicate witness contradicts the selected model",
                 ));
             }
@@ -531,7 +531,7 @@ pub(crate) fn resolve(
             .map_err(shared)?
         {
             return Err(failure(
-                "query_v2_model_predicate_evidence",
+                "query_model_predicate_evidence",
                 "hydrated solution does not satisfy the validated match predicate",
             ));
         }
@@ -624,7 +624,7 @@ pub(crate) fn resolve(
                     if collection_members > limits.collection_members {
                         return Err(crate::plan_lowering::failure(
                             DiagnosticCategory::ResourceLimit,
-                            "query_v2_model_collection_limit",
+                            "query_model_collection_limit",
                             "collected slots exceed the collection budget",
                         ));
                     }
@@ -646,7 +646,7 @@ pub(crate) fn resolve(
     {
         return Err(crate::plan_lowering::failure(
             DiagnosticCategory::ResourceLimit,
-            "query_v2_model_complete_rows_exceeded",
+            "query_model_complete_rows_exceeded",
             "more distinct rows matched than the complete fetch accepts",
         ));
     }

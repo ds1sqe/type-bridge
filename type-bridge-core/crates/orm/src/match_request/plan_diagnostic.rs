@@ -10,7 +10,7 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 /// Direct execution and authenticated remote execution must both cross this
 /// compatibility map before a language binding observes the failure.
 pub(crate) fn released_plan_execution_error(diagnostic: &Diagnostic) -> MatchError {
-    if diagnostic.code().as_str() == "query_v2_model_exactly_one" {
+    if diagnostic.code().as_str() == "query_model_exactly_one" {
         let actual = diagnostic
             .details()
             .get("actual")
@@ -64,22 +64,22 @@ pub(crate) fn released_plan_execution_error(diagnostic: &Diagnostic) -> MatchErr
 
 fn released_execution_path(diagnostic: &Diagnostic) -> MatchErrorPath {
     let segments = match diagnostic.code().as_str() {
-        "query_v2_model_regex" => vec![MatchErrorPathSegment::Predicate],
-        "query_v2_model_rows_collection" => vec![MatchErrorPathSegment::Operation],
+        "query_model_regex" => vec![MatchErrorPathSegment::Predicate],
+        "query_model_rows_collection" => vec![MatchErrorPathSegment::Operation],
         "query_plan_result_stack"
         | "query_plan_result_state"
         | "query_plan_result_operation"
-        | "query_v2_model_contract_missing"
-        | "query_v2_model_provider_plan_missing"
-        | "query_v2_model_provider_plan_mismatch"
-        | "query_v2_model_tuple_plan"
-        | "query_v2_model_page_total_plan" => vec![MatchErrorPathSegment::Result],
-        "query_v2_model_predicate_equal_type"
-        | "query_v2_model_predicate_order_type"
-        | "query_v2_model_predicate_string_type" => vec![MatchErrorPathSegment::Result],
-        "query_v2_model_order_non_scalar"
-        | "query_v2_model_order_missing"
-        | "query_v2_model_order_value_type" => {
+        | "query_model_contract_missing"
+        | "query_model_provider_plan_missing"
+        | "query_model_provider_plan_mismatch"
+        | "query_model_tuple_plan"
+        | "query_model_page_total_plan" => vec![MatchErrorPathSegment::Result],
+        "query_model_predicate_equal_type"
+        | "query_model_predicate_order_type"
+        | "query_model_predicate_string_type" => vec![MatchErrorPathSegment::Result],
+        "query_model_order_non_scalar"
+        | "query_model_order_missing"
+        | "query_model_order_value_type" => {
             let owner = diagnostic.details().get("field_owner").and_then(|value| {
                 if let DiagnosticDetailValue::Text(value) = value {
                     Some(value.clone())
@@ -181,47 +181,47 @@ pub(super) fn released_execution_diagnostic(
             "response_byte_limit",
             "provider answer exceeded the response-byte ceiling",
         ),
-        "query_v2_model_item_limit" => (
+        "query_model_item_limit" => (
             MatchErrorCategory::ResourceLimit,
             "processed_item_limit",
             "provider answer exceeded the processed-item ceiling",
         ),
-        "query_v2_model_byte_limit" => (
+        "query_model_byte_limit" => (
             MatchErrorCategory::ResourceLimit,
             "response_byte_limit",
             "provider answer exceeded the response-byte ceiling",
         ),
-        "query_v2_model_collection_limit" => (
+        "query_model_collection_limit" => (
             MatchErrorCategory::ResourceLimit,
             "collected_concept_limit",
             "provider result exceeded the collected-concept ceiling",
         ),
-        "query_v2_model_graph_limit" | "query_v2_model_hydration_limit" => (
+        "query_model_graph_limit" | "query_model_hydration_limit" => (
             MatchErrorCategory::ResourceLimit,
             "hydrated_thing_limit",
             "provider result exceeded the hydrated-thing ceiling",
         ),
-        "query_v2_model_attribute_limit" => (
+        "query_model_attribute_limit" => (
             MatchErrorCategory::ResourceLimit,
             "hydrated_attribute_value_limit",
             "provider result exceeded the hydrated attribute-value ceiling",
         ),
-        "query_v2_model_role_player_limit" => (
+        "query_model_role_player_limit" => (
             MatchErrorCategory::ResourceLimit,
             "hydrated_role_player_limit",
             "provider result exceeded the hydrated role-player ceiling",
         ),
-        "query_v2_model_solution_limit" => (
+        "query_model_solution_limit" => (
             MatchErrorCategory::ResourceLimit,
             "solution_scan_limit",
             "provider solution ceiling was reached before result completeness was proven",
         ),
-        "query_v2_model_complete_rows_exceeded" => (
+        "query_model_complete_rows_exceeded" => (
             MatchErrorCategory::ResourceLimit,
             "row_window_exceeded",
             "provider returned more distinct rows than the validated window permits",
         ),
-        "query_v2_model_count_overflow" => (
+        "query_model_count_overflow" => (
             MatchErrorCategory::ResourceLimit,
             "processed_item_counter_overflow",
             "processed provider item counter overflowed",
@@ -229,182 +229,180 @@ pub(super) fn released_execution_diagnostic(
         "query_plan_result_stack"
         | "query_plan_result_state"
         | "query_plan_result_operation"
-        | "query_v2_model_contract_missing"
-        | "query_v2_model_provider_plan_missing"
-        | "query_v2_model_provider_plan_mismatch"
-        | "query_v2_model_tuple_plan" => (
+        | "query_model_contract_missing"
+        | "query_model_provider_plan_missing"
+        | "query_model_provider_plan_mismatch"
+        | "query_model_tuple_plan" => (
             MatchErrorCategory::ResultDecode,
             "result_operation_mismatch",
             "adapted V2 result variant does not match the validated released operation",
         ),
-        "query_v2_model_rows_collection" => (
+        "query_model_rows_collection" => (
             MatchErrorCategory::InvalidPlan,
             "unsupported_collection_slot",
             "selected-row execution does not support collected output slots",
         ),
-        "query_v2_model_page_total_plan" => (
+        "query_model_page_total_plan" => (
             MatchErrorCategory::ResultDecode,
             "page_operation_mismatch",
             "typed page plan does not belong to a PageBy operation",
         ),
-        "query_v2_model_provider_not_exhausted" => (
+        "query_model_provider_not_exhausted" => (
             MatchErrorCategory::ResultDecode,
             "provider_stream_not_exhausted",
             "provider stopped before the bounded typed statement reached its terminal frame",
         ),
-        "query_v2_model_solution_kind" => (
+        "query_model_solution_kind" => (
             MatchErrorCategory::ResultDecode,
             "solution_answer_kind",
             "selected solution scan returned a document instead of a row",
         ),
         "query_plan_result_rows"
-        | "query_remote_v3_answer_kind"
-        | "query_remote_v3_answer_concept"
-        | "query_v2_model_solution_malformed"
-        | "query_v2_model_predicate_evidence"
-        | "query_v2_model_role_edge_evidence" => (
+        | "query_remote_answer_kind"
+        | "query_remote_answer_concept"
+        | "query_model_solution_malformed"
+        | "query_model_predicate_evidence"
+        | "query_model_role_edge_evidence" => (
             MatchErrorCategory::ResultDecode,
             "malformed_solution_row",
             "provider solution row does not match the typed evidence shape",
         ),
-        "query_v2_model_solution_binding" => (
+        "query_model_solution_binding" => (
             MatchErrorCategory::ResultDecode,
             "missing_provider_binding",
             "provider solution omitted a required positive binding",
         ),
-        "query_v2_model_solution_unknown_binding" => (
+        "query_model_solution_unknown_binding" => (
             MatchErrorCategory::ResultDecode,
             "unknown_provider_binding",
             "provider solution contains an unknown binding",
         ),
-        "query_v2_model_solution_duplicate_binding" => (
+        "query_model_solution_duplicate_binding" => (
             MatchErrorCategory::ResultDecode,
             "duplicate_provider_binding",
             "provider solution assigns one binding more than once",
         ),
-        "query_v2_model_solution_malformed_iid" => (
+        "query_model_solution_malformed_iid" => (
             MatchErrorCategory::ResultDecode,
             "malformed_provider_concept_id",
             "provider solution contains a malformed provider IID",
         ),
-        "query_v2_model_unstable_provider_order" => (
+        "query_model_unstable_provider_order" => (
             MatchErrorCategory::ResultDecode,
             "unstable_provider_order",
             "provider solutions violate the validator-derived stable order",
         ),
-        "query_v2_model_order_non_scalar" => (
+        "query_model_order_non_scalar" => (
             MatchErrorCategory::ResultDecode,
             "non_scalar_order_evidence",
             "provider returned multiple values for a validated scalar order field",
         ),
-        "query_v2_model_order_missing" => (
+        "query_model_order_missing" => (
             MatchErrorCategory::ResultDecode,
             "missing_order_value",
             "provider omitted a value required by stable ordering",
         ),
-        "query_v2_model_order_value_type" => (
+        "query_model_order_value_type" => (
             MatchErrorCategory::ResultDecode,
             "order_value_type_mismatch",
             "provider order values are not mutually comparable",
         ),
-        "query_v2_model_predicate_equal_type" => (
+        "query_model_predicate_equal_type" => (
             MatchErrorCategory::ResultDecode,
             "predicate_value_type_mismatch",
             "provider predicate values do not have the same validated type",
         ),
-        "query_v2_model_predicate_order_type" => (
+        "query_model_predicate_order_type" => (
             MatchErrorCategory::ResultDecode,
             "predicate_value_type_mismatch",
             "provider predicate values are not order-compatible",
         ),
-        "query_v2_model_predicate_string_type" => (
+        "query_model_predicate_string_type" => (
             MatchErrorCategory::ResultDecode,
             "predicate_value_type_mismatch",
             "provider predicate values do not support the validated string operator",
         ),
-        "query_v2_model_regex" => (
+        "query_model_regex" => (
             MatchErrorCategory::InvalidPlan,
             "invalid_regex_pattern",
             "validated request contains an invalid regular expression",
         ),
-        "query_v2_model_tuple_evidence" => (
+        "query_model_tuple_evidence" => (
             MatchErrorCategory::ResultDecode,
             "malformed_tuple_row",
             "provider tuple proof row does not match the typed evidence shape",
         ),
-        "query_v2_model_root_kind" => (
+        "query_model_root_kind" => (
             MatchErrorCategory::ResultDecode,
             "root_answer_kind",
             "distinct-root scan returned a document instead of a row",
         ),
-        "query_v2_model_root_binding" => (
+        "query_model_root_binding" => (
             MatchErrorCategory::ResultDecode,
             "root_binding_mismatch",
             "distinct-root row contains the wrong binding",
         ),
-        "query_plan_result_count"
-        | "query_plan_result_exists"
-        | "query_v2_model_root_malformed" => (
+        "query_plan_result_count" | "query_plan_result_exists" | "query_model_root_malformed" => (
             MatchErrorCategory::ResultDecode,
             "malformed_root_row",
             "distinct-root row does not match the typed evidence shape",
         ),
-        "query_v2_model_page_kind" => (
+        "query_model_page_kind" => (
             MatchErrorCategory::ResultDecode,
             "page_rematch_answer_kind",
             "page re-match returned a row instead of a hydrated document",
         ),
-        "query_v2_model_page_document" => (
+        "query_model_page_document" => (
             MatchErrorCategory::ResultDecode,
             "malformed_page_rematch_document",
             "page re-match document does not match the typed evidence shape",
         ),
-        "query_v2_model_page_binding" => (
+        "query_model_page_binding" => (
             MatchErrorCategory::ResultDecode,
             "malformed_page_rematch_binding",
             "page re-match omitted a required positive binding",
         ),
-        "query_plan_result_window" | "query_v2_model_page_root_set" => (
+        "query_plan_result_window" | "query_model_page_root_set" => (
             MatchErrorCategory::ResultDecode,
             "selected_root_set_mismatch",
             "page re-match root set does not exactly equal root selection",
         ),
-        "query_v2_model_page_unexpected_root" => (
+        "query_model_page_unexpected_root" => (
             MatchErrorCategory::ResultDecode,
             "unexpected_hydrated_root",
             "page re-match returned a root outside the selected root set",
         ),
-        "query_v2_model_page_total_length" => (
+        "query_model_page_total_length" => (
             MatchErrorCategory::ResultDecode,
             "page_total_length_mismatch",
             "provider page length is inconsistent with its same-snapshot total and window",
         ),
-        "query_v2_model_hydration_missing" => (
+        "query_model_hydration_missing" => (
             MatchErrorCategory::ResultDecode,
             "missing_hydrated_concept",
             "batched hydration omitted a requested binding/IID pair",
         ),
-        "query_v2_model_hydration_unexpected" => (
+        "query_model_hydration_unexpected" => (
             MatchErrorCategory::ResultDecode,
             "unexpected_hydrated_concept",
             "batched hydration returned an unrequested binding/IID pair",
         ),
-        "query_v2_model_hydration_value_type" | "query_v2_model_hydration_value_order" => (
+        "query_model_hydration_value_type" | "query_model_hydration_value_order" => (
             MatchErrorCategory::ResultDecode,
             "hydrated_attribute_value_type",
             "TypeDB wildcard attribute value has the wrong value type",
         ),
-        "query_v2_model_hydration_attributes" => (
+        "query_model_hydration_attributes" => (
             MatchErrorCategory::ResultDecode,
             "malformed_hydrated_attributes",
             "TypeDB wildcard hydration attributes are malformed",
         ),
-        "query_plan_hydration_roles" | "query_v2_model_hydration_roles" => (
+        "query_plan_hydration_roles" | "query_model_hydration_roles" => (
             MatchErrorCategory::ResultDecode,
             "malformed_hydrated_roles",
             "TypeDB nested role hydration is malformed",
         ),
-        "query_v2_model_hydration_role_player" => (
+        "query_model_hydration_role_player" => (
             MatchErrorCategory::ResultDecode,
             "malformed_hydrated_role_player",
             "TypeDB nested hydration role player is malformed",
@@ -415,33 +413,33 @@ pub(super) fn released_execution_diagnostic(
         | "query_plan_hydration_fetch"
         | "query_plan_hydration_iid"
         | "query_plan_hydration_type"
-        | "query_v2_model_hydration_document"
-        | "query_v2_model_hydration_binding"
-        | "query_v2_model_hydration_iid"
-        | "query_v2_model_hydration_descriptor"
-        | "query_v2_model_hydration_kind" => (
+        | "query_model_hydration_document"
+        | "query_model_hydration_binding"
+        | "query_model_hydration_iid"
+        | "query_model_hydration_descriptor"
+        | "query_model_hydration_kind" => (
             MatchErrorCategory::ResultDecode,
             "malformed_hydration_document",
             "hydration document does not match the typed evidence shape",
         ),
-        "query_plan_hydration_conflict" | "query_v2_model_hydration_conflict" => (
+        "query_plan_hydration_conflict" | "query_model_hydration_conflict" => (
             MatchErrorCategory::ResultDecode,
             "duplicate_hydrated_concept",
             "batched hydration returned contradictory evidence for one provider concept",
         ),
-        "query_v2_model_hydration_authority" | "query_v2_model_hydration_state" => (
+        "query_model_hydration_authority" | "query_model_hydration_state" => (
             MatchErrorCategory::ResultDecode,
             "malformed_hydration_document",
             "hydration document does not match the typed evidence shape",
         ),
         "query_plan_result_reduction"
-        | "query_v2_model_reduction_descriptor"
-        | "query_v2_model_reduction_group" => (
+        | "query_model_reduction_descriptor"
+        | "query_model_reduction_group" => (
             MatchErrorCategory::ResultDecode,
             "malformed_reduction_row",
             "provider reduction evidence references an unexpected concrete descriptor",
         ),
-        _ if diagnostic.code().as_str().starts_with("query_v2_model_") => (
+        _ if diagnostic.code().as_str().starts_with("query_model_") => (
             MatchErrorCategory::ResultDecode,
             "unmapped_model_execution_diagnostic",
             "model execution emitted a diagnostic without a released compatibility mapping",

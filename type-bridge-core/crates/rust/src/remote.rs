@@ -1097,7 +1097,7 @@ mod tests {
     fn remote_model_resource_limits_use_released_generated_error_codes() {
         let internal = Diagnostic::new(
             DiagnosticCategory::ResourceLimit,
-            DiagnosticCode::new("query_v2_model_role_player_limit").unwrap(),
+            DiagnosticCode::new("query_model_role_player_limit").unwrap(),
             "internal model execution detail",
         );
         let error = remote_model_hydration_error(RemoteModelQueryError::Diagnostic(internal));

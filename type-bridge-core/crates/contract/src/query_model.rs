@@ -277,7 +277,7 @@ impl ModelValue {
         {
             return Err(failure(
                 DiagnosticCategory::ResourceLimit,
-                "query_plan_v2_compatibility_value_limit",
+                "query_plan_compatibility_value_limit",
                 "compatibility value bytes overflow the bounded artifact domain",
             ));
         }
@@ -285,7 +285,7 @@ impl ModelValue {
         if chunks != &released_value_chunks(&value) {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
-                "query_plan_v2_compatibility_value_chunks",
+                "query_plan_compatibility_value_chunks",
                 "compatibility value chunks are not in canonical UTF-8 boundaries",
             ));
         }
@@ -311,7 +311,7 @@ impl ModelValue {
         } else {
             Err(failure(
                 DiagnosticCategory::InvalidContract,
-                "query_plan_v2_compatibility_value_lexical",
+                "query_plan_compatibility_value_lexical",
                 "compatibility value is invalid or has an ordinary canonical representation",
             ))
         }

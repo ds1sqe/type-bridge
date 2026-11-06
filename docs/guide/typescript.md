@@ -460,7 +460,7 @@ keeps no replies: a dropped or unverifiable reply rejects with
 database to find out. Every other signed refusal keeps its code and applied
 nothing. The `/v3/capabilities` advertisement must name the same
 executor and reply key as the connection's advertisement
-(`query_remote_v3_advertisement_mismatch` otherwise); pin it with the
+(`query_remote_advertisement_mismatch` otherwise); pin it with the
 `stagedAdvertisement` connect option. Writes need a caller the server's
 interceptor vouches for, or a server that allows unauthenticated staged writes;
 otherwise the commit fails with `staged_write_not_authorized`. See the

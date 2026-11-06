@@ -708,9 +708,9 @@ failure (such as an `STC2` conflict). Staged replies carry fetch documents with 
 shape as direct answers. Rust validates exact types, inherited ownership,
 attribute value domains and cardinalities, and required/optional role evidence
 before commit and again when verifying the signed reply. Unknown keys, types,
-attributes, values and roles fail with `query_remote_v3_document_key`,
-`query_remote_v3_document_type`, `query_remote_v3_document_attribute`,
-`query_remote_v3_document_value` and `query_remote_v3_document_role`.
+attributes, values and roles fail with `query_remote_document_key`,
+`query_remote_document_type`, `query_remote_document_attribute`,
+`query_remote_document_value` and `query_remote_document_role`.
 
 A plan entry may add a `result_refs` array under capability
 `query.stage.result_ref`. Each reference names `input` (a later string input

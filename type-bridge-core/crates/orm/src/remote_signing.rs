@@ -92,7 +92,7 @@ pub fn encode_unbound_staged_failure(
             None,
             &Diagnostic::new(
                 DiagnosticCategory::Integrity,
-                DiagnosticCode::new("query_remote_v3_internal_failure")
+                DiagnosticCode::new("query_remote_internal_failure")
                     .expect("fixed diagnostic code"),
                 "executor could not encode the original staged remote failure",
             ),

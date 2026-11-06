@@ -338,6 +338,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 <!-- --8<-- [start:breaking-3-0] -->
 
+Active `query_remote_v2_*` / `query_remote_v3_*` diagnostics become
+`query_remote_*`; `query_v2_model_*` and `query_v2_adapter_*` become
+`query_model_*` and `query_adapter_*`. Remaining versioned query diagnostic
+codes also lose the version. The 3.0 upgrade guide lists every exact code
+replacement; typed categories, paths and details are preserved.
+
 Server interceptors use the single staged policy path. `supports_v3`,
 `InterceptorChain::ensure_v3_coverage` and `QueryPipeline::validate_v3_coverage`
 are removed; implement the policy hooks directly. Authentication, write

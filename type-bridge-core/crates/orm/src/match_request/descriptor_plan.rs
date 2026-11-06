@@ -59,7 +59,7 @@ impl MatchRequestAdapterAuthority {
         let schema = SchemaInfo::from_descriptors(&registry.snapshot());
         let source = try_generate_define_block(&schema).map_err(|_| {
             integrity(
-                "query_v2_adapter_registry_projection",
+                "query_adapter_registry_projection",
                 "registered schema cannot render",
             )
         })?;
@@ -73,14 +73,14 @@ impl MatchRequestAdapterAuthority {
         )
         .map_err(|_| {
             integrity(
-                "query_v2_adapter_registry_projection",
+                "query_adapter_registry_projection",
                 "validated descriptor registry cannot be projected into V2 schema authority",
             )
         })?;
         let profile = SemanticProfileId::new(V1_ADAPTER_SEMANTIC_PROFILE)?;
         let resolved = resolve(&declared, &profile).map_err(|_| {
             integrity(
-                "query_v2_adapter_registry_projection",
+                "query_adapter_registry_projection",
                 "validated descriptor registry cannot be resolved as V2 schema authority",
             )
         })?;
@@ -91,7 +91,7 @@ impl MatchRequestAdapterAuthority {
         );
         let managed = managed_schema_state(&declared, &delta_context).map_err(|_| {
             integrity(
-                "query_v2_adapter_registry_projection",
+                "query_adapter_registry_projection",
                 "validated descriptor registry cannot form managed V2 schema authority",
             )
         })?;
@@ -125,7 +125,7 @@ pub(crate) fn validate_match_literal_limits(
         return Err(limits.annotate(
             Diagnostic::new(
                 DiagnosticCategory::ResourceLimit,
-                DiagnosticCode::new("query_v2_adapter_literal_byte_limit")
+                DiagnosticCode::new("query_adapter_literal_byte_limit")
                     .expect("static adapter diagnostic code"),
                 "a predicate literal exceeds the canonical artifact byte ceiling",
             )
@@ -179,7 +179,7 @@ pub(crate) fn build_hydration(
     for relation in &role_hydrated {
         let resolved = schema.types().get(relation).ok_or_else(|| {
             integrity(
-                "query_v2_adapter_schema_mismatch",
+                "query_adapter_schema_mismatch",
                 "binding hydration relation is absent from resolved schema",
             )
         })?;
@@ -190,7 +190,7 @@ pub(crate) fn build_hydration(
                     .get(role)
                     .ok_or_else(|| {
                         integrity(
-                            "query_v2_adapter_schema_mismatch",
+                            "query_adapter_schema_mismatch",
                             "effective role lacks resolved player authority",
                         )
                     })?
@@ -223,7 +223,7 @@ pub(crate) fn hydration_descriptor(
 ) -> Result<HydrationDescriptor, Diagnostic> {
     let resolved = schema.types().get(id).ok_or_else(|| {
         integrity(
-            "query_v2_adapter_schema_mismatch",
+            "query_adapter_schema_mismatch",
             "hydration descriptor is absent from resolved schema",
         )
     })?;
@@ -236,7 +236,7 @@ pub(crate) fn hydration_descriptor(
             .find(|candidate| candidate.attr_name == attribute.label().as_str())
             .ok_or_else(|| {
                 integrity(
-                    "query_v2_adapter_registry_authority_mismatch",
+                    "query_adapter_registry_authority_mismatch",
                     "registered hydration descriptor omits a resolved effective attribute",
                 )
             })?;
@@ -246,7 +246,7 @@ pub(crate) fn hydration_descriptor(
                 &TypeId::new(TypeKind::Attribute, attribute.label().as_str().to_owned()).map_err(
                     |_| {
                         integrity(
-                            "query_v2_adapter_schema_mismatch",
+                            "query_adapter_schema_mismatch",
                             "resolved attribute label is malformed",
                         )
                     },
@@ -255,7 +255,7 @@ pub(crate) fn hydration_descriptor(
             .and_then(ResolvedType::value_type)
             .ok_or_else(|| {
                 integrity(
-                    "query_v2_adapter_schema_mismatch",
+                    "query_adapter_schema_mismatch",
                     "resolved owned attribute lacks a scalar value type",
                 )
             })?
@@ -266,7 +266,7 @@ pub(crate) fn hydration_descriptor(
                 != (owns.is_key() || owns.is_unique())
         {
             return Err(integrity(
-                "query_v2_adapter_registry_authority_mismatch",
+                "query_adapter_registry_authority_mismatch",
                 "registered field type, cardinality, or uniqueness contradicts resolved schema",
             ));
         }
@@ -289,7 +289,7 @@ pub(crate) fn hydration_descriptor(
     let roles = if hydrate_roles {
         let TypeDescriptorRef::Relation(registered) = registered else {
             return Err(integrity(
-                "query_v2_adapter_registry_authority_mismatch",
+                "query_adapter_registry_authority_mismatch",
                 "resolved relation is registered as an entity",
             ));
         };
@@ -315,13 +315,13 @@ pub(crate) fn hydration_roles(
             .find(|role| role.role_name == effective_id.label().as_str())
             .ok_or_else(|| {
                 integrity(
-                    "query_v2_adapter_registry_authority_mismatch",
+                    "query_adapter_registry_authority_mismatch",
                     "registered relation omits a resolved effective role",
                 )
             })?;
         if registered_role_cardinality(registered_role)? != effective.cardinality() {
             return Err(integrity(
-                "query_v2_adapter_registry_authority_mismatch",
+                "query_adapter_registry_authority_mismatch",
                 "registered role cardinality contradicts resolved schema",
             ));
         }
@@ -330,7 +330,7 @@ pub(crate) fn hydration_roles(
             .get(effective_id)
             .ok_or_else(|| {
                 integrity(
-                    "query_v2_adapter_schema_mismatch",
+                    "query_adapter_schema_mismatch",
                     "effective role lacks resolved accepted-player authority",
                 )
             })?
@@ -356,7 +356,7 @@ pub(crate) fn hydration_roles(
             .collect::<BTreeSet<_>>();
         if &covered != accepted {
             return Err(integrity(
-                "query_v2_adapter_registry_authority_mismatch",
+                "query_adapter_registry_authority_mismatch",
                 "registered role-player declarations do not cover resolved accepted players",
             ));
         }
@@ -387,7 +387,7 @@ pub(crate) fn adapt_field(
         .get(usize::from(field.binding.get()))
         .ok_or_else(|| {
             integrity(
-                "query_v2_adapter_unknown_binding",
+                "query_adapter_unknown_binding",
                 "validated field references no declared binding",
             )
         })?;
@@ -445,7 +445,7 @@ pub(crate) fn constructible_closure(
 ) -> Result<Vec<TypeId>, Diagnostic> {
     let resolved = schema.types().get(declared).ok_or_else(|| {
         integrity(
-            "query_v2_adapter_schema_mismatch",
+            "query_adapter_schema_mismatch",
             "registered descriptor is absent from resolved schema",
         )
     })?;
@@ -475,7 +475,7 @@ pub(crate) fn registered_descriptor(
 ) -> Result<TypeDescriptorRef, Diagnostic> {
     let descriptor = registry.get(id.label().as_str()).ok_or_else(|| {
         integrity(
-            "query_v2_adapter_registry_authority_mismatch",
+            "query_adapter_registry_authority_mismatch",
             "resolved hydration descriptor has no registered model descriptor",
         )
     })?;
@@ -483,7 +483,7 @@ pub(crate) fn registered_descriptor(
         Ok(descriptor)
     } else {
         Err(integrity(
-            "query_v2_adapter_registry_authority_mismatch",
+            "query_adapter_registry_authority_mismatch",
             "registered hydration descriptor kind contradicts resolved schema",
         ))
     }
@@ -515,13 +515,13 @@ pub(crate) fn registered_attribute(
 ) -> Result<OwnedAttributeDescriptor, Diagnostic> {
     let owner = registry.descriptor_type_name(&field.owner).ok_or_else(|| {
         integrity(
-            "query_v2_adapter_registry_authority_mismatch",
+            "query_adapter_registry_authority_mismatch",
             "validated field owner is no longer registered",
         )
     })?;
     let descriptor = registry.get(&owner).ok_or_else(|| {
         integrity(
-            "query_v2_adapter_registry_authority_mismatch",
+            "query_adapter_registry_authority_mismatch",
             "validated field owner is no longer registered",
         )
     })?;
@@ -531,7 +531,7 @@ pub(crate) fn registered_attribute(
         .cloned()
         .ok_or_else(|| {
             integrity(
-                "query_v2_adapter_registry_authority_mismatch",
+                "query_adapter_registry_authority_mismatch",
                 "validated field is absent from its registered owner",
             )
         })
@@ -625,7 +625,7 @@ pub(crate) fn request_binding_type(
         .get(usize::from(binding))
         .ok_or_else(|| {
             integrity(
-                "query_v2_adapter_unknown_binding",
+                "query_adapter_unknown_binding",
                 "validated output references no declared binding",
             )
         })?;
@@ -636,7 +636,7 @@ pub(crate) fn descriptor_role_id(owner: &str, role: &str) -> Result<RoleId, Diag
     let owner = descriptor_id_type(owner)?;
     if owner.kind() != TypeKind::Relation {
         return Err(integrity(
-            "query_v2_adapter_role_owner",
+            "query_adapter_role_owner",
             "validated role owner is not relation-kind",
         ));
     }
@@ -646,7 +646,7 @@ pub(crate) fn descriptor_role_id(owner: &str, role: &str) -> Result<RoleId, Diag
 pub(crate) fn descriptor_id_type(descriptor: &str) -> Result<TypeId, Diagnostic> {
     let (prefix, label) = descriptor.split_once(':').ok_or_else(|| {
         integrity(
-            "query_v2_adapter_descriptor_malformed",
+            "query_adapter_descriptor_malformed",
             "validated descriptor identity is not kind-qualified",
         )
     })?;
@@ -655,7 +655,7 @@ pub(crate) fn descriptor_id_type(descriptor: &str) -> Result<TypeId, Diagnostic>
         "relation" => TypeKind::Relation,
         _ => {
             return Err(integrity(
-                "query_v2_adapter_descriptor_malformed",
+                "query_adapter_descriptor_malformed",
                 "validated descriptor identity has an unsupported kind",
             ));
         }
@@ -673,7 +673,7 @@ pub(crate) fn descriptor_type(descriptor: &str, kind: ThingKind) -> Result<TypeI
         Ok(id)
     } else {
         Err(integrity(
-            "query_v2_adapter_descriptor_malformed",
+            "query_adapter_descriptor_malformed",
             "validated descriptor kind disagrees with the binding thing kind",
         ))
     }
@@ -701,7 +701,7 @@ pub(crate) fn adapt_output(
             FetchSlot::Collect { distinct, .. } => {
                 let proof = validated.collection_order(slot.binding()).ok_or_else(|| {
                     integrity(
-                        "query_v2_adapter_collection_order_proof",
+                        "query_adapter_collection_order_proof",
                         "validated collection output lacks its stable-order proof",
                     )
                 })?;
@@ -789,7 +789,7 @@ pub(crate) fn adapt_expression(
         },
         MatchExpr::ScalarComparison { .. } => {
             return Err(integrity(
-                "query_v2_adapter_function_state",
+                "query_adapter_function_state",
                 "schema-function predicates require native Query V2 adaptation",
             ));
         }
@@ -814,7 +814,7 @@ pub(crate) fn adapt_expression(
                 .filter(|binding| binding.thing_kind == ThingKind::Relation)
                 .ok_or_else(|| {
                     integrity(
-                        "query_v2_adapter_unknown_binding",
+                        "query_adapter_unknown_binding",
                         "validated role edge references no relation binding",
                     )
                 })?;
@@ -898,7 +898,7 @@ pub(crate) fn adapt_compatibility_expression(
             if predicate_has_schema_function(expression) =>
         {
             Err(integrity(
-                "query_v2_adapter_function_scope",
+                "query_adapter_function_scope",
                 "schema-function predicates must remain in the root conjunction",
             ))
         }
@@ -940,7 +940,7 @@ pub(crate) fn adapt_comparator(operator: ComparisonOp) -> ModelComparator {
 pub(crate) fn adapt_value(value: &AttributeValue) -> Result<ModelValue, Diagnostic> {
     let malformed = || {
         integrity(
-            "query_v2_adapter_validated_literal_malformed",
+            "query_adapter_validated_literal_malformed",
             "a validated V1 literal no longer satisfies its released scalar domain",
         )
     };
@@ -979,7 +979,7 @@ pub(crate) fn adapt_value(value: &AttributeValue) -> Result<ModelValue, Diagnost
     };
     Ok(ModelValue::canonical(canonical.ok_or_else(|| {
         integrity(
-            "query_v2_adapter_literal_state",
+            "query_adapter_literal_state",
             "validated literal adaptation produced no canonical or released value",
         )
     })?))

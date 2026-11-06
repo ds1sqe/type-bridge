@@ -51,7 +51,7 @@ impl<'plan> HydrationAuthority<'plan> {
             || descriptors.len() != projection.descriptors().len()
         {
             return Err(validation_error(
-                "query_v2_model_hydration_authority",
+                "query_model_hydration_authority",
                 "validated hydration authority contains duplicate identities",
             ));
         }
@@ -64,7 +64,7 @@ impl<'plan> HydrationAuthority<'plan> {
     pub(crate) fn binding(&self, binding: u16) -> ExecResult<&'plan HydrationBinding> {
         self.bindings.get(&binding).copied().ok_or_else(|| {
             validation_error(
-                "query_v2_model_hydration_binding",
+                "query_model_hydration_binding",
                 "provider hydration references an unknown binding",
             )
         })
@@ -81,13 +81,13 @@ impl<'plan> HydrationAuthority<'plan> {
             .filter(|descriptor| descriptor.descriptor().label().as_str() == label);
         let descriptor = matches.next().ok_or_else(|| {
             validation_error(
-                "query_v2_model_hydration_descriptor",
+                "query_model_hydration_descriptor",
                 "provider hydration returned an unknown concrete type",
             )
         })?;
         if matches.next().is_some() {
             return Err(validation_error(
-                "query_v2_model_hydration_descriptor",
+                "query_model_hydration_descriptor",
                 "provider hydration label is ambiguous across thing kinds",
             ));
         }
@@ -142,7 +142,7 @@ impl GraphBuilder {
     pub(crate) fn insert(&mut self, node: NodeDraft) -> ExecResult<()> {
         if !is_canonical_thing_iid(&node.iid) {
             return Err(evidence_error(
-                "query_v2_model_hydration_iid",
+                "query_model_hydration_iid",
                 "hydration returned a malformed provider IID",
             ));
         }
@@ -152,13 +152,13 @@ impl GraphBuilder {
                 || previous.attributes != node.attributes
             {
                 return Err(evidence_error(
-                    "query_v2_model_hydration_conflict",
+                    "query_model_hydration_conflict",
                     "one provider IID carries contradictory concrete hydration evidence",
                 ));
             }
             if previous.full && node.full && previous.roles != node.roles {
                 return Err(evidence_error(
-                    "query_v2_model_hydration_conflict",
+                    "query_model_hydration_conflict",
                     "one provider IID carries contradictory relation-role evidence",
                 ));
             }
@@ -169,7 +169,7 @@ impl GraphBuilder {
                     previous.full = true;
                 } else {
                     return Err(validation_error(
-                        "query_v2_model_hydration_state",
+                        "query_model_hydration_state",
                         "hydration merge lost an existing provider identity",
                     ));
                 }
@@ -181,7 +181,7 @@ impl GraphBuilder {
             .saturating_add(1);
         if next_nodes > self.max_nodes {
             return Err(resource_error(
-                "query_v2_model_graph_limit",
+                "query_model_graph_limit",
                 "hydration construction exceeded the caller's graph-node budget",
             ));
         }
@@ -193,7 +193,7 @@ impl GraphBuilder {
                     .checked_add(u64::try_from(values.len()).unwrap_or(u64::MAX))
                     .ok_or_else(|| {
                         resource_error(
-                            "query_v2_model_attribute_limit",
+                            "query_model_attribute_limit",
                             "hydration attribute-value counter overflowed",
                         )
                     })
@@ -204,7 +204,7 @@ impl GraphBuilder {
             .filter(|total| *total <= self.max_attribute_values)
             .ok_or_else(|| {
                 resource_error(
-                    "query_v2_model_attribute_limit",
+                    "query_model_attribute_limit",
                     "hydration construction exceeded the caller's attribute-value budget",
                 )
             })?;
@@ -221,7 +221,7 @@ impl GraphBuilder {
                 .checked_add(u64::try_from(role.players.len()).unwrap_or(u64::MAX))
                 .ok_or_else(|| {
                     resource_error(
-                        "query_v2_model_role_player_limit",
+                        "query_model_role_player_limit",
                         "hydration role-player counter overflowed",
                     )
                 })
@@ -232,7 +232,7 @@ impl GraphBuilder {
             .filter(|total| *total <= self.max_role_players)
             .ok_or_else(|| {
                 resource_error(
-                    "query_v2_model_role_player_limit",
+                    "query_model_role_player_limit",
                     "hydration construction exceeded the caller's role-player budget",
                 )
             })?;
@@ -242,7 +242,7 @@ impl GraphBuilder {
     pub(crate) fn node(&self, iid: &str) -> ExecResult<&NodeDraft> {
         self.nodes.get(iid).ok_or_else(|| {
             evidence_error(
-                "query_v2_model_hydration_missing",
+                "query_model_hydration_missing",
                 "selected provider identity lacks complete hydration evidence",
             )
         })
@@ -257,7 +257,7 @@ impl GraphBuilder {
             }
             let node = self.nodes.get(&iid).ok_or_else(|| {
                 evidence_error(
-                    "query_v2_model_hydration_missing",
+                    "query_model_hydration_missing",
                     "output references a provider identity absent from hydration evidence",
                 )
             })?;
@@ -273,7 +273,7 @@ impl GraphBuilder {
             .map(|(index, iid)| {
                 let index = u32::try_from(index).map_err(|_| {
                     resource_error(
-                        "query_v2_model_graph_limit",
+                        "query_model_graph_limit",
                         "hydration graph ordinal exceeds the contract range",
                     )
                 })?;
@@ -311,7 +311,7 @@ impl GraphBuilder {
                                     })
                                     .ok_or_else(|| {
                                         evidence_error(
-                                            "query_v2_model_hydration_missing",
+                                            "query_model_hydration_missing",
                                             "relation role references missing player hydration",
                                         )
                                     })
@@ -351,7 +351,7 @@ impl FinishedGraph {
             .map(|node| HydrationReference::new(declared.clone(), node))
             .ok_or_else(|| {
                 evidence_error(
-                    "query_v2_model_hydration_missing",
+                    "query_model_hydration_missing",
                     "output references a provider identity pruned from its hydration graph",
                 )
             })
@@ -417,7 +417,7 @@ pub(crate) fn decode_hydrated_document(
     if let Ok(wire) = serde_json::from_value::<HydratedThingWire>(value.clone()) {
         if expected_binding.is_some_and(|expected| expected != wire.binding) {
             return Err(evidence_error(
-                "query_v2_model_hydration_binding",
+                "query_model_hydration_binding",
                 "hydration document contains the wrong binding ordinal",
             ));
         }
@@ -425,7 +425,7 @@ pub(crate) fn decode_hydrated_document(
     }
     let object = value.as_object().ok_or_else(|| {
         evidence_error(
-            "query_v2_model_hydration_document",
+            "query_model_hydration_document",
             "TypeDB hydration document is not an object",
         )
     })?;
@@ -433,7 +433,7 @@ pub(crate) fn decode_hydrated_document(
         .or_else(|| object.get("binding").and_then(json_u16))
         .ok_or_else(|| {
             evidence_error(
-                "query_v2_model_hydration_binding",
+                "query_model_hydration_binding",
                 "TypeDB hydration document omits its binding ordinal",
             )
         })?;
@@ -442,7 +442,7 @@ pub(crate) fn decode_hydrated_document(
         .and_then(json_string)
         .ok_or_else(|| {
             evidence_error(
-                "query_v2_model_hydration_iid",
+                "query_model_hydration_iid",
                 "TypeDB hydration document omits its provider IID",
             )
         })?
@@ -452,7 +452,7 @@ pub(crate) fn decode_hydrated_document(
         .and_then(json_string)
         .ok_or_else(|| {
             evidence_error(
-                "query_v2_model_hydration_descriptor",
+                "query_model_hydration_descriptor",
                 "TypeDB hydration document omits its concrete type",
             )
         })?;
@@ -467,7 +467,7 @@ pub(crate) fn decode_hydrated_document(
             .is_some_and(|value| value.as_array().is_none_or(|roles| !roles.is_empty()))
         {
             return Err(evidence_error(
-                "query_v2_model_hydration_roles",
+                "query_model_hydration_roles",
                 "hydrated entity unexpectedly carries relation roles",
             ));
         }
@@ -500,7 +500,7 @@ pub(crate) fn decode_exact_thing(
         (Vec::new(), Vec::new())
     } else {
         return Err(evidence_error(
-            "query_v2_model_hydration_roles",
+            "query_model_hydration_roles",
             "hydrated entity unexpectedly carries relation roles",
         ));
     };
@@ -530,7 +530,7 @@ pub(crate) fn validate_binding_concrete(
         Ok(())
     } else {
         Err(evidence_error(
-            "query_v2_model_hydration_descriptor",
+            "query_model_hydration_descriptor",
             "hydrated concrete type is outside the binding's validated subtype closure",
         ))
     }
@@ -544,7 +544,7 @@ pub(crate) fn decode_wildcard_attributes(
         None => None,
         Some(value) => Some(value.as_object().ok_or_else(|| {
             evidence_error(
-                "query_v2_model_hydration_attributes",
+                "query_model_hydration_attributes",
                 "TypeDB wildcard hydration attributes are not an object",
             )
         })?),
@@ -558,7 +558,7 @@ pub(crate) fn decode_wildcard_attributes(
             && field.alias() != field.attribute().label().as_str()
         {
             return Err(evidence_error(
-                "query_v2_model_hydration_attributes",
+                "query_model_hydration_attributes",
                 "TypeDB wildcard hydration repeats one projected attribute under two names",
             ));
         }
@@ -576,7 +576,7 @@ pub(crate) fn decode_wildcard_attributes(
                 .any(|field| field.alias() == name || field.attribute().label().as_str() == name);
             if !known {
                 return Err(evidence_error(
-                    "query_v2_model_hydration_attributes",
+                    "query_model_hydration_attributes",
                     "TypeDB wildcard hydration returned an undeclared attribute",
                 ));
             }
@@ -622,13 +622,13 @@ pub(crate) fn decode_exact_attributes(
             })
             .ok_or_else(|| {
                 evidence_error(
-                    "query_v2_model_hydration_attributes",
+                    "query_model_hydration_attributes",
                     "typed hydration returned an undeclared attribute",
                 )
             })?;
         if attribute.value_type != value_type_label(field.value_type()) {
             return Err(evidence_error(
-                "query_v2_model_hydration_value_type",
+                "query_model_hydration_value_type",
                 "typed hydration attribute declares the wrong scalar domain",
             ));
         }
@@ -643,7 +643,7 @@ pub(crate) fn decode_exact_attributes(
             .is_some()
         {
             return Err(evidence_error(
-                "query_v2_model_hydration_attributes",
+                "query_model_hydration_attributes",
                 "typed hydration returns one attribute more than once",
             ));
         }
@@ -679,7 +679,7 @@ pub(crate) fn canonicalize_field_values(
                 .semantic_cmp_same_domain(&values[current])
                 .ok_or_else(|| {
                     evidence_error(
-                        "query_v2_model_hydration_value_order",
+                        "query_model_hydration_value_order",
                         "unordered hydration values are not comparable in their validated domain",
                     )
                 })?;
@@ -704,7 +704,7 @@ pub(crate) fn decode_wildcard_roles(
         None => &[][..],
         Some(value) => value.as_array().ok_or_else(|| {
             evidence_error(
-                "query_v2_model_hydration_roles",
+                "query_model_hydration_roles",
                 "TypeDB nested role hydration is not a list",
             )
         })?,
@@ -714,13 +714,13 @@ pub(crate) fn decode_wildcard_roles(
     for document in documents {
         let document = document.as_object().ok_or_else(|| {
             evidence_error(
-                "query_v2_model_hydration_roles",
+                "query_model_hydration_roles",
                 "TypeDB nested role hydration member is not an object",
             )
         })?;
         let role_label = document.get("role").and_then(json_string).ok_or_else(|| {
             evidence_error(
-                "query_v2_model_hydration_roles",
+                "query_model_hydration_roles",
                 "TypeDB nested role hydration omits the role label",
             )
         })?;
@@ -730,7 +730,7 @@ pub(crate) fn decode_wildcard_roles(
             .and_then(json_string)
             .ok_or_else(|| {
                 evidence_error(
-                    "query_v2_model_hydration_role_player",
+                    "query_model_hydration_role_player",
                     "TypeDB nested role hydration omits the player IID",
                 )
             })?
@@ -740,7 +740,7 @@ pub(crate) fn decode_wildcard_roles(
             .and_then(json_string)
             .ok_or_else(|| {
                 evidence_error(
-                    "query_v2_model_hydration_role_player",
+                    "query_model_hydration_role_player",
                     "TypeDB nested role hydration omits the player concrete type",
                 )
             })?;
@@ -774,7 +774,7 @@ pub(crate) fn decode_exact_roles(
         let role = projected_role(descriptor, &wire_role.role)?;
         if grouped.contains_key(role.role()) {
             return Err(evidence_error(
-                "query_v2_model_hydration_roles",
+                "query_model_hydration_roles",
                 "typed hydration returns one relation role more than once",
             ));
         }
@@ -792,7 +792,7 @@ pub(crate) fn decode_exact_roles(
             });
             if !compatible {
                 return Err(evidence_error(
-                    "query_v2_model_hydration_role_player",
+                    "query_model_hydration_role_player",
                     "typed hydration role player violates its declared-to-concrete authority",
                 ));
             }
@@ -836,7 +836,7 @@ pub(crate) fn complete_roles(
     }
     if !grouped.is_empty() {
         return Err(evidence_error(
-            "query_v2_model_hydration_roles",
+            "query_model_hydration_roles",
             "hydration returned a role outside the concrete projection",
         ));
     }
@@ -862,13 +862,13 @@ pub(crate) fn projected_role<'a>(
     });
     let role = matches.next().ok_or_else(|| {
         evidence_error(
-            "query_v2_model_hydration_roles",
+            "query_model_hydration_roles",
             "hydration returned an undeclared relation role",
         )
     })?;
     if matches.next().is_some() {
         return Err(evidence_error(
-            "query_v2_model_hydration_roles",
+            "query_model_hydration_roles",
             "hydration role label is ambiguous under the concrete relation",
         ));
     }
@@ -882,7 +882,7 @@ pub(crate) fn declared_player_type(role: &HydrationRole, concrete: &TypeId) -> E
         .map(|player| player.declared_descriptor().clone())
         .ok_or_else(|| {
             evidence_error(
-                "query_v2_model_hydration_role_player",
+                "query_model_hydration_role_player",
                 "hydrated role player is outside the role's concrete player closure",
             )
         })
@@ -894,7 +894,7 @@ pub(crate) fn compatibility_value_from_json(
 ) -> ExecResult<ModelValue> {
     let value = AttributeValue::from_json(value, value_type_label(expected)).ok_or_else(|| {
         evidence_error(
-            "query_v2_model_hydration_value_type",
+            "query_model_hydration_value_type",
             "hydration attribute value does not match its validated scalar domain",
         )
     })?;
@@ -923,7 +923,7 @@ pub(crate) fn validate_wire_kind(kind: WireThingKind, expected: TypeKind) -> Exe
         Ok(())
     } else {
         Err(evidence_error(
-            "query_v2_model_hydration_kind",
+            "query_model_hydration_kind",
             "hydration thing kind contradicts its concrete descriptor",
         ))
     }
@@ -934,7 +934,7 @@ pub(crate) fn node_kind(kind: TypeKind) -> ExecResult<HydrationNodeKind> {
         TypeKind::Entity => Ok(HydrationNodeKind::Entity),
         TypeKind::Relation => Ok(HydrationNodeKind::Relation),
         TypeKind::Attribute | TypeKind::Struct => Err(validation_error(
-            "query_v2_model_hydration_kind",
+            "query_model_hydration_kind",
             "model hydration projection contains a non-thing descriptor",
         )),
     }
@@ -1068,7 +1068,7 @@ pub(crate) fn order_field_value<'a>(
         .unwrap_or_default();
     if values.len() > 1 {
         return Err(field_evidence_error(
-            "query_v2_model_order_non_scalar",
+            "query_model_order_non_scalar",
             "stable order field carries more than one hydrated scalar value",
             field,
         ));
@@ -1087,7 +1087,7 @@ pub(crate) fn compare_optional_values(
             type_bridge_contract::query_plan::ModelMissingOrder::First => Ok(Ordering::Less),
             type_bridge_contract::query_plan::ModelMissingOrder::Last => Ok(Ordering::Greater),
             type_bridge_contract::query_plan::ModelMissingOrder::Reject => Err(evidence_error(
-                "query_v2_model_order_missing",
+                "query_model_order_missing",
                 "stable order rejects missing hydrated values",
             )),
         },
@@ -1095,13 +1095,13 @@ pub(crate) fn compare_optional_values(
             type_bridge_contract::query_plan::ModelMissingOrder::First => Ok(Ordering::Greater),
             type_bridge_contract::query_plan::ModelMissingOrder::Last => Ok(Ordering::Less),
             type_bridge_contract::query_plan::ModelMissingOrder::Reject => Err(evidence_error(
-                "query_v2_model_order_missing",
+                "query_model_order_missing",
                 "stable order rejects missing hydrated values",
             )),
         },
         (Some(left), Some(right)) => left.semantic_cmp_same_domain(right).ok_or_else(|| {
             evidence_error(
-                "query_v2_model_order_value_type",
+                "query_model_order_value_type",
                 "stable order values are not comparable in their validated domain",
             )
         }),
@@ -1118,7 +1118,7 @@ pub(crate) fn validate_solution_order(
             == Ordering::Greater
         {
             return Err(evidence_error(
-                "query_v2_model_unstable_provider_order",
+                "query_model_unstable_provider_order",
                 "provider solutions violate the validator-derived stable total order",
             ));
         }
@@ -1161,7 +1161,7 @@ pub(crate) fn compare_solutions_by_order(
         let right = solution_field_values(right, graph, term.field())?;
         if left.len() > 1 || right.len() > 1 {
             return Err(field_evidence_error(
-                "query_v2_model_order_non_scalar",
+                "query_model_order_non_scalar",
                 "stable order field carries more than one hydrated scalar value",
                 term.field(),
             ));
@@ -1186,13 +1186,13 @@ pub(crate) fn compare_solutions_by_order(
     for binding in order.identity_tiebreakers() {
         let left = left.bindings.get(&binding.get()).ok_or_else(|| {
             evidence_error(
-                "query_v2_model_solution_binding",
+                "query_model_solution_binding",
                 "stable-order identity tie breaker references a missing binding",
             )
         })?;
         let right = right.bindings.get(&binding.get()).ok_or_else(|| {
             evidence_error(
-                "query_v2_model_solution_binding",
+                "query_model_solution_binding",
                 "stable-order identity tie breaker references a missing binding",
             )
         })?;
@@ -1220,7 +1220,7 @@ pub(crate) fn charge_selected_solution_semantics(
             let node = graph.node(iid)?;
             hydrated_things = hydrated_things.checked_add(1).ok_or_else(|| {
                 resource_error(
-                    "query_v2_model_graph_limit",
+                    "query_model_graph_limit",
                     "hydrated thing multiplicity counter overflowed",
                 )
             })?;
@@ -1228,7 +1228,7 @@ pub(crate) fn charge_selected_solution_semantics(
                 .checked_add(node_attribute_value_count(node)?)
                 .ok_or_else(|| {
                     resource_error(
-                        "query_v2_model_attribute_limit",
+                        "query_model_attribute_limit",
                         "hydrated attribute-value multiplicity counter overflowed",
                     )
                 })?;
@@ -1236,7 +1236,7 @@ pub(crate) fn charge_selected_solution_semantics(
                 for player in &role.players {
                     hydrated_things = hydrated_things.checked_add(1).ok_or_else(|| {
                         resource_error(
-                            "query_v2_model_graph_limit",
+                            "query_model_graph_limit",
                             "hydrated thing multiplicity counter overflowed",
                         )
                     })?;
@@ -1244,7 +1244,7 @@ pub(crate) fn charge_selected_solution_semantics(
                         .checked_add(node_attribute_value_count(graph.node(&player.iid)?)?)
                         .ok_or_else(|| {
                             resource_error(
-                                "query_v2_model_attribute_limit",
+                                "query_model_attribute_limit",
                                 "hydrated attribute-value multiplicity counter overflowed",
                             )
                         })?;
@@ -1254,13 +1254,13 @@ pub(crate) fn charge_selected_solution_semantics(
     }
     if hydrated_things > limits.max_graph_nodes {
         return Err(resource_error(
-            "query_v2_model_graph_limit",
+            "query_model_graph_limit",
             "provider hydration exceeded the hydrated-thing ceiling",
         ));
     }
     if attribute_values > limits.max_attribute_values {
         return Err(resource_error(
-            "query_v2_model_attribute_limit",
+            "query_model_attribute_limit",
             "provider hydration exceeded the attribute-value ceiling",
         ));
     }
@@ -1275,7 +1275,7 @@ pub(crate) fn node_attribute_value_count(node: &NodeDraft) -> ExecResult<u64> {
                 .checked_add(u64::try_from(values.len()).unwrap_or(u64::MAX))
                 .ok_or_else(|| {
                     resource_error(
-                        "query_v2_model_attribute_limit",
+                        "query_model_attribute_limit",
                         "hydrated attribute-value counter overflowed",
                     )
                 })
@@ -1298,7 +1298,7 @@ fn predicate_field_values<'a>(
             .get(&field.binding().get())
             .ok_or_else(|| {
                 evidence_error(
-                    "query_v2_model_solution_binding",
+                    "query_model_solution_binding",
                     "predicate witness omits its binding",
                 )
             })?;
@@ -1311,7 +1311,7 @@ fn predicate_field_values<'a>(
             .map(Vec::as_slice)
             .ok_or_else(|| {
                 evidence_error(
-                    "query_v2_model_predicate_evidence",
+                    "query_model_predicate_evidence",
                     "predicate witness column is missing",
                 )
             });
@@ -1383,13 +1383,13 @@ fn recheck_pattern(
             }
             let relation_iid = solution.bindings.get(&relation.get()).ok_or_else(|| {
                 evidence_error(
-                    "query_v2_model_solution_binding",
+                    "query_model_solution_binding",
                     "role edge references a missing relation binding",
                 )
             })?;
             let player_iid = solution.bindings.get(&player.get()).ok_or_else(|| {
                 evidence_error(
-                    "query_v2_model_solution_binding",
+                    "query_model_solution_binding",
                     "role edge references a missing player binding",
                 )
             })?;
@@ -1458,7 +1458,7 @@ pub(crate) fn solution_field_values<'a>(
         .get(&field.binding().get())
         .ok_or_else(|| {
             evidence_error(
-                "query_v2_model_solution_binding",
+                "query_model_solution_binding",
                 "field predicate references a missing binding",
             )
         })?;
@@ -1483,7 +1483,7 @@ pub(crate) fn compare_predicate_values(
                 .map(|ordering| ordering == Ordering::Equal)
                 .ok_or_else(|| {
                     evidence_error(
-                        "query_v2_model_predicate_equal_type",
+                        "query_model_predicate_equal_type",
                         "predicate values do not share their validated scalar domain",
                     )
                 })?;
@@ -1499,7 +1499,7 @@ pub(crate) fn compare_predicate_values(
         | ModelComparator::GreaterOrEqual => {
             let ordering = left.semantic_cmp_same_domain(right).ok_or_else(|| {
                 evidence_error(
-                    "query_v2_model_predicate_order_type",
+                    "query_model_predicate_order_type",
                     "predicate values are not order-compatible",
                 )
             })?;
@@ -1527,7 +1527,7 @@ pub(crate) fn compare_predicate_values(
                     .map(|regex| regex.is_match(&left))
                     .map_err(|_| {
                         validation_error(
-                            "query_v2_model_regex",
+                            "query_model_regex",
                             "validated compatibility predicate contains an invalid regular expression",
                         )
                     }),
@@ -1540,7 +1540,7 @@ pub(crate) fn compare_predicate_values(
 pub(crate) fn compatibility_string(value: &ModelValue) -> ExecResult<String> {
     if value.value_type() != ValueTypeTag::String {
         return Err(evidence_error(
-            "query_v2_model_predicate_string_type",
+            "query_model_predicate_string_type",
             "string predicate operator received a non-string value",
         ));
     }
@@ -1551,7 +1551,7 @@ pub(crate) fn compatibility_string(value: &ModelValue) -> ExecResult<String> {
     }
     value.released_text().ok_or_else(|| {
         evidence_error(
-            "query_v2_model_predicate_string_type",
+            "query_model_predicate_string_type",
             "string predicate value has no canonical or released representation",
         )
     })
@@ -1594,19 +1594,19 @@ pub(crate) fn compare_optional_field_values(
 ) -> ExecResult<Ordering> {
     compare_optional_values(left, right, missing).map_err(|error| match error {
         PlanExecutionError::Validation(diagnostic)
-            if diagnostic.code().as_str() == "query_v2_model_order_missing" =>
+            if diagnostic.code().as_str() == "query_model_order_missing" =>
         {
             field_evidence_error(
-                "query_v2_model_order_missing",
+                "query_model_order_missing",
                 "stable order rejects missing hydrated values",
                 field,
             )
         }
         PlanExecutionError::Validation(diagnostic)
-            if diagnostic.code().as_str() == "query_v2_model_order_value_type" =>
+            if diagnostic.code().as_str() == "query_model_order_value_type" =>
         {
             field_evidence_error(
-                "query_v2_model_order_value_type",
+                "query_model_order_value_type",
                 "stable order values are not comparable in their validated domain",
                 field,
             )
@@ -1698,21 +1698,21 @@ pub(crate) fn validate_plan_documents(
     }
     let counts = answer.resource_counts();
     for (actual, maximum, code) in [
-        (counts[0], limits.graph_nodes, "query_v2_model_graph_limit"),
+        (counts[0], limits.graph_nodes, "query_model_graph_limit"),
         (
             counts[1],
             limits.attribute_values,
-            "query_v2_model_attribute_limit",
+            "query_model_attribute_limit",
         ),
         (
             counts[2],
             limits.collection_members,
-            "query_v2_model_collection_limit",
+            "query_model_collection_limit",
         ),
         (
             counts[3],
             limits.role_players,
-            "query_v2_model_role_player_limit",
+            "query_model_role_player_limit",
         ),
     ] {
         if actual > maximum {

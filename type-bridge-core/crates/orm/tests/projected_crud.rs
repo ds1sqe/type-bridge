@@ -997,7 +997,7 @@ async fn hydration_failure_after_insert_rolls_back_and_redacts_provider_shape() 
         .unwrap_err();
 
     assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
-    assert_eq!(diagnostic.code().as_str(), "query_remote_v3_document_value");
+    assert_eq!(diagnostic.code().as_str(), "query_remote_document_value");
     let rendered = format!("{diagnostic:?} {diagnostic}");
     assert!(!rendered.contains("email"));
     let state = state.lock().unwrap();
@@ -2414,7 +2414,7 @@ async fn a_failed_hydration_after_a_put_poisons_the_borrowed_transaction() {
         .await
         .unwrap_err();
 
-    assert_eq!(diagnostic.code().as_str(), "query_remote_v3_document_type");
+    assert_eq!(diagnostic.code().as_str(), "query_remote_document_type");
     assert_eq!(
         transaction.lifecycle_state().await,
         type_bridge_orm::session::TransactionContextState::RollbackOnly

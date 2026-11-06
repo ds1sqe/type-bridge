@@ -218,7 +218,7 @@ pub fn lower_match_error(error: &MatchError) -> SdkExecutionDiagnostic {
 #[doc(hidden)]
 #[must_use]
 pub fn lower_remote_query_diagnostic(error: Diagnostic) -> SdkExecutionDiagnostic {
-    if error.code().as_str() == "query_v2_model_exactly_one" {
+    if error.code().as_str() == "query_model_exactly_one" {
         let Some(actual) = error.details().get("actual").and_then(|value| match value {
             DiagnosticDetailValue::Long(value) => usize::try_from(*value).ok(),
             DiagnosticDetailValue::Text(_)
@@ -233,7 +233,7 @@ pub fn lower_remote_query_diagnostic(error: Diagnostic) -> SdkExecutionDiagnosti
         return lower_match_error(&error);
     }
 
-    if error.code().as_str().starts_with("query_v2_model_") {
+    if error.code().as_str().starts_with("query_model_") {
         return lower_match_error(&released_plan_execution_error(&error));
     }
 
@@ -702,7 +702,7 @@ mod tests {
         for (actual, code) in [(0_i64, "no_result"), (2_i64, "not_unique")] {
             let error = Diagnostic::new(
                 DiagnosticCategory::InvalidContract,
-                type_bridge_contract::diagnostic::DiagnosticCode::new("query_v2_model_exactly_one")
+                type_bridge_contract::diagnostic::DiagnosticCode::new("query_model_exactly_one")
                     .unwrap(),
                 "internal model execution detail",
             )
@@ -742,10 +742,8 @@ mod tests {
     fn authenticated_remote_model_limit_uses_the_released_resource_surface() {
         let error = Diagnostic::new(
             DiagnosticCategory::ResourceLimit,
-            type_bridge_contract::diagnostic::DiagnosticCode::new(
-                "query_v2_model_role_player_limit",
-            )
-            .unwrap(),
+            type_bridge_contract::diagnostic::DiagnosticCode::new("query_model_role_player_limit")
+                .unwrap(),
             "internal model execution detail",
         );
 
@@ -773,13 +771,13 @@ mod tests {
         for error in [
             Diagnostic::new(
                 DiagnosticCategory::InvalidContract,
-                type_bridge_contract::diagnostic::DiagnosticCode::new("query_v2_model_exactly_one")
+                type_bridge_contract::diagnostic::DiagnosticCode::new("query_model_exactly_one")
                     .unwrap(),
                 "missing cardinality detail",
             ),
             Diagnostic::new(
                 DiagnosticCategory::InvalidContract,
-                type_bridge_contract::diagnostic::DiagnosticCode::new("query_v2_model_exactly_one")
+                type_bridge_contract::diagnostic::DiagnosticCode::new("query_model_exactly_one")
                     .unwrap(),
                 "impossible exactly-one success",
             )

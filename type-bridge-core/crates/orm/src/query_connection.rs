@@ -313,7 +313,7 @@ impl ProxyQueryConnection {
     /// # Errors
     ///
     /// Returns the decode failure, or
-    /// `query_remote_v3_advertisement_mismatch` when its executor binding
+    /// `query_remote_advertisement_mismatch` when its executor binding
     /// or reply key differs from this connection's advertisement.
     pub fn with_staged_advertisement(
         self,
@@ -387,7 +387,7 @@ impl ProxyQueryConnection {
         {
             return Err(lower_remote_query_diagnostic(Diagnostic::new(
                 DiagnosticCategory::InvalidContract,
-                DiagnosticCode::new("query_remote_v3_advertisement_mismatch")
+                DiagnosticCode::new("query_remote_advertisement_mismatch")
                     .expect("the static mismatch code is canonical"),
                 "the staged advertisement's executor or reply key differs from the connection's",
             )));
@@ -468,7 +468,7 @@ impl ProxyQueryConnection {
     /// # Errors
     ///
     /// Returns the decode failure of the advertisement, or
-    /// `query_remote_v3_advertisement_mismatch`.
+    /// `query_remote_advertisement_mismatch`.
     pub fn staged_transaction_with_exchange(
         &self,
         staged_advertisement: &[u8],

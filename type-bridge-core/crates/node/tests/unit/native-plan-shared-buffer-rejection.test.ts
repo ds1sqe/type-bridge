@@ -27,13 +27,13 @@ test("directly loaded addon rejects SharedArrayBuffer before Rust borrowing", ()
 
   assert.throws(
     () => raw.planAuthority(shared, "shared-buffer", "typedb-3.13.6/v1"),
-    /query_v2_shared_buffer_unsupported/,
+    /query_shared_buffer_unsupported/,
   );
   assert.doesNotThrow(() => {
     try {
       raw.planAuthority(Buffer.from("{}"), "shared-buffer", "typedb-3.13.6/v1");
     } catch (error) {
-      assert.doesNotMatch(String(error), /query_v2_shared_buffer_unsupported/);
+      assert.doesNotMatch(String(error), /query_shared_buffer_unsupported/);
     }
   });
 });

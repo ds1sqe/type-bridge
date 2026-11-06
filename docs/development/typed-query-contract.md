@@ -755,7 +755,7 @@ direct commit. Every other verified signed refusal applied nothing and keeps
 its code. TypeBridge reports outcomes; retries, locking and concurrency limits
 are application policy. The staged advertisement is trusted only when its
 executor binding and reply key equal the connection's advertisement
-(`query_remote_v3_advertisement_mismatch` otherwise); it is pinned or fetched
+(`query_remote_advertisement_mismatch` otherwise); it is pinned or fetched
 once per connection. The server admits writes only from a caller an
 interceptor vouches for (`on_write_authority`), or from any caller under
 `[staged] allow_unauthenticated_staged_writes`. The wire format and failure

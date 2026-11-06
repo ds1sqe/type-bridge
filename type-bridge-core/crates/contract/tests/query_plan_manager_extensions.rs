@@ -266,7 +266,7 @@ fn collected_roles_and_scalar_fields_are_default_preserving_and_fail_closed() {
             .unwrap_err()
             .code()
             .as_str(),
-        "query_remote_v3_document_key"
+        "query_remote_document_key"
     );
     let mut duplicate = root.clone();
     duplicate.insert(
@@ -281,7 +281,7 @@ fn collected_roles_and_scalar_fields_are_default_preserving_and_fail_closed() {
             .unwrap_err()
             .code()
             .as_str(),
-        "query_remote_v3_document_role"
+        "query_remote_document_role"
     );
     let mut wrong = player;
     wrong.insert("_type".into(), text("other"));
@@ -294,7 +294,7 @@ fn collected_roles_and_scalar_fields_are_default_preserving_and_fail_closed() {
     );
     assert_eq!(
         answer(bad).validate_for(&plan).unwrap_err().code().as_str(),
-        "query_remote_v3_document_role"
+        "query_remote_document_role"
     );
     let old = ThingDocument::new(id(0), vec![DocumentRole::new(role(), false)]);
     let old = serde_json::to_value(old).unwrap();

@@ -56,7 +56,7 @@ fn limit(code: &'static str, message: &'static str) -> Diagnostic {
 fn mismatch() -> Diagnostic {
     Diagnostic::stable(
         DiagnosticCategory::Integrity,
-        "query_remote_v3_binding_mismatch",
+        "query_remote_binding_mismatch",
         "staged reply does not bind the expected request",
     )
 }
@@ -69,7 +69,7 @@ fn validate_reply_binding(
 ) -> Result<(), Diagnostic> {
     if format != QUERY_REMOTE_REPLY_FORMAT {
         return Err(invalid(
-            "query_remote_v3_format_unsupported",
+            "query_remote_format_unsupported",
             "unsupported staged reply format",
         ));
     }
@@ -209,7 +209,7 @@ impl StagedLimits {
             || self.admission_window_milliseconds == 0
         {
             return Err(limit(
-                "query_remote_v3_limits",
+                "query_remote_limits",
                 "staged budgets exceed the supported range",
             ));
         }
@@ -302,13 +302,13 @@ impl StagedPlan {
         // The outer codec bounds the string before the embedded bytes are allocated.
         if wire.plan_bytes.len() > limits.codec.max_bytes.saturating_mul(2) {
             return Err(limit(
-                "query_remote_v3_plan_bytes",
+                "query_remote_plan_bytes",
                 "embedded plan exceeds its byte ceiling",
             ));
         }
         let bytes = unhex(&wire.plan_bytes).map_err(|_| {
             invalid(
-                "query_remote_v3_plan_bytes",
+                "query_remote_plan_bytes",
                 "embedded plan bytes are not canonical lowercase hexadecimal",
             )
         })?;
@@ -327,14 +327,14 @@ impl StagedPlan {
         if let Some(bound) = plan.given_rows() {
             if bound != wire.rows {
                 return Err(invalid(
-                    "query_remote_v3_given_mismatch",
+                    "query_remote_given_mismatch",
                     "bound plan rows differ from staged invocation rows",
                 ));
             }
         } else if plan.inputs().is_empty() {
             if !wire.rows.is_empty() {
                 return Err(invalid(
-                    "query_remote_v3_unexpected_rows",
+                    "query_remote_unexpected_rows",
                     "a plan without columns has no invocation rows",
                 ));
             }
@@ -423,7 +423,7 @@ impl StagedRequest {
     ) -> Result<Self, Diagnostic> {
         query_limits.validate_plan().map_err(|_| {
             invalid(
-                "query_remote_v3_query_limits",
+                "query_remote_query_limits",
                 "caller query limits are invalid",
             )
         })?;
@@ -434,7 +434,7 @@ impl StagedRequest {
         let expires = spec
             .prepared_at_unix_ms
             .checked_add(limits.admission_window_milliseconds)
-            .ok_or_else(|| invalid("query_remote_v3_time", "staged request lifetime is invalid"))?;
+            .ok_or_else(|| invalid("query_remote_time", "staged request lifetime is invalid"))?;
         let wire = RequestWire {
             advertisement: advertisement.fingerprint()?.digest_hex(),
             expires_at_unix_ms: expires,
@@ -456,7 +456,7 @@ impl StagedRequest {
         wire.limits.validate()?;
         if wire.format != QUERY_REMOTE_REQUEST_FORMAT {
             return Err(invalid(
-                "query_remote_v3_format",
+                "query_remote_format",
                 "unsupported staged request format",
             ));
         }
@@ -472,13 +472,13 @@ impl StagedRequest {
                 > advertisement.admission_window_milliseconds()
         {
             return Err(invalid(
-                "query_remote_v3_time",
+                "query_remote_time",
                 "staged request lifetime is invalid",
             ));
         }
         if wire.plans.is_empty() || wire.plans.len() > wire.limits.max_staged_plans as usize {
             return Err(limit(
-                "query_remote_v3_plan_limit",
+                "query_remote_plan_limit",
                 "staged plan count exceeds its budget",
             ));
         }
@@ -494,7 +494,7 @@ impl StagedRequest {
         }))
         .map_err(|_| {
             invalid(
-                "query_remote_v3_query_limits",
+                "query_remote_query_limits",
                 "receiver query limits are invalid",
             )
         })?;
@@ -513,7 +513,7 @@ impl StagedRequest {
             || (writes > 0 && wire.kind == Some(StagedKind::Read))
         {
             return Err(invalid(
-                "query_remote_v3_kind",
+                "query_remote_kind",
                 "transaction kind refuses the staged operations",
             ));
         }
@@ -521,7 +521,7 @@ impl StagedRequest {
             || reads > wire.limits.max_read_statements as usize
         {
             return Err(limit(
-                "query_remote_v3_statement_limit",
+                "query_remote_statement_limit",
                 "staged plans exceed their minimum statement budget",
             ));
         }
@@ -529,7 +529,7 @@ impl StagedRequest {
             && reads.saturating_add(writes) as u64 > *maximum
         {
             return Err(limit(
-                "query_remote_v3_statement_limit",
+                "query_remote_statement_limit",
                 "staged plans exceed the receiver's explicit statement ceiling",
             )
             .with_detail("limit", "statements")
@@ -585,7 +585,7 @@ impl StagedRequest {
     ) -> Result<Self, Diagnostic> {
         limits.validate_plan().map_err(|_| {
             invalid(
-                "query_remote_v3_query_limits",
+                "query_remote_query_limits",
                 "receiver query limits are invalid",
             )
         })?;
@@ -613,7 +613,7 @@ impl StagedRequest {
         let request = Self::rebuild(wire, schema, advertisement, limits)?;
         if request.encode()?.as_slice() != bytes {
             return Err(invalid(
-                "query_remote_v3_noncanonical",
+                "query_remote_noncanonical",
                 "staged request reconstruction changes canonical bytes",
             ));
         }
@@ -638,7 +638,7 @@ impl StagedRequest {
             || self.wire.prepared_at_unix_ms > now_unix_ms.saturating_add(MAX_REMOTE_CLOCK_SKEW_MS)
         {
             return Err(invalid(
-                "query_remote_v3_expired",
+                "query_remote_expired",
                 "staged request is expired or prepared beyond the clock-skew allowance",
             ));
         }
@@ -1154,7 +1154,7 @@ impl SdkDiagnosticProjection {
         )?;
         if bytes.len() > MAX_REMOTE_ENVELOPE_BYTES {
             return Err(limit(
-                "query_remote_v3_diagnostic_limit",
+                "query_remote_diagnostic_limit",
                 "SDK diagnostic exceeds its byte ceiling",
             ));
         }
@@ -1163,7 +1163,7 @@ impl SdkDiagnosticProjection {
 }
 fn bad_diagnostic() -> Diagnostic {
     invalid(
-        "query_remote_v3_diagnostic",
+        "query_remote_diagnostic",
         "staged reply has an invalid SDK diagnostic projection",
     )
 }
@@ -1350,7 +1350,7 @@ impl StagedReply {
             && bytes.len() as u64 > request.limits().max_bytes
         {
             return Err(limit(
-                "query_remote_v3_reply_bytes",
+                "query_remote_reply_bytes",
                 "staged successful reply exceeds its byte budget",
             ));
         }
@@ -1392,7 +1392,7 @@ impl VerifiedStagedReply {
             && matches!(raw.outcome, OutcomeWire::Committed)
         {
             return Err(invalid(
-                "query_remote_v3_answer_count",
+                "query_remote_answer_count",
                 "staged reply answer count differs from its plan stack",
             ));
         }
@@ -1411,7 +1411,7 @@ impl VerifiedStagedReply {
         let correlations = validate_reply(&wire, request)?;
         if to_canonical_json_with_limits(&wire, STAGED_REMOTE_CODEC_LIMITS)?.as_slice() != payload {
             return Err(invalid(
-                "query_remote_v3_noncanonical",
+                "query_remote_noncanonical",
                 "staged reply reconstruction changes canonical bytes",
             ));
         }
@@ -1419,7 +1419,7 @@ impl VerifiedStagedReply {
             && bytes.len() as u64 > request.limits().max_bytes
         {
             return Err(limit(
-                "query_remote_v3_reply_bytes",
+                "query_remote_reply_bytes",
                 "staged successful reply exceeds its byte budget",
             ));
         }
@@ -1472,7 +1472,7 @@ fn validate_reply(
                     )
                     .map_err(|_| {
                         limit(
-                            "query_remote_v3_execution_timeline_limit",
+                            "query_remote_execution_timeline_limit",
                             "Execution timeline exceeds the request statement bound",
                         )
                     })?;
@@ -1482,14 +1482,14 @@ fn validate_reply(
             Ok(vec![])
         } else {
             Err(invalid(
-                "query_remote_v3_partial_answers",
+                "query_remote_partial_answers",
                 "failed transactions do not expose partial answers",
             ))
         };
     }
     if wire.answers.len() != request.plans().len() {
         return Err(invalid(
-            "query_remote_v3_answer_count",
+            "query_remote_answer_count",
             "answer count does not match the staged stack",
         ));
     }
@@ -1511,14 +1511,14 @@ fn validate_reply(
             dimensions[index] = dimensions[index].saturating_add(count);
             if ceilings[index].is_some_and(|maximum| dimensions[index] > maximum) {
                 return Err(limit(
-                    "query_remote_v3_answer_dimensions",
+                    "query_remote_answer_dimensions",
                     "aggregate staged evidence exceeds its semantic answer budget",
                 ));
             }
         }
         if items > request.limits().max_items {
             return Err(limit(
-                "query_remote_v3_answer_items",
+                "query_remote_answer_items",
                 "aggregate staged answers exceed their item budget",
             )
             .with_detail("actual", i64::try_from(items).unwrap_or(i64::MAX))
@@ -1568,7 +1568,7 @@ pub fn decode_remote_value_with_limits(
     limits: crate::limits::CodecLimits,
 ) -> Result<RemoteValue, Diagnostic> {
     serde_json::from_value::<ValueWire>(value)
-        .map_err(|_| invalid("query_remote_v3_answer_concept", "invalid V3 row cell"))?
+        .map_err(|_| invalid("query_remote_answer_concept", "invalid V3 row cell"))?
         .rebuild(limits)
 }
 
@@ -1648,7 +1648,7 @@ fn decode_answer(
     }
     Ok(
         match serde_json::from_value(value)
-            .map_err(|_| invalid("query_remote_v3_answer_kind", "invalid staged answer"))?
+            .map_err(|_| invalid("query_remote_answer_kind", "invalid staged answer"))?
         {
             Wire::Rows { rows } => StagedAnswer::Rows {
                 rows: rows
@@ -1743,7 +1743,7 @@ fn validate_answer(
 
     let bad = || {
         invalid(
-            "query_remote_v3_answer_kind",
+            "query_remote_answer_kind",
             "staged evidence does not match its plan operation and output",
         )
     };
@@ -1883,33 +1883,33 @@ fn preflight_reply_payload(
     }
     let peek: Peek<'_> = serde_json::from_slice(payload).map_err(|_| {
         invalid(
-            "query_remote_v3_reply_shape",
+            "query_remote_reply_shape",
             "staged reply has an invalid framing shape",
         )
     })?;
     validate_reply_binding(peek.format, peek.nonce, peek.request, request)?;
     let outcome: OutcomePeek<'_> = serde_json::from_str(peek.outcome.get()).map_err(|_| {
         invalid(
-            "query_remote_v3_reply_shape",
+            "query_remote_reply_shape",
             "staged reply has an invalid outcome framing",
         )
     })?;
     match outcome.kind {
         "committed" if envelope_bytes as u64 > request.limits().max_bytes => Err(limit(
-            "query_remote_v3_reply_bytes",
+            "query_remote_reply_bytes",
             "staged successful reply exceeds its byte budget",
         )),
         "committed" => Ok(()),
         "failed" => {
             if peek.answers.get() != "[]" {
                 return Err(invalid(
-                    "query_remote_v3_partial_answers",
+                    "query_remote_partial_answers",
                     "failed transactions do not expose partial answers",
                 ));
             }
             let diagnostic = outcome.diagnostic.ok_or_else(|| {
                 invalid(
-                    "query_remote_v3_reply_shape",
+                    "query_remote_reply_shape",
                     "staged failed reply is missing its diagnostic",
                 )
             })?;
@@ -1922,7 +1922,7 @@ fn preflight_reply_payload(
             )
         }
         _ => Err(invalid(
-            "query_remote_v3_reply_shape",
+            "query_remote_reply_shape",
             "staged reply has an unsupported outcome",
         )),
     }
@@ -1952,7 +1952,7 @@ fn preflight_diagnostic(bytes: &[u8], statement_limit: u32) -> Result<(), Diagno
     let peek: Peek<'_> = serde_json::from_slice(bytes).map_err(|_| {
         if bytes.len() > crate::limits::MAX_DIAGNOSTIC_BYTES {
             limit(
-                "query_remote_v3_diagnostic_limit",
+                "query_remote_diagnostic_limit",
                 "SDK diagnostic exceeds its byte ceiling",
             )
         } else {
@@ -1971,7 +1971,7 @@ fn preflight_diagnostic(bytes: &[u8], statement_limit: u32) -> Result<(), Diagno
     }
     if ordinary_bytes > crate::limits::MAX_DIAGNOSTIC_BYTES {
         return Err(limit(
-            "query_remote_v3_diagnostic_limit",
+            "query_remote_diagnostic_limit",
             "SDK diagnostic exceeds its byte ceiling",
         ));
     }
@@ -2007,7 +2007,7 @@ mod execution_timeline_preflight_tests {
                 .unwrap_err()
                 .code()
                 .as_str(),
-            "query_remote_v3_execution_timeline_limit"
+            "query_remote_execution_timeline_limit"
         );
         let mut malformed = value.clone();
         malformed["details"]["execution_timeline"]["value"]["stamps"][3]["statement_index"] =
@@ -2017,7 +2017,7 @@ mod execution_timeline_preflight_tests {
                 .unwrap_err()
                 .code()
                 .as_str(),
-            "query_remote_v3_execution_timeline"
+            "query_remote_execution_timeline"
         );
         let mut ordinary = value;
         ordinary["details"]["ordinary"] =
@@ -2027,7 +2027,7 @@ mod execution_timeline_preflight_tests {
                 .unwrap_err()
                 .code()
                 .as_str(),
-            "query_remote_v3_diagnostic_limit"
+            "query_remote_diagnostic_limit"
         );
     }
 }

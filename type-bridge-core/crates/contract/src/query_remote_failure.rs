@@ -26,7 +26,7 @@ pub(super) fn validate_nonce(nonce: &str) -> Result<(), Diagnostic> {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
     {
         return Err(failure_diagnostic(
-            "query_remote_v3_nonce",
+            "query_remote_nonce",
             "staged nonce is outside its canonical grammar",
         ));
     }
@@ -50,7 +50,7 @@ fn encode_minimal_signed_failure(
     advertisement: &RemoteCapabilitiesFingerprint,
     signer: &impl RemoteReplySigner,
 ) -> Vec<u8> {
-    const PREFIX: &[u8] = b"{\"category\":\"integrity\",\"code\":\"query_remote_v3_internal_failure\",\"details\":{},\"format\":\"typebridge.query-remote-failure/v3\",\"message\":\"executor could not encode the original V3 remote failure\",\"nonce\":";
+    const PREFIX: &[u8] = b"{\"category\":\"integrity\",\"code\":\"query_remote_internal_failure\",\"details\":{},\"format\":\"typebridge.query-remote-failure/v3\",\"message\":\"executor could not encode the original V3 remote failure\",\"nonce\":";
     let nonce = original
         .nonce
         .as_deref()
@@ -155,14 +155,14 @@ impl StagedFailure {
         if bytes.len() > maximum {
             return Err(diagnostic_failure(
                 DiagnosticCategory::ResourceLimit,
-                "query_remote_v3_diagnostic_too_large",
+                "query_remote_diagnostic_too_large",
                 "V3 remote diagnostic exceeds the canonical byte ceiling",
             ));
         }
         let failure = from_canonical_json_with_limits::<Self>(bytes, REMOTE_ENVELOPE_CODEC_LIMITS)?;
         if failure.format != QUERY_REMOTE_FAILURE_FORMAT {
             return Err(failure_diagnostic(
-                "query_remote_v3_format",
+                "query_remote_format",
                 "unsupported staged failure format",
             ));
         }

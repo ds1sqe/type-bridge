@@ -86,7 +86,7 @@ def test_generated_only_operation_inventory_is_complete_and_source_tied() -> Non
             assert operation["replacements"], operation["id"]
             assert required_bindings == {"python"}, operation["id"]
         if operation["status"] == "uniform_unsupported":
-            assert operation["diagnostic"] == "query_remote_v2_native_only_operation"
+            assert operation["diagnostic"] == "query_remote_native_only_operation"
 
         for binding, support in operation["support"].items():
             assert support["surface"], (operation["id"], binding)

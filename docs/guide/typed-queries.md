@@ -929,7 +929,7 @@ stage time over the proxy.
 The SDK verifies staged replies only under the signer it already trusts: the
 `/v3/capabilities` advertisement must name the same executor and reply key as
 the connection's advertisement, or the transaction fails with
-`query_remote_v3_advertisement_mismatch`. It is fetched once per connection,
+`query_remote_advertisement_mismatch`. It is fetched once per connection,
 or pinned out of band (Rust `ProxyConnectionPolicy::staged_advertisement`,
 Python `staged_advertisement=`, TypeScript `stagedAdvertisement`).
 

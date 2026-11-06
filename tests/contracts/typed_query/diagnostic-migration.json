@@ -15,7 +15,7 @@
       "category": "resource_limit",
       "core_codes": [
         "collected_concept_limit",
-        "query_v2_model_collection_limit"
+        "query_model_collection_limit"
       ]
     },
     {
@@ -24,7 +24,7 @@
       "category": "result_decode",
       "core_codes": [
         "query_plan_hydration_conflict",
-        "query_v2_model_hydration_conflict"
+        "query_model_hydration_conflict"
       ]
     },
     {
@@ -32,7 +32,7 @@
       "new_code": "duplicate_provider_binding",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_solution_duplicate_binding"
+        "query_model_solution_duplicate_binding"
       ]
     },
     {
@@ -41,7 +41,7 @@
       "category": "resource_limit",
       "core_codes": [
         "hydrated_attribute_value_limit",
-        "query_v2_model_attribute_limit"
+        "query_model_attribute_limit"
       ]
     },
     {
@@ -49,8 +49,8 @@
       "new_code": "hydrated_attribute_value_type",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_hydration_value_order",
-        "query_v2_model_hydration_value_type"
+        "query_model_hydration_value_order",
+        "query_model_hydration_value_type"
       ]
     },
     {
@@ -59,7 +59,7 @@
       "category": "resource_limit",
       "core_codes": [
         "hydrated_role_player_limit",
-        "query_v2_model_role_player_limit"
+        "query_model_role_player_limit"
       ]
     },
     {
@@ -68,8 +68,8 @@
       "category": "resource_limit",
       "core_codes": [
         "hydrated_thing_limit",
-        "query_v2_model_graph_limit",
-        "query_v2_model_hydration_limit"
+        "query_model_graph_limit",
+        "query_model_hydration_limit"
       ]
     },
     {
@@ -77,7 +77,7 @@
       "new_code": "invalid_regex_pattern",
       "category": "invalid_plan",
       "core_codes": [
-        "query_v2_model_regex"
+        "query_model_regex"
       ]
     },
     {
@@ -85,7 +85,7 @@
       "new_code": "malformed_hydrated_attributes",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_hydration_attributes"
+        "query_model_hydration_attributes"
       ]
     },
     {
@@ -93,7 +93,7 @@
       "new_code": "malformed_hydrated_role_player",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_hydration_role_player"
+        "query_model_hydration_role_player"
       ]
     },
     {
@@ -102,7 +102,7 @@
       "category": "result_decode",
       "core_codes": [
         "query_plan_hydration_roles",
-        "query_v2_model_hydration_roles"
+        "query_model_hydration_roles"
       ]
     },
     {
@@ -116,13 +116,13 @@
         "query_plan_hydration_type",
         "query_plan_result_documents",
         "query_plan_result_type",
-        "query_v2_model_hydration_authority",
-        "query_v2_model_hydration_binding",
-        "query_v2_model_hydration_descriptor",
-        "query_v2_model_hydration_document",
-        "query_v2_model_hydration_iid",
-        "query_v2_model_hydration_kind",
-        "query_v2_model_hydration_state"
+        "query_model_hydration_authority",
+        "query_model_hydration_binding",
+        "query_model_hydration_descriptor",
+        "query_model_hydration_document",
+        "query_model_hydration_iid",
+        "query_model_hydration_kind",
+        "query_model_hydration_state"
       ]
     },
     {
@@ -130,7 +130,7 @@
       "new_code": "malformed_page_rematch_binding",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_page_binding"
+        "query_model_page_binding"
       ]
     },
     {
@@ -138,7 +138,7 @@
       "new_code": "malformed_page_rematch_document",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_page_document"
+        "query_model_page_document"
       ]
     },
     {
@@ -146,7 +146,7 @@
       "new_code": "malformed_provider_concept_id",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_solution_malformed_iid"
+        "query_model_solution_malformed_iid"
       ]
     },
     {
@@ -155,8 +155,8 @@
       "category": "result_decode",
       "core_codes": [
         "query_plan_result_reduction",
-        "query_v2_model_reduction_descriptor",
-        "query_v2_model_reduction_group"
+        "query_model_reduction_descriptor",
+        "query_model_reduction_group"
       ]
     },
     {
@@ -166,7 +166,7 @@
       "core_codes": [
         "query_plan_result_count",
         "query_plan_result_exists",
-        "query_v2_model_root_malformed"
+        "query_model_root_malformed"
       ]
     },
     {
@@ -175,11 +175,11 @@
       "category": "result_decode",
       "core_codes": [
         "query_plan_result_rows",
-        "query_remote_v3_answer_concept",
-        "query_remote_v3_answer_kind",
-        "query_v2_model_predicate_evidence",
-        "query_v2_model_role_edge_evidence",
-        "query_v2_model_solution_malformed"
+        "query_remote_answer_concept",
+        "query_remote_answer_kind",
+        "query_model_predicate_evidence",
+        "query_model_role_edge_evidence",
+        "query_model_solution_malformed"
       ]
     },
     {
@@ -187,7 +187,7 @@
       "new_code": "malformed_tuple_row",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_tuple_evidence"
+        "query_model_tuple_evidence"
       ]
     },
     {
@@ -195,7 +195,7 @@
       "new_code": "missing_hydrated_concept",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_hydration_missing"
+        "query_model_hydration_missing"
       ]
     },
     {
@@ -203,7 +203,7 @@
       "new_code": "missing_order_value",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_order_missing"
+        "query_model_order_missing"
       ]
     },
     {
@@ -211,7 +211,7 @@
       "new_code": "missing_provider_binding",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_solution_binding"
+        "query_model_solution_binding"
       ]
     },
     {
@@ -219,7 +219,7 @@
       "new_code": "non_scalar_order_evidence",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_order_non_scalar"
+        "query_model_order_non_scalar"
       ]
     },
     {
@@ -227,7 +227,7 @@
       "new_code": "order_value_type_mismatch",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_order_value_type"
+        "query_model_order_value_type"
       ]
     },
     {
@@ -235,7 +235,7 @@
       "new_code": "page_operation_mismatch",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_page_total_plan"
+        "query_model_page_total_plan"
       ]
     },
     {
@@ -243,7 +243,7 @@
       "new_code": "page_rematch_answer_kind",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_page_kind"
+        "query_model_page_kind"
       ]
     },
     {
@@ -251,7 +251,7 @@
       "new_code": "page_total_length_mismatch",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_page_total_length"
+        "query_model_page_total_length"
       ]
     },
     {
@@ -259,9 +259,9 @@
       "new_code": "predicate_value_type_mismatch",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_predicate_equal_type",
-        "query_v2_model_predicate_order_type",
-        "query_v2_model_predicate_string_type"
+        "query_model_predicate_equal_type",
+        "query_model_predicate_order_type",
+        "query_model_predicate_string_type"
       ]
     },
     {
@@ -270,7 +270,7 @@
       "category": "resource_limit",
       "core_codes": [
         "processed_item_counter_overflow",
-        "query_v2_model_count_overflow"
+        "query_model_count_overflow"
       ]
     },
     {
@@ -279,7 +279,7 @@
       "category": "resource_limit",
       "core_codes": [
         "processed_item_limit",
-        "query_v2_model_item_limit"
+        "query_model_item_limit"
       ]
     },
     {
@@ -295,7 +295,7 @@
       "new_code": "provider_stream_not_exhausted",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_provider_not_exhausted"
+        "query_model_provider_not_exhausted"
       ]
     },
     {
@@ -303,7 +303,7 @@
       "new_code": "response_byte_limit",
       "category": "resource_limit",
       "core_codes": [
-        "query_v2_model_byte_limit",
+        "query_model_byte_limit",
         "response_byte_limit"
       ]
     },
@@ -315,10 +315,10 @@
         "query_plan_result_operation",
         "query_plan_result_stack",
         "query_plan_result_state",
-        "query_v2_model_contract_missing",
-        "query_v2_model_provider_plan_mismatch",
-        "query_v2_model_provider_plan_missing",
-        "query_v2_model_tuple_plan"
+        "query_model_contract_missing",
+        "query_model_provider_plan_mismatch",
+        "query_model_provider_plan_missing",
+        "query_model_tuple_plan"
       ]
     },
     {
@@ -326,7 +326,7 @@
       "new_code": "root_answer_kind",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_root_kind"
+        "query_model_root_kind"
       ]
     },
     {
@@ -334,7 +334,7 @@
       "new_code": "root_binding_mismatch",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_root_binding"
+        "query_model_root_binding"
       ]
     },
     {
@@ -342,7 +342,7 @@
       "new_code": "row_window_exceeded",
       "category": "resource_limit",
       "core_codes": [
-        "query_v2_model_complete_rows_exceeded"
+        "query_model_complete_rows_exceeded"
       ]
     },
     {
@@ -351,7 +351,7 @@
       "category": "result_decode",
       "core_codes": [
         "query_plan_result_window",
-        "query_v2_model_page_root_set"
+        "query_model_page_root_set"
       ]
     },
     {
@@ -359,7 +359,7 @@
       "new_code": "solution_answer_kind",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_solution_kind"
+        "query_model_solution_kind"
       ]
     },
     {
@@ -367,7 +367,7 @@
       "new_code": "solution_scan_limit",
       "category": "resource_limit",
       "core_codes": [
-        "query_v2_model_solution_limit"
+        "query_model_solution_limit"
       ]
     },
     {
@@ -391,7 +391,7 @@
       "new_code": "unexpected_hydrated_concept",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_hydration_unexpected"
+        "query_model_hydration_unexpected"
       ]
     },
     {
@@ -399,7 +399,7 @@
       "new_code": "unexpected_hydrated_root",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_page_unexpected_root"
+        "query_model_page_unexpected_root"
       ]
     },
     {
@@ -407,7 +407,7 @@
       "new_code": "unknown_provider_binding",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_solution_unknown_binding"
+        "query_model_solution_unknown_binding"
       ]
     },
     {
@@ -415,7 +415,7 @@
       "new_code": "unstable_provider_order",
       "category": "result_decode",
       "core_codes": [
-        "query_v2_model_unstable_provider_order"
+        "query_model_unstable_provider_order"
       ]
     },
     {
@@ -423,7 +423,7 @@
       "new_code": "unsupported_collection_slot",
       "category": "invalid_plan",
       "core_codes": [
-        "query_v2_model_rows_collection"
+        "query_model_rows_collection"
       ]
     },
     {

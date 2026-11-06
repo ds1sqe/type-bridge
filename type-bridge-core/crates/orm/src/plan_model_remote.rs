@@ -26,7 +26,7 @@ use std::sync::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::limits::{LIMIT_SOURCE_ADVERTISED, MAX_REMOTE_ENVELOPE_BYTES};
 use type_bridge_contract::query_model_limits::RemoteModelLimits;
 use type_bridge_contract::query_remote::RemoteCapabilities;
@@ -50,30 +50,8 @@ pub enum RemoteModelQueryError {
 
 impl From<Diagnostic> for RemoteModelQueryError {
     fn from(error: Diagnostic) -> Self {
-        Self::Diagnostic(typed_transport_diagnostic(error))
+        Self::Diagnostic(error)
     }
-}
-
-fn typed_transport_diagnostic(error: Diagnostic) -> Diagnostic {
-    let suffix = error
-        .code()
-        .as_str()
-        .strip_prefix("query_remote_v3_")
-        .or_else(|| error.code().as_str().strip_prefix("query_remote_v2_"));
-    let Some(suffix) = suffix else {
-        return error;
-    };
-    let mut mapped = Diagnostic::new(
-        error.category(),
-        DiagnosticCode::new(format!("query_remote_{suffix}"))
-            .expect("versionless transport diagnostic remains canonical"),
-        error.message(),
-    )
-    .with_path(error.path().clone());
-    for (key, value) in error.details() {
-        mapped = mapped.with_detail(key.clone(), value.clone());
-    }
-    mapped
 }
 
 struct PreparedModel {
@@ -236,9 +214,7 @@ impl ClaimedRemoteModelReply {
             use type_bridge_contract::sdk_diagnostic::{
                 SdkDiagnosticDetailValue, SdkDiagnosticName, SdkQueryDiagnosticIdentity,
             };
-            let mut diagnostic = diagnostic
-                .to_query_diagnostic()
-                .map_err(typed_transport_diagnostic)?;
+            let mut diagnostic = diagnostic.to_query_diagnostic()?;
             let limit_name = SdkDiagnosticName::new("limit").expect("static detail");
             if !diagnostic.details().contains_key(&limit_name)
                 && let Some((limit, maximum, source)) = self
@@ -341,7 +317,7 @@ fn annotate_refusal(
     {
         return error;
     }
-    let released = if error.code().as_str().starts_with("query_v2_model_") {
+    let released = if error.code().as_str().starts_with("query_model_") {
         released_plan_execution_error(&error)
             .code()
             .as_str()
@@ -1562,7 +1538,7 @@ mod answer_limit_refusal_tests {
         );
         // The caller's own configured budget was.
         let configured =
-            answer_limit_refusal(refusal("query_v2_model_item_limit"), budget(10), budget(10));
+            answer_limit_refusal(refusal("query_model_item_limit"), budget(10), budget(10));
         assert_eq!(
             details(&configured),
             (Some("items".into()), Some(10), Some("configured".into()))

@@ -71,7 +71,7 @@ impl RemoteDiagnostic {
         if bytes.len() > MAX_DIAGNOSTIC_BYTES {
             return Err(failure(
                 DiagnosticCategory::ResourceLimit,
-                "query_remote_v2_diagnostic_too_large",
+                "query_remote_diagnostic_too_large",
                 "V2 remote diagnostic exceeds the canonical byte ceiling",
             ));
         }
@@ -152,7 +152,7 @@ fn validate_detail_key(key: &str) -> Result<(), Diagnostic> {
         .map_err(|_| {
             failure(
                 DiagnosticCategory::InvalidContract,
-                "query_remote_v2_diagnostic_detail_key_invalid",
+                "query_remote_diagnostic_detail_key_invalid",
                 "V2 diagnostic detail keys must be canonical snake-case identifiers",
             )
         })
@@ -167,14 +167,14 @@ fn detail_value_from_wire(
             let parsed = value.parse::<i64>().map_err(|_| {
                 failure(
                     DiagnosticCategory::InvalidContract,
-                    "query_remote_v2_diagnostic_long_invalid",
+                    "query_remote_diagnostic_long_invalid",
                     "V2 diagnostic long detail is outside the signed 64-bit range",
                 )
             })?;
             if parsed.to_string() != *value {
                 return Err(failure(
                     DiagnosticCategory::InvalidContract,
-                    "query_remote_v2_diagnostic_long_invalid",
+                    "query_remote_diagnostic_long_invalid",
                     "V2 diagnostic long detail is not canonical decimal text",
                 ));
             }

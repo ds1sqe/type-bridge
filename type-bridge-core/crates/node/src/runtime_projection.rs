@@ -8714,9 +8714,9 @@ entities:
                             assert_eq!(
                                 diagnostic.code().as_str(),
                                 if relation {
-                                    "query_remote_v3_document_type"
+                                    "query_remote_document_type"
                                 } else {
-                                    "query_remote_v3_answer_kind"
+                                    "query_remote_answer_kind"
                                 },
                                 "relation={relation}; queries={:?}",
                                 state.lock().unwrap().queries

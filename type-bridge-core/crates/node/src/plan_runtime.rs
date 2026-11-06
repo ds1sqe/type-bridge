@@ -26,7 +26,7 @@ use type_bridge_schema::{
 
 pub(crate) fn napi_error(diagnostic: &Diagnostic) -> napi::Error {
     napi::Error::from_reason(serde_json::to_string(diagnostic).unwrap_or_else(|_| {
-        r#"{"category":"invalid_contract","code":"query_v2_diagnostic_unencodable","message":"the structured query diagnostic could not be encoded","path":[],"details":{}}"#
+        r#"{"category":"invalid_contract","code":"query_diagnostic_unencodable","message":"the structured query diagnostic could not be encoded","path":[],"details":{}}"#
             .to_owned()
     }))
 }
@@ -285,7 +285,7 @@ pub(crate) fn non_shared_buffer(env: &Env, value: Unknown) -> napi::Result<Buffe
     if !ordinary_array_buffer {
         return Err(napi::Error::new(
             napi::Status::InvalidArg,
-            "query_v2_shared_buffer_unsupported: raw native byte inputs cannot use SharedArrayBuffer storage"
+            "query_shared_buffer_unsupported: raw native byte inputs cannot use SharedArrayBuffer storage"
                 .to_owned(),
         ));
     }

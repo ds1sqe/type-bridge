@@ -1398,7 +1398,7 @@ async fn key_reference_uses_its_selected_key_and_scoped_roles_are_validated() {
         .execute(&database, &batch, control())
         .await
         .unwrap_err();
-    assert_eq!(diagnostic.code().as_str(), "query_remote_v3_document_key");
+    assert_eq!(diagnostic.code().as_str(), "query_remote_document_key");
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), 1);
     assert_eq!(state.rollbacks, 1);
@@ -1879,7 +1879,7 @@ async fn first_malformed_mutation_item_wins_over_a_later_answer_limit() {
         .execute_in_transaction(&transaction, &batch, control())
         .await
         .unwrap_err();
-    assert_eq!(diagnostic.code().as_str(), "query_remote_v3_document_value");
+    assert_eq!(diagnostic.code().as_str(), "query_remote_document_value");
     assert_eq!(
         transaction.rollback_only_cause().await.unwrap().code(),
         diagnostic.code()
@@ -2936,7 +2936,7 @@ async fn returning_capture_keeps_the_first_malformed_item_over_a_later_provider_
         .execute(&database, &batch, control())
         .await
         .unwrap_err();
-    assert_eq!(error.code().as_str(), "query_remote_v3_document_value");
+    assert_eq!(error.code().as_str(), "query_remote_document_value");
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), 1);
     assert_eq!((state.commits, state.rollbacks), (0, 1));

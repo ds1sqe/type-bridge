@@ -226,7 +226,7 @@ pub(crate) fn preflight_json(
     let invalid = || {
         crate::diagnostic::Diagnostic::new(
             crate::diagnostic::DiagnosticCategory::InvalidContract,
-            crate::diagnostic::DiagnosticCode::new("query_remote_v3_execution_timeline")
+            crate::diagnostic::DiagnosticCode::new("query_remote_execution_timeline")
                 .expect("static code"),
             "Execution timeline has invalid phase records",
         )
@@ -239,7 +239,7 @@ pub(crate) fn preflight_json(
         if state.over_limit {
             return Err(crate::diagnostic::Diagnostic::new(
                 crate::diagnostic::DiagnosticCategory::ResourceLimit,
-                crate::diagnostic::DiagnosticCode::new("query_remote_v3_execution_timeline_limit")
+                crate::diagnostic::DiagnosticCode::new("query_remote_execution_timeline_limit")
                     .expect("static code"),
                 "Execution timeline exceeds the request statement bound",
             ));

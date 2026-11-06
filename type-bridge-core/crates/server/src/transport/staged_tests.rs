@@ -505,7 +505,7 @@ async fn staged_standalone_inserts_refuse_missing_or_extra_provider_rows() {
         let request = staged(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE);
         let reply = verify(&fixture, &request, &post(&fixture, &request).await);
         assert!(!reply.committed());
-        assert_eq!(failure_code(&reply), "query_remote_v3_document_value");
+        assert_eq!(failure_code(&reply), "query_remote_document_value");
         assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
     }
@@ -625,7 +625,7 @@ async fn unmappable_write_answers_are_refused_before_commit() {
     let first = post(&fixture, &request).await;
     let reply = verify(&fixture, &request, &first);
     assert!(!reply.committed());
-    assert_eq!(failure_code(&reply), "query_remote_v3_answer_concept");
+    assert_eq!(failure_code(&reply), "query_remote_answer_concept");
     assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
 
@@ -634,7 +634,7 @@ async fn unmappable_write_answers_are_refused_before_commit() {
     *fixture.metrics.rows.lock().expect("rows lock") = vec![serde_json::json!({})];
     let request = staged(&fixture, &[rows_plan(&fixture.declared)], TEST_NONCE);
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
-    assert_eq!(failure_code(&reply), "query_remote_v3_answer_concept");
+    assert_eq!(failure_code(&reply), "query_remote_answer_concept");
     assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 0);
 }
 
@@ -647,7 +647,7 @@ async fn schema_kind_is_refused_before_anything_opens() {
     wire["kind"] = serde_json::json!("schema");
     let body = to_canonical_json(&wire).expect("canonical bytes");
     let reply = call(&fixture.router, "POST", "/v3/staged", body).await;
-    assert!(String::from_utf8_lossy(&reply).contains("query_remote_v3_kind"));
+    assert!(String::from_utf8_lossy(&reply).contains("query_remote_kind"));
     assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
 }
 
@@ -1115,7 +1115,7 @@ async fn malformed_staged_requests_are_refused_before_anything_opens() {
         now_ms() - 10 * 60 * 1_000,
     );
     let reply = verify(&fixture, &stale, &post(&fixture, &stale).await);
-    assert_eq!(failure_code(&reply), "query_remote_v3_expired");
+    assert_eq!(failure_code(&reply), "query_remote_expired");
 
     // A body over the transport limit, refused before it decodes.
     let oversized = vec![b' '; fixture.query.body_limit_bytes() + 1];
@@ -1283,7 +1283,7 @@ fn sdk_staged_advertisement_must_match_the_connection_signer() {
         .expect_err("a foreign signer is refused");
     assert_eq!(
         refused.code().as_str(),
-        "query_remote_v3_advertisement_mismatch"
+        "query_remote_advertisement_mismatch"
     );
 
     let exchange: type_bridge_orm::session::StagedExchangeFn =
@@ -1301,7 +1301,7 @@ fn sdk_staged_advertisement_must_match_the_connection_signer() {
         .expect_err("a fetched foreign advertisement is refused");
     assert_eq!(
         refused.code().as_str(),
-        "query_remote_v3_advertisement_mismatch"
+        "query_remote_advertisement_mismatch"
     );
 }
 

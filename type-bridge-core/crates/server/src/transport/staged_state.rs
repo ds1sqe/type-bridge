@@ -377,7 +377,7 @@ impl StagedQueryState {
         let limits = limits.validate_plan().map_err(|_| {
             diagnostic(
                 DiagnosticCategory::ResourceLimit,
-                "query_remote_v3_query_limits",
+                "query_remote_query_limits",
                 "staged query limits exceed their supported range",
             )
         })?;
