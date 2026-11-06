@@ -588,7 +588,7 @@ pub(super) fn render_open(
     output: &mut String,
     projection: &RuntimeProjection,
     prefix: &str,
-    ordered: bool,
+    _ordered: bool,
 ) -> Result<(), Diagnostic> {
     let opener = generated_symbol(prefix, "plan_open")?;
     let digest_name = generated_symbol(prefix, "plan_view_layout_digest")?;
@@ -596,24 +596,9 @@ pub(super) fn render_open(
         type_bridge_contract::projection::c_view::CViewLayouts::for_projection(projection)?
             .digest();
     let [add, preflight] = generated_alias_helper_symbols(prefix)?;
-    let diagnostics = if ordered {
-        "type_bridge_execution_diagnostics_t"
-    } else {
-        "type_bridge_diagnostics_t"
-    };
-    let close = if ordered {
-        "type_bridge_execution_diagnostics_close"
-    } else {
-        "type_bridge_diagnostics_close"
-    };
-    let package_open = generated_symbol(
-        prefix,
-        if ordered {
-            "schema_package_open_v2"
-        } else {
-            "schema_package_open"
-        },
-    )?;
+    let diagnostics = "type_bridge_execution_diagnostics_t";
+    let close = "type_bridge_execution_diagnostics_close";
+    let package_open = generated_symbol(prefix, "schema_package_open")?;
     let _ = writeln!(
         output,
         "static const uint8_t {digest_name}[32] = {{ {} }};",

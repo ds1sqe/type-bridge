@@ -15,7 +15,7 @@ use crate::query::TypeBridgeQueryExecutionLimitsV1;
 const LIMITS_VERSION: u32 = 1;
 
 /// Frozen database configuration V2 descriptor version.
-pub const DATABASE_CONFIG_V2_VERSION: u32 = 2;
+pub const DATABASE_CONFIG_VERSION: u32 = 2;
 /// Frozen maximum copied custom-root PEM input length.
 pub const DATABASE_CUSTOM_ROOT_CA_BYTES_MAX: usize = 1_048_576;
 /// Plaintext transport mode.
@@ -28,7 +28,7 @@ pub const TLS_CUSTOM_ROOT_CA: u32 = 2;
 /// Version-2 direct TypeDB database connection and answer policy.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct TypeBridgeDatabaseConfigV2 {
+pub struct TypeBridgeDatabaseConfig {
     /// Exact `sizeof` of this structure.
     pub struct_size: u32,
     /// Database configuration layout version.
@@ -69,6 +69,16 @@ fn invalid_limits() -> SdkExecutionDiagnostic {
             "Typed-query limits must use the canonical version-1 descriptor layout",
         )
         .expect("static C limits diagnostic message is valid"),
+    )
+}
+
+/// All-zero embedded database policies select the shared direct defaults.
+pub(crate) fn parse_database_limits(
+    value: TypeBridgeQueryExecutionLimitsV1,
+) -> Result<QueryExecutionResourceLimits, SdkExecutionDiagnostic> {
+    parse_common_limits(
+        (value != TypeBridgeQueryExecutionLimitsV1::default()).then_some(value),
+        AnswerTransport::Direct,
     )
 }
 
@@ -132,6 +142,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zero_database_policies_select_defaults_without_accepting_partial_layouts() {
+        assert_eq!(
+            parse_database_limits(TypeBridgeQueryExecutionLimitsV1::default()).unwrap(),
+            parse_common_limits(None, AnswerTransport::Direct).unwrap(),
+        );
+        let partial = TypeBridgeQueryExecutionLimitsV1 {
+            timeout_milliseconds: 1,
+            ..TypeBridgeQueryExecutionLimitsV1::default()
+        };
+        assert!(parse_database_limits(partial).is_err());
+    }
+
+    #[test]
     fn phase_collection_flag_is_exact_and_round_trips() {
         let mut value = TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
@@ -180,48 +203,36 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn database_config_v2_native_layout_matches_the_frozen_lp64_or_llp64_contract() {
-        assert_eq!(size_of::<TypeBridgeDatabaseConfigV2>(), 336);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, struct_size), 0);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, version), 4);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, address), 8);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, database), 24);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, username), 40);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, password), 56);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, http_port), 72);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, tls_mode), 76);
-        assert_eq!(
-            offset_of!(TypeBridgeDatabaseConfigV2, custom_root_ca_pem),
-            80
-        );
-        assert_eq!(
-            offset_of!(TypeBridgeDatabaseConfigV2, connection_limits),
-            96
-        );
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, answer_limits), 200);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, reserved), 304);
+        assert_eq!(size_of::<TypeBridgeDatabaseConfig>(), 336);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, struct_size), 0);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, version), 4);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, address), 8);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, database), 24);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, username), 40);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, password), 56);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, http_port), 72);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, tls_mode), 76);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, custom_root_ca_pem), 80);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, connection_limits), 96);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, answer_limits), 200);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, reserved), 304);
     }
 
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn database_config_v2_native_layout_matches_the_frozen_ilp32_contract() {
-        assert_eq!(size_of::<TypeBridgeDatabaseConfigV2>(), 296);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, struct_size), 0);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, version), 4);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, address), 8);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, database), 16);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, username), 24);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, password), 32);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, http_port), 40);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, tls_mode), 44);
-        assert_eq!(
-            offset_of!(TypeBridgeDatabaseConfigV2, custom_root_ca_pem),
-            48
-        );
-        assert_eq!(
-            offset_of!(TypeBridgeDatabaseConfigV2, connection_limits),
-            56
-        );
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, answer_limits), 160);
-        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, reserved), 264);
+        assert_eq!(size_of::<TypeBridgeDatabaseConfig>(), 296);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, struct_size), 0);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, version), 4);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, address), 8);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, database), 16);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, username), 24);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, password), 32);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, http_port), 40);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, tls_mode), 44);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, custom_root_ca_pem), 48);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, connection_limits), 56);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, answer_limits), 160);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfig, reserved), 264);
     }
 }

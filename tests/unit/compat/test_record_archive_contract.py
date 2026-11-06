@@ -88,7 +88,7 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         re.findall(r"TYPE_BRIDGE_CALL\s+(type_bridge_[a-z0-9_]+)\s*\(", header.read_text())
     )
     assert contract["exports"] == sorted(exports)
-    assert len(exports) == 655
+    assert len(exports) == 652
     previous = ROOT / "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
     assert hashlib.sha256(previous.read_bytes()).hexdigest() == (
         "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"
@@ -101,6 +101,17 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         else name
         for name in previous_exports
     }
+    # ABI 2.0 consolidates old package/database openers into current signatures.
+    opener_names = {
+        "type_bridge_schema_package_open_v1": "type_bridge_schema_package_open",
+        "type_bridge_schema_package_open_v2": "type_bridge_schema_package_open",
+        "type_bridge_schema_package_open_chunked_v1": "type_bridge_schema_package_open_chunked",
+        "type_bridge_schema_package_open_chunked_v2": "type_bridge_schema_package_open_chunked",
+        "type_bridge_database_open_v1": "type_bridge_database_open",
+        "type_bridge_database_open_v2": "type_bridge_database_open",
+        "type_bridge_database_config_validate_v2": "type_bridge_database_config_validate",
+    }
+    previous_exports = {opener_names.get(name, name) for name in previous_exports}
     builder = {
         f"type_bridge_plan_builder_{name}"
         for name in (
@@ -159,7 +170,7 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
             "type_bridge_pending_free",
             "type_bridge_execution_diagnostics_failure_get_v1",
             "type_bridge_proxy_connection_open_v1",
-            "type_bridge_database_open_with_query_limits_v2",
+            "type_bridge_database_open_with_query_limits",
             "type_bridge_proxy_connection_open_with_query_limits_v1",
             "type_bridge_proxy_connection_close",
             "type_bridge_proxy_query_execute",

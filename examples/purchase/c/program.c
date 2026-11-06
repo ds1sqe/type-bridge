@@ -779,7 +779,7 @@ static const char *env_or(const char *name, const char *fallback) {
 int main(void) {
   type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_database_t *database = NULL;
@@ -825,7 +825,7 @@ int main(void) {
     type_bridge_runtime_config_v1_t runtime_config = {
         sizeof(type_bridge_runtime_config_v1_t), TYPE_BRIDGE_RUNTIME_CONFIG_VERSION, 2u, 0u,
         {0u, 0u, 0u, 0u}};
-    type_bridge_database_config_v1_t config;
+    type_bridge_database_config_t config;
     target_t target = {NULL, NULL};
     CHECK(type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics));
     memset(&config, 0, sizeof(config));
@@ -837,7 +837,7 @@ int main(void) {
     config.password = view(env_or("TYPEDB_PASSWORD", "password"));
     config.http_port = http_port();
     config.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
-    CHECK(type_bridge_database_open_v1(runtime, package, &config, NULL, &database, &diagnostics));
+    CHECK(type_bridge_database_open(runtime, package, &config, NULL, &database, &diagnostics));
     target.database = database;
     printf("\"direct\":");
     CHECK(run_program(suite, &target, plans, &direct_snapshot));
@@ -872,7 +872,7 @@ done:
   (void)type_bridge_execution_diagnostics_close(&diagnostics);
   if (runtime != NULL) (void)type_bridge_runtime_close(&runtime, &diagnostics);
   (void)type_bridge_execution_diagnostics_close(&diagnostics);
-  if (package_diagnostics != NULL) (void)type_bridge_diagnostics_close(&package_diagnostics);
+  if (package_diagnostics != NULL) (void)type_bridge_execution_diagnostics_close(&package_diagnostics);
   if (package != NULL) (void)type_bridge_schema_package_close(&package);
   fflush(stdout);
   return status == TYPE_BRIDGE_STATUS_OK ? 0 : 1;

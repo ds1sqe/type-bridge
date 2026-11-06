@@ -1480,7 +1480,7 @@ static int run_role_and_package_evidence(
 static int run_projection_evidence(void) {
   type_bridge_schema_package_t *package = NULL;
   type_bridge_schema_package_t *foreign_package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   person_values_t values;
   person_fields_t person_fields;

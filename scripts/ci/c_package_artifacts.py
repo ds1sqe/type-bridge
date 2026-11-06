@@ -687,7 +687,7 @@ int main(void) {{
   if (type_bridge_runtime_version(&version) != TYPE_BRIDGE_STATUS_OK ||
       version.length != sizeof(expected_version) - 1u ||
       memcmp(version.data, expected_version, sizeof(expected_version) - 1u) != 0) return 10;
-  if ({PACKAGE_NAME}_schema_package_open_v2(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK ||
+  if ({PACKAGE_NAME}_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK ||
       package == NULL || diagnostics != NULL) return 11;
   if ({PACKAGE_NAME}_identifier_open(package, identifier_input, &identifier, &diagnostics) !=
           TYPE_BRIDGE_STATUS_OK || identifier == NULL || diagnostics != NULL) return 12;
@@ -703,7 +703,7 @@ int main(void) {{
     cpp = f"""#include <type_traits>
 #include <{PACKAGE_NAME}/{PACKAGE_NAME}.h>
 static_assert(std::is_standard_layout_v<type_bridge_byte_view_t>);
-void type_bridge_cpp_header_probe() {{ auto open = &{PACKAGE_NAME}_schema_package_open_v2; (void)open; }}
+void type_bridge_cpp_header_probe() {{ auto open = &{PACKAGE_NAME}_schema_package_open; (void)open; }}
 """.encode()
     return cmake, main, cpp
 

@@ -113,6 +113,8 @@ pub enum TypeBridgeExecutionDiagnosticDetailKind {
     TextList = 14,
     /// Execution phase records available through the timeline accessors.
     ExecutionTimeline = 15,
+    /// Exact canonical generic admission-diagnostics JSON array in `primary`.
+    AdmissionCause = 16,
     /// A newer detail kind unknown to this ABI minor.
     Unknown = 255,
 }
@@ -677,6 +679,31 @@ pub(crate) fn execution_diagnostics_handle(
     TypeBridgeExecutionDiagnostics {
         items: diagnostics.into_iter().map(OwnedDiagnostic::from).collect(),
     }
+}
+
+/// Preserve the structured admission cause without changing the shared SDK contract.
+pub(crate) fn admission_diagnostics_handle(
+    diagnostic: SdkExecutionDiagnostic,
+    cause: Vec<type_bridge_contract::diagnostic::Diagnostic>,
+) -> TypeBridgeExecutionDiagnostics {
+    let mut item = OwnedDiagnostic::from(diagnostic);
+    item.details.push(OwnedDetail {
+        key: b"admission_cause".to_vec(),
+        kind: TypeBridgeExecutionDiagnosticDetailKind::AdmissionCause,
+        boolean_value: false,
+        unsigned_value: 0,
+        signed_value: 0,
+        text: [
+            crate::diagnostic::diagnostics_handle(cause).encoded,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ],
+        list: Vec::new(),
+        timeline: None,
+    });
+    item.details.sort_by(|left, right| left.key.cmp(&right.key));
+    TypeBridgeExecutionDiagnostics { items: vec![item] }
 }
 
 pub(crate) fn status_for(diagnostic: &SdkExecutionDiagnostic) -> TypeBridgeStatus {

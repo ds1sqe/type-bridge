@@ -166,7 +166,7 @@ unsafe extern "C" {
         count: usize,
     ) -> TypeBridgeStatus;
 
-    fn type_bridge_schema_package_open_v1(
+    fn type_bridge_schema_package_open(
         descriptor: *const TypeBridgeSchemaPackageDescriptorV1,
         out_package: *mut *mut TypeBridgeSchemaPackage,
         out_diagnostics: *mut *mut c_void,
@@ -391,8 +391,8 @@ impl OpenPackage {
         .collect();
         let descriptor = TypeBridgeSchemaPackageDescriptorV1 {
             struct_size: u32::try_from(size_of::<TypeBridgeSchemaPackageDescriptorV1>()).unwrap(),
-            abi_major: 1,
-            abi_minor: 7,
+            abi_major: 2,
+            abi_minor: 0,
             schema_authority_json: view(&bytes[0]),
             declared_schema_json: view(&bytes[1]),
             runtime_projection_json: view(&bytes[2]),
@@ -405,9 +405,8 @@ impl OpenPackage {
         let mut handle = ptr::null_mut();
         let mut diagnostics = ptr::null_mut();
         // SAFETY: the descriptor views and both output slots live for the call.
-        let status = unsafe {
-            type_bridge_schema_package_open_v1(&descriptor, &mut handle, &mut diagnostics)
-        };
+        let status =
+            unsafe { type_bridge_schema_package_open(&descriptor, &mut handle, &mut diagnostics) };
         assert_eq!(status, TypeBridgeStatus::Ok, "the purchase package opens");
         Self {
             handle,
@@ -891,7 +890,7 @@ fn compiled_c_purchase_prints_the_hand_built_bytes() {
 
 int main(void) {{
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_plan_t *plan = NULL;
   uint8_t *bytes;
@@ -1700,7 +1699,7 @@ static tb_long_t right(type_bridge_plan_builder_t *p, shop_item_handle_t item) {
 int main(int argc, char **argv) {
   type_bridge_plan_builder_t *p = NULL;
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_plan_t *plan = NULL;
   shop_account_handle_t account; shop_item_handle_t item;
@@ -2312,7 +2311,7 @@ plays:
 #define OK(call) do { type_bridge_status_t status = (call); if (status != TYPE_BRIDGE_STATUS_OK) { fprintf(stderr, "line %d status %d\n", __LINE__, (int)status); return 2; } } while (0)
 int main(int argc, char **argv) {
   type_bridge_plan_builder_t *p = NULL; type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL; type_bridge_plan_t *plan = NULL;
   shop_group_handle_t group; shop_a_handle_t a; shop_b_handle_t b;
   shop_group_link_t links; shop_group_unlink_t unlinks;

@@ -88,6 +88,7 @@ pub use generated_preflight::{
     TypeBridgeGeneratedCreateHandleChunkV1, TypeBridgeGeneratedCreateMemberV1,
     TypeBridgeGeneratedOpaqueInputV1, TypeBridgeGeneratedOutputRangeV1,
 };
+pub use policy::TypeBridgeDatabaseConfig;
 pub use projected_create_builder::TypeBridgeProjectedCreateBuilder;
 pub use projected_model::{
     TypeBridgeProjectedCreate, TypeBridgeProjectedCreateDescriptorV1,
@@ -112,9 +113,8 @@ pub use query::{
     TypeBridgeQueryShapeSlotV1, TypeBridgeQueryTerminal, TypeBridgeQueryTerminalDescriptorV1,
 };
 pub use runtime::{
-    TypeBridgeCancellation, TypeBridgeDatabase, TypeBridgeDatabaseConfigV1,
-    TypeBridgeReadTransaction, TypeBridgeRuntime, TypeBridgeRuntimeConfigV1,
-    TypeBridgeWriteTransaction,
+    TypeBridgeCancellation, TypeBridgeDatabase, TypeBridgeReadTransaction, TypeBridgeRuntime,
+    TypeBridgeRuntimeConfigV1, TypeBridgeWriteTransaction,
 };
 
 pub use runtime::{TypeBridgeDebugListener, type_bridge_debug_listener_set};

@@ -333,6 +333,25 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+- C package openers and runtime/generated migration-catalog openers use
+  execution diagnostics. The V1 package openers are removed; generated
+  packages expose one opener. Detail kind 16 retains the exact original
+  admission diagnostics JSON; close these handles with
+  `type_bridge_execution_diagnostics_close`.
+- C removes `type_bridge_database_open_v1` and `type_bridge_database_config_v1_t`;
+  use `type_bridge_database_open` with `type_bridge_database_config_t` and
+  `TYPE_BRIDGE_DATABASE_CONFIG_VERSION` (layout 2). All-zero embedded policies
+  select direct defaults; existing TLS mode values retain their meaning.
+- C ABI 2.0 removes version suffixes from package opening and database
+  configuration. Signatures and descriptor version values are unchanged:
+  - `type_bridge_schema_package_open_v2` → `type_bridge_schema_package_open`.
+  - `type_bridge_schema_package_open_chunked_v2` → `type_bridge_schema_package_open_chunked`.
+  - `type_bridge_database_config_validate_v2` → `type_bridge_database_config_validate`.
+  - `type_bridge_database_open_v2` → `type_bridge_database_open`.
+  - `type_bridge_database_open_with_query_limits_v2` → `type_bridge_database_open_with_query_limits`.
+  - `type_bridge_database_config_v2_t` → `type_bridge_database_config_t`.
+  - `TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION` → `TYPE_BRIDGE_DATABASE_CONFIG_VERSION`.
+  - `*_schema_package_open_v2` → `*_schema_package_open`.
 - Regenerated C manager structs store `root_filter` instead of `binding` and
   `root_query`; manager filter references expose `value` instead of `query`.
   Use the generated open/filter/terminal functions and regenerate packages

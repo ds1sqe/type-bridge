@@ -139,7 +139,7 @@ refused, never clamped. Manager terminals run only on a database or a read
 transaction.
 
 Independent connection query limits use
-`type_bridge_database_open_with_query_limits_v2` or
+`type_bridge_database_open_with_query_limits` or
 `type_bridge_proxy_connection_open_with_query_limits_v1`. Pass the existing
 transport configuration plus an array of `type_bridge_query_limit_override_v1_t`
 entries and its count. Names and values follow the shared `QueryLimits` policy:

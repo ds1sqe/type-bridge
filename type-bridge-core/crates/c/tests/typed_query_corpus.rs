@@ -17,7 +17,7 @@ use std::ptr::{self, NonNull};
 use serde_json::{Value, json};
 use type_bridge_c::TypeBridgeProjectedTokenV1;
 use type_bridge_c::{
-    TypeBridgeByteView, TypeBridgeDiagnostics, TypeBridgeExecutionDiagnosticCategory,
+    TypeBridgeByteView, TypeBridgeExecutionDiagnosticCategory,
     TypeBridgeExecutionDiagnosticDetailKind, TypeBridgeExecutionDiagnosticDetailViewV1,
     TypeBridgeExecutionDiagnosticPathKind, TypeBridgeExecutionDiagnosticPathViewV1,
     TypeBridgeExecutionDiagnosticViewV1, TypeBridgeExecutionDiagnostics, TypeBridgeQuery,
@@ -94,10 +94,10 @@ struct LimitOverride {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    fn type_bridge_schema_package_open_v1(
+    fn type_bridge_schema_package_open(
         descriptor: *const TypeBridgeSchemaPackageDescriptorV1,
         out_package: *mut *mut TypeBridgeSchemaPackage,
-        out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
     fn type_bridge_schema_package_close(
         package: *mut *mut TypeBridgeSchemaPackage,
@@ -414,8 +414,8 @@ impl Fixture {
         };
         let descriptor = TypeBridgeSchemaPackageDescriptorV1 {
             struct_size: size_of::<TypeBridgeSchemaPackageDescriptorV1>() as u32,
-            abi_major: 1,
-            abi_minor: 6,
+            abi_major: 2,
+            abi_minor: 0,
             schema_authority_json: view(&authority),
             declared_schema_json: view(&declared),
             runtime_projection_json: view(&projection_json),
@@ -426,11 +426,10 @@ impl Fixture {
             reserved: [0; 4],
         };
         let mut package = ptr::null_mut();
-        let mut diagnostics = NonNull::<TypeBridgeDiagnostics>::dangling().as_ptr();
+        let mut diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
         // SAFETY: the descriptor borrows live bytes; both outputs are writable.
-        let status = unsafe {
-            type_bridge_schema_package_open_v1(&descriptor, &mut package, &mut diagnostics)
-        };
+        let status =
+            unsafe { type_bridge_schema_package_open(&descriptor, &mut package, &mut diagnostics) };
         assert_eq!(status, TypeBridgeStatus::Ok);
         Self {
             package,

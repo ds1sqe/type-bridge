@@ -674,7 +674,7 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_open(
     package: *const TypeBridgeSchemaPackage,
     bundle: TypeBridgeByteView,
     out_catalog: *mut *mut TypeBridgeMigrationCatalog,
-    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+    out_diagnostics: *mut *mut crate::execution_diagnostic::TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     let outputs = match direct_output_preflight(&[
         (
@@ -683,7 +683,7 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_open(
         ),
         (
             out_diagnostics.cast(),
-            size_of::<*mut TypeBridgeDiagnostics>(),
+            size_of::<*mut crate::execution_diagnostic::TypeBridgeExecutionDiagnostics>(),
         ),
     ]) {
         Ok(value) => value,
@@ -697,9 +697,10 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_open(
     {
         return TypeBridgeStatus::InvalidArgument;
     }
-    if let Err(status) = unsafe { initialize_diagnostics(out_diagnostics) } {
-        return status;
+    if out_diagnostics.is_null() {
+        return TypeBridgeStatus::InvalidArgument;
     }
+    unsafe { out_diagnostics.write_unaligned(ptr::null_mut()) };
     unsafe { out_catalog.write_unaligned(ptr::null_mut()) };
     guarded(|| {
         let Some(package) = (unsafe { package.as_ref() }) else {
@@ -713,10 +714,8 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_open(
         } {
             Ok(value) => value,
             Err((status, diagnostics)) => {
-                return match unsafe { publish_diagnostics(diagnostics, out_diagnostics) } {
-                    Ok(()) => status,
-                    Err(status) => status,
-                };
+                return crate::abi::return_schema_package_open_error(status, diagnostics,
+                    type_bridge_contract::sdk_diagnostic::SdkProjectionEvidenceSlotPresence::Present, out_diagnostics);
             }
         };
         match MigrationCatalogState::open(&package.state()._authority, &bytes) {
@@ -727,7 +726,12 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_open(
                     out_catalog,
                 )
             },
-            Err(error) => return_failure(error, out_diagnostics),
+            Err(error) => crate::abi::return_schema_package_open_error(
+                failure_status(&error),
+                vec![error],
+                type_bridge_contract::sdk_diagnostic::SdkProjectionEvidenceSlotPresence::Present,
+                out_diagnostics,
+            ),
         }
     })
 }

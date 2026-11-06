@@ -148,24 +148,20 @@ unsafe extern "C" {
     fn type_bridge_c_abi_major() -> u32;
     fn type_bridge_c_abi_minor() -> u32;
     fn type_bridge_runtime_version(out_version: *mut TypeBridgeByteView) -> TypeBridgeStatus;
-    fn type_bridge_schema_package_open_v1(
-        descriptor: *const TypeBridgeSchemaPackageDescriptorV1,
-        out_package: *mut *mut TypeBridgeSchemaPackage,
-        out_diagnostics: *mut *mut TypeBridgeDiagnostics,
-    ) -> TypeBridgeStatus;
-    fn type_bridge_schema_package_open_chunked_v1(
-        descriptor: *const TypeBridgeSchemaPackageChunkedDescriptorV1,
-        out_package: *mut *mut TypeBridgeSchemaPackage,
-        out_diagnostics: *mut *mut TypeBridgeDiagnostics,
-    ) -> TypeBridgeStatus;
-    fn type_bridge_schema_package_open_v2(
+    fn type_bridge_schema_package_open(
         descriptor: *const TypeBridgeSchemaPackageDescriptorV1,
         out_package: *mut *mut TypeBridgeSchemaPackage,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
-    fn type_bridge_schema_package_open_chunked_v2(
+    fn type_bridge_schema_package_open_chunked(
         descriptor: *const TypeBridgeSchemaPackageChunkedDescriptorV1,
         out_package: *mut *mut TypeBridgeSchemaPackage,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_migration_catalog_open(
+        package: *const TypeBridgeSchemaPackage,
+        bundle: TypeBridgeByteView,
+        out_catalog: *mut *mut std::ffi::c_void,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
     fn type_bridge_schema_package_close(
@@ -194,10 +190,6 @@ unsafe extern "C" {
     fn type_bridge_schema_package_semantic_profile(
         package: *const TypeBridgeSchemaPackage,
         out_value: *mut TypeBridgeByteView,
-    ) -> TypeBridgeStatus;
-    fn type_bridge_diagnostics_json(
-        diagnostics: *const TypeBridgeDiagnostics,
-        out_json: *mut TypeBridgeByteView,
     ) -> TypeBridgeStatus;
     fn type_bridge_diagnostics_close(
         diagnostics: *mut *mut TypeBridgeDiagnostics,
@@ -1361,19 +1353,36 @@ unsafe fn copied_view(
     unsafe { std::slice::from_raw_parts(output.data, output.length) }.to_vec()
 }
 
-unsafe fn diagnostic_text(diagnostics: *const TypeBridgeDiagnostics) -> String {
-    let mut output = TypeBridgeByteView {
-        data: ptr::null(),
-        length: 0,
-    };
-    // SAFETY: `diagnostics` is live for the call and `output` is writable.
-    assert_eq!(
-        unsafe { type_bridge_diagnostics_json(diagnostics, &mut output) },
-        TypeBridgeStatus::Ok,
-    );
-    // SAFETY: the successful accessor returns live UTF-8 diagnostic JSON.
-    String::from_utf8(unsafe { std::slice::from_raw_parts(output.data, output.length) }.to_vec())
-        .expect("diagnostic JSON is UTF-8")
+unsafe fn admission_cause_text(diagnostics: *const TypeBridgeExecutionDiagnostics) -> String {
+    // SAFETY: caller retains this diagnostic owner throughout the borrowed reads.
+    let view = unsafe { one_execution_diagnostic(diagnostics) };
+    for index in 0..view.detail_count {
+        let mut detail =
+            std::mem::MaybeUninit::<TypeBridgeExecutionDiagnosticDetailViewV1>::uninit();
+        // SAFETY: output is a disjoint writable view and the owner remains live.
+        assert_eq!(
+            unsafe {
+                type_bridge_execution_diagnostics_detail_get_v1(
+                    diagnostics,
+                    0,
+                    index,
+                    detail.as_mut_ptr(),
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        // SAFETY: successful accessor initialized the view.
+        let detail = unsafe { detail.assume_init() };
+        if detail.kind == TypeBridgeExecutionDiagnosticDetailKind::AdmissionCause {
+            // SAFETY: text borrows the live diagnostic owner.
+            assert_eq!(
+                unsafe { execution_view_text(detail.key) },
+                "admission_cause"
+            );
+            return unsafe { execution_view_text(detail.primary) };
+        }
+    }
+    panic!("admission failure must retain its structured cause");
 }
 
 unsafe fn execution_view_text(view: TypeBridgeByteView) -> String {
@@ -1436,7 +1445,7 @@ unsafe fn assert_missing_semantic_fingerprint_diagnostic(
         "projection_evidence_mismatch"
     );
     assert_eq!(view.path_count, 3);
-    assert_eq!(view.detail_count, 3);
+    assert_eq!(view.detail_count, 4);
 
     for (index, kind, expected_index, expected_primary) in [
         (
@@ -1508,7 +1517,7 @@ unsafe fn assert_missing_semantic_fingerprint_diagnostic(
                 type_bridge_execution_diagnostics_detail_get_v1(
                     diagnostics,
                     0,
-                    index,
+                    if index == 0 { 0 } else { index + 1 },
                     detail.as_mut_ptr(),
                 )
             },
@@ -1536,7 +1545,7 @@ fn assert_v2_flat_rejected(
     let mut diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
     // SAFETY: the descriptor and both output slots remain live for the complete call.
     assert_eq!(
-        unsafe { type_bridge_schema_package_open_v2(descriptor, &mut package, &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(descriptor, &mut package, &mut diagnostics) },
         status,
     );
     assert!(package.is_null());
@@ -1545,7 +1554,7 @@ fn assert_v2_flat_rejected(
     let view = unsafe { one_execution_diagnostic(diagnostics) };
     assert_eq!(view.category, category);
     assert_eq!(view.path_count, path_count);
-    assert_eq!(view.detail_count, detail_count);
+    assert_eq!(view.detail_count, detail_count + 1);
     // SAFETY: the diagnostic handle remains live while its borrowed code is copied.
     assert_eq!(unsafe { execution_view_text(view.code) }, code);
     // SAFETY: this slot uniquely owns the returned diagnostic handle.
@@ -1565,7 +1574,7 @@ fn assert_v2_chunked_rejected(
     // SAFETY: the descriptor graph and both output slots remain live for the complete call.
     assert_eq!(
         unsafe {
-            type_bridge_schema_package_open_chunked_v2(descriptor, &mut package, &mut diagnostics)
+            type_bridge_schema_package_open_chunked(descriptor, &mut package, &mut diagnostics)
         },
         status,
     );
@@ -1575,7 +1584,7 @@ fn assert_v2_chunked_rejected(
     let view = unsafe { one_execution_diagnostic(diagnostics) };
     assert_eq!(view.category, category);
     assert_eq!(view.path_count, path_count);
-    assert_eq!(view.detail_count, detail_count);
+    assert_eq!(view.detail_count, detail_count + 1);
     // SAFETY: the diagnostic handle remains live while its borrowed code is copied.
     assert_eq!(unsafe { execution_view_text(view.code) }, code);
     // SAFETY: this slot uniquely owns the returned diagnostic handle.
@@ -1587,11 +1596,20 @@ fn assert_rejected(
     status: TypeBridgeStatus,
     code: &str,
 ) {
+    let status = if status == TypeBridgeStatus::SchemaPackageRejected {
+        if code.ends_with("layout_mismatch") {
+            TypeBridgeStatus::InvalidArgument
+        } else {
+            TypeBridgeStatus::ExecutionFailed
+        }
+    } else {
+        status
+    };
     let mut package = NonNull::<TypeBridgeSchemaPackage>::dangling().as_ptr();
-    let mut diagnostics = NonNull::<TypeBridgeDiagnostics>::dangling().as_ptr();
+    let mut diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
     // SAFETY: the descriptor and both output slots are readable/writable for the call.
     let actual =
-        unsafe { type_bridge_schema_package_open_v1(descriptor, &mut package, &mut diagnostics) };
+        unsafe { type_bridge_schema_package_open(descriptor, &mut package, &mut diagnostics) };
     assert_eq!(actual, status);
     assert!(
         package.is_null(),
@@ -1602,20 +1620,20 @@ fn assert_rejected(
         "ordinary rejection must return structured diagnostics"
     );
     // SAFETY: the failed open returned a live diagnostic handle.
-    let json = unsafe { diagnostic_text(diagnostics) };
+    let json = unsafe { admission_cause_text(diagnostics) };
     assert!(
         json.contains(&format!("\"code\":\"{code}\"")),
         "diagnostics did not contain {code}: {json}",
     );
     // SAFETY: ownership of the returned handle is released through its exact close family.
     assert_eq!(
-        unsafe { type_bridge_diagnostics_close(&mut diagnostics) },
+        unsafe { type_bridge_execution_diagnostics_close(&mut diagnostics) },
         TypeBridgeStatus::Ok,
     );
     assert!(diagnostics.is_null());
     // SAFETY: repeated close of the now-null slot is explicitly idempotent.
     assert_eq!(
-        unsafe { type_bridge_diagnostics_close(&mut diagnostics) },
+        unsafe { type_bridge_execution_diagnostics_close(&mut diagnostics) },
         TypeBridgeStatus::Ok,
     );
 }
@@ -1635,13 +1653,13 @@ fn schema_less_package_admission_is_refused_before_runtime_use() {
     let mut diagnostics = ptr::null_mut();
     // SAFETY: all retained evidence and independent output slots remain live.
     assert_eq!(
-        unsafe { type_bridge_schema_package_open_v1(&descriptor, &mut package, &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(&descriptor, &mut package, &mut diagnostics) },
         TypeBridgeStatus::InvalidArgument
     );
     assert!(package.is_null());
     // SAFETY: failed admission returned one live diagnostic handle.
     let value: serde_json::Value =
-        serde_json::from_str(&unsafe { diagnostic_text(diagnostics) }).unwrap();
+        serde_json::from_str(&unsafe { admission_cause_text(diagnostics) }).unwrap();
     assert_eq!(value[0]["code"], "c_schema_descriptor_invalid_view");
     assert_eq!(
         value[0]["path"],
@@ -1649,7 +1667,7 @@ fn schema_less_package_admission_is_refused_before_runtime_use() {
     );
     // SAFETY: the test owns the diagnostic handle.
     assert_eq!(
-        unsafe { type_bridge_diagnostics_close(&mut diagnostics) },
+        unsafe { type_bridge_execution_diagnostics_close(&mut diagnostics) },
         TypeBridgeStatus::Ok
     );
 }
@@ -1672,19 +1690,103 @@ fn malformed_authority_diagnostic_json_matches_the_golden() {
     let mut descriptor = bytes.descriptor();
     descriptor.schema_authority_json = view(malformed);
     let mut package = NonNull::<TypeBridgeSchemaPackage>::dangling().as_ptr();
-    let mut diagnostics = NonNull::<TypeBridgeDiagnostics>::dangling().as_ptr();
+    let mut diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
     // SAFETY: the descriptor and both output slots are readable/writable for the call.
     let status =
-        unsafe { type_bridge_schema_package_open_v1(&descriptor, &mut package, &mut diagnostics) };
-    assert_eq!(status, TypeBridgeStatus::SchemaPackageRejected);
+        unsafe { type_bridge_schema_package_open(&descriptor, &mut package, &mut diagnostics) };
+    assert_eq!(status, TypeBridgeStatus::ExecutionFailed);
     // SAFETY: the failed open returned a live diagnostic handle.
-    let json: serde_json::Value =
-        serde_json::from_str(&unsafe { diagnostic_text(diagnostics) }).unwrap();
-    assert_eq!(json, serde_json::Value::Array(vec![expected]));
+    let expected_bytes = type_bridge_contract::codec::to_canonical_json(&vec![expected]).unwrap();
+    assert_eq!(
+        unsafe { admission_cause_text(diagnostics) }.as_bytes(),
+        expected_bytes
+    );
+    assert_eq!(
+        unsafe { execution_view_text(one_execution_diagnostic(diagnostics).code) },
+        "projection_evidence_mismatch"
+    );
     // SAFETY: ownership of the returned handle is released through its close family.
     assert_eq!(
-        unsafe { type_bridge_diagnostics_close(&mut diagnostics) },
+        unsafe { type_bridge_execution_diagnostics_close(&mut diagnostics) },
         TypeBridgeStatus::Ok,
+    );
+}
+
+#[test]
+fn catalog_admission_preserves_the_golden_cause_and_fences_its_bytes() {
+    let golden: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../tests/contracts/diagnostic-json.json"
+    ))
+    .unwrap();
+    let expected = golden["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["id"] == "contract.malformed_canonical_json")
+        .unwrap()["diagnostic"]
+        .clone();
+    let expected_bytes = type_bridge_contract::codec::to_canonical_json(&vec![expected]).unwrap();
+    let bytes = emitted_fixture().bytes;
+    let mut package = ptr::null_mut();
+    let mut diagnostics = ptr::null_mut();
+    // SAFETY: descriptor and independent owner slots remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_schema_package_open(&bytes.descriptor(), &mut package, &mut diagnostics)
+        },
+        TypeBridgeStatus::Ok
+    );
+    let mut catalog = ptr::dangling_mut();
+    // SAFETY: package and byte view remain live, and outputs are disjoint.
+    assert_eq!(
+        unsafe {
+            type_bridge_migration_catalog_open(package, view(b"{"), &mut catalog, &mut diagnostics)
+        },
+        TypeBridgeStatus::InvalidArgument
+    );
+    assert!(catalog.is_null());
+    assert_eq!(
+        unsafe { admission_cause_text(diagnostics) }.as_bytes(),
+        expected_bytes
+    );
+    let summary = unsafe { one_execution_diagnostic(diagnostics) };
+    assert_eq!(
+        unsafe { execution_view_text(summary.code) },
+        "c_schema_descriptor_invalid_view"
+    );
+    let mut detail = std::mem::MaybeUninit::<TypeBridgeExecutionDiagnosticDetailViewV1>::uninit();
+    // The cause sorts before the classification details.
+    assert_eq!(
+        unsafe {
+            type_bridge_execution_diagnostics_detail_get_v1(diagnostics, 0, 0, detail.as_mut_ptr())
+        },
+        TypeBridgeStatus::Ok
+    );
+    let detail = unsafe { detail.assume_init() };
+    assert_eq!(
+        detail.kind,
+        TypeBridgeExecutionDiagnosticDetailKind::AdmissionCause
+    );
+    // SAFETY: the intentional interior output is refused before any write.
+    assert_eq!(
+        unsafe {
+            type_bridge_execution_diagnostics_detail_get_v1(
+                diagnostics,
+                0,
+                0,
+                detail.primary.data.cast_mut().cast(),
+            )
+        },
+        TypeBridgeStatus::InvalidArgument
+    );
+    assert_eq!(
+        unsafe { admission_cause_text(diagnostics) }.as_bytes(),
+        expected_bytes
+    );
+    unsafe { close_execution_diagnostics(&mut diagnostics) };
+    assert_eq!(
+        unsafe { type_bridge_schema_package_close(&mut package) },
+        TypeBridgeStatus::Ok
     );
 }
 
@@ -2902,13 +3004,13 @@ static_assert(std::is_standard_layout_v<type_bridge_execution_diagnostic_view_v1
 static_assert(std::is_standard_layout_v<type_bridge_execution_diagnostic_path_view_v1_t>);
 static_assert(std::is_standard_layout_v<type_bridge_execution_diagnostic_detail_view_v1_t>);
 static_assert(std::is_standard_layout_v<type_bridge_runtime_config_v1_t>);
-static_assert(std::is_standard_layout_v<type_bridge_database_config_v1_t>);
+static_assert(std::is_standard_layout_v<type_bridge_database_config_t>);
 
 void type_bridge_header_compatibility_probe() {
   auto abi_major = &type_bridge_c_abi_major;
   auto open = &fixture_schema_package_open;
   auto runtime_open = &type_bridge_runtime_open_v1;
-  auto database_open = &type_bridge_database_open_v1;
+  auto database_open = &type_bridge_database_open;
   auto read_open = &type_bridge_read_transaction_open;
   auto write_open = &type_bridge_write_transaction_open;
   auto generated_preflight = &type_bridge_generated_opaque_alias_preflight_v1;
@@ -2935,7 +3037,7 @@ int main(void) {
   if (migration_smoke() != 0) return 20;
   type_bridge_byte_view_t view = {0};
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_execution_diagnostics_t *execution_diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_cancellation_t *cancellation = NULL;
@@ -3355,7 +3457,7 @@ fn clean_staged_pkg_config_consumer_supports_nested_library_directories() {
 int main(void) {
   type_bridge_byte_view_t version = {0};
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
   if (type_bridge_runtime_version(&version) != TYPE_BRIDGE_STATUS_OK ||
       version.length != sizeof(TYPE_BRIDGE_EXPECTED_RUNTIME_VERSION) - 1u ||
       memcmp(version.data, TYPE_BRIDGE_EXPECTED_RUNTIME_VERSION,
@@ -3423,11 +3525,11 @@ fn generated_descriptor_opens_and_borrows_exact_emitted_bytes() {
     let bytes = emitted_fixture().bytes;
     let descriptor = bytes.descriptor();
     let mut package = ptr::null_mut();
-    let mut diagnostics = NonNull::<TypeBridgeDiagnostics>::dangling().as_ptr();
+    let mut diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
 
     // SAFETY: the descriptor views and both writable output slots live for the call.
     assert_eq!(
-        unsafe { type_bridge_schema_package_open_v1(&descriptor, &mut package, &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(&descriptor, &mut package, &mut diagnostics) },
         TypeBridgeStatus::Ok,
     );
     assert!(!package.is_null());
@@ -3484,7 +3586,7 @@ fn current_abi_descriptors_open_in_flat_and_chunked_forms() {
     let mut diagnostics = ptr::null_mut();
     // SAFETY: descriptor backing bytes and distinct owner slots stay live.
     assert_eq!(
-        unsafe { type_bridge_schema_package_open_v1(&descriptor, &mut package, &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(&descriptor, &mut package, &mut diagnostics) },
         TypeBridgeStatus::Ok
     );
     assert!(!package.is_null());
@@ -3499,7 +3601,7 @@ fn current_abi_descriptors_open_in_flat_and_chunked_forms() {
     // SAFETY: chunk tables, backing bytes and owner slots stay live.
     assert_eq!(
         unsafe {
-            type_bridge_schema_package_open_chunked_v1(&descriptor, &mut package, &mut diagnostics)
+            type_bridge_schema_package_open_chunked(&descriptor, &mut package, &mut diagnostics)
         },
         TypeBridgeStatus::Ok
     );
@@ -3541,14 +3643,14 @@ fn abi_1_6_header_consumer_rejects_old_package_before_io() {
 _Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 6u, "must use the frozen old header");
 type_bridge_status_t TYPE_BRIDGE_CALL fixture_schema_package_open(
     type_bridge_schema_package_t **out_package,
-    type_bridge_diagnostics_t **out_diagnostics);
+    type_bridge_execution_diagnostics_t **out_diagnostics);
 int main(void) {
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
   if (type_bridge_c_abi_major() != 2u || type_bridge_c_abi_minor() != 0u) return 1;
   if (fixture_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_UNSUPPORTED) return 2;
   if (package != NULL || diagnostics == NULL) return 3;
-  return type_bridge_diagnostics_close(&diagnostics) == TYPE_BRIDGE_STATUS_OK ? 0 : 4;
+  return type_bridge_execution_diagnostics_close(&diagnostics) == TYPE_BRIDGE_STATUS_OK ? 0 : 4;
 }
 "#).expect("old consumer is written");
     let old_include = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/abi-1.6");
@@ -3633,10 +3735,11 @@ fn abi_1_6_package_source(generated: &str) -> String {
     );
     format!(
         "#include <typebridge/type_bridge.h>\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_schema_package_open_chunked(const type_bridge_schema_package_chunked_descriptor_v1_t *, type_bridge_schema_package_t **, type_bridge_execution_diagnostics_t **);\n\
          #define FIXTURE_HOSTED_OBJECT_BYTES_MIN 65535u\n\
          type_bridge_status_t TYPE_BRIDGE_CALL fixture_schema_package_open(\n\
              type_bridge_schema_package_t **out_package,\n\
-             type_bridge_diagnostics_t **out_diagnostics);\n\n{previous}"
+             type_bridge_execution_diagnostics_t **out_diagnostics);\n\n{previous}"
     )
 }
 
@@ -3687,8 +3790,8 @@ int main(void) {
   type_bridge_byte_view_t actual = {0};
   type_bridge_schema_package_t *package =
       (type_bridge_schema_package_t *)(uintptr_t)1u;
-  type_bridge_diagnostics_t *diagnostics =
-      (type_bridge_diagnostics_t *)(uintptr_t)1u;
+  type_bridge_execution_diagnostics_t *diagnostics =
+      (type_bridge_execution_diagnostics_t *)(uintptr_t)1u;
 
   CHECK(type_bridge_c_abi_major() == TYPE_BRIDGE_C_ABI_MAJOR);
   CHECK(type_bridge_c_abi_minor() == TYPE_BRIDGE_C_ABI_MINOR);
@@ -4208,7 +4311,7 @@ int main(void) {
   CHECK(fixture_schema_package_open(&package, NULL) ==
         TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
   CHECK(package == NULL);
-  diagnostics = (type_bridge_diagnostics_t *)(uintptr_t)1u;
+  diagnostics = (type_bridge_execution_diagnostics_t *)(uintptr_t)1u;
   CHECK(fixture_schema_package_open(NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
   CHECK(diagnostics == NULL);
@@ -4326,7 +4429,7 @@ static int execution_code_is(
 int main(void) {
   type_bridge_schema_package_t *package = NULL;
   type_bridge_schema_package_t *foreign_package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   relation_person_ref *person = NULL;
   relation_person_ref *person_copy = NULL;
@@ -4759,7 +4862,7 @@ static int diagnostic_is(
 int main(void) {
   type_bridge_schema_package_t *package = NULL;
   type_bridge_schema_package_t *foreign_package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   orderedphase_aliases *first_alias = NULL;
   orderedphase_aliases *second_alias = NULL;
@@ -5307,7 +5410,7 @@ fn standalone_generated_consumer_is_clean_under_address_and_undefined_sanitizers
 int main(void) {
   type_bridge_byte_view_t view = {0};
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_migration_cancellation_t *cancellation = NULL;
   uint8_t cancelled = 9u;
   if (fixture_schema_package_open(&package, &diagnostics) !=
@@ -5467,18 +5570,19 @@ fn hostile_descriptors_fail_closed_with_initialized_outputs_and_diagnostics() {
     );
 
     let mut package = NonNull::<TypeBridgeSchemaPackage>::dangling().as_ptr();
-    let mut diagnostics = NonNull::<TypeBridgeDiagnostics>::dangling().as_ptr();
+    let mut diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
     // SAFETY: both output slots are writable; a null descriptor is an intentional hostile input.
     assert_eq!(
-        unsafe { type_bridge_schema_package_open_v1(ptr::null(), &mut package, &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(ptr::null(), &mut package, &mut diagnostics) },
         TypeBridgeStatus::InvalidArgument,
     );
     assert!(package.is_null());
-    assert!(diagnostics.is_null());
+    assert!(!diagnostics.is_null());
+    unsafe { close_execution_diagnostics(&mut diagnostics) };
 }
 
 #[test]
-fn schema_package_open_v2_accepts_exact_flat_and_chunked_v1_descriptor_layouts() {
+fn schema_package_open_accepts_exact_flat_and_chunked_v1_descriptor_layouts() {
     let fixture = emitted_fixture();
 
     let flat = fixture.bytes.descriptor();
@@ -5486,7 +5590,7 @@ fn schema_package_open_v2_accepts_exact_flat_and_chunked_v1_descriptor_layouts()
     let mut diagnostics = ptr::dangling_mut();
     assert_eq!(
         // SAFETY: the descriptor backing bytes and both output slots remain live.
-        unsafe { type_bridge_schema_package_open_v2(&flat, &mut package, &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(&flat, &mut package, &mut diagnostics) },
         TypeBridgeStatus::Ok,
     );
     assert!(!package.is_null());
@@ -5509,7 +5613,7 @@ fn schema_package_open_v2_accepts_exact_flat_and_chunked_v1_descriptor_layouts()
     assert_eq!(
         // SAFETY: every chunk table/data range and both output slots remain live.
         unsafe {
-            type_bridge_schema_package_open_chunked_v2(&chunked, &mut package, &mut diagnostics)
+            type_bridge_schema_package_open_chunked(&chunked, &mut package, &mut diagnostics)
         },
         TypeBridgeStatus::Ok,
     );
@@ -5528,7 +5632,7 @@ fn schema_package_open_v2_accepts_exact_flat_and_chunked_v1_descriptor_layouts()
 }
 
 #[test]
-fn schema_package_open_v2_classifies_all_seven_nonempty_hostile_evidence_slots() {
+fn schema_package_open_classifies_all_seven_nonempty_hostile_evidence_slots() {
     let fixture = emitted_fixture().bytes;
     let mutations: [fn(&mut EmittedDescriptorBytes); 7] = [
         |bytes| bytes.authority = b"{".to_vec(),
@@ -5556,7 +5660,7 @@ fn schema_package_open_v2_classifies_all_seven_nonempty_hostile_evidence_slots()
 }
 
 #[test]
-fn schema_package_open_v2_retains_the_exact_missing_semantic_evidence_representative() {
+fn schema_package_open_retains_the_exact_missing_semantic_evidence_representative() {
     let fixture = emitted_fixture();
     let mut flat = fixture.bytes.descriptor();
     flat.semantic_fingerprint_json = TypeBridgeByteView {
@@ -5567,7 +5671,7 @@ fn schema_package_open_v2_retains_the_exact_missing_semantic_evidence_representa
     let mut diagnostics = ptr::dangling_mut();
     assert_eq!(
         // SAFETY: all nonempty descriptor views and both output slots remain live.
-        unsafe { type_bridge_schema_package_open_v2(&flat, &mut package, &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(&flat, &mut package, &mut diagnostics) },
         TypeBridgeStatus::ExecutionFailed,
     );
     assert!(package.is_null());
@@ -5592,7 +5696,7 @@ fn schema_package_open_v2_retains_the_exact_missing_semantic_evidence_representa
     assert_eq!(
         // SAFETY: every nonempty chunk graph and both output slots remain live.
         unsafe {
-            type_bridge_schema_package_open_chunked_v2(&chunked, &mut package, &mut diagnostics)
+            type_bridge_schema_package_open_chunked(&chunked, &mut package, &mut diagnostics)
         },
         TypeBridgeStatus::ExecutionFailed,
     );
@@ -5633,7 +5737,7 @@ fn schema_package_admission_rejects_unsupported_abis() {
 }
 
 #[test]
-fn schema_package_open_v2_preserves_narrow_structural_statuses() {
+fn schema_package_open_preserves_narrow_structural_statuses() {
     let fixture = emitted_fixture();
 
     let mut flat_layout = fixture.bytes.descriptor();
@@ -5719,7 +5823,7 @@ fn schema_package_open_v2_preserves_narrow_structural_statuses() {
 }
 
 #[test]
-fn schema_package_open_v2_rejects_aliases_before_writes_and_initializes_valid_outputs() {
+fn schema_package_open_rejects_aliases_before_writes_and_initializes_valid_outputs() {
     let fixture = emitted_fixture();
     let mut flat = fixture.bytes.descriptor();
     let flat_before = unsafe {
@@ -5734,7 +5838,7 @@ fn schema_package_open_v2_rejects_aliases_before_writes_and_initializes_valid_ou
     let mut diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
     assert_eq!(
         // SAFETY: the hostile package output intentionally targets descriptor storage.
-        unsafe { type_bridge_schema_package_open_v2(&flat, descriptor_output, &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(&flat, descriptor_output, &mut diagnostics) },
         TypeBridgeStatus::InvalidArgument,
     );
     assert_eq!(diagnostics, NonNull::dangling().as_ptr());
@@ -5751,7 +5855,7 @@ fn schema_package_open_v2_rejects_aliases_before_writes_and_initializes_valid_ou
     let diagnostics_slot = package_slot.cast::<*mut TypeBridgeExecutionDiagnostics>();
     assert_eq!(
         // SAFETY: one writable pointer slot is intentionally supplied for both outputs.
-        unsafe { type_bridge_schema_package_open_v2(&flat, package_slot, diagnostics_slot) },
+        unsafe { type_bridge_schema_package_open(&flat, package_slot, diagnostics_slot) },
         TypeBridgeStatus::InvalidArgument,
     );
     assert_eq!(shared_slot, NonNull::dangling().as_ptr());
@@ -5771,7 +5875,7 @@ fn schema_package_open_v2_rejects_aliases_before_writes_and_initializes_valid_ou
     assert_eq!(
         // SAFETY: the hostile package output intentionally targets descriptor storage.
         unsafe {
-            type_bridge_schema_package_open_chunked_v2(&chunked, chunked_output, &mut diagnostics)
+            type_bridge_schema_package_open_chunked(&chunked, chunked_output, &mut diagnostics)
         },
         TypeBridgeStatus::InvalidArgument,
     );
@@ -5787,7 +5891,7 @@ fn schema_package_open_v2_rejects_aliases_before_writes_and_initializes_valid_ou
     let mut package = NonNull::<TypeBridgeSchemaPackage>::dangling().as_ptr();
     assert_eq!(
         // SAFETY: the package slot is writable and the diagnostics output is intentionally null.
-        unsafe { type_bridge_schema_package_open_v2(&flat, &mut package, ptr::null_mut()) },
+        unsafe { type_bridge_schema_package_open(&flat, &mut package, ptr::null_mut()) },
         TypeBridgeStatus::InvalidArgument,
     );
     assert!(package.is_null());
@@ -5795,7 +5899,7 @@ fn schema_package_open_v2_rejects_aliases_before_writes_and_initializes_valid_ou
     diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
     assert_eq!(
         // SAFETY: the diagnostics slot is writable and the package output is intentionally null.
-        unsafe { type_bridge_schema_package_open_v2(&flat, ptr::null_mut(), &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(&flat, ptr::null_mut(), &mut diagnostics) },
         TypeBridgeStatus::InvalidArgument,
     );
     assert!(diagnostics.is_null());
@@ -5804,7 +5908,7 @@ fn schema_package_open_v2_rejects_aliases_before_writes_and_initializes_valid_ou
     diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
     assert_eq!(
         // SAFETY: both writable outputs are valid and null is an intentional descriptor input.
-        unsafe { type_bridge_schema_package_open_v2(ptr::null(), &mut package, &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(ptr::null(), &mut package, &mut diagnostics) },
         TypeBridgeStatus::InvalidArgument,
     );
     assert!(package.is_null());
@@ -5834,7 +5938,7 @@ fn chunked_schema_package_open_reassembles_exact_bytes_and_rejects_aliases_read_
     assert_eq!(
         // SAFETY: every table/data range and both writable outputs remain live.
         unsafe {
-            type_bridge_schema_package_open_chunked_v1(&descriptor, &mut package, &mut diagnostics)
+            type_bridge_schema_package_open_chunked(&descriptor, &mut package, &mut diagnostics)
         },
         TypeBridgeStatus::Ok,
     );
@@ -5866,11 +5970,7 @@ fn chunked_schema_package_open_reassembles_exact_bytes_and_rejects_aliases_read_
     assert_eq!(
         // SAFETY: the hostile interior output is intentionally readable/writable storage.
         unsafe {
-            type_bridge_schema_package_open_chunked_v1(
-                &descriptor,
-                aliased_package,
-                &mut diagnostics,
-            )
+            type_bridge_schema_package_open_chunked(&descriptor, aliased_package, &mut diagnostics)
         },
         TypeBridgeStatus::InvalidArgument,
     );
@@ -5969,7 +6069,7 @@ fn chunked_schema_package_open_rejects_malformed_views_chunks_and_interior_alias
     assert_eq!(
         // SAFETY: the hostile table-interior output intentionally targets live table storage.
         unsafe {
-            type_bridge_schema_package_open_chunked_v1(&descriptor, table_output, &mut diagnostics)
+            type_bridge_schema_package_open_chunked(&descriptor, table_output, &mut diagnostics)
         },
         TypeBridgeStatus::InvalidArgument,
     );
@@ -5992,7 +6092,7 @@ fn chunked_schema_package_open_rejects_malformed_views_chunks_and_interior_alias
     assert_eq!(
         // SAFETY: the hostile data-interior output intentionally targets live chunk bytes.
         unsafe {
-            type_bridge_schema_package_open_chunked_v1(&descriptor, data_output, &mut diagnostics)
+            type_bridge_schema_package_open_chunked(&descriptor, data_output, &mut diagnostics)
         },
         TypeBridgeStatus::InvalidArgument,
     );
@@ -6004,15 +6104,11 @@ fn chunked_schema_package_open_rejects_malformed_views_chunks_and_interior_alias
         .as_mut_ptr()
         .cast::<*mut TypeBridgeSchemaPackage>();
     let diagnostics_output =
-        unsafe { output_bytes.as_mut_ptr().add(1) }.cast::<*mut TypeBridgeDiagnostics>();
+        unsafe { output_bytes.as_mut_ptr().add(1) }.cast::<*mut TypeBridgeExecutionDiagnostics>();
     assert_eq!(
         // SAFETY: both deliberately overlapping slots lie in writable sentinel storage.
         unsafe {
-            type_bridge_schema_package_open_chunked_v1(
-                &descriptor,
-                package_output,
-                diagnostics_output,
-            )
+            type_bridge_schema_package_open_chunked(&descriptor, package_output, diagnostics_output)
         },
         TypeBridgeStatus::InvalidArgument,
     );
@@ -6114,7 +6210,7 @@ fn chunked_schema_package_open_enforces_chunk_bytes_and_flat_table_hosted_object
     assert_eq!(
         // SAFETY: the +1 table descriptor remains readable; preflight is read-only.
         unsafe {
-            type_bridge_schema_package_open_chunked_v1(&over_table, &mut package, &mut diagnostics)
+            type_bridge_schema_package_open_chunked(&over_table, &mut package, &mut diagnostics)
         },
         TypeBridgeStatus::ResourceLimit,
     );
@@ -6134,26 +6230,35 @@ fn assert_rejected_chunked(
     expected_status: TypeBridgeStatus,
     expected_code: &str,
 ) {
+    let expected_status = if expected_status == TypeBridgeStatus::SchemaPackageRejected {
+        if expected_code.ends_with("layout_mismatch") {
+            TypeBridgeStatus::InvalidArgument
+        } else {
+            TypeBridgeStatus::ExecutionFailed
+        }
+    } else {
+        expected_status
+    };
     let mut package = ptr::dangling_mut();
     let mut diagnostics = ptr::dangling_mut();
     assert_eq!(
         // SAFETY: descriptor backing storage and both output slots remain live.
         unsafe {
-            type_bridge_schema_package_open_chunked_v1(descriptor, &mut package, &mut diagnostics)
+            type_bridge_schema_package_open_chunked(descriptor, &mut package, &mut diagnostics)
         },
         expected_status,
     );
     assert!(package.is_null());
     assert!(!diagnostics.is_null());
     // SAFETY: failure returned one owned diagnostic handle.
-    let json = unsafe { diagnostic_text(diagnostics) };
+    let json = unsafe { admission_cause_text(diagnostics) };
     assert!(
         json.contains(&format!("\"code\":\"{expected_code}\"")),
         "{json}"
     );
     // SAFETY: this slot uniquely owns the diagnostic handle.
     assert_eq!(
-        unsafe { type_bridge_diagnostics_close(&mut diagnostics) },
+        unsafe { type_bridge_execution_diagnostics_close(&mut diagnostics) },
         TypeBridgeStatus::Ok,
     );
 }
@@ -6175,7 +6280,7 @@ fn legacy_schema_open_rejects_descriptor_and_blob_interior_outputs_without_write
     assert_eq!(
         // SAFETY: hostile descriptor-interior output is intentionally writable storage.
         unsafe {
-            type_bridge_schema_package_open_v1(&descriptor, descriptor_output, &mut diagnostics)
+            type_bridge_schema_package_open(&descriptor, descriptor_output, &mut diagnostics)
         },
         TypeBridgeStatus::InvalidArgument,
     );
@@ -6197,7 +6302,7 @@ fn legacy_schema_open_rejects_descriptor_and_blob_interior_outputs_without_write
         .cast::<*mut TypeBridgeSchemaPackage>();
     assert_eq!(
         // SAFETY: hostile mutable backing bytes are deliberately selected as output storage.
-        unsafe { type_bridge_schema_package_open_v1(&descriptor, blob_output, &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(&descriptor, blob_output, &mut diagnostics) },
         TypeBridgeStatus::InvalidArgument,
     );
     assert_eq!(fixture.bytes.authority, authority_before);
@@ -6323,7 +6428,7 @@ fn independent_schema_package_handles_are_thread_safe_under_repeated_open_read_c
                     // both writable output slots for the complete call.
                     assert_eq!(
                         unsafe {
-                            type_bridge_schema_package_open_v1(
+                            type_bridge_schema_package_open(
                                 &descriptor,
                                 &mut package,
                                 &mut diagnostics,
@@ -6364,18 +6469,16 @@ fn partially_null_open_outputs_still_clear_the_writable_slot() {
     // SAFETY: the package slot is writable and the diagnostics slot is an
     // intentional null argument.
     assert_eq!(
-        unsafe { type_bridge_schema_package_open_v1(&descriptor, &mut package, ptr::null_mut()) },
+        unsafe { type_bridge_schema_package_open(&descriptor, &mut package, ptr::null_mut()) },
         TypeBridgeStatus::InvalidArgument,
     );
     assert!(package.is_null());
 
-    let mut diagnostics = NonNull::<TypeBridgeDiagnostics>::dangling().as_ptr();
+    let mut diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
     // SAFETY: the diagnostics slot is writable and the package slot is an
     // intentional null argument.
     assert_eq!(
-        unsafe {
-            type_bridge_schema_package_open_v1(&descriptor, ptr::null_mut(), &mut diagnostics)
-        },
+        unsafe { type_bridge_schema_package_open(&descriptor, ptr::null_mut(), &mut diagnostics) },
         TypeBridgeStatus::InvalidArgument,
     );
     assert!(diagnostics.is_null());
@@ -6387,12 +6490,12 @@ fn aliased_open_output_slots_are_rejected_without_writes() {
     let descriptor = bytes.descriptor();
     let mut shared_slot = NonNull::<TypeBridgeSchemaPackage>::dangling().as_ptr();
     let package_slot = &mut shared_slot as *mut *mut TypeBridgeSchemaPackage;
-    let diagnostics_slot = package_slot.cast::<*mut TypeBridgeDiagnostics>();
+    let diagnostics_slot = package_slot.cast::<*mut TypeBridgeExecutionDiagnostics>();
 
     // SAFETY: the one writable pointer-sized slot is deliberately supplied for
     // both outputs to prove the ABI rejects ownership aliasing before opening.
     assert_eq!(
-        unsafe { type_bridge_schema_package_open_v1(&descriptor, package_slot, diagnostics_slot,) },
+        unsafe { type_bridge_schema_package_open(&descriptor, package_slot, diagnostics_slot,) },
         TypeBridgeStatus::InvalidArgument,
     );
     assert_eq!(
@@ -6608,7 +6711,7 @@ int main(void) {
       getenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION");
   const uint32_t http_port = required_http_port();
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_database_t *database = NULL;
@@ -6621,7 +6724,7 @@ int main(void) {
       TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN,
       0u,
       {0u, 0u, 0u, 0u}};
-  type_bridge_database_config_v1_t database_config;
+  type_bridge_database_config_t database_config;
 
   CHECK(address != NULL && address[0] != '\0');
   CHECK(expected_server_version != NULL &&
@@ -6647,7 +6750,7 @@ int main(void) {
   CHECK(type_bridge_runtime_open_v1(
             &runtime_config, &runtime, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(runtime != NULL && diagnostics == NULL);
-  CHECK(type_bridge_database_open_v1(
+  CHECK(type_bridge_database_open(
             runtime, package, &database_config, NULL, &database,
             &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(database != NULL && diagnostics == NULL);
@@ -7011,7 +7114,7 @@ int main(void) {
   const char *password = getenv("TYPEDB_PASSWORD");
   const uint32_t http_port = required_http_port();
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_database_t *database = NULL;
@@ -7036,7 +7139,7 @@ int main(void) {
       TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN,
       0u,
       {0u, 0u, 0u, 0u}};
-  type_bridge_database_config_v1_t database_config;
+  type_bridge_database_config_t database_config;
 
   CHECK(address != NULL && address[0] != '\0');
   CHECK(database_name != NULL && database_name[0] != '\0');
@@ -7064,7 +7167,7 @@ int main(void) {
         TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_runtime_open_v1(
             &runtime_config, &runtime, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(type_bridge_database_open_v1(
+  CHECK(type_bridge_database_open(
             runtime, package, &database_config, NULL, &database,
             &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_schema_package_close(&package) == TYPE_BRIDGE_STATUS_OK);
@@ -7392,7 +7495,7 @@ static uint32_t required_http_port(void) {{
 static type_bridge_status_t open_database(type_bridge_runtime_t *runtime,
                                           const type_bridge_schema_package_t *package,
                                           type_bridge_database_t **database) {{
-  type_bridge_database_config_v1_t config;
+  type_bridge_database_config_t config;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_status_t status;
   memset(&config, 0, sizeof(config));
@@ -7404,7 +7507,7 @@ static type_bridge_status_t open_database(type_bridge_runtime_t *runtime,
   config.password = view_of(getenv("TYPEDB_PASSWORD"));
   config.http_port = required_http_port();
   config.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
-  status = type_bridge_database_open_v1(runtime, package, &config, NULL, database, &diagnostics);
+  status = type_bridge_database_open(runtime, package, &config, NULL, database, &diagnostics);
   (void)type_bridge_execution_diagnostics_close(&diagnostics);
   return status;
 }}
@@ -7494,7 +7597,7 @@ static const char *lock_name(uint32_t lock) {{
 
 int main(void) {{
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_database_t *first = NULL;

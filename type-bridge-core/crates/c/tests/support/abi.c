@@ -22,7 +22,7 @@ ABI_ASSERT(offsetof(type_bridge_projected_codec_options_v1_t, cancellation) == 6
 
 ABI_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 2u, "ABI major drifted");
 ABI_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 0u, "C ABI is no longer supported");
-ABI_ASSERT(TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION == 2u,
+ABI_ASSERT(TYPE_BRIDGE_DATABASE_CONFIG_VERSION == 2u,
                     "database config version drifted");
 ABI_ASSERT(TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX == 1048576u,
                     "custom-root ceiling drifted");
@@ -44,56 +44,56 @@ ABI_ASSERT(TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT == 36,
                     "batch-result input tag drifted");
 ABI_ASSERT(sizeof(type_bridge_query_execution_limits_v1_t) == 104u,
                     "nested limits layout drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, struct_size) == 0u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, struct_size) == 0u,
                     "config struct_size offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, version) == 4u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, version) == 4u,
                     "config version offset drifted");
 
 #if UINTPTR_MAX == UINT64_MAX
-ABI_ASSERT(sizeof(type_bridge_database_config_v2_t) == 336u,
+ABI_ASSERT(sizeof(type_bridge_database_config_t) == 336u,
                     "LP64/LLP64 config size drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, address) == 8u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, address) == 8u,
                     "LP64/LLP64 address offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, database) == 24u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, database) == 24u,
                     "LP64/LLP64 database offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, username) == 40u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, username) == 40u,
                     "LP64/LLP64 username offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, password) == 56u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, password) == 56u,
                     "LP64/LLP64 password offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, http_port) == 72u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, http_port) == 72u,
                     "LP64/LLP64 http_port offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, tls_mode) == 76u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, tls_mode) == 76u,
                     "LP64/LLP64 tls_mode offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, custom_root_ca_pem) == 80u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, custom_root_ca_pem) == 80u,
                     "LP64/LLP64 custom-root offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, connection_limits) == 96u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, connection_limits) == 96u,
                     "LP64/LLP64 connection limits offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, answer_limits) == 200u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, answer_limits) == 200u,
                     "LP64/LLP64 answer limits offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, reserved) == 304u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, reserved) == 304u,
                     "LP64/LLP64 reserved offset drifted");
 #elif UINTPTR_MAX == UINT32_MAX
-ABI_ASSERT(sizeof(type_bridge_database_config_v2_t) == 296u,
+ABI_ASSERT(sizeof(type_bridge_database_config_t) == 296u,
                     "ILP32 config size drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, address) == 8u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, address) == 8u,
                     "ILP32 address offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, database) == 16u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, database) == 16u,
                     "ILP32 database offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, username) == 24u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, username) == 24u,
                     "ILP32 username offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, password) == 32u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, password) == 32u,
                     "ILP32 password offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, http_port) == 40u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, http_port) == 40u,
                     "ILP32 http_port offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, tls_mode) == 44u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, tls_mode) == 44u,
                     "ILP32 tls_mode offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, custom_root_ca_pem) == 48u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, custom_root_ca_pem) == 48u,
                     "ILP32 custom-root offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, connection_limits) == 56u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, connection_limits) == 56u,
                     "ILP32 connection limits offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, answer_limits) == 160u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, answer_limits) == 160u,
                     "ILP32 answer limits offset drifted");
-ABI_ASSERT(offsetof(type_bridge_database_config_v2_t, reserved) == 264u,
+ABI_ASSERT(offsetof(type_bridge_database_config_t, reserved) == 264u,
                     "ILP32 reserved offset drifted");
 #else
 #error "C ABI supports only frozen 32-bit and 64-bit pointer layouts"
@@ -106,16 +106,16 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *schema_chunked_open_fn)(
     const type_bridge_schema_package_chunked_descriptor_v1_t *,
     type_bridge_schema_package_t **, type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *config_validate_fn)(
-    const type_bridge_database_config_v2_t *,
+    const type_bridge_database_config_t *,
     type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_open_fn)(
     const type_bridge_runtime_t *, const type_bridge_schema_package_t *,
-    const type_bridge_database_config_v2_t *,
+    const type_bridge_database_config_t *,
     const type_bridge_cancellation_t *, type_bridge_database_t **,
     type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_query_limits_open_fn)(
     const type_bridge_runtime_t *, const type_bridge_schema_package_t *,
-    const type_bridge_database_config_v2_t *,
+    const type_bridge_database_config_t *,
     const type_bridge_query_limit_override_v1_t *, size_t,
     const type_bridge_cancellation_t *, type_bridge_database_t **,
     type_bridge_execution_diagnostics_t **);
@@ -493,11 +493,11 @@ void type_bridge_abi_probe(void) {
   TAKE(manager_result_count_fn, type_bridge_manager_result_count);
   TAKE(manager_result_at_fn, type_bridge_manager_result_at);
   TAKE(manager_result_close_fn, type_bridge_manager_result_close);
-  TAKE(schema_open_fn, type_bridge_schema_package_open_v2);
-  TAKE(schema_chunked_open_fn, type_bridge_schema_package_open_chunked_v2);
-  TAKE(config_validate_fn, type_bridge_database_config_validate_v2);
-  TAKE(database_open_fn, type_bridge_database_open_v2);
-  TAKE(database_query_limits_open_fn, type_bridge_database_open_with_query_limits_v2);
+  TAKE(schema_open_fn, type_bridge_schema_package_open);
+  TAKE(schema_chunked_open_fn, type_bridge_schema_package_open_chunked);
+  TAKE(config_validate_fn, type_bridge_database_config_validate);
+  TAKE(database_open_fn, type_bridge_database_open);
+  TAKE(database_query_limits_open_fn, type_bridge_database_open_with_query_limits);
   TAKE(proxy_query_limits_open_fn, type_bridge_proxy_connection_open_with_query_limits_v1);
   TAKE(read_open_fn, type_bridge_read_transaction_open_v2);
   TAKE(write_open_fn, type_bridge_write_transaction_open_v2);

@@ -445,11 +445,10 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
         "ordered descriptor must require literal ABI 2.0",
     );
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MINOR"));
-    assert!(source.contains("type_bridge_schema_package_open_chunked_v1("));
-    assert!(source.contains("type_bridge_schema_package_open_chunked_v2("));
+    assert!(source.contains("type_bridge_schema_package_open_chunked("));
+    assert!(source.contains("type_bridge_schema_package_open_chunked("));
     assert!(source.contains("type_bridge_migration_catalog_open("));
-    assert!(header.contains("acme_v3_schema_package_open("));
-    assert!(header.contains("acme_v3_schema_package_open_v2("));
+    assert_eq!(header.matches("acme_v3_schema_package_open(").count(), 1);
     assert!(header.contains("type_bridge_execution_diagnostics_t **out_diagnostics"));
     assert!(cmake.contains("find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)"));
     assert!(package_config.contains("find_dependency(TypeBridge 2.0.0 EXACT CONFIG)"));
@@ -1103,7 +1102,7 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
         Some(4),
         "generated create open must retain its frozen four-parameter surface",
     );
-    assert!(source.contains("type_bridge_schema_package_open_chunked_v1("));
+    assert!(source.contains("type_bridge_schema_package_open_chunked("));
     assert!(source.contains("acme_schema_package_chunks_v1"));
     for parameter in [
         "const acme_displayzhname *field_displayzhname;",
@@ -2672,7 +2671,7 @@ int main(void) {
   acme_personzhrecord_update_batch_result *acme_personzhrecord_update_result = NULL;
   const type_bridge_schema_package_t *package = 0;
   type_bridge_schema_package_t *opened_package = 0;
-  type_bridge_diagnostics_t *package_diagnostics = 0;
+  type_bridge_execution_diagnostics_t *package_diagnostics = 0;
   const type_bridge_database_t *database = 0;
   const type_bridge_read_transaction_t *read_tx = 0;
   const type_bridge_write_transaction_t *write_tx = 0;
@@ -2833,7 +2832,7 @@ int main(void) {
   (void)acme_personzhrecord_ref_close(&reference);
   (void)acme_personzhrecord_create_close(&create);
   (void)acme_personzhrecord_close(&person);
-  (void)type_bridge_diagnostics_close(&package_diagnostics);
+  (void)type_bridge_execution_diagnostics_close(&package_diagnostics);
   (void)type_bridge_schema_package_close(&opened_package);
 
   return person != 0 || display_name != 0 || text.length != 0 ||
@@ -4971,7 +4970,7 @@ int main() {
   acme_personzhrecord_update_batch_result *acme_personzhrecord_update_result = NULL;
   const type_bridge_schema_package_t *package = nullptr;
   type_bridge_schema_package_t *opened_package = nullptr;
-  type_bridge_diagnostics_t *package_diagnostics = nullptr;
+  type_bridge_execution_diagnostics_t *package_diagnostics = nullptr;
   const type_bridge_database_t *database = nullptr;
   const type_bridge_read_transaction_t *read_tx = nullptr;
   const type_bridge_write_transaction_t *write_tx = nullptr;
@@ -5133,7 +5132,7 @@ int main() {
   (void)acme_personzhrecord_ref_close(&reference);
   (void)acme_personzhrecord_create_close(&create);
   (void)acme_personzhrecord_close(&person);
-  (void)type_bridge_diagnostics_close(&package_diagnostics);
+  (void)type_bridge_execution_diagnostics_close(&package_diagnostics);
   (void)type_bridge_schema_package_close(&opened_package);
   return person != nullptr || display_name != nullptr || text.length != 0u ||
       TYPE_BRIDGE_C_ABI_MAJOR != 2u;

@@ -26,7 +26,7 @@ const C_SIMULTANEOUS_MACRO_MAX: usize = 4_095;
 const C_HOSTED_OBJECT_BYTES_MIN: usize = 65_535;
 const C_EMBEDDED_BYTE_CHUNK_MAX: usize = 32_768;
 const C_CREATE_ARGS_VERSION: u32 = 1;
-const C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 655;
+const C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 652;
 const C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 360;
 // Windows Clang exposes 1580 predefined and stddef/stdint platform macros.
 // Reserve space above that measured count while keeping the complete macro
@@ -186,14 +186,11 @@ fn render_header(
             "\n#define {macro_prefix}_MIGRATION_HISTORY_RESOURCE \"typebridge/migration-history.json\"\n\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_schema_package_open(\n\
                type_bridge_schema_package_t **out_package,\n\
-               type_bridge_diagnostics_t **out_diagnostics);\n\
-             type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_schema_package_open_v2(\n\
-               type_bridge_schema_package_t **out_package,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics);\n\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_migration_catalog_open(\n\
                type_bridge_byte_view_t history_bundle,\n\
                type_bridge_migration_catalog_t **out_catalog,\n\
-               type_bridge_diagnostics_t **out_diagnostics);\n\n\
+               type_bridge_execution_diagnostics_t **out_diagnostics);\n\n\
              #ifdef __cplusplus\n}}\n#endif\n\n#endif /* {guard} */\n"
         );
     } else {
@@ -201,7 +198,7 @@ fn render_header(
             output,
             "\ntype_bridge_status_t TYPE_BRIDGE_CALL {prefix}_schema_package_open(\n\
                type_bridge_schema_package_t **out_package,\n\
-               type_bridge_diagnostics_t **out_diagnostics);\n\n\
+               type_bridge_execution_diagnostics_t **out_diagnostics);\n\n\
              #ifdef __cplusplus\n}}\n#endif\n\n#endif /* {guard} */\n"
         );
     }
@@ -374,8 +371,8 @@ fn render_source(
              \"generated package descriptor exceeds the C hosted-object minimum\");\n\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_schema_package_open(\n\
              type_bridge_schema_package_t **out_package,\n\
-             type_bridge_diagnostics_t **out_diagnostics) {{\n\
-           return type_bridge_schema_package_open_chunked_v1(\n\
+             type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
+           return type_bridge_schema_package_open_chunked(\n\
                &{prefix}_schema_package_chunks_v1, out_package, out_diagnostics);\n\
          }}\n",
         macro_prefix = prefix.to_ascii_uppercase(),
@@ -413,20 +410,10 @@ fn render_source(
         let _ = write!(
             output,
             "\n\
-             type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_schema_package_open_v2(\n\
-                 type_bridge_schema_package_t **out_package,\n\
-                 type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-               return type_bridge_schema_package_open_chunked_v2(\n\
-                   &{prefix}_schema_package_chunks_v1, out_package, out_diagnostics);\n\
-             }}\n"
-        );
-        let _ = write!(
-            output,
-            "\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_migration_catalog_open(\n\
                  type_bridge_byte_view_t history_bundle,\n\
                  type_bridge_migration_catalog_t **out_catalog,\n\
-                 type_bridge_diagnostics_t **out_diagnostics) {{\n\
+                 type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
                type_bridge_generated_opaque_input_v1_t alias_inputs[1];\n\
                size_t alias_input_count = 0u;\n\
                type_bridge_schema_package_t *package = NULL;\n\
@@ -1195,7 +1182,6 @@ fn validate_generated_symbols(
     insert(format!("{prefix}_schema_package_open"))?;
     insert(generated_symbol(prefix, "plan_open")?)?;
     if ordered {
-        insert(format!("{prefix}_schema_package_open_v2"))?;
         insert(format!("{prefix}_migration_catalog_open"))?;
     }
     for symbol in plan::symbols(projection, prefix)? {
@@ -1396,7 +1382,6 @@ fn generated_external_identifiers(
     symbols.insert(format!("{prefix}_schema_package_open"));
     symbols.insert(generated_symbol(prefix, "plan_open")?);
     if ordered {
-        symbols.insert(format!("{prefix}_schema_package_open_v2"));
         symbols.insert(format!("{prefix}_migration_catalog_open"));
     }
     for (_, kind_name, ordinal) in projected_tokens(projection, ordered) {

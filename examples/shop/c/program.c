@@ -453,7 +453,7 @@ static const char *answer_kind(type_bridge_plan_answer_kind_t kind) {
 typedef struct source {
   const type_bridge_runtime_t *runtime;
   const type_bridge_schema_package_t *package;
-  const type_bridge_database_config_v1_t *config;
+  const type_bridge_database_config_t *config;
   const type_bridge_proxy_connection_options_v1_t *options;
 } source_t;
 
@@ -467,7 +467,7 @@ static type_bridge_status_t connect_to(const source_t *source, connection_t *con
   type_bridge_status_t status;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   if (source->config != NULL)
-    status = type_bridge_database_open_v1(source->runtime, source->package, source->config, NULL,
+    status = type_bridge_database_open(source->runtime, source->package, source->config, NULL,
                                           &connection->database, &diagnostics);
   else
     status = type_bridge_proxy_connection_open_v1(source->package, source->options, NULL,
@@ -702,7 +702,7 @@ static const char *env_or(const char *name, const char *fallback) {
 int main(void) {
   type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   connection_t direct = {NULL, NULL}, proxied = {NULL, NULL};
@@ -728,7 +728,7 @@ int main(void) {
     type_bridge_runtime_config_v1_t runtime_config = {
         sizeof(type_bridge_runtime_config_v1_t), TYPE_BRIDGE_RUNTIME_CONFIG_VERSION, 2u, 0u,
         {0u, 0u, 0u, 0u}};
-    type_bridge_database_config_v1_t config;
+    type_bridge_database_config_t config;
     source_t source = {NULL, NULL, NULL, NULL};
     CHECK(type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics));
     memset(&config, 0, sizeof(config));
@@ -771,7 +771,7 @@ done:
   (void)type_bridge_execution_diagnostics_close(&diagnostics);
   if (runtime != NULL) (void)type_bridge_runtime_close(&runtime, &diagnostics);
   (void)type_bridge_execution_diagnostics_close(&diagnostics);
-  if (package_diagnostics != NULL) (void)type_bridge_diagnostics_close(&package_diagnostics);
+  if (package_diagnostics != NULL) (void)type_bridge_execution_diagnostics_close(&package_diagnostics);
   if (package != NULL) (void)type_bridge_schema_package_close(&package);
   fflush(stdout);
   return status == TYPE_BRIDGE_STATUS_OK ? 0 : 1;

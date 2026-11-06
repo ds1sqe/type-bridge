@@ -413,14 +413,14 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(c_header.contains("ordered_codegen_person_tag_count"));
     assert!(c_header.contains("ordered_codegen_membership_member_count"));
     assert!(c_header.contains("#include <typebridge/type_bridge.h>"));
-    assert!(c_header.contains("ordered_codegen_schema_package_open_v2("));
+    assert!(c_header.contains("ordered_codegen_schema_package_open("));
     assert!(contains_hex_bytes(c_source, b"ordered_list"));
     assert!(contains_hex_bytes(c_source, b"distinct"));
     assert!(
         c_source
             .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  11u,")
     );
-    assert!(c_source.contains("type_bridge_schema_package_open_chunked_v2("));
+    assert!(c_source.contains("type_bridge_schema_package_open_chunked("));
     assert!(c_cmake.contains("find_package(TypeBridge 1.11.0 EXACT CONFIG REQUIRED)"));
     assert!(c_package_config.contains("find_dependency(TypeBridge 1.11.0 EXACT CONFIG)"));
     assert!(c_pkg_config.contains("Requires: type-bridge-abi >= 1.11.0"));

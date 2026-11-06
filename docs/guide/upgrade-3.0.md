@@ -280,3 +280,49 @@ parameterized batches, use generated manager bulk operations.
 Node `TransactionContext.query` (native `queryJson`) is removed. Use
 `Database.executeQuery` or `rawTransaction` and its `executeQuery`. Existing
 manager transaction contexts and typed staged queries keep their typed APIs.
+
+## C ABI 2.0 package and database names
+
+Regenerate C packages against ABI 2.0. These names lose their version suffix;
+argument layouts and descriptor version values stay the same.
+
+| Previous name | ABI 2.0 name |
+| --- | --- |
+| `type_bridge_schema_package_open_v2` | `type_bridge_schema_package_open` |
+| `type_bridge_schema_package_open_chunked_v2` | `type_bridge_schema_package_open_chunked` |
+| `type_bridge_database_config_validate_v2` | `type_bridge_database_config_validate` |
+| `type_bridge_database_open_v2` | `type_bridge_database_open` |
+| `type_bridge_database_open_with_query_limits_v2` | `type_bridge_database_open_with_query_limits` |
+| `type_bridge_database_config_v2_t` | `type_bridge_database_config_t` |
+| `TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION` | `TYPE_BRIDGE_DATABASE_CONFIG_VERSION` |
+| `*_schema_package_open_v2` | `*_schema_package_open` |
+
+The V1 `type_bridge_database_config_v1_t` and `type_bridge_database_open_v1`
+are removed. Initialize `type_bridge_database_config_t` to zero, set
+`struct_size = sizeof(config)` and
+`version = TYPE_BRIDGE_DATABASE_CONFIG_VERSION` (layout value `2`), and call
+`type_bridge_database_open(runtime, package, &config, NULL, &database, &diagnostics)`. Copy the old
+`address`, `database`, `username`, `password`, and `http_port` fields unchanged;
+retain `tls_mode` as `TYPE_BRIDGE_TLS_DISABLED` or
+`TYPE_BRIDGE_TLS_NATIVE_ROOTS`. Keep `custom_root_ca_pem` empty for these modes
+and reserved words zero. All-zero `connection_limits` and `answer_limits`
+select the shared direct defaults; partially initialized policy descriptors
+are rejected. Custom-root TLS uses `TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA` and the PEM
+byte view. The current open call returns execution diagnostics: release them
+with `type_bridge_execution_diagnostics_close`.
+
+The old generic-diagnostics `type_bridge_schema_package_open_v1` and
+`type_bridge_schema_package_open_chunked_v1` are removed. Use the current
+unsuffixed openers with `type_bridge_execution_diagnostics_t **` as the final
+argument. Generated `*_schema_package_open` likewise has one signature with
+execution diagnostics. Both runtime `type_bridge_migration_catalog_open` and
+generated `*_migration_catalog_open` now use that same diagnostic output type.
+Release these outputs with `type_bridge_execution_diagnostics_close` instead of
+`type_bridge_diagnostics_close`.
+
+Admission failures retain the underlying structured diagnostics in detail kind
+`TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_ADMISSION_CAUSE` (`16`), with key
+`admission_cause`. Its `primary` byte view is the exact canonical JSON array of
+original diagnostic objects, including code, message, path and details. Read
+it with `type_bridge_execution_diagnostics_detail_get_v1` while the execution
+diagnostics owner is live. The enclosing typed admission code is retained.

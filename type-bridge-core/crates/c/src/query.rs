@@ -264,7 +264,7 @@ pub struct TypeBridgeQueryTerminalDescriptorV1 {
 
 /// Version-1 common tightened direct and remote generated-query limits.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct TypeBridgeQueryExecutionLimitsV1 {
     pub struct_size: u32,
     pub version: u32,

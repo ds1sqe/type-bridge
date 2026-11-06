@@ -21,7 +21,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-type_bridge_status_t TYPE_BRIDGE_CALL query_schema_package_open_flat_v2(
+type_bridge_status_t TYPE_BRIDGE_CALL query_schema_package_open_flat(
     type_bridge_schema_package_t **out_package,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 #ifdef __cplusplus
@@ -1372,9 +1372,9 @@ run_interaction_batches(const type_bridge_schema_package_t *package,
 static int check_answer_ceiling_binds_calls(
     type_bridge_runtime_t *runtime, const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database,
-    const type_bridge_database_config_v2_t *base_config,
+    const type_bridge_database_config_t *base_config,
     const type_bridge_query_execution_limits_v1_t *limits) {
-  type_bridge_database_config_v2_t config = *base_config;
+  type_bridge_database_config_t config = *base_config;
   type_bridge_query_execution_limits_v1_t bounded_limits = *limits;
   type_bridge_database_t *bounded = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
@@ -1388,7 +1388,7 @@ static int check_answer_ceiling_binds_calls(
   bounded_limits.timeout_milliseconds = 0;
   bounded_limits.bytes = 1u;
   config.answer_limits = bounded_limits;
-  CHECK(type_bridge_database_open_v2(runtime, package, &config, NULL, &bounded,
+  CHECK(type_bridge_database_open(runtime, package, &config, NULL, &bounded,
                                      &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_database_count_v2(bounded, limits, NULL, &count,
                                          &diagnostics) ==
@@ -1445,7 +1445,7 @@ int main(void) {
   type_bridge_byte_view_t version;
   uint64_t count = 0u;
   type_bridge_runtime_config_v1_t runtime_config;
-  type_bridge_database_config_v2_t database_config;
+  type_bridge_database_config_t database_config;
   type_bridge_query_execution_limits_v1_t limits =
       TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
 
@@ -1460,10 +1460,10 @@ int main(void) {
   CHECK(http_end != NULL && *http_end == '\0' && http_port > 0ul &&
         http_port <= 65535ul);
 
-  CHECK(fixture_schema_package_open_v2(&chunked_package, &diagnostics) ==
+  CHECK(fixture_schema_package_open(&chunked_package, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(chunked_package != NULL && diagnostics == NULL);
-  CHECK(query_schema_package_open_flat_v2(&package, &diagnostics) ==
+  CHECK(query_schema_package_open_flat(&package, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(package != NULL && diagnostics == NULL);
   CHECK(type_bridge_schema_package_close(&chunked_package) ==
@@ -1479,7 +1479,7 @@ int main(void) {
 
   memset(&database_config, 0, sizeof(database_config));
   database_config.struct_size = sizeof(database_config);
-  database_config.version = TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION;
+  database_config.version = TYPE_BRIDGE_DATABASE_CONFIG_VERSION;
   database_config.address = view_of(address);
   database_config.database = view_of(database_name);
   database_config.username = view_of(username);
@@ -1488,9 +1488,9 @@ int main(void) {
   database_config.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
   database_config.connection_limits = limits;
   database_config.answer_limits = limits;
-  CHECK(type_bridge_database_config_validate_v2(
+  CHECK(type_bridge_database_config_validate(
             &database_config, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(type_bridge_database_open_v2(runtime, package, &database_config, NULL,
+  CHECK(type_bridge_database_open(runtime, package, &database_config, NULL,
                                      &database,
                                      &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_database_server_version(database, &version) ==

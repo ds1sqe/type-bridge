@@ -55,12 +55,12 @@ int main(int argc, char **argv) {
             CHECK(type_bridge_proxy_connection_open_v1(package, &connection, NULL, &proxy, &errors) == TYPE_BRIDGE_STATUS_OK);
             CHECK(type_bridge_proxy_connection_transaction_with_options(proxy, TYPE_BRIDGE_TRANSACTION_WRITE, &options, &tx, &errors) == TYPE_BRIDGE_STATUS_OK);
         } else {
-            type_bridge_database_config_v1_t connection = {0};
+            type_bridge_database_config_t connection = {0};
             connection.struct_size = sizeof(connection); connection.version = TYPE_BRIDGE_DATABASE_CONFIG_VERSION;
             connection.address = view(argv[2]); connection.database = view(argv[3]);
             connection.username = view("admin"); connection.password = view("password");
             connection.http_port = 43131; connection.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
-            CHECK(type_bridge_database_open_v1(runtime, package, &connection, NULL, &database, &errors) == TYPE_BRIDGE_STATUS_OK);
+            CHECK(type_bridge_database_open(runtime, package, &connection, NULL, &database, &errors) == TYPE_BRIDGE_STATUS_OK);
             CHECK(type_bridge_database_transaction_with_options(database, TYPE_BRIDGE_TRANSACTION_WRITE, &options, &tx, &errors) == TYPE_BRIDGE_STATUS_OK);
         }
         type_bridge_pending_t *pending = NULL;

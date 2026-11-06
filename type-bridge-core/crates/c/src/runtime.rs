@@ -14,10 +14,10 @@ use type_bridge_contract::sdk_diagnostic::{
 };
 use type_bridge_core_lib::version::{GeneratedPackageRelease, Version};
 use type_bridge_orm::{
-    AnswerCancellation, ConnectOptions, Database, OrmError, PreparedSecureConnectOptions,
-    QueryExecutionDeadline, QueryExecutionResourceLimits, SecureConnectError, SecureConnectOptions,
-    TlsMode, TransactionContext, TransactionContextState, TxType,
-    is_identity_safe_provider_address, lower_execution_error,
+    AnswerCancellation, Database, OrmError, PreparedSecureConnectOptions, QueryExecutionDeadline,
+    QueryExecutionResourceLimits, SecureConnectError, SecureConnectOptions, TlsMode,
+    TransactionContext, TransactionContextState, TxType, is_identity_safe_provider_address,
+    lower_execution_error,
 };
 
 use crate::abi::{
@@ -30,13 +30,12 @@ use crate::execution_diagnostic::{
 };
 use crate::generated_preflight::{DirectOutputPreflight, direct_output_preflight};
 use crate::policy::{
-    DATABASE_CONFIG_V2_VERSION, DATABASE_CUSTOM_ROOT_CA_BYTES_MAX, TLS_CUSTOM_ROOT_CA,
-    TLS_DISABLED, TLS_NATIVE_ROOTS, TypeBridgeDatabaseConfigV2, parse_common_limits,
+    DATABASE_CONFIG_VERSION, DATABASE_CUSTOM_ROOT_CA_BYTES_MAX, TLS_CUSTOM_ROOT_CA, TLS_DISABLED,
+    TLS_NATIVE_ROOTS, TypeBridgeDatabaseConfig, parse_common_limits, parse_database_limits,
 };
 use crate::query::TypeBridgeQueryExecutionLimitsV1;
 
 const RUNTIME_CONFIG_VERSION: u32 = 1;
-const DATABASE_CONFIG_VERSION: u32 = 1;
 const MIN_RUNTIME_WORKER_THREADS: u32 = 1;
 const MAX_RUNTIME_WORKER_THREADS: u32 = 64;
 const MAX_ADDRESS_BYTES: usize = 4 * 1024;
@@ -44,36 +43,16 @@ const MAX_DATABASE_NAME_BYTES: usize = 256;
 const MAX_USERNAME_BYTES: usize = 4 * 1024;
 const MAX_PASSWORD_BYTES: usize = 64 * 1024;
 
-type ConnectFuture = Pin<Box<dyn Future<Output = Result<Database, OrmError>> + Send + 'static>>;
 type ControlledConnectFuture =
     Pin<Box<dyn Future<Output = Result<Database, SdkExecutionDiagnostic>> + Send + 'static>>;
 
 trait DatabaseConnector: Send + Sync {
-    fn connect(&self, input: DatabaseConnectInput) -> ConnectFuture;
-
     fn connect_v2(&self, input: DatabaseConnectInputV2) -> ControlledConnectFuture;
 }
 
 struct TypeDbConnector;
 
 impl DatabaseConnector for TypeDbConnector {
-    fn connect(&self, input: DatabaseConnectInput) -> ConnectFuture {
-        Box::pin(async move {
-            Database::connect_with_options(
-                &input.address,
-                &input.database,
-                &input.username,
-                &input.password,
-                ConnectOptions {
-                    http_port: input.http_port,
-                    tls: input.tls_native_roots,
-                    server_version: None,
-                },
-            )
-            .await
-        })
-    }
-
     fn connect_v2(&self, input: DatabaseConnectInputV2) -> ControlledConnectFuture {
         Box::pin(async move {
             Database::connect_prepared_secure_with_control(
@@ -105,30 +84,6 @@ pub struct TypeBridgeRuntimeConfigV1 {
     pub worker_threads: u32,
     /// Explicit alignment and compatible-growth padding; must be zero.
     pub reserved0: u32,
-    /// Reserved zero words for compatible growth.
-    pub reserved: [u64; 4],
-}
-
-/// Version-1 direct TypeDB database connection configuration.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct TypeBridgeDatabaseConfigV1 {
-    /// Exact `sizeof` of this structure.
-    pub struct_size: u32,
-    /// Database configuration layout version.
-    pub version: u32,
-    /// TypeDB gRPC address as bounded copied UTF-8.
-    pub address: TypeBridgeByteView,
-    /// TypeDB database name as bounded copied UTF-8.
-    pub database: TypeBridgeByteView,
-    /// Username as bounded copied UTF-8.
-    pub username: TypeBridgeByteView,
-    /// Password as bounded copied UTF-8. Empty is admitted.
-    pub password: TypeBridgeByteView,
-    /// Authoritative HTTP version-probe port in the range 1 through 65535.
-    pub http_port: u32,
-    /// Zero for plaintext or one for native-root TLS on both probe and driver.
-    pub tls_mode: u32,
     /// Reserved zero words for compatible growth.
     pub reserved: [u64; 4],
 }
@@ -583,13 +538,12 @@ fn commit_context_sdk_controlled(
     }
 }
 
+#[cfg(test)]
 struct DatabaseConnectInput {
     address: String,
     database: String,
     username: String,
     password: String,
-    http_port: u16,
-    tls_native_roots: bool,
 }
 
 struct DatabaseConnectInputV2 {
@@ -605,7 +559,7 @@ struct DatabaseConnectInputV2 {
 }
 
 struct DatabaseConfigV2Preflight {
-    config: TypeBridgeDatabaseConfigV2,
+    config: TypeBridgeDatabaseConfig,
     connection_limits: QueryExecutionResourceLimits,
     answer_limits: QueryExecutionResourceLimits,
     deadline: QueryExecutionDeadline,
@@ -718,7 +672,7 @@ fn check_preflight_object<T>(
 
 unsafe fn check_database_config_v2_ranges(
     preflight: &DirectOutputPreflight,
-    config: *const TypeBridgeDatabaseConfigV2,
+    config: *const TypeBridgeDatabaseConfig,
 ) -> Result<(), TypeBridgeStatus> {
     check_preflight_object(preflight, config)?;
     if config.is_null() {
@@ -1077,74 +1031,8 @@ unsafe fn copied_utf8(
     Ok(value)
 }
 
-unsafe fn snapshot_database_config(
-    config: *const TypeBridgeDatabaseConfigV1,
-) -> Result<DatabaseConnectInput, SdkExecutionDiagnostic> {
-    if config.is_null() {
-        return Err(invalid_input(
-            "c_database_config_missing",
-            "The database configuration is required",
-        ));
-    }
-    // SAFETY: unaligned reads admit hostile-but-readable C descriptor storage.
-    let config = unsafe { config.read_unaligned() };
-    if config.struct_size as usize != size_of::<TypeBridgeDatabaseConfigV1>()
-        || config.version != DATABASE_CONFIG_VERSION
-        || config.reserved != [0; 4]
-    {
-        return Err(invalid_input(
-            "c_database_config_layout_invalid",
-            "The database configuration layout is invalid",
-        ));
-    }
-    let http_port = u16::try_from(config.http_port)
-        .ok()
-        .filter(|value| *value != 0)
-        .ok_or_else(|| {
-            invalid_input(
-                "c_database_config_http_port_invalid",
-                "The database HTTP probe port is invalid",
-            )
-        })?;
-    let tls_native_roots = match config.tls_mode {
-        TLS_DISABLED => false,
-        TLS_NATIVE_ROOTS => true,
-        _ => {
-            return Err(invalid_input(
-                "c_database_config_tls_mode_invalid",
-                "The database TLS mode is invalid",
-            ));
-        }
-    };
-    // SAFETY: the address is copied under its stable ceiling before grammar checks.
-    let address = unsafe { copied_utf8(config.address, MAX_ADDRESS_BYTES, false) }?;
-    if !is_identity_safe_provider_address(&address) {
-        return Err(invalid_input(
-            "c_database_address_invalid",
-            "The database address is not a canonical credential-free provider endpoint",
-        ));
-    }
-    if address.contains(',') {
-        return Err(unsupported(
-            "c_database_multi_endpoint_unsupported",
-            "C database configuration version 1 supports exactly one provider endpoint",
-        ));
-    }
-    Ok(DatabaseConnectInput {
-        address,
-        // SAFETY: every input is copied under a stable ceiling before dispatch.
-        database: unsafe { copied_utf8(config.database, MAX_DATABASE_NAME_BYTES, false) }?,
-        // SAFETY: every input is copied under a stable ceiling before dispatch.
-        username: unsafe { copied_utf8(config.username, MAX_USERNAME_BYTES, false) }?,
-        // SAFETY: every input is copied under a stable ceiling before dispatch.
-        password: unsafe { copied_utf8(config.password, MAX_PASSWORD_BYTES, true) }?,
-        http_port,
-        tls_native_roots,
-    })
-}
-
 unsafe fn preflight_database_config_v2(
-    config: *const TypeBridgeDatabaseConfigV2,
+    config: *const TypeBridgeDatabaseConfig,
 ) -> Result<DatabaseConfigV2Preflight, SdkExecutionDiagnostic> {
     if config.is_null() {
         return Err(invalid_input(
@@ -1154,8 +1042,8 @@ unsafe fn preflight_database_config_v2(
     }
     // SAFETY: unaligned reads admit hostile-but-readable C descriptor storage.
     let config = unsafe { config.read_unaligned() };
-    if config.struct_size as usize != size_of::<TypeBridgeDatabaseConfigV2>()
-        || config.version != DATABASE_CONFIG_V2_VERSION
+    if config.struct_size as usize != size_of::<TypeBridgeDatabaseConfig>()
+        || config.version != DATABASE_CONFIG_VERSION
         || config.reserved != [0; 4]
     {
         return Err(invalid_input(
@@ -1163,14 +1051,8 @@ unsafe fn preflight_database_config_v2(
             "The database configuration layout is invalid",
         ));
     }
-    let connection_limits = parse_common_limits(
-        Some(config.connection_limits),
-        type_bridge_orm::AnswerTransport::Direct,
-    )?;
-    let answer_limits = parse_common_limits(
-        Some(config.answer_limits),
-        type_bridge_orm::AnswerTransport::Direct,
-    )?;
+    let connection_limits = parse_database_limits(config.connection_limits)?;
+    let answer_limits = parse_database_limits(config.answer_limits)?;
     let deadline = QueryExecutionDeadline::for_limits(connection_limits);
     Ok(DatabaseConfigV2Preflight {
         config,
@@ -1571,9 +1453,9 @@ pub unsafe extern "C" fn type_bridge_cancellation_close(
 }
 
 /// Validate and snapshot one version-2 database policy without provider I/O.
-#[unsafe(export_name = "type_bridge_database_config_validate_v2")]
-pub(crate) unsafe extern "C" fn type_bridge_database_config_validate_v2_impl(
-    config: *const TypeBridgeDatabaseConfigV2,
+#[unsafe(export_name = "type_bridge_database_config_validate")]
+pub(crate) unsafe extern "C" fn type_bridge_database_config_validate_impl(
+    config: *const TypeBridgeDatabaseConfig,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     let outputs = match direct_output_preflight(&[(
@@ -1608,11 +1490,11 @@ pub(crate) unsafe extern "C" fn type_bridge_database_config_validate_v2_impl(
 }
 
 /// Connect through one captured version-2 policy.
-#[unsafe(export_name = "type_bridge_database_open_v2")]
-pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
+#[unsafe(export_name = "type_bridge_database_open")]
+pub(crate) unsafe extern "C" fn type_bridge_database_open_impl(
     runtime: *const TypeBridgeRuntime,
     package: *const TypeBridgeSchemaPackage,
-    config: *const TypeBridgeDatabaseConfigV2,
+    config: *const TypeBridgeDatabaseConfig,
     cancellation: *const TypeBridgeCancellation,
     out_database: *mut *mut TypeBridgeDatabase,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -1638,10 +1520,10 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
 /// Parent/configuration handles and named overrides are readable during the call;
 /// output slots are writable and cannot overlap any borrowed input.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_open_with_query_limits_v2(
+pub unsafe extern "C" fn type_bridge_database_open_with_query_limits(
     runtime: *const TypeBridgeRuntime,
     package: *const TypeBridgeSchemaPackage,
-    config: *const TypeBridgeDatabaseConfigV2,
+    config: *const TypeBridgeDatabaseConfig,
     query_limits: *const crate::query::TypeBridgeQueryLimitOverrideV1,
     query_limit_count: usize,
     cancellation: *const TypeBridgeCancellation,
@@ -1670,7 +1552,7 @@ pub unsafe extern "C" fn type_bridge_database_open_with_query_limits_v2(
 unsafe fn database_open_v2_with_query_limits(
     runtime: *const TypeBridgeRuntime,
     package: *const TypeBridgeSchemaPackage,
-    config: *const TypeBridgeDatabaseConfigV2,
+    config: *const TypeBridgeDatabaseConfig,
     query_limits: *const crate::query::TypeBridgeQueryLimitOverrideV1,
     query_limit_count: usize,
     cancellation: *const TypeBridgeCancellation,
@@ -1833,105 +1715,6 @@ unsafe fn database_open_v2_with_query_limits(
                     state: Arc::new(state),
                 },
             )))
-        };
-        TypeBridgeStatus::Ok
-    })
-}
-
-/// Connect and bind one database meeting a verified C package's patch floors.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_open_v1(
-    runtime: *const TypeBridgeRuntime,
-    package: *const TypeBridgeSchemaPackage,
-    config: *const TypeBridgeDatabaseConfigV1,
-    cancellation: *const TypeBridgeCancellation,
-    out_database: *mut *mut TypeBridgeDatabase,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    if aliases(runtime, out_database)
-        || aliases(runtime, out_diagnostics)
-        || aliases(package, out_database)
-        || aliases(package, out_diagnostics)
-        || aliases(config, out_database)
-        || aliases(config, out_diagnostics)
-        || aliases(cancellation, out_database)
-        || aliases(cancellation, out_diagnostics)
-    {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: independent output initialization is the constructor contract.
-    if let Err(status) = unsafe { initialize_handle_outputs(out_database, out_diagnostics) } {
-        return status;
-    }
-    guarded(|| {
-        if runtime.is_null() || package.is_null() {
-            return TypeBridgeStatus::InvalidArgument;
-        }
-        // SAFETY: configuration bytes are copied and validated before provider dispatch.
-        let input = match unsafe { snapshot_database_config(config) } {
-            Ok(value) => value,
-            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-        };
-        // SAFETY: caller retains both immutable parent handles during the call.
-        let runtime = unsafe { &*runtime };
-        let package = unsafe { &*package };
-        let Some(release) = package_release_for_database(package.state()) else {
-            return return_execution_error(
-                unsupported(
-                    "c_database_semantic_profile_unsupported",
-                    "The verified schema package targets a semantic profile unsupported by C database configuration version 1",
-                ),
-                out_diagnostics,
-            );
-        };
-        if is_cancelled(cancellation) {
-            return cancellation_error(out_diagnostics);
-        }
-
-        // Cancellation is deliberately not observed after this dispatch point.
-        let database = match runtime
-            .state
-            .runtime
-            .block_on(runtime.state.connector.connect(input))
-        {
-            Ok(value) => value,
-            Err(error) => {
-                return return_execution_error(
-                    lower_execution_error(error, SdkProviderOperation::Connect),
-                    out_diagnostics,
-                );
-            }
-        };
-        let Some(server_version) =
-            admitted_server_version(database.server_version(), |version| release.admits(version))
-        else {
-            let _ = database.close();
-            return return_execution_error(
-                unsupported(
-                    "c_database_server_version_not_exact",
-                    "The C database ABI requires a detected TypeDB version admitted by the package semantic profile",
-                ),
-                out_diagnostics,
-            );
-        };
-        if let Err(diagnostic) = increment_child(&runtime.state.database_children) {
-            let _ = database.close();
-            return return_execution_error(diagnostic, out_diagnostics);
-        }
-        let state = DatabaseState {
-            runtime: Arc::clone(&runtime.state),
-            _package: Arc::clone(package.state()),
-            database: Arc::new(database),
-            server_version,
-            transaction_children: AtomicUsize::new(0),
-            debug_dispatch: std::sync::Mutex::new(None),
-            debug_listener: Arc::new(std::sync::Mutex::new(None)),
-        };
-        // SAFETY: the initialized output remains writable.
-        unsafe {
-            out_database.write(Box::into_raw(Box::new(TypeBridgeDatabase {
-                state: Arc::new(state),
-            })))
         };
         TypeBridgeStatus::Ok
     })
@@ -2679,17 +2462,17 @@ pub(crate) unsafe extern "C" fn type_bridge_write_transaction_commit_v2_impl(
 }
 
 const _: unsafe extern "C" fn(
-    *const TypeBridgeDatabaseConfigV2,
+    *const TypeBridgeDatabaseConfig,
     *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus = type_bridge_database_config_validate_v2_impl;
+) -> TypeBridgeStatus = type_bridge_database_config_validate_impl;
 const _: unsafe extern "C" fn(
     *const TypeBridgeRuntime,
     *const TypeBridgeSchemaPackage,
-    *const TypeBridgeDatabaseConfigV2,
+    *const TypeBridgeDatabaseConfig,
     *const TypeBridgeCancellation,
     *mut *mut TypeBridgeDatabase,
     *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus = type_bridge_database_open_v2_impl;
+) -> TypeBridgeStatus = type_bridge_database_open_impl;
 const _: unsafe extern "C" fn(
     *const TypeBridgeDatabase,
     *const TypeBridgeQueryExecutionLimitsV1,
@@ -2878,7 +2661,7 @@ mod tests {
     use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::projection::{BindingTarget, CSymbolPrefix, ProjectionConfig};
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
-    use type_bridge_core_lib::version::{Version, VersionError};
+    use type_bridge_core_lib::version::Version;
     use type_bridge_orm::error::{ClassifiedCommitError, CommitFailureCertainty};
     use type_bridge_orm::session::backend::{
         BoxFuture, DriverBackend, QueryResult, TransactionOps,
@@ -3000,7 +2783,7 @@ entities:
         fail_version_probe: AtomicBool,
         fail_open: AtomicBool,
         pending_open: AtomicBool,
-        supports_given_rows: AtomicBool,
+        lacks_given_rows: AtomicBool,
         panic_transaction_close: AtomicBool,
         panic_rollback: AtomicBool,
         commit: AtomicU8,
@@ -3015,40 +2798,6 @@ entities:
     }
 
     impl DatabaseConnector for FakeConnector {
-        fn connect(&self, input: DatabaseConnectInput) -> ConnectFuture {
-            self.state.connects.fetch_add(1, Ordering::AcqRel);
-            self.state
-                .inputs
-                .lock()
-                .unwrap()
-                .push_back(DatabaseConnectInput {
-                    address: input.address.clone(),
-                    database: input.database.clone(),
-                    username: input.username.clone(),
-                    password: input.password.clone(),
-                    http_port: input.http_port,
-                    tls_native_roots: input.tls_native_roots,
-                });
-            let state = Arc::clone(&self.state);
-            let version = self.version;
-            Box::pin(async move {
-                if state.fail_version_probe.load(Ordering::Acquire) {
-                    return Err(OrmError::UnsupportedVersion(VersionError::Probe(
-                        "provider address=/private credential=secret".into(),
-                    )));
-                }
-                if state.fail_connect.load(Ordering::Acquire) {
-                    return Err(OrmError::Connection(
-                        "provider address=private password=secret".into(),
-                    ));
-                }
-                Ok(Database::with_backend(
-                    Box::new(FakeBackend { state, version }),
-                    input.database,
-                ))
-            })
-        }
-
         fn connect_v2(&self, input: DatabaseConnectInputV2) -> ControlledConnectFuture {
             let state = Arc::clone(&self.state);
             let version = self.version;
@@ -3067,8 +2816,6 @@ entities:
                         database: input.database.clone(),
                         username: input.username.clone(),
                         password: input.password.clone(),
-                        http_port: 0,
-                        tls_native_roots: false,
                     });
                 let _transport = input.transport;
                 if state.fail_version_probe.load(Ordering::Acquire)
@@ -3127,7 +2874,7 @@ entities:
         }
 
         fn supports_given_rows(&self) -> bool {
-            self.state.supports_given_rows.load(Ordering::Acquire)
+            !self.state.lacks_given_rows.load(Ordering::Acquire)
         }
     }
 
@@ -3274,19 +3021,13 @@ entities:
         ))
     }
 
-    fn database_config() -> (
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        TypeBridgeDatabaseConfigV1,
-    ) {
+    fn database_config() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, TypeBridgeDatabaseConfig) {
         let address = b"localhost:1729".to_vec();
         let database = b"sdk".to_vec();
         let username = b"admin".to_vec();
         let password = b"password".to_vec();
-        let config = TypeBridgeDatabaseConfigV1 {
-            struct_size: size_of::<TypeBridgeDatabaseConfigV1>() as u32,
+        let config = TypeBridgeDatabaseConfig {
+            struct_size: size_of::<TypeBridgeDatabaseConfig>() as u32,
             version: DATABASE_CONFIG_VERSION,
             address: view(&address),
             database: view(&database),
@@ -3294,6 +3035,12 @@ entities:
             password: view(&password),
             http_port: 8000,
             tls_mode: TLS_DISABLED,
+            custom_root_ca_pem: TypeBridgeByteView {
+                data: ptr::null(),
+                length: 0,
+            },
+            connection_limits: TypeBridgeQueryExecutionLimitsV1::default(),
+            answer_limits: TypeBridgeQueryExecutionLimitsV1::default(),
             reserved: [0; 4],
         };
         (address, database, username, password, config)
@@ -3327,7 +3074,7 @@ entities:
         _username: Vec<u8>,
         _password: Vec<u8>,
         _custom_root: Vec<u8>,
-        config: TypeBridgeDatabaseConfigV2,
+        config: TypeBridgeDatabaseConfig,
     }
 
     impl DatabaseConfigV2Fixture {
@@ -3349,9 +3096,9 @@ entities:
             } else {
                 view(&custom_root)
             };
-            let config = TypeBridgeDatabaseConfigV2 {
-                struct_size: size_of::<TypeBridgeDatabaseConfigV2>() as u32,
-                version: DATABASE_CONFIG_V2_VERSION,
+            let config = TypeBridgeDatabaseConfig {
+                struct_size: size_of::<TypeBridgeDatabaseConfig>() as u32,
+                version: DATABASE_CONFIG_VERSION,
                 address: view(&address),
                 database: view(&database),
                 username: view(&username),
@@ -3397,7 +3144,7 @@ entities:
         let mut diagnostics = ptr::null_mut();
         // SAFETY: all handles and descriptor views remain live for the call.
         let status = unsafe {
-            type_bridge_database_open_v1(
+            type_bridge_database_open_impl(
                 runtime,
                 package,
                 &config,
@@ -3412,7 +3159,7 @@ entities:
     unsafe fn open_database_v2(
         runtime: *mut TypeBridgeRuntime,
         package: *mut TypeBridgeSchemaPackage,
-        config: &TypeBridgeDatabaseConfigV2,
+        config: &TypeBridgeDatabaseConfig,
         cancellation: *const TypeBridgeCancellation,
     ) -> (
         *mut TypeBridgeDatabase,
@@ -3423,7 +3170,7 @@ entities:
         let mut diagnostics = ptr::null_mut();
         // SAFETY: all handles and descriptor views remain live for the call.
         let status = unsafe {
-            type_bridge_database_open_v2_impl(
+            type_bridge_database_open_impl(
                 runtime,
                 package,
                 config,
@@ -3551,9 +3298,7 @@ entities:
         );
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
-            unsafe {
-                type_bridge_database_config_validate_v2_impl(&valid.config, &mut diagnostics)
-            },
+            unsafe { type_bridge_database_config_validate_impl(&valid.config, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
         assert!(diagnostics.is_null());
@@ -3570,7 +3315,7 @@ entities:
         );
         assert_eq!(
             unsafe {
-                type_bridge_database_config_validate_v2_impl(
+                type_bridge_database_config_validate_impl(
                     &expired_but_provider_free.config,
                     &mut diagnostics,
                 )
@@ -3587,7 +3332,7 @@ entities:
             .cast_mut()
             .cast::<*mut TypeBridgeExecutionDiagnostics>();
         assert_eq!(
-            unsafe { type_bridge_database_config_validate_v2_impl(&aliased.config, nested_output) },
+            unsafe { type_bridge_database_config_validate_impl(&aliased.config, nested_output) },
             TypeBridgeStatus::InvalidArgument
         );
         assert_eq!(aliased._address, preserved_address);
@@ -3599,9 +3344,7 @@ entities:
             QueryExecutionResourceLimits::default(),
         );
         assert_eq!(
-            unsafe {
-                type_bridge_database_config_validate_v2_impl(&invalid.config, &mut diagnostics)
-            },
+            unsafe { type_bridge_database_config_validate_impl(&invalid.config, &mut diagnostics) },
             TypeBridgeStatus::InvalidArgument
         );
         assert_eq!(
@@ -3623,7 +3366,7 @@ entities:
         };
         assert_eq!(
             unsafe {
-                type_bridge_database_config_validate_v2_impl(&noncanonical.config, &mut diagnostics)
+                type_bridge_database_config_validate_impl(&noncanonical.config, &mut diagnostics)
             },
             TypeBridgeStatus::InvalidArgument
         );
@@ -3637,7 +3380,7 @@ entities:
     #[test]
     fn v2_result_handle_allocation_failures_precede_provider_dispatch() {
         let state = Arc::new(FakeState::default());
-        state.supports_given_rows.store(true, Ordering::Release);
+        state.lacks_given_rows.store(false, Ordering::Release);
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2allocation")));
         let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
@@ -3771,7 +3514,7 @@ entities:
     #[test]
     fn v2_output_preflight_fences_nested_and_live_handle_storage_before_writes() {
         let state = Arc::new(FakeState::default());
-        state.supports_given_rows.store(true, Ordering::Release);
+        state.lacks_given_rows.store(false, Ordering::Release);
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2alias")));
         let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
@@ -3784,7 +3527,7 @@ entities:
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_open_v2_impl(
+                type_bridge_database_open_impl(
                     runtime,
                     package,
                     &fixture.config,
@@ -4045,7 +3788,7 @@ entities:
     #[test]
     fn legacy_lifecycle_on_v2_handles_deep_fences_every_retained_input_before_writes() {
         let state = Arc::new(FakeState::default());
-        state.supports_given_rows.store(true, Ordering::Release);
+        state.lacks_given_rows.store(false, Ordering::Release);
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "legacydeep")));
         let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
@@ -4259,7 +4002,7 @@ entities:
     fn connection_query_limits_validate_before_io_and_are_captured_by_the_database() {
         use crate::query::TypeBridgeQueryLimitOverrideV1;
         let state = Arc::new(FakeState::default());
-        state.supports_given_rows.store(true, Ordering::Release);
+        state.lacks_given_rows.store(false, Ordering::Release);
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 13, 6));
         let mut package = Box::into_raw(Box::new(package("typedb-3.13.6/v1", "querypolicy")));
         let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
@@ -4279,7 +4022,7 @@ entities:
         let mut diagnostics = ptr::null_mut();
         // SAFETY: retained descriptors and independent owned output slots.
         let status = unsafe {
-            type_bridge_database_open_with_query_limits_v2(
+            type_bridge_database_open_with_query_limits(
                 runtime,
                 package,
                 &fixture.config,
@@ -4313,7 +4056,7 @@ entities:
         }
         // SAFETY: the retained, deliberately unaligned descriptor graph holds valid limits.
         let status = unsafe {
-            type_bridge_database_open_with_query_limits_v2(
+            type_bridge_database_open_with_query_limits(
                 runtime,
                 package,
                 &fixture.config,
@@ -4363,7 +4106,7 @@ entities:
         let mut diagnostics = sentinel;
         // SAFETY: every range is readable/writable; overlap is the rejected condition.
         let status = unsafe {
-            type_bridge_database_open_with_query_limits_v2(
+            type_bridge_database_open_with_query_limits(
                 ptr::null(),
                 ptr::null(),
                 ptr::null(),
@@ -4382,7 +4125,7 @@ entities:
         overrides[0].name = name.as_ptr();
         // SAFETY: writable name storage overlaps the database output and must remain intact.
         let status = unsafe {
-            type_bridge_database_open_with_query_limits_v2(
+            type_bridge_database_open_with_query_limits(
                 ptr::null(),
                 ptr::null(),
                 ptr::null(),
@@ -4401,6 +4144,7 @@ entities:
     #[test]
     fn v2_database_requires_band9_and_transactions_intersect_and_inherit_answer_policy() {
         let state = Arc::new(FakeState::default());
+        state.lacks_given_rows.store(true, Ordering::Release);
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2policy")));
         let answer_limits =
@@ -4419,7 +4163,7 @@ entities:
         );
         unsafe { close_diagnostics(&mut diagnostics) };
 
-        state.supports_given_rows.store(true, Ordering::Release);
+        state.lacks_given_rows.store(false, Ordering::Release);
         let (mut database, mut diagnostics, status) =
             unsafe { open_database_v2(runtime, package, &fixture.config, ptr::null()) };
         assert_eq!(status, TypeBridgeStatus::Ok);
@@ -4604,7 +4348,7 @@ entities:
             TypeBridgeStatus::Ok
         );
 
-        state.supports_given_rows.store(true, Ordering::Release);
+        state.lacks_given_rows.store(false, Ordering::Release);
         let inherited_timeout = DatabaseConfigV2Fixture::plaintext(timeout_limits);
         let (mut database, mut diagnostics, status) =
             unsafe { open_database_v2(runtime, package, &inherited_timeout.config, ptr::null()) };
@@ -4666,7 +4410,7 @@ entities:
     #[test]
     fn rollback_only_commit_is_exact_pre_dispatch_and_retains_legacy_and_v2_owners() {
         let state = Arc::new(FakeState::default());
-        state.supports_given_rows.store(true, Ordering::Release);
+        state.lacks_given_rows.store(false, Ordering::Release);
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "rollbackonly")));
         let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
@@ -5075,7 +4819,7 @@ entities:
         for observed in [Version::new(3, 13, 6), Version::new(3, 14, 0)] {
             for config_version in [1, 2] {
                 let state = Arc::new(FakeState::default());
-                state.supports_given_rows.store(true, Ordering::Release);
+                state.lacks_given_rows.store(false, Ordering::Release);
                 let mut runtime = runtime(state, observed);
                 let mut package = Box::into_raw(Box::new(package("typedb-3.13.6/v1", "observed")));
                 let fixture =
@@ -5265,7 +5009,7 @@ entities:
         let mut rejected = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_open_v1(
+                type_bridge_database_open_impl(
                     runtime,
                     package_a,
                     &invalid,
@@ -5339,7 +5083,7 @@ entities:
         config.address = view(&oversized);
         assert_eq!(
             unsafe {
-                type_bridge_database_open_v1(
+                type_bridge_database_open_impl(
                     runtime,
                     package,
                     &config,
@@ -5357,7 +5101,7 @@ entities:
         config.address = view(&invalid_utf8);
         assert_eq!(
             unsafe {
-                type_bridge_database_open_v1(
+                type_bridge_database_open_impl(
                     runtime,
                     package,
                     &config,
@@ -5406,7 +5150,7 @@ entities:
             config.address = view(candidate.as_bytes());
             assert_eq!(
                 unsafe {
-                    type_bridge_database_open_v1(
+                    type_bridge_database_open_impl(
                         runtime,
                         package,
                         &config,
@@ -5433,7 +5177,7 @@ entities:
         config.http_port = 0;
         assert_eq!(
             unsafe {
-                type_bridge_database_open_v1(
+                type_bridge_database_open_impl(
                     runtime,
                     package,
                     &config,
@@ -5463,7 +5207,7 @@ entities:
         config.tls_mode = TLS_NATIVE_ROOTS;
         assert_eq!(
             unsafe {
-                type_bridge_database_open_v1(
+                type_bridge_database_open_impl(
                     runtime,
                     package,
                     &config,
@@ -5479,8 +5223,6 @@ entities:
         assert_eq!(copied.database, "sdk");
         assert_eq!(copied.username, "admin");
         assert_eq!(copied.password, "");
-        assert_eq!(copied.http_port, 8000);
-        assert!(copied.tls_native_roots);
 
         assert_eq!(
             unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },

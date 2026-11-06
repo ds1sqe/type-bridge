@@ -5650,7 +5650,7 @@ int main(void) {
       getenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION");
   const uint32_t http_port = required_http_port();
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_database_t *database = NULL;
@@ -5716,7 +5716,7 @@ int main(void) {
       TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN,
       0u,
       {0u, 0u, 0u, 0u}};
-  type_bridge_database_config_v1_t database_config;
+  type_bridge_database_config_t database_config;
 
   CHECK(address != NULL && address[0] != '\0');
   CHECK(expected_server_version != NULL &&
@@ -5740,7 +5740,7 @@ int main(void) {
   CHECK(package != NULL && package_diagnostics == NULL);
   CHECK(type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(type_bridge_database_open_v1(runtime, package, &database_config, NULL,
+  CHECK(type_bridge_database_open(runtime, package, &database_config, NULL,
                                      &database, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_database_server_version(database, &version) ==

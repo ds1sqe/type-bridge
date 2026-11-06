@@ -354,7 +354,7 @@ int main(void) {
   uint32_t http_port = required_http_port();
   type_bridge_schema_package_t *package = NULL;
   type_bridge_schema_package_t *foreign_package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_database_t *database = NULL;
@@ -364,7 +364,7 @@ int main(void) {
       TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN,
       0u,
       {0u, 0u, 0u, 0u}};
-  type_bridge_database_config_v1_t database_config = {0};
+  type_bridge_database_config_t database_config = {0};
   type_bridge_byte_view_t version = {0};
   projected_person_create *ada_create = NULL;
   projected_person_create *dana_create = NULL;
@@ -421,7 +421,7 @@ int main(void) {
   CHECK(type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         runtime != NULL && diagnostics == NULL);
-  CHECK(type_bridge_database_open_v1(runtime, package, &database_config, NULL,
+  CHECK(type_bridge_database_open(runtime, package, &database_config, NULL,
                                      &database, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         database != NULL && diagnostics == NULL);

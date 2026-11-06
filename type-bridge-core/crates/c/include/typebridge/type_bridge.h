@@ -159,7 +159,6 @@ typedef struct type_bridge_query_remote_pending
 typedef struct type_bridge_query_remote_claim type_bridge_query_remote_claim_t;
 
 #define TYPE_BRIDGE_RUNTIME_CONFIG_VERSION 1u
-#define TYPE_BRIDGE_DATABASE_CONFIG_VERSION 1u
 #define TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN 1u
 #define TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MAX 64u
 #define TYPE_BRIDGE_DATABASE_ADDRESS_BYTES_MAX 4096u
@@ -552,33 +551,6 @@ typedef struct type_bridge_runtime_config_v1 {
   uint64_t reserved[4];
 } type_bridge_runtime_config_v1_t;
 
-/*
- * All byte views are copied during database_open_v1. Address, database, and
- * username are non-empty; password may be empty. `address` is exactly one
- * canonical credential-free host:port or [IPv6]:port endpoint. Version 1
- * rejects comma-delimited endpoint lists until a per-endpoint HTTP probe
- * policy is defined. `http_port` is the authoritative TypeDB HTTP
- * version-probe port. The C ABI never accepts a caller-claimed server version
- * and enforces the verified package's semantic profile: 3.12.3+ on the 3.12
- * line for typedb-3.12.1/v1; 3.13.6+, 3.14.0+, and newer lines for
- * typedb-3.13.6/v1.
- * Newer lines are not tested or supported by this TypeBridge release;
- * each connection to one emits a warning.
- * Other verified profiles return TYPE_BRIDGE_STATUS_UNSUPPORTED before
- * provider I/O.
- */
-typedef struct type_bridge_database_config_v1 {
-  uint32_t struct_size;
-  uint32_t version;
-  type_bridge_byte_view_t address;
-  type_bridge_byte_view_t database;
-  type_bridge_byte_view_t username;
-  type_bridge_byte_view_t password;
-  uint32_t http_port;
-  uint32_t tls_mode;
-  uint64_t reserved[4];
-} type_bridge_database_config_v1_t;
-
 typedef int32_t type_bridge_projected_value_kind_t;
 #define TYPE_BRIDGE_PROJECTED_VALUE_STRING                                    \
   ((type_bridge_projected_value_kind_t)1)
@@ -878,6 +850,9 @@ typedef int32_t type_bridge_execution_diagnostic_detail_kind_t;
 #define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_TEXT_LIST                      \
   ((type_bridge_execution_diagnostic_detail_kind_t)14)
 #define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_EXECUTION_TIMELINE ((type_bridge_execution_diagnostic_detail_kind_t)15)
+/* Key admission_cause; primary is canonical JSON: an array of diagnostic
+ * objects containing category, code, message, path, and details. */
+#define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_ADMISSION_CAUSE ((type_bridge_execution_diagnostic_detail_kind_t)16)
 #define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_UNKNOWN                        \
   ((type_bridge_execution_diagnostic_detail_kind_t)255)
 
@@ -968,35 +943,6 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_runtime_version(type_bridge_byte_view_t *out_version);
-
-/*
- * Snapshot and verify a generated schema package. Every non-NULL output slot
- * is initialized before validation, including when the other slot is NULL.
- * The two output slot addresses must be distinct.
- * On success, *out_package is owned by the caller and *out_diagnostics is
- * NULL. On ordinary failure, *out_package is NULL and *out_diagnostics
- * contains canonical structured diagnostics.
- */
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_schema_package_open_v1(
-    const type_bridge_schema_package_descriptor_v1_t *descriptor,
-    type_bridge_schema_package_t **out_package,
-    type_bridge_diagnostics_t **out_diagnostics);
-/*
- * Generated large-package entry point. The aggregate chunk count across all
- * seven resources is bounded by TYPE_BRIDGE_PROJECTED_COLLECTION_LEN_MAX.
- * Each flat chunk table is one hosted object of at most 65,535 bytes and every
- * chunk contains at most 32,768 bytes. With this ABI's 16-byte byte-view layout,
- * a valid table therefore contains at most 4,095 chunks; the aggregate ceiling
- * remains an overflow and defense-in-depth bound across all seven tables.
- * An aggregate excess returns RESOURCE_LIMIT read-only and leaves both outputs
- * untouched because bounded data/output disjointness cannot be established.
- */
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_schema_package_open_chunked_v1(
-    const type_bridge_schema_package_chunked_descriptor_v1_t *descriptor,
-    type_bridge_schema_package_t **out_package,
-    type_bridge_diagnostics_t **out_diagnostics);
 
 /* Idempotent for a non-NULL slot whose current value is NULL. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
@@ -1152,7 +1098,7 @@ type_bridge_execution_diagnostics_failure_get_v1(
  * owns database children and a database owns transaction children. Parent
  * close returns TYPE_BRIDGE_STATUS_IN_USE without changing the owner pointer
  * while any child remains. A database retains its verified package evidence,
- * so the original schema-package handle may close after database_open_v1.
+ * so the original schema-package handle may close after database_open.
  * Child open/access/terminal calls must not race their parent close.
  */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
@@ -1183,14 +1129,6 @@ type_bridge_cancellation_is_requested(
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_cancellation_close(type_bridge_cancellation_t **cancellation);
 
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_open_v1(
-    const type_bridge_runtime_t *runtime,
-    const type_bridge_schema_package_t *package,
-    const type_bridge_database_config_v1_t *config,
-    const type_bridge_cancellation_t *cancellation,
-    type_bridge_database_t **out_database,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_database_server_version(
     const type_bridge_database_t *database,
@@ -3262,7 +3200,7 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_projected_thing_close(type_bridge_projected_thing_t **thing);
 
 
-#define TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION 2u
+#define TYPE_BRIDGE_DATABASE_CONFIG_VERSION 2u
 #define TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX 1048576u
 #define TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA 2u
 
@@ -3284,11 +3222,21 @@ typedef int32_t type_bridge_projected_batch_operation_t;
   ((type_bridge_generated_opaque_input_kind_t)36)
 
 /*
- * Version-2 direct database policy. Every byte view is copied during the
- * call. Connection and answer limits are tighten-only common ceilings.
- * Reserved words must be zero.
+ * Current direct database policy (layout version 2). All-zero embedded
+ * connection and answer limits select direct defaults. Every byte view is
+ * copied during the call. Explicit policies use the common policy layout;
+ * reserved words must be zero. Address, database, and username are non-empty;
+ * password may be empty. Address is one canonical credential-free host:port
+ * or [IPv6]:port endpoint; comma-delimited endpoint lists are rejected.
+ * http_port is the authoritative TypeDB HTTP version-probe port. The runtime
+ * verifies the server version against the package semantic profile, never a
+ * caller-claimed version: 3.12.3+ on the 3.12 line for typedb-3.12.1/v1;
+ * 3.13.6+, 3.14.0+, and newer lines for typedb-3.13.6/v1. Newer lines are not
+ * tested or supported by this release and emit a connection warning. Other
+ * profiles return UNSUPPORTED before provider I/O. TLS mode retains values
+ * DISABLED and NATIVE_ROOTS; CUSTOM_ROOT_CA requires custom_root_ca_pem.
  */
-typedef struct type_bridge_database_config_v2 {
+typedef struct type_bridge_database_config {
   uint32_t struct_size;
   uint32_t version;
   type_bridge_byte_view_t address;
@@ -3301,7 +3249,7 @@ typedef struct type_bridge_database_config_v2 {
   type_bridge_query_execution_limits_v1_t connection_limits;
   type_bridge_query_execution_limits_v1_t answer_limits;
   uint64_t reserved[4];
-} type_bridge_database_config_v2_t;
+} type_bridge_database_config_t;
 
 typedef struct type_bridge_projected_batch_builder
     type_bridge_projected_batch_builder_t;
@@ -3309,35 +3257,54 @@ typedef struct type_bridge_projected_batch type_bridge_projected_batch_t;
 
 
 
+/*
+ * Snapshot and verify a generated schema package. Every non-NULL output slot
+ * is initialized before validation, including when the other slot is NULL.
+ * The two output slot addresses must be distinct.
+ * On success, *out_package is owned by the caller and *out_diagnostics is
+ * NULL. On ordinary failure, *out_package is NULL and *out_diagnostics
+ * contains execution diagnostics, including the canonical admission cause.
+ */
+/*
+ * Generated large-package entry point. The aggregate chunk count across all
+ * seven resources is bounded by TYPE_BRIDGE_PROJECTED_COLLECTION_LEN_MAX.
+ * Each flat chunk table is one hosted object of at most 65,535 bytes and every
+ * chunk contains at most 32,768 bytes. With this ABI's 16-byte byte-view layout,
+ * a valid table therefore contains at most 4,095 chunks; the aggregate ceiling
+ * remains an overflow and defense-in-depth bound across all seven tables.
+ * An aggregate excess returns RESOURCE_LIMIT read-only and leaves both outputs
+ * untouched because bounded data/output disjointness cannot be established.
+ */
+
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_schema_package_open_v2(
+type_bridge_schema_package_open(
     const type_bridge_schema_package_descriptor_v1_t *descriptor,
     type_bridge_schema_package_t **out_package,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_schema_package_open_chunked_v2(
+type_bridge_schema_package_open_chunked(
     const type_bridge_schema_package_chunked_descriptor_v1_t *descriptor,
     type_bridge_schema_package_t **out_package,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_config_validate_v2(
-    const type_bridge_database_config_v2_t *config,
+type_bridge_database_config_validate(
+    const type_bridge_database_config_t *config,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_open_v2(
+type_bridge_database_open(
     const type_bridge_runtime_t *runtime,
     const type_bridge_schema_package_t *package,
-    const type_bridge_database_config_v2_t *config,
+    const type_bridge_database_config_t *config,
     const type_bridge_cancellation_t *cancellation,
     type_bridge_database_t **out_database,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 /* Independent query limits captured before provider I/O. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_database_open_with_query_limits_v2(
+type_bridge_database_open_with_query_limits(
     const type_bridge_runtime_t *runtime,
     const type_bridge_schema_package_t *package,
-    const type_bridge_database_config_v2_t *config,
+    const type_bridge_database_config_t *config,
     const type_bridge_query_limit_override_v1_t *query_limits,
     size_t query_limit_count,
     const type_bridge_cancellation_t *cancellation,
@@ -4170,7 +4137,7 @@ type_bridge_database_deletion_plan_close(type_bridge_database_deletion_plan_t **
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_database_administration_close(type_bridge_database_administration_t **);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_migration_catalog_open(const type_bridge_schema_package_t *, type_bridge_byte_view_t, type_bridge_migration_catalog_t **, type_bridge_diagnostics_t **);
+type_bridge_migration_catalog_open(const type_bridge_schema_package_t *, type_bridge_byte_view_t, type_bridge_migration_catalog_t **, type_bridge_execution_diagnostics_t **);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_migration_catalog_fingerprint(const type_bridge_migration_catalog_t *, type_bridge_byte_view_t *);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
