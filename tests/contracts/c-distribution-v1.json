@@ -15,7 +15,7 @@
     "package_metadata_version": "2.0.0",
     "package_metadata_description": "CMake and pkg-config require ABI 2.0.0; regenerate all ABI 1.x schema packages.",
     "contract_path": "tests/contracts/c-abi.json",
-    "contract_sha256": "f56cb222bb163455fdcbcae3cb5355b572535b2ab8fd77870193c1b2230ab5ac",
+    "contract_sha256": "c0282d906886f05da2f9e3daa19ad001602578261ee7cbf6d31438f7bbd60d1c",
     "static_linkage": "unsupported",
     "shared_linkage": "artifact",
     "accepted_descriptor_minors": [
@@ -27,6 +27,8 @@
       "type_bridge_database_manager_all",
       "type_bridge_database_manager_count",
       "type_bridge_database_manager_delete",
+      "type_bridge_database_manager_delete_many_returning",
+      "type_bridge_database_manager_delete_returning",
       "type_bridge_database_manager_exists",
       "type_bridge_database_manager_first",
       "type_bridge_database_manager_insert",
@@ -268,6 +270,8 @@
       "type_bridge_proxy_connection_manager_all",
       "type_bridge_proxy_connection_manager_count",
       "type_bridge_proxy_connection_manager_delete",
+      "type_bridge_proxy_connection_manager_delete_many_returning",
+      "type_bridge_proxy_connection_manager_delete_returning",
       "type_bridge_proxy_connection_manager_exists",
       "type_bridge_proxy_connection_manager_first",
       "type_bridge_proxy_connection_manager_insert",
@@ -339,6 +343,8 @@
       "type_bridge_write_transaction_manager_all",
       "type_bridge_write_transaction_manager_count",
       "type_bridge_write_transaction_manager_delete",
+      "type_bridge_write_transaction_manager_delete_many_returning",
+      "type_bridge_write_transaction_manager_delete_returning",
       "type_bridge_write_transaction_manager_exists",
       "type_bridge_write_transaction_manager_first",
       "type_bridge_write_transaction_manager_insert",
@@ -529,7 +535,7 @@
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-      "sha256": "df47bbfc5e1a90a0d8f564437f51b34471f18c293460a5b8e68271b639259f20"
+      "sha256": "eda92adcbb9fe93dbf2115659a21faa9ee5a497f928465408ccd0b719086226e"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",

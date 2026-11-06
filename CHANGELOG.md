@@ -14,6 +14,9 @@ All notable changes to TypeBridge will be documented in this file.
   continue to use schema-bound native plans and explicit counts.
 
 ### Added
+- C managers expose typed-IID `delete_returning` and `delete_many_returning`
+  on database, write transaction, and proxy targets. Results retain deleted
+  snapshots, omit missing IIDs, and perform no provider I/O for an empty list.
 - Generated C managers expose canonical `insert`, `put`, filtered `update`,
   and filtered `delete` methods for database, write transaction, and proxy
   targets, preserving complete write results and exact-model validation.

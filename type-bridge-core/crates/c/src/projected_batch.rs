@@ -279,6 +279,23 @@ impl TypeBridgeProjectedBatch {
 }
 
 impl TypeBridgeProjectedBatchResult {
+    pub(crate) fn from_deleted(
+        package: Arc<SchemaPackageState>,
+        model: TypeId,
+        input_count: usize,
+        result: ProjectedBatchResult,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        map_result(
+            package,
+            model,
+            ProjectedBatchOperation::Delete,
+            input_count,
+            Vec::new(),
+            result,
+            true,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn test_item(&self) -> &Arc<ProjectedThing> {
         assert_eq!(self.count, 1);
@@ -441,7 +458,9 @@ unsafe fn copied_limits(
     }
 }
 
-unsafe fn copy_iid(value: *const TypeBridgeIid) -> Result<String, SdkExecutionDiagnostic> {
+pub(crate) unsafe fn copy_iid(
+    value: *const TypeBridgeIid,
+) -> Result<String, SdkExecutionDiagnostic> {
     if value.is_null() {
         return Err(invalid_iid());
     }

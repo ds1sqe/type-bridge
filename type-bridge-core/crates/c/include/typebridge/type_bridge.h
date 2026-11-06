@@ -3821,6 +3821,63 @@ type_bridge_proxy_connection_projected_batch_delete_returning(
     type_bridge_projected_batch_result_t **out_result,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 
+/* Returning deletes retain complete snapshots and omit missing IIDs.
+ * Empty IID lists perform no provider I/O. Inputs and outputs must be disjoint. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_manager_delete_returning(
+    const type_bridge_database_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_iid_t *iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_manager_delete_many_returning(
+    const type_bridge_database_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_iid_t *const *iids, size_t count,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_manager_delete_returning(
+    const type_bridge_write_transaction_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_iid_t *iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_manager_delete_many_returning(
+    const type_bridge_write_transaction_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_iid_t *const *iids, size_t count,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_manager_delete_returning(
+    const type_bridge_proxy_connection_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_iid_t *iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_manager_delete_many_returning(
+    const type_bridge_proxy_connection_t *owner,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_iid_t *const *iids, size_t count,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out,
+    type_bridge_execution_diagnostics_t **diagnostics);
+
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_database_manager_insert(
     const type_bridge_database_t *owner,
