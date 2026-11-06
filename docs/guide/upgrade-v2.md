@@ -105,8 +105,9 @@ type-bridge --manifest typebridge.yaml migration apply --environment production
 type-bridge --manifest typebridge.yaml migration verify --environment production
 ```
 
-Read-only recovery, ledger import, and replay remain available after the
-cutover; they cannot reopen the archived write path.
+Read-only verification and canonical replay remain available after the cutover.
+Import runs under the canonical migration lease and cannot reopen the archived
+write path.
 
 ## Query facades in 3.0
 
@@ -145,19 +146,12 @@ retry over plaintext.
 - No application imports `type_bridge.models`, handwritten Node descriptors,
   or Rust ORM derive/schema-authoring APIs.
 - Generated application operations pass on TypeDB 3.11 and/or 3.12; connected
-  migration apply/verify/adopt pass on the workspace profile's admitted patch
+  migration apply/verify pass on the workspace profile's admitted patch
   floors and reject unsupported profile/server pairs before database mutation.
-- Archived migration adoption and a subsequent canonical V2 migration replay
+- Previously adopted history imports once, and canonical migrations replay
   from empty.
 - Wheel, npm package, generated Rust crate, CLI, and server candidates contain
   no removed authoring or provider payload.
 
 The exact removed and retained surfaces are listed in
 [V2.1 cutover inventory](migrations.md).
-
-### C migration callback handles
-
-A callback's transaction becomes unusable when the callback finishes, but the
-C handle allocation remains retained until its catalog and every derived plan
-are closed. Close those owners before closing the database: database close is
-refused while retained callback handles still hold it.

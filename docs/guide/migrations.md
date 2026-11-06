@@ -351,6 +351,9 @@ result handle. Return an error status, optionally transferring owned execution
 diagnostics, to fail the callback. The context must be callable from a worker
 thread and remain live until the catalog and all derived plans close. Close
 those owners before closing the database; they retain borrowed handle storage.
+The transaction becomes unusable when the callback ends, but its C handle
+allocation is freed only when the catalog and every derived plan close.
+Database close is refused while those retained handles still hold it.
 C callbacks must not unwind. Cancellation invalidates the borrowed transaction;
 the execute call waits for the C function to return before releasing its context.
 

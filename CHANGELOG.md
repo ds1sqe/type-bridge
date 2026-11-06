@@ -331,6 +331,37 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+
+<!-- --8<-- [start:breaking-3-0] -->
+
+- Migrations write the companion suffix `__tb_journal` and
+  `typebridge-internal-*` labels in place of `__tbv2_journal` and
+  `typebridge-internal-v2-*`. Stop all 2.x migration runners before the first
+  3.0 apply, rollback, or profile upgrade. That operation imports the owned old
+  journal and verified legacy partition once; old rows remain untouched.
+  Read-only verification reports `migration_journal_import_pending` until then.
+  Changes to the old journal afterward fail with `migration_old_writer_after_import`.
+  Pair inspection exposes `ImportPending` / `import_pending`; pair deletion also
+  removes the exact owner-verified old companion to prevent later resurrection.
+- Persisted-name constants retain their Rust names but now contain the new
+  suffix and label values. `TYPEBRIDGE_INTERNAL_PREFIX` reserves the full
+  `typebridge-internal-` namespace, including the retained old control labels.
+  Changed values include `TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX`,
+  `MANAGED_CONTROL_ENTITY`, `MANAGED_CONTROL_SCOPE`,
+  `MANAGED_CONTROL_LEASE_HOLDER`, `MANAGED_CONTROL_LEASE_FENCE`,
+  `MANAGED_CONTROL_LEASE_STATE`, `LEGACY_CUTOVER_ANCHOR_ENTITY`,
+  `LEGACY_CUTOVER_ANCHOR_KEY`, `LEGACY_CUTOVER_ANCHOR_SCOPE`, and
+  `LEGACY_CUTOVER_ANCHOR_FINGERPRINT`.
+  `JOURNAL_CONTROL_SCHEMA_TYPEQL` and `MANAGED_FENCE_SCHEMA_TYPEQL` now come
+  from `contract::reserved` and remain re-exported by their existing modules.
+- `MigrationStep` gains `Data(DataStep)`, with `DataProgram::{Plan, Typeql, User}`
+  forward and optional reverse programs. Exhaustive matches must handle `Data`.
+  Data steps without a reverse are irreversible and rollback refuses them before
+  writes. `migration make --data-step` consumes
+  `typebridge.migration-data-step-intent/v1` YAML; each program has exactly one
+  `user`, `typeql`, or `plan-file` key. Plan paths resolve beside the intent.
+- Removed legacy `CopyAttribute` reverse behavior. Canonical backfill reverse
+  removes destination values only while they still equal the source value.
 - Workspace `MigrationV2Directory` and `migration_v2_directory` accessors/builders
   become `MigrationDirectory` and `migration_directory`. History defaults to
   `migrations/`; explicit confined directories no longer need a `v2` suffix.
@@ -338,15 +369,44 @@ All notable changes to TypeBridge will be documented in this file.
   locks because the resolved-config identity field also changes. The removed
   `InvalidMigrationV2Directory` restriction is replaced by ordinary
   `PathNotConfined` checks and `LegacyMigrationDirectory` for the old default.
+  `migration_v2_absolute_path()` becomes `migration_absolute_path()`.
 - Node migration `MigrationPlan.execute()` and `executeControlled()` now return
   Promises. Await them, including schema-only migrations. Ordinary manager and
   transaction methods keep their existing return types.
 - Generated SDK migration catalogs register process-local user data callbacks.
   Callbacks use engine-owned write transactions; lifecycle calls are refused and
   retained handles become unusable after callback completion.
+  Python and Node expose `MigrationCatalog.register()` and
+  `MigrationTransaction`; Rust adds `register()`, `register_with_reverse()`, and
+  `MigrationTransaction<S>`. C adds `type_bridge_migration_catalog_register()`
+  with `type_bridge_migration_callback_t` (`TypeBridgeMigrationCallback` in
+  the Rust implementation), and `type_bridge_migration_transaction_execute_query()`, using
+  `type_bridge_execution_diagnostics_t` errors so callbacks can forward failures.
+  C retains callback context pointers until the catalog and every retained plan
+  close; the database refuses close while callbacks retain it. Callback failures
+  preserve the original error text as diagnostic cause evidence.
+- Core data-step APIs include `MigrationStep::as_data()`,
+  `generate_data_migration()`, `author_data_migration_in()`,
+  `data_step_indices()`, `data_steps()`, `DataStepDirection`,
+  `DataStepEventRecord`, and journal `from_store_with_data_events()` /
+  `data_events()`. Providers and runners accept `MigrationUserSteps` through
+  `with_user_steps()`; controlled catalog executors add
+  `execute_catalog_apply_plan_controlled_with_user_steps()` and
+  `execute_catalog_rollback_plan_controlled_with_user_steps()`.
+  The ORM's `BorrowedTransactionContext` is entered through
+  `borrow_migration_context()`, which verifies the held migration fence.
+  Compatibility inspection adds `derived_legacy_journal_database()`,
+  `verify_import_pending_query_control_scope()`,
+  `import_legacy_fence_schema_presence()`, `without_import_control()`, and
+  live-authority `import_control_present()` / `current_control_present()`.
+- Removed legacy test helpers `MockEvent`, `EventLog`, `MockMigrationBackend`,
+  `with_responses`, `with_legacy_cutover`, `with_recorded_guards`,
+  `with_legacy_cutover_responses`, `with_state_read_responses`,
+  `with_state_read_and_close_failure`, `with_partial_state_schema`,
+  `with_commit_failure`, and `with_definitely_aborted_commit_failure`.
+  Use canonical migration-store/provider fixtures and ORM backend mocks.
 
 
-<!-- --8<-- [start:breaking-3-0] -->
 
 - Removed the `type-bridge-migration` crate; it is not published for 3.0.
   Use canonical `schema-migration` manifests and SDK migration catalogs or
