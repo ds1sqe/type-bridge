@@ -518,7 +518,8 @@ impl<'a> SelectedResultExecutor<'a> {
         }
         self.preflight_compatibility(validated)?;
         self.check_lifecycle_budget()?;
-        if context.tx_type() != TxType::Read && !(allow_write && context.tx_type() == TxType::Write)
+        if context.tx_type() != TxType::Read
+            && !((allow_write || context.is_scoped_borrow()) && context.tx_type() == TxType::Write)
         {
             return Err(MatchError::new(
                 MatchErrorCategory::InvalidPlan,
@@ -2481,6 +2482,49 @@ mod tests {
             })]),
             person_documents(&[("0x01", "Ada")]),
         ]
+    }
+
+    #[tokio::test]
+    async fn scoped_write_context_reads_share_the_transaction_without_widening_owned_targets() {
+        let registry = person_registry();
+        let request = count_request(&registry);
+        let (database, events) = native_database(CapabilitySet::all(), vec![count_answer(7)]);
+        for kind in [TxType::Write, TxType::Schema] {
+            let context = database.transaction_context(kind).await.unwrap();
+            let error = context
+                .execute_match(&registry, &request)
+                .await
+                .unwrap_err();
+            assert_eq!(match_code(&error), "borrowed_target_not_read_only");
+            let borrowed = context.clone().borrowed();
+            if kind == TxType::Write {
+                let result = borrowed.execute_match(&registry, &request).await.unwrap();
+                assert!(matches!(
+                    result.result(),
+                    super::super::result::MatchResult::Count { value: 7, .. }
+                ));
+                assert!(borrowed.commit().await.is_err());
+            } else {
+                let error = borrowed
+                    .execute_match(&registry, &request)
+                    .await
+                    .unwrap_err();
+                assert_eq!(match_code(&error), "borrowed_target_not_read_only");
+            }
+            context.close().await.unwrap();
+            assert!(borrowed.execute_match(&registry, &request).await.is_err());
+        }
+        let events = events.lock().unwrap();
+        assert_eq!(
+            (
+                events.opens,
+                events.closes,
+                events.commits,
+                events.rollbacks
+            ),
+            (2, 2, 0, 0)
+        );
+        assert_eq!(events.queries.len(), 1);
     }
 
     #[tokio::test]

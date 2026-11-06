@@ -172,7 +172,8 @@ impl<'db, S: Schema> WriteTransaction<'db, S> {
         M: EntityModel<Schema = S>,
     {
         TransactionEntityManager {
-            transaction: self,
+            tx: &self.tx,
+            db: self.db,
             marker: PhantomData,
         }
     }
@@ -183,7 +184,8 @@ impl<'db, S: Schema> WriteTransaction<'db, S> {
         M: RelationModel<Schema = S>,
     {
         TransactionRelationManager {
-            transaction: self,
+            tx: &self.tx,
+            db: self.db,
             marker: PhantomData,
         }
     }
@@ -205,13 +207,12 @@ impl<'db, S: Schema> WriteTransaction<'db, S> {
     pub async fn rollback_keep(&mut self) -> Result<()> {
         self.tx.rollback().await.map_err(Error::from_orm)
     }
+}
 
-    fn installed(&self) -> Result<&InstalledRuntimeProjection> {
-        self.db
-            .installed_schema()
-            .map(Arc::as_ref)
-            .ok_or_else(schema_not_bound)
-    }
+fn installed_schema<S: Schema>(db: &Database<S>) -> Result<&InstalledRuntimeProjection> {
+    db.installed_schema()
+        .map(Arc::as_ref)
+        .ok_or_else(schema_not_bound)
 }
 
 /// Schema-bound, model-branded exact entity manager borrowing one open
@@ -219,7 +220,8 @@ impl<'db, S: Schema> WriteTransaction<'db, S> {
 /// never commit, roll back, or close it; errors are returned with the
 /// transaction left open for the caller to decide.
 pub struct TransactionEntityManager<'t, S: Schema, M: EntityModel<Schema = S>> {
-    transaction: &'t WriteTransaction<'t, S>,
+    tx: &'t TransactionContext,
+    db: &'t Database<S>,
     marker: PhantomData<M>,
 }
 
@@ -235,12 +237,21 @@ where
     S: Schema,
     M: EntityModel<Schema = S> + CompleteModel,
 {
+    #[cfg(feature = "typedb")]
+    pub(crate) fn from_context(tx: &'t TransactionContext, db: &'t Database<S>) -> Self {
+        Self {
+            tx,
+            db,
+            marker: PhantomData,
+        }
+    }
+
     /// Start an immutable exact-model filter in this open write transaction.
     pub fn filter(&self) -> Result<crate::ProjectedEntityFilter<'t, S, M>> {
         crate::ProjectedEntityFilter::for_target(
             crate::manager_target::ManagerTarget {
-                installed: self.transaction.installed()?,
-                target: type_bridge_orm::QueryTarget::Transaction(&self.transaction.tx),
+                installed: installed_schema(self.db)?,
+                target: type_bridge_orm::QueryTarget::Transaction(self.tx),
             },
             crate::hooks::HookRunner::default(),
         )
@@ -253,7 +264,7 @@ where
         &InstalledRuntimeProjection,
         DynamicEntityManager<'static>,
     )> {
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, descriptor): (TypeId, EntityDescriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -261,11 +272,11 @@ where
             true,
         )?;
         let manager = DynamicEntityManager::with_registry_transaction(
-            self.transaction.tx.clone(),
+            self.tx.clone(),
             installed.manager_registry().map_err(Error::from_orm)?,
             Arc::new(descriptor),
         );
-        let manager = if self.transaction.db.inner_orm().supports_given_stage() {
+        let manager = if self.db.inner_orm().supports_given_stage() {
             manager
         } else {
             manager.literal_values()
@@ -276,7 +287,7 @@ where
     /// Inserts one exact entity in the open transaction and returns its
     /// complete freshly hydrated model without committing.
     pub async fn insert(&self, input: M::Create) -> Result<WriteResult<M>> {
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -285,7 +296,7 @@ where
         )?;
         let create = project_create(input, &id, installed)?;
         crate::projected_batch::execute_transaction_single(
-            &self.transaction.tx,
+            self.tx,
             installed,
             create,
             CrudOperation::Insert,
@@ -299,7 +310,7 @@ where
     /// including complete replacement of non-key ownership for an existing
     /// exact row, without committing.
     pub async fn put(&self, input: M::Create) -> Result<WriteResult<M>> {
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -308,7 +319,7 @@ where
         )?;
         let create = project_create(input, &id, installed)?;
         crate::projected_batch::execute_transaction_single(
-            &self.transaction.tx,
+            self.tx,
             installed,
             create,
             CrudOperation::Put,
@@ -341,7 +352,7 @@ where
         inputs: Vec<M::Create>,
         put: bool,
     ) -> Result<crate::BatchWriteResult<M>> {
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -351,7 +362,7 @@ where
         let rows = create_rows(installed, &id, inputs)?;
         let operation = create_operation(installed, &id, put);
         let batch = prepare_batch(installed, id, operation, rows)?;
-        execute_borrowed_things(&self.transaction.tx, installed, &batch).await
+        execute_borrowed_things(self.tx, installed, &batch).await
     }
 
     /// Redirect to `filter()?.iid(iid)?.update(input)` for the exact model scope.
@@ -373,7 +384,7 @@ where
         iids: &[crate::Iid],
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(iids.len())?;
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -386,12 +397,7 @@ where
             ProjectedBatchOperation::Delete,
             delete_rows(iids)?,
         )?;
-        crate::projected_batch::execute_borrowed_deleted_things(
-            &self.transaction.tx,
-            installed,
-            &batch,
-        )
-        .await
+        crate::projected_batch::execute_borrowed_deleted_things(self.tx, installed, &batch).await
     }
 
     /// Redirect to `filter()?.iid(iid)?.delete()` for the exact model scope.
@@ -407,7 +413,7 @@ where
         inputs: Vec<(crate::Iid, M::Create)>,
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -416,7 +422,7 @@ where
         )?;
         let rows = update_rows(installed, &id, inputs)?;
         let batch = prepare_batch(installed, id, ProjectedBatchOperation::Update, rows)?;
-        execute_borrowed_things(&self.transaction.tx, installed, &batch).await
+        execute_borrowed_things(self.tx, installed, &batch).await
     }
 
     /// Redirect to `filter()?.iids(iids)?.delete()` for the exact model scope.
@@ -445,7 +451,7 @@ where
 
     /// Counts only exact models through the open transaction.
     pub async fn count(&self) -> Result<u64> {
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -453,7 +459,7 @@ where
             true,
         )?;
         ProjectedCrudExecutor::new(installed)
-            .count_entities_in_transaction_with_compatibility(&self.transaction.tx, &id)
+            .count_entities_in_transaction_with_compatibility(self.tx, &id)
             .await
             .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None))
     }
@@ -464,7 +470,8 @@ where
 /// never commit, roll back, or close it; errors are returned with the
 /// transaction left open for the caller to decide.
 pub struct TransactionRelationManager<'t, S: Schema, M: RelationModel<Schema = S>> {
-    transaction: &'t WriteTransaction<'t, S>,
+    tx: &'t TransactionContext,
+    db: &'t Database<S>,
     marker: PhantomData<M>,
 }
 
@@ -480,12 +487,21 @@ where
     S: Schema,
     M: RelationModel<Schema = S> + CompleteModel,
 {
+    #[cfg(feature = "typedb")]
+    pub(crate) fn from_context(tx: &'t TransactionContext, db: &'t Database<S>) -> Self {
+        Self {
+            tx,
+            db,
+            marker: PhantomData,
+        }
+    }
+
     /// Start an immutable exact-model filter in this open write transaction.
     pub fn filter(&self) -> Result<crate::ProjectedRelationFilter<'t, S, M>> {
         crate::ProjectedRelationFilter::for_target(
             crate::manager_target::ManagerTarget {
-                installed: self.transaction.installed()?,
-                target: type_bridge_orm::QueryTarget::Transaction(&self.transaction.tx),
+                installed: installed_schema(self.db)?,
+                target: type_bridge_orm::QueryTarget::Transaction(self.tx),
             },
             crate::hooks::HookRunner::default(),
         )
@@ -498,7 +514,7 @@ where
         &InstalledRuntimeProjection,
         DynamicRelationManager<'static>,
     )> {
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, descriptor): (TypeId, RelationDescriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -506,11 +522,11 @@ where
             true,
         )?;
         let manager = DynamicRelationManager::with_registry_transaction(
-            self.transaction.tx.clone(),
+            self.tx.clone(),
             installed.manager_registry().map_err(Error::from_orm)?,
             Arc::new(descriptor),
         );
-        let manager = if self.transaction.db.inner_orm().supports_given_stage() {
+        let manager = if self.db.inner_orm().supports_given_stage() {
             manager
         } else {
             manager.literal_values()
@@ -522,7 +538,7 @@ where
     /// open transaction and returns its complete freshly hydrated model
     /// without committing.
     pub async fn insert(&self, input: M::Create) -> Result<WriteResult<M>> {
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -531,7 +547,7 @@ where
         )?;
         let create = project_create(input, &id, installed)?;
         crate::projected_batch::execute_transaction_single(
-            &self.transaction.tx,
+            self.tx,
             installed,
             create,
             CrudOperation::Insert,
@@ -545,7 +561,7 @@ where
     /// including complete replacement of non-key ownership and active role
     /// players for an existing exact row, without committing.
     pub async fn put(&self, input: M::Create) -> Result<WriteResult<M>> {
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -554,7 +570,7 @@ where
         )?;
         let create = project_create(input, &id, installed)?;
         crate::projected_batch::execute_transaction_single(
-            &self.transaction.tx,
+            self.tx,
             installed,
             create,
             CrudOperation::Put,
@@ -587,7 +603,7 @@ where
         inputs: Vec<M::Create>,
         put: bool,
     ) -> Result<crate::BatchWriteResult<M>> {
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -597,7 +613,7 @@ where
         let rows = create_rows(installed, &id, inputs)?;
         let operation = create_operation(installed, &id, put);
         let batch = prepare_batch(installed, id, operation, rows)?;
-        execute_borrowed_things(&self.transaction.tx, installed, &batch).await
+        execute_borrowed_things(self.tx, installed, &batch).await
     }
 
     /// Redirect to `filter()?.iid(iid)?.update(input)` for the exact model scope.
@@ -619,7 +635,7 @@ where
         iids: &[crate::Iid],
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(iids.len())?;
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -632,12 +648,7 @@ where
             ProjectedBatchOperation::Delete,
             delete_rows(iids)?,
         )?;
-        crate::projected_batch::execute_borrowed_deleted_things(
-            &self.transaction.tx,
-            installed,
-            &batch,
-        )
-        .await
+        crate::projected_batch::execute_borrowed_deleted_things(self.tx, installed, &batch).await
     }
 
     /// Redirect to `filter()?.iid(iid)?.delete()` for the exact model scope.
@@ -653,7 +664,7 @@ where
         inputs: Vec<(crate::Iid, M::Create)>,
     ) -> Result<crate::BatchWriteResult<M>> {
         validate_binding_row_count(inputs.len())?;
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -662,7 +673,7 @@ where
         )?;
         let rows = update_rows(installed, &id, inputs)?;
         let batch = prepare_batch(installed, id, ProjectedBatchOperation::Update, rows)?;
-        execute_borrowed_things(&self.transaction.tx, installed, &batch).await
+        execute_borrowed_things(self.tx, installed, &batch).await
     }
 
     /// Redirect to `filter()?.iids(iids)?.delete()` for the exact model scope.
@@ -691,7 +702,7 @@ where
 
     /// Counts only exact relations through the open transaction.
     pub async fn count(&self) -> Result<u64> {
-        let installed = self.transaction.installed()?;
+        let installed = installed_schema(self.db)?;
         let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
@@ -699,7 +710,7 @@ where
             true,
         )?;
         ProjectedCrudExecutor::new(installed)
-            .count_relations_in_transaction_with_compatibility(&self.transaction.tx, &id)
+            .count_relations_in_transaction_with_compatibility(self.tx, &id)
             .await
             .map_err(|error| Error::from_projected_crud(error, ModelKind::Relation, None))
     }

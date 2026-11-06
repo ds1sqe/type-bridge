@@ -1,5 +1,10 @@
 //! Generated-package-owned immutable migration catalog inspection.
 
+#[cfg(feature = "typedb")]
+mod user_steps;
+#[cfg(feature = "typedb")]
+pub use user_steps::MigrationTransaction;
+
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -16,11 +21,45 @@ use crate::session::Database;
 /// Immutable replay-verified migration catalog branded by one generated schema.
 #[derive(Clone, Debug)]
 pub struct MigrationCatalog<S: Schema> {
+    #[cfg(feature = "typedb")]
+    user_steps: user_steps::UserSteps<S>,
     inner: type_bridge_schema_migration::MigrationCatalog,
     marker: PhantomData<fn() -> S>,
 }
 
 impl<S: Schema> MigrationCatalog<S> {
+    /// Register a plain async function or closure before creating previews.
+    #[cfg(feature = "typedb")]
+    pub fn register<F, Fut>(&mut self, step_id: &str, forward: F) -> Result<()>
+    where
+        F: Fn(MigrationTransaction<S>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+    {
+        self.user_steps
+            .insert(step_id, Arc::new(move |tx| Box::pin(forward(tx))), None)
+    }
+
+    /// Register explicit forward and reverse functions for one manifest id.
+    #[cfg(feature = "typedb")]
+    pub fn register_with_reverse<F, Fut, R, Rev>(
+        &mut self,
+        step_id: &str,
+        forward: F,
+        reverse: R,
+    ) -> Result<()>
+    where
+        F: Fn(MigrationTransaction<S>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+        R: Fn(MigrationTransaction<S>) -> Rev + Send + Sync + 'static,
+        Rev: std::future::Future<Output = Result<()>> + Send + 'static,
+    {
+        self.user_steps.insert(
+            step_id,
+            Arc::new(move |tx| Box::pin(forward(tx))),
+            Some(Arc::new(move |tx| Box::pin(reverse(tx)))),
+        )
+    }
+
     /// Construct one validated portable compound identity for catalog planning.
     pub fn identity(&self, app_label: &str, name: &str) -> Result<MigrationId> {
         let _ = self;
@@ -76,6 +115,8 @@ impl<S: Schema> MigrationCatalog<S> {
         self.inner
             .preview_apply(&applied, &target)
             .map(|plan| MigrationPreview {
+                #[cfg(feature = "typedb")]
+                user_steps: self.user_steps.clone(),
                 inner: Arc::new(MigrationPreviewState {
                     catalog: self.inner.clone(),
                     plan: MigrationPreviewInner::Apply(plan),
@@ -97,6 +138,8 @@ impl<S: Schema> MigrationCatalog<S> {
                 &removals.into_iter().collect(),
             )
             .map(|plan| MigrationPreview {
+                #[cfg(feature = "typedb")]
+                user_steps: self.user_steps.clone(),
                 inner: Arc::new(MigrationPreviewState {
                     catalog: self.inner.clone(),
                     plan: MigrationPreviewInner::Rollback(plan),
@@ -148,6 +191,8 @@ struct MigrationPreviewState {
 /// Generated-schema-branded immutable provider-free migration preview.
 #[derive(Clone, Debug)]
 pub struct MigrationPreview<S: Schema> {
+    #[cfg(feature = "typedb")]
+    user_steps: user_steps::UserSteps<S>,
     inner: Arc<MigrationPreviewState>,
     marker: PhantomData<fn() -> S>,
 }
@@ -260,6 +305,8 @@ impl<S: Schema> MigrationPreview<S> {
         }
         .map_err(plan_error)?;
         Ok(MigrationPlan {
+            #[cfg(feature = "typedb")]
+            user_steps: self.user_steps.clone(),
             catalog: self.inner.catalog.clone(),
             plan,
             marker: PhantomData,
@@ -349,6 +396,8 @@ impl<S: Schema> MigrationApprovalSet<S> {
 /// Generated-schema-branded executable migration plan.
 #[derive(Clone, Debug)]
 pub struct MigrationPlan<S: Schema> {
+    #[cfg(feature = "typedb")]
+    user_steps: user_steps::UserSteps<S>,
     #[cfg_attr(not(feature = "typedb"), allow(dead_code))]
     catalog: type_bridge_schema_migration::MigrationCatalog,
     plan: MigrationPreviewInner,
@@ -390,27 +439,30 @@ impl<S: Schema> MigrationPlan<S> {
     ) -> Result<type_bridge_schema_migration::MigrationExecutionReport> {
         let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
             .map_err(migration_diagnostic)?;
+        let user_steps = self.user_steps.bind(database)?;
         let database = Arc::new(database.inner_orm().clone());
         match &self.plan {
             MigrationPreviewInner::Apply(plan) => {
-                type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled(
+                type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled_with_user_steps(
                     database,
                     &self.catalog,
                     &holder,
                     plan,
                     control,
+                    &user_steps,
                 )
                 .await
                 .map(type_bridge_schema_migration::MigrationExecutionReport::from_apply)
                 .map_err(migration_diagnostic)
             }
             MigrationPreviewInner::Rollback(plan) => {
-                type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled(
+                type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled_with_user_steps(
                     database,
                     &self.catalog,
                     &holder,
                     plan,
                     control,
+                    &user_steps,
                 )
                 .await
                 .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
@@ -574,6 +626,8 @@ impl<S: Schema> SchemaPackage<S> {
             },
         )?;
         Ok(MigrationCatalog {
+            #[cfg(feature = "typedb")]
+            user_steps: user_steps::UserSteps::default(),
             inner,
             marker: PhantomData,
         })
@@ -612,4 +666,42 @@ fn migration_error(code: &str) -> Error {
 
 fn migration_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
     Error::from_contract_diagnostic(error)
+}
+
+#[cfg(all(test, feature = "typedb"))]
+mod callback_tests {
+    use super::*;
+    use crate::schema::Unbound;
+
+    async fn plain_step(_: MigrationTransaction<Unbound>) -> Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn catalog_accepts_plain_async_functions_and_rejects_duplicate_or_invalid_ids() {
+        let graph =
+            type_bridge_schema_migration::MigrationHistoryGraph::from_verified(std::iter::empty())
+                .unwrap();
+        let bundle =
+            type_bridge_schema_migration::VerifiedMigrationHistoryBundle::from_graph(&graph)
+                .unwrap();
+        let mut catalog = MigrationCatalog::<Unbound> {
+            inner: type_bridge_schema_migration::MigrationCatalog::from_verified_bundle(bundle)
+                .unwrap(),
+            user_steps: Default::default(),
+            marker: PhantomData,
+        };
+        catalog.register("derive-gender", plain_step).unwrap();
+        assert_eq!(
+            catalog
+                .register("derive-gender", plain_step)
+                .unwrap_err()
+                .code(),
+            Some("migration_user_step_duplicate")
+        );
+        assert!(catalog.register("", plain_step).is_err());
+        catalog
+            .register_with_reverse("reversible-gender", plain_step, plain_step)
+            .unwrap();
+    }
 }

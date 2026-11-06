@@ -156,12 +156,14 @@ impl ProjectedQueryOrigin {
         }
     }
 
-    /// Bind materialized things to the database of one borrowed read context.
+    /// Bind materialized things to a borrowed read or engine-scoped write context.
     #[doc(hidden)]
     pub fn for_transaction(
         transaction: &TransactionContext,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        if transaction.tx_type() != TxType::Read {
+        if transaction.tx_type() != TxType::Read
+            && !(transaction.tx_type() == TxType::Write && transaction.is_scoped_borrow())
+        {
             return Err(SdkExecutionDiagnostic::invalid_input(
                 sdk_code("query_borrowed_transaction_not_read"),
                 sdk_message("Typed query terminals require a borrowed read transaction"),
@@ -2335,7 +2337,15 @@ plays:
             diagnostic.code().as_str(),
             "query_borrowed_transaction_not_read"
         );
+        let scoped = write.clone().borrowed();
+        let borrowed = ProjectedQueryOrigin::for_transaction(&scoped).unwrap();
+        assert_eq!(borrowed.database_identity, direct.database_identity);
         write.close().await.unwrap();
+
+        let schema = database.transaction_context(TxType::Schema).await.unwrap();
+        assert!(ProjectedQueryOrigin::for_transaction(&schema).is_err());
+        assert!(ProjectedQueryOrigin::for_transaction(&schema.clone().borrowed()).is_err());
+        schema.close().await.unwrap();
     }
 
     #[test]

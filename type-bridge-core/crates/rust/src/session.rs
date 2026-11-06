@@ -192,6 +192,19 @@ pub struct Database<S: Schema = Unbound> {
     marker: std::marker::PhantomData<fn() -> S>,
 }
 
+impl<S: Schema> Database<S> {
+    #[cfg(feature = "typedb")]
+    pub(crate) fn clone_for_migration(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            installed_schema: self.installed_schema.clone(),
+            match_registry: self.match_registry.clone(),
+            managed_scope_id: self.managed_scope_id.clone(),
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
 pub(crate) fn build_match_registry(
     installed: &type_bridge_orm::InstalledRuntimeProjection,
 ) -> Result<Arc<DescriptorRegistry>> {

@@ -47,6 +47,26 @@ pub async fn execute_catalog_apply_plan_controlled(
     plan: &VerifiedMigrationApplyPlan,
     control: &MigrationExecutionControl,
 ) -> Result<MigrationExecutionOutcome, Diagnostic> {
+    execute_catalog_apply_plan_controlled_with_user_steps(
+        managed_database,
+        catalog,
+        holder,
+        plan,
+        control,
+        &crate::MigrationUserSteps::default(),
+    )
+    .await
+}
+
+/// Execute a catalog plan with registered process-local user callbacks.
+pub async fn execute_catalog_apply_plan_controlled_with_user_steps(
+    managed_database: Arc<Database>,
+    catalog: &MigrationCatalog,
+    holder: &LeaseHolderId,
+    plan: &VerifiedMigrationApplyPlan,
+    control: &MigrationExecutionControl,
+    user_steps: &crate::MigrationUserSteps,
+) -> Result<MigrationExecutionOutcome, Diagnostic> {
     control.check()?;
     require_authorized_apply_plan(plan)?;
     require_apply_group_limit(plan, control)?;
@@ -57,7 +77,8 @@ pub async fn execute_catalog_apply_plan_controlled(
     control.check()?;
     let store = store.bind_plan(plan)?;
     let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities())?
-        .for_replayed_profile_bridge(catalog.graph(), plan);
+        .for_replayed_profile_bridge(catalog.graph(), plan)
+        .with_user_steps(user_steps.clone());
     execute_verified_migration_apply_plan_controlled(&store, &provider, holder, plan, control).await
 }
 
@@ -86,6 +107,26 @@ pub async fn execute_catalog_rollback_plan_controlled(
     plan: &VerifiedMigrationRollbackPlan,
     control: &MigrationExecutionControl,
 ) -> Result<MigrationRollbackOutcome, Diagnostic> {
+    execute_catalog_rollback_plan_controlled_with_user_steps(
+        managed_database,
+        catalog,
+        holder,
+        plan,
+        control,
+        &crate::MigrationUserSteps::default(),
+    )
+    .await
+}
+
+/// Execute a catalog plan with registered process-local user callbacks.
+pub async fn execute_catalog_rollback_plan_controlled_with_user_steps(
+    managed_database: Arc<Database>,
+    catalog: &MigrationCatalog,
+    holder: &LeaseHolderId,
+    plan: &VerifiedMigrationRollbackPlan,
+    control: &MigrationExecutionControl,
+    user_steps: &crate::MigrationUserSteps,
+) -> Result<MigrationRollbackOutcome, Diagnostic> {
     control.check()?;
     require_authorized_rollback_plan(plan)?;
     require_rollback_group_limit(plan, control)?;
@@ -95,7 +136,8 @@ pub async fn execute_catalog_rollback_plan_controlled(
     let store = TypeDbMigrationStore::new(&binding, verified)?;
     control.check()?;
     let store = store.bind_rollback_plan(plan)?;
-    let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities())?;
+    let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities())?
+        .with_user_steps(user_steps.clone());
     execute_verified_migration_rollback_plan_controlled(&store, &provider, holder, plan, control)
         .await
 }
@@ -192,7 +234,9 @@ fn require_apply_group_limit(
         .migrations()
         .iter()
         .try_fold(0usize, |count, migration| {
-            count.checked_add(migration.transaction_groups().len())
+            count
+                .checked_add(migration.transaction_groups().len())
+                .and_then(|count| count.checked_add(migration.data_step_indices().len()))
         })
         .ok_or_else(execution_group_limit)?;
     if groups > control.resources().transaction_groups() {

@@ -329,6 +329,10 @@ impl TransactionContext {
         }
     }
 
+    pub(crate) fn is_scoped_borrow(&self) -> bool {
+        !self.owns_lifecycle
+    }
+
     pub(crate) fn borrowed(mut self) -> Self {
         self.owns_lifecycle = false;
         self

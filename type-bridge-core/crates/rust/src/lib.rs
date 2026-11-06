@@ -57,6 +57,8 @@ pub use error::{
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookFuture, LifecycleHook, ModelKind, PreHookResult,
 };
+#[cfg(feature = "typedb")]
+pub use migration::MigrationTransaction;
 pub use migration::{
     MigrationApprovalBuilder, MigrationApprovalSet, MigrationCatalog, MigrationHistoryEntry,
     MigrationPlan, MigrationPreview, MigrationPreviewEntry,
