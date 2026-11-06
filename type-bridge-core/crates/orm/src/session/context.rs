@@ -369,7 +369,6 @@ impl TransactionContext {
             }
             Err(_) => None,
         };
-        let contended = transaction.is_none();
         let close = async move {
             let transaction = match transaction {
                 Some(transaction) => transaction,
@@ -383,7 +382,7 @@ impl TransactionContext {
                 let _ = transaction.close().await;
             }
         };
-        if !contended && let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(close);
         } else {
             // Drop never waits for an operation holding the context mutex or
@@ -1171,6 +1170,7 @@ mod tests {
     #[derive(Default)]
     struct Calls {
         closed: Notify,
+        close_thread: std::sync::Mutex<Option<std::thread::ThreadId>>,
         queries: AtomicUsize,
         commits: AtomicUsize,
         classified_commits: AtomicUsize,
@@ -1289,6 +1289,7 @@ mod tests {
 
         fn close(&mut self) -> BoxFuture<'_, Result<()>> {
             self.calls.closes.fetch_add(1, Ordering::SeqCst);
+            *self.calls.close_thread.lock().unwrap() = Some(std::thread::current().id());
             self.calls.closed.notify_one();
             let fails = self.close_fails;
             let gate = self.close_gate.clone();
@@ -1375,12 +1376,27 @@ mod tests {
 
     #[test]
     fn contended_abandoned_callback_returns_before_the_lock_is_released() {
+        assert_contended_abandonment(false);
+    }
+
+    #[test]
+    fn contended_abandoned_callback_uses_the_current_runtime_without_blocking() {
+        assert_contended_abandonment(true);
+    }
+
+    fn assert_contended_abandonment(enter_runtime: bool) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
         let (context, calls) = active_context();
         let context = context.borrowed();
         let lock = context.inner.try_lock().unwrap();
         let escaped = context.clone();
         let (returned, received) = std::sync::mpsc::channel();
         let dropping = std::thread::spawn(move || {
+            let _entered = enter_runtime.then(|| handle.enter());
             escaped.abandon_borrowed();
             returned.send(()).unwrap();
         });
@@ -1389,10 +1405,6 @@ mod tests {
         drop(lock);
         dropping.join().unwrap();
         result.expect("Drop must return while the mutex is still held");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
         runtime.block_on(async {
             tokio::time::timeout(std::time::Duration::from_secs(5), calls.closed.notified())
                 .await
@@ -1401,6 +1413,13 @@ mod tests {
         });
         assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
         assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+        if enter_runtime {
+            assert_eq!(
+                *calls.close_thread.lock().unwrap(),
+                Some(std::thread::current().id()),
+                "provider cleanup must run on the original current-thread runtime"
+            );
+        }
     }
 
     #[test]
