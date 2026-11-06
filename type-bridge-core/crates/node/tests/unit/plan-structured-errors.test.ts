@@ -8,7 +8,7 @@ const validDiagnostic = Object.freeze({
   category: "invalid_contract",
   sdk_category: "invalid_input",
   query_category: "invalid_contract",
-  code: "query_v2_fixture",
+  code: "query_fixture",
   message: "fixture diagnostic",
   path: [
     { kind: "field", value: "patterns" },

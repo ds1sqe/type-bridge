@@ -480,7 +480,7 @@ mod tests {
     fn structured_query_error_preserves_typed_path_and_detail_values() {
         let diagnostic = Diagnostic::new(
             DiagnosticCategory::InvalidContract,
-            DiagnosticCode::new("query_v2_fixture").expect("diagnostic code"),
+            DiagnosticCode::new("query_fixture").expect("diagnostic code"),
             "fixture diagnostic",
         )
         .at(DiagnosticPathSegment::Field("patterns".to_owned()))
@@ -510,7 +510,7 @@ mod tests {
                     .expect("code")
                     .extract::<String>()
                     .expect("code string"),
-                "query_v2_fixture",
+                "query_fixture",
             );
             assert_eq!(
                 value

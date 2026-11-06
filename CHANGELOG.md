@@ -338,6 +338,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 <!-- --8<-- [start:breaking-3-0] -->
 
+The Python native CLI bridge `type_bridge_core.run_v2_cli` is renamed to
+`type_bridge_core.run_cli`. The `type-bridge` console command is unchanged.
+
+
 Staged answer conversion and runtime limit names are unversioned:
 
 | Removed name | Replacement |

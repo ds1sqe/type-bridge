@@ -9,7 +9,7 @@ def main() -> None:
     """Run the canonical workspace CLI through the bundled native engine."""
     from type_bridge._native import core_module
 
-    sys.exit(int(core_module().run_v2_cli(["type-bridge", *sys.argv[1:]])))
+    sys.exit(int(core_module().run_cli(["type-bridge", *sys.argv[1:]])))
 
 
 if __name__ == "__main__":

@@ -563,7 +563,7 @@ fn _typeql_queries_equivalent(left: &str, right: &str) -> PyResult<bool> {
 /// the returned value is the process exit code. The GIL is released for
 /// the whole run so connected commands do not block other Python threads.
 #[pyfunction]
-fn run_v2_cli(py: Python<'_>, arguments: Vec<String>) -> i32 {
+fn run_cli(py: Python<'_>, arguments: Vec<String>) -> i32 {
     py.detach(|| type_bridge_cli::run_cli(arguments))
 }
 
@@ -580,7 +580,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(format_value, m)?)?;
     m.add_function(wrap_pyfunction!(_clear_attribute_query, m)?)?;
     m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
-    m.add_function(wrap_pyfunction!(run_v2_cli, m)?)?;
+    m.add_function(wrap_pyfunction!(run_cli, m)?)?;
 
     // ORM CRUD query builder
     orm_runtime::register(m)?;

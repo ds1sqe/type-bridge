@@ -1,8 +1,8 @@
 # pyright: reportMissingImports=false
-"""The console entry point serves V2 workspace verbs from the wheel itself.
+"""The console entry point serves workspace verbs from the wheel itself.
 
 Covers:
-- every invocation runs the in-process V2 CLI shipped inside the native
+- every invocation runs the in-process CLI shipped inside the native
   extension (no external binary involved)
 - a real split-YAML workspace passes ``schema check`` through the entry point
 - exit codes propagate unchanged
@@ -30,14 +30,14 @@ pytest.importorskip("type_bridge_core")
         ["--version"],
     ],
 )
-def test_invocations_run_verbatim_through_the_v2_native_parser(
+def test_invocations_run_verbatim_through_the_native_parser(
     arguments: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     observed: list[list[str]] = []
 
     class Native:
         @staticmethod
-        def run_v2_cli(native_arguments: list[str]) -> int:
+        def run_cli(native_arguments: list[str]) -> int:
             observed.append(native_arguments)
             return 27
 
@@ -80,7 +80,7 @@ def test_schema_check_runs_in_process(tmp_path: Path, monkeypatch: pytest.Monkey
     assert excinfo.value.code == 0
 
 
-def test_v2_failure_exit_code_propagates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failure_exit_code_propagates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     missing = tmp_path / "absent.yaml"
     monkeypatch.setattr("sys.argv", ["type-bridge", "--manifest", str(missing), "schema", "check"])
     with pytest.raises(SystemExit) as excinfo:
@@ -89,7 +89,7 @@ def test_v2_failure_exit_code_propagates(tmp_path: Path, monkeypatch: pytest.Mon
 
 
 @pytest.mark.parametrize("verb", ["schema", "migration"])
-def test_v2_verb_help_remains_available_in_process(
+def test_verb_help_remains_available_in_process(
     verb: str,
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
@@ -104,7 +104,7 @@ def test_v2_verb_help_remains_available_in_process(
     assert stderr == ""
 
 
-def test_v2_version_remains_available_after_an_opt_in_manifest_selector(
+def test_version_remains_available_after_an_opt_in_manifest_selector(
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:

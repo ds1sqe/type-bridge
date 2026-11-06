@@ -738,3 +738,8 @@ Use these unversioned Rust names; conversion behavior and wire bytes are unchang
 | `to_staged_v3` | `to_staged` |
 | `from_staged_v3` | `from_staged` |
 | `QueryV2RuntimeAnswerLimits` | `QueryRuntimeAnswerLimits` |
+
+### Native CLI bridge
+
+Direct native callers should replace `type_bridge_core.run_v2_cli` with
+`type_bridge_core.run_cli`. Console command arguments and exit codes are unchanged.
