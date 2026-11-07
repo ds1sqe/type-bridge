@@ -617,6 +617,7 @@ impl<M: crate::__codegen::MaterializeModel> PlanResult for Vec<M> {
 /// A typed answer visible after the transaction commits successfully.
 pub struct Pending<R> {
     answer: PendingAnswers,
+    documents: std::sync::OnceLock<Arc<PlanAnswer>>,
     plan: Arc<PlanInner>,
     marker: PhantomData<fn() -> R>,
 }
@@ -674,12 +675,40 @@ impl<R> Clone for Pending<R> {
     fn clone(&self) -> Self {
         Self {
             answer: self.answer.clone(),
+            documents: self.documents.clone(),
             plan: Arc::clone(&self.plan),
             marker: PhantomData,
         }
     }
 }
 impl<R: PlanResult> Pending<R> {
+    /// Borrow the raw documents of this execution after successful commit.
+    ///
+    /// Does not execute another query or hydrate models. The returned slice
+    /// remains valid while this pending result is borrowed.
+    ///
+    /// # Errors
+    /// Returns the transaction's lifecycle or execution failure, or
+    /// `plan_result_shape` when the selected answer is not documents.
+    pub fn documents(&self) -> Result<&[serde_json::Value]> {
+        if self.documents.get().is_none() {
+            let answer = self.answer.get(&self.plan)?;
+            if !matches!(answer.as_ref(), PlanAnswer::Documents(_)) {
+                return Err(result_shape());
+            }
+            let _ = self.documents.set(answer);
+        }
+        match self
+            .documents
+            .get()
+            .expect("successful answer retained")
+            .as_ref()
+        {
+            PlanAnswer::Documents(documents) => Ok(documents),
+            _ => unreachable!("only document answers are retained"),
+        }
+    }
+
     /// Read the selected result after successful commit.
     ///
     /// # Errors
@@ -1020,6 +1049,7 @@ impl<R, S: Schema> Plan<R, S> {
             PlanProgram::Models { registry, .. } => tx
                 .stage_plan_fetch(Arc::clone(source), Arc::clone(registry), Default::default())
                 .map(|answer| Pending {
+                    documents: std::sync::OnceLock::new(),
                     answer: PendingAnswers::Models {
                         answer,
                         origin,
@@ -1031,6 +1061,7 @@ impl<R, S: Schema> Plan<R, S> {
             PlanProgram::Bulk(plans) => tx
                 .stage_plans(Arc::clone(source), plans.returns_documents())
                 .map(|answers| Pending {
+                    documents: std::sync::OnceLock::new(),
                     answer: PendingAnswers::Bulk(answers),
                     plan: Arc::clone(source),
                     marker: PhantomData,
@@ -1043,6 +1074,7 @@ impl<R, S: Schema> Plan<R, S> {
         answer: type_bridge_orm::session::staged::Pending<PlanAnswer>,
     ) -> Pending<R> {
         Pending {
+            documents: std::sync::OnceLock::new(),
             answer: PendingAnswers::Single(answer),
             plan: Arc::clone(self.shared_inner().expect("stage admitted a built plan")),
             marker: PhantomData,

@@ -393,16 +393,24 @@ impl PyPending {
         cls.clone().unbind()
     }
 
+    /// Return the raw documents of this execution after commit, without another
+    /// query or hydration. Mutating the returned JSON does not change the
+    /// retained native answer. Rejects answers that are not documents.
+    fn documents(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let answer = self.plan_answer()?;
+        documents_object(py, &answer)
+    }
+
     /// Return the plan answer or decoded typed-query value after commit. Raises
     /// the commit's typed failure, or a lifecycle error before commit.
     fn result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let _entry = crate::perf_stages::entry().entered();
         let answer = match &self.source {
             PendingSource::Plans {
-                pending,
                 plans,
                 models,
                 projected,
+                ..
             } => {
                 if let Some(pending) = models {
                     let proof = pending.get().map_err(|error| pending_error(&error))?;
@@ -411,26 +419,7 @@ impl PyPending {
                     };
                     return model.materialize(py, &proof, self.origin.clone(), projected);
                 }
-                let answers = pending
-                    .iter()
-                    .map(|pending| pending.get())
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| pending_error(&error))?;
-                let correlations = pending
-                    .iter()
-                    .map(|pending| pending.correlation())
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| pending_error(&error))?;
-                let answer = merge_plan_answers(
-                    match plans.as_ref() {
-                        PyPlanProgram::Raw(plans) => plans,
-                        _ => unreachable!("raw answer retains raw plans"),
-                    },
-                    &answers,
-                    &correlations,
-                )
-                .map_err(|error| value_error(&error))?;
-                answer_object(py, answer.as_ref())?
+                answer_object(py, self.plan_answer()?.as_ref())?
             }
             PendingSource::Query {
                 pending,
@@ -473,6 +462,53 @@ impl PyPending {
             None => Ok(answer),
         }
     }
+}
+
+impl PyPending {
+    fn plan_answer(&self) -> PyResult<Arc<PlanAnswer>> {
+        let PendingSource::Plans {
+            pending,
+            plans,
+            models,
+            ..
+        } = &self.source
+        else {
+            return Err(PyValueError::new_err(
+                "plan_result_shape: a typed query has no document plan answer",
+            ));
+        };
+        if let Some(pending) = models {
+            return pending
+                .get()
+                .map(|proof| proof.shared_selection())
+                .map_err(|error| pending_error(&error));
+        }
+        let answers = pending
+            .iter()
+            .map(|pending| pending.get())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| pending_error(&error))?;
+        let correlations = pending
+            .iter()
+            .map(|pending| pending.correlation())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| pending_error(&error))?;
+        let PyPlanProgram::Raw(plans) = plans.as_ref() else {
+            unreachable!("raw answer retains raw plans")
+        };
+        merge_plan_answers(plans, &answers, &correlations).map_err(|error| value_error(&error))
+    }
+}
+
+fn documents_object(py: Python<'_>, answer: &PlanAnswer) -> PyResult<Py<PyAny>> {
+    let PlanAnswer::Documents(documents) = answer else {
+        return Err(PyValueError::new_err(
+            "plan_result_shape: the committed answer is not documents",
+        ));
+    };
+    pythonize(py, documents)
+        .map(|value| value.unbind())
+        .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 fn answer_object(py: Python<'_>, answer: &PlanAnswer) -> PyResult<Py<PyAny>> {
@@ -641,6 +677,12 @@ mod document_answer_tests {
             let instance = answer.bind(py).cast::<PyDocuments>().unwrap();
             let expected = pythonize(py, &documents).unwrap();
             assert!(instance.get().documents.bind(py).eq(expected).unwrap());
+            let retained = PlanAnswer::Documents(documents);
+            let exposed = documents_object(py, &retained).unwrap();
+            exposed.bind(py).call_method0("clear").unwrap();
+            let again = documents_object(py, &retained).unwrap();
+            assert_eq!(again.bind(py).len().unwrap(), 1);
+            assert!(documents_object(py, &PlanAnswer::Count(1)).is_err());
         });
     }
 }

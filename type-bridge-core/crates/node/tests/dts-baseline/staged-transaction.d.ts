@@ -36,6 +36,12 @@ export declare class Pending<R = PlanAnswer> {
      * typed failure every answer of a failed commit shares.
      */
     result(): R;
+    /**
+     * Raw documents from this execution after commit, without another query or
+     * hydration. Throws the pending failure or rejects a non-document answer.
+     * Mutating the returned JSON cannot change the retained native answer.
+     */
+    documents(): readonly Readonly<Record<string, unknown>>[];
 }
 type AsyncDisposeSymbol = SymbolConstructor extends {
     readonly asyncDispose: infer Key extends symbol;

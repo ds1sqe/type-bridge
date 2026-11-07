@@ -80,6 +80,22 @@ possible types, including admitted subtypes; scalar bindings have an empty
 list. `required_capabilities` lists what the receiving executor must advertise.
 See the [complete explanation shape](../reference/query-plan.md#explaining-a-plan).
 
+## Inspect committed documents
+
+For a staged plan that returns documents, `pending.documents()` exposes the
+raw documents from that execution in Python, TypeScript, and Rust. Call it
+after a successful commit, alongside `pending.result()` for the hydrated
+result. It performs no additional query or model hydration. It reports the
+pending transaction failure before a successful commit and rejects answers
+such as counts that do not contain documents.
+
+Python returns a list of dictionaries, TypeScript a readonly array of JSON
+objects, and Rust a borrowed `&[serde_json::Value]`. Python and TypeScript
+convert the retained native answer to host JSON; changing that JSON does not
+change the pending result. Rust borrows the retained answer. C exposes the
+same documents through `type_bridge_pending_document_count` and
+`type_bridge_pending_document`.
+
 ## Send traces to the host logger
 
 Python forwards native debug records to `logging` under `type_bridge.plan`

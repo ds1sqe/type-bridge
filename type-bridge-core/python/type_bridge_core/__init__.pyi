@@ -1034,6 +1034,9 @@ class Transaction:
 class Pending[R]:
     def __new__(cls) -> Never: ...
     def result(self) -> R: ...
+    def documents(self) -> list[dict[str, Any]]:
+        """Raw documents of this execution after commit; no query or hydration."""
+        ...
 
 class PlanAnswer:
     """The answer of one staged plan."""

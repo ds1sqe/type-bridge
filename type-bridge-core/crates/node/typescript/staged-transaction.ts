@@ -54,6 +54,19 @@ export class Pending<R = PlanAnswer> {
     return this.#decode(projection === null ? planNativeCall(() => this.#native.getJson()) : "", projection ?? undefined);
   }
 
+  /**
+   * Raw documents from this execution after commit, without another query or
+   * hydration. Throws the pending failure or rejects a non-document answer.
+   * Mutating the returned JSON cannot change the retained native answer.
+   */
+  documents(): readonly Readonly<Record<string, unknown>>[] {
+    const answer = JSON.parse(planNativeCall(() => this.#native.getJson())) as PlanAnswer;
+    if (answer.kind !== "documents") {
+      throw new TypeError("plan_result_shape: the committed answer is not documents");
+    }
+    return answer.documents;
+  }
+
 }
 
 // `Symbol.asyncDispose` exists in the type only where the consumer's lib

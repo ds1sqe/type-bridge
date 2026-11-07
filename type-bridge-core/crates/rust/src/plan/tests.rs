@@ -157,6 +157,7 @@ async fn empty_bulk_keeps_the_commit_barrier_without_provider_io() {
     assert!(matches!(answer.get(), Err(PendingError::NotCommitted)));
     tx.commit().await.unwrap();
     assert_eq!(*answer.get().unwrap(), PlanAnswer::Documents(vec![]));
+    assert!(answer.documents().unwrap().is_empty());
     assert!(log.lock().unwrap().0.is_empty());
 }
 
@@ -492,7 +493,16 @@ async fn model_pending_consumes_the_core_proof_once_and_preserves_direct_deleted
         let mut tx = db.transaction(Default::default());
         let pending = tx.stage(&plan).unwrap();
         assert!(pending.result().is_err());
+        assert!(pending.documents().is_err());
         tx.commit().await.unwrap();
+        let documents = pending.documents().unwrap();
+        assert_eq!(documents[0]["_iid"], "0x01");
+        assert_eq!(documents.as_ptr(), pending.documents().unwrap().as_ptr());
+        assert_eq!(
+            documents.as_ptr(),
+            pending.clone().documents().unwrap().as_ptr()
+        );
+        let calls = log.lock().unwrap().0.len();
         let values = pending.result().unwrap();
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].iid, "0x01");
@@ -506,9 +516,14 @@ async fn model_pending_consumes_the_core_proof_once_and_preserves_direct_deleted
         };
         let original = std::ptr::from_ref(projected.get().unwrap());
         let proof = answer.get().unwrap();
+        let PlanAnswer::Documents(raw) = proof.selection() else {
+            panic!("document selection")
+        };
+        assert_eq!(documents.as_ptr(), raw.as_ptr());
         assert!(Arc::ptr_eq(&proof, &answer.get().unwrap()));
         assert_eq!(pending.result().unwrap()[0].iid, "0x01");
         assert_eq!(original, std::ptr::from_ref(projected.get().unwrap()));
+        assert_eq!(calls, log.lock().unwrap().0.len());
     }
 }
 
@@ -612,9 +627,14 @@ async fn typed_pending_decodes_count_and_keeps_commit_visibility() {
     let mut tx = db.transaction(TransactionOptions::default());
     let answer = tx.stage(&plan).unwrap();
     assert!(answer.result().is_err());
+    assert!(answer.documents().is_err());
     assert!(Arc::ptr_eq(plan.shared_inner().unwrap(), &answer.plan));
     tx.commit().await.unwrap();
     assert_eq!(answer.result().unwrap(), 1_i64);
+    assert_eq!(
+        answer.documents().unwrap_err().code(),
+        Some("plan_result_shape")
+    );
 }
 
 #[test]

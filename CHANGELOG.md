@@ -10,6 +10,9 @@ All notable changes to TypeBridge will be documented in this file.
   uncertainty instead of surfacing a generic panic.
 
 ### Added
+- Typed pending plans expose `documents()` in Python, TypeScript, and Rust
+  to inspect the raw documents of the same committed execution without
+  another query or model hydration.
 - Generated C projected batches execute insert, put, update, and delete
   through proxy connections with the same nominal results as direct writes.
 - Generated C entity and relation managers expose single and many returning
