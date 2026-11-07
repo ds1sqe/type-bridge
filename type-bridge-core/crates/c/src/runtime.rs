@@ -166,6 +166,26 @@ pub struct TypeBridgeCancellation {
     answer: type_bridge_orm::AnswerCancellation,
 }
 
+impl DatabaseState {
+    fn debug_dispatch(&self) -> Option<tracing::Dispatch> {
+        self.debug_dispatch
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    fn block_on<F: Future>(&self, future: F) -> F::Output {
+        use tracing::instrument::WithSubscriber;
+        match self.debug_dispatch() {
+            Some(dispatch) => self
+                .runtime
+                .runtime
+                .block_on(future.with_subscriber(dispatch)),
+            None => self.runtime.runtime.block_on(future),
+        }
+    }
+}
+
 impl TypeBridgeDatabase {
     pub(crate) fn clone_for_migration(&self) -> Self {
         Self {
@@ -238,22 +258,10 @@ impl StagedDatabaseGuard {
         type_bridge_orm::ProjectedQueryOrigin::for_database(&self.database.database)
     }
     pub(crate) fn debug_dispatch(&self) -> Option<tracing::Dispatch> {
-        self.database
-            .debug_dispatch
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.database.debug_dispatch()
     }
     pub(crate) fn block_on<F: Future>(&self, future: F) -> F::Output {
-        use tracing::instrument::WithSubscriber;
-        match self.debug_dispatch() {
-            Some(dispatch) => self
-                .database
-                .runtime
-                .runtime
-                .block_on(future.with_subscriber(dispatch)),
-            None => self.database.runtime.runtime.block_on(future),
-        }
+        self.database.block_on(future)
     }
 
     /// Fence the retained package and server-version bytes, as the 1.6
@@ -284,7 +292,7 @@ impl TypeBridgeDatabase {
     }
 
     pub(crate) fn block_on<F: Future>(&self, future: F) -> F::Output {
-        self.state.runtime.runtime.block_on(future)
+        self.state.block_on(future)
     }
 
     pub(crate) fn orm_database(&self) -> &Database {
@@ -424,7 +432,7 @@ impl TypeBridgeReadTransaction {
     }
 
     pub(crate) fn block_on<F: Future>(&self, future: F) -> F::Output {
-        self.state.database.runtime.runtime.block_on(future)
+        self.state.database.block_on(future)
     }
 }
 
@@ -490,7 +498,7 @@ impl TypeBridgeWriteTransaction {
     }
 
     pub(crate) fn block_on<F: Future>(&self, future: F) -> F::Output {
-        self.state.database.runtime.runtime.block_on(future)
+        self.state.database.block_on(future)
     }
 }
 

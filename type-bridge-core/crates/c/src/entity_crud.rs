@@ -203,7 +203,71 @@ functions:
         state: Arc<FakeState>,
     }
 
+    // The real provider owns materialized-plan TRACE events. This adapter adds
+    // that observation to the fake while retaining TransactionOps' bounded
+    // default implementation (including its dispatch and resource accounting).
+    struct MaterializedFake<'a> {
+        inner: &'a mut FakeTransaction,
+        canonical: bool,
+        display: Option<&'a str>,
+    }
+    impl MaterializedFake<'_> {
+        fn statement(&self, typeql: &str) {
+            if self.canonical {
+                tracing::trace!(target: "type_bridge.io", statement = self.display.unwrap_or(typeql), "type_bridge.io.provider.statement");
+            }
+        }
+    }
+    impl TransactionOps for MaterializedFake<'_> {
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.inner.query(typeql)
+        }
+        fn query_canonical(
+            &mut self,
+            typeql: &str,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.statement(typeql);
+            self.inner.query_canonical(typeql)
+        }
+        fn query_with_rows(
+            &mut self,
+            typeql: &str,
+            rows: GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.statement(typeql);
+            self.inner.query_with_rows(typeql, rows)
+        }
+        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.inner.commit()
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.inner.rollback()
+        }
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.inner.close()
+        }
+    }
+
     impl TransactionOps for FakeTransaction {
+        fn query_materialized_bounded<'a>(
+            &'a mut self,
+            typeql: &'a str,
+            rows: Option<GivenRowsSpec>,
+            limits: type_bridge_orm::session::backend::AnswerLimits,
+            canonical: bool,
+            display: Option<&'a str>,
+        ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
+            Box::pin(async move {
+                MaterializedFake {
+                    inner: self,
+                    canonical,
+                    display,
+                }
+                .query_materialized_bounded(typeql, rows, limits, canonical, display)
+                .await
+            })
+        }
+
         fn supports_given_rows(&self) -> bool {
             true
         }
@@ -772,6 +836,148 @@ functions:
         assert!(state.opened_transactions().is_empty());
         assert_eq!(state.query_count(), 0);
         close_diagnostics(&mut diagnostics);
+    }
+
+    #[test]
+    fn manager_statements_reach_only_the_owning_database_listener() {
+        // A child configures TRACE without mutating this parallel test process's environment.
+        const CHILD: &str = "TYPE_BRIDGE_C_MANAGER_LISTENER_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "entity_crud::tests::manager_statements_reach_only_the_owning_database_listener", "--nocapture"])
+                .env(CHILD, "1").env("RUST_LOG", "type_bridge=trace").output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        unsafe extern "C" fn record(view: TypeBridgeByteView, context: *mut std::ffi::c_void) {
+            // SAFETY: the listener owns live callback bytes; each test context is
+            // retained until both listeners are cleared before fixture teardown.
+            let records = unsafe { &*context.cast::<Mutex<Vec<String>>>() };
+            let bytes = unsafe { std::slice::from_raw_parts(view.data, view.length) };
+            let event: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+            if event["name"] == "type_bridge.io.provider.statement" {
+                records
+                    .lock()
+                    .unwrap()
+                    .push(event["fields"]["statement"].as_str().unwrap().to_owned());
+            }
+        }
+        let make = || {
+            fixture(
+                vec![
+                    documents(vec![person_document("0x10")]),
+                    documents(vec![person_document("0x10")]),
+                    documents(vec![person_document("0x10")]),
+                    Response::Result(QueryResult::Rows(Vec::new())),
+                ],
+                COMMIT_SUCCESS,
+            )
+        };
+        let databases = [make(), make()];
+        let captured = [
+            Mutex::new(Vec::<String>::new()),
+            Mutex::new(Vec::<String>::new()),
+        ];
+        // SAFETY: all fixtures and contexts outlive listener registration and every
+        // FFI call. Result owners are closed after each successful operation.
+        unsafe {
+            for (database, records) in databases.iter().zip(&captured) {
+                assert_eq!(
+                    crate::runtime::type_bridge_debug_listener_set(
+                        &*database.database,
+                        Some(record),
+                        (records as *const Mutex<Vec<String>>).cast_mut().cast()
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+            }
+            for (index, fixture) in databases.iter().enumerate() {
+                let iid = TypeBridgeIid::new("0x10").unwrap();
+                let mut result = ptr::null_mut();
+                let mut diagnostics = ptr::null_mut();
+                assert_eq!(
+                    type_bridge_database_entity_insert(
+                        &*fixture.database,
+                        &fixture.token,
+                        &*fixture.create,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+                close_result(&mut result);
+                let mut thing = ptr::null_mut();
+                assert_eq!(
+                    type_bridge_database_entity_get_by_iid(
+                        &*fixture.database,
+                        &fixture.token,
+                        &iid,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut thing,
+                        &mut diagnostics
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(
+                    type_bridge_projected_thing_close(&mut thing),
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(
+                    type_bridge_database_entity_update(
+                        &*fixture.database,
+                        &fixture.token,
+                        &iid,
+                        &*fixture.create,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+                close_result(&mut result);
+                assert_eq!(
+                    type_bridge_database_entity_delete_by_iid(
+                        &*fixture.database,
+                        &fixture.token,
+                        &iid,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut diagnostics
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+                assert!(diagnostics.is_null());
+                assert_eq!(
+                    *captured[index].lock().unwrap(),
+                    *fixture.state.queries.lock().unwrap()
+                );
+                assert_eq!(captured[index].lock().unwrap().len(), 4);
+                assert_eq!(
+                    captured[1 - index].lock().unwrap().len(),
+                    if index == 0 { 0 } else { 4 }
+                );
+            }
+            for fixture in &databases {
+                assert_eq!(
+                    crate::runtime::type_bridge_debug_listener_set(
+                        &*fixture.database,
+                        None,
+                        ptr::null_mut()
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+            }
+        }
     }
 
     #[test]
