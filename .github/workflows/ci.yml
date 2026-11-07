@@ -876,7 +876,7 @@ jobs:
 
   # Every server of the default profile typedb-3.13.6/v1 (3.13.6, 3.14.0):
   # the live steps test.sh's lanes on that profile run and no 3.12 leg
-  # can (staged query-plan/v3 programs, the ABI 1.7 C plans, the
+  # can (staged query-plan/v3 programs, the ABI 2.0 C plans, the
   # four-language writes suites, the profile's migration probes; the
   # concurrency guide's pinned outcomes on 3.13.6 only). Commands and env
   # mirror run_live_lane. The races run last: their paused-server case
@@ -1031,7 +1031,7 @@ jobs:
 
       # The C staged plans and the four-language writes emit SDK conformance
       # reports, which the profile matrix pairs with TypeDB 3.13.6 only.
-      - name: Run C ABI 1.7 staged contract plans
+      - name: Run C ABI 2.0 staged contract plans
         if: matrix.typedb == '3.13.6'
         env:
           TYPEDB_ADDRESS: localhost:1729
@@ -1046,7 +1046,7 @@ jobs:
             --manifest-path type-bridge-core/Cargo.toml --locked \
             -p type-bridge-c --test schema_package_abi
 
-      - name: Run C ABI 1.7 builder purchase race
+      - name: Run C ABI 2.0 builder purchase race
         if: matrix.typedb == '3.13.6'
         env:
           TYPEDB_ADDRESS: localhost:1729
@@ -2798,16 +2798,16 @@ jobs:
       - name: Consume relocated CMake and pkg-config packages
         run: >-
           python scripts/ci/c_package_artifacts.py smoke
-          tmp/c-package-artifacts/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-package-artifacts/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          tmp/c-package-artifacts/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-package-artifacts/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
 
       - name: Upload immutable non-publishing C artifact evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: c-package-artifacts-linux-x86_64-gnu
           path: |
-            tmp/c-package-artifacts/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-            tmp/c-package-artifacts/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+            tmp/c-package-artifacts/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+            tmp/c-package-artifacts/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -2875,8 +2875,8 @@ jobs:
         run: >-
           python scripts/ci/c_distribution_security.py assemble
           --cli tmp/c-distribution-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          --runtime tmp/c-distribution-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          --generated tmp/c-distribution-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          --runtime tmp/c-distribution-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          --generated tmp/c-distribution-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
           --audit-report tmp/c-distribution-input/rustsec-report.json
           --output tmp/c-distribution-evidence
 
@@ -2930,8 +2930,8 @@ jobs:
         run: >-
           python scripts/ci/c_artifact_journey.py provider-free
           tmp/c-artifact-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
           > tmp/c-artifact-clean-consumer.json
 
       - name: Independently revalidate the exact artifact-bound report
@@ -2939,8 +2939,8 @@ jobs:
           python scripts/ci/c_artifact_journey.py validate-report
           tmp/c-artifact-clean-consumer.json
           tmp/c-artifact-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
 
       - name: Upload immutable non-publishing clean-consumer evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -3029,8 +3029,8 @@ jobs:
         run: >-
           python scripts/ci/c_artifact_journey.py live
           tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
           --database c_artifact_data_${{ github.run_id }}_${{ github.run_attempt }}
           --migration-database c_artifact_migration_${{ github.run_id }}_${{ github.run_attempt }}
           --infra-target ${{ runner.temp }}/typebridge-c-artifact-infra
@@ -3044,8 +3044,8 @@ jobs:
           python scripts/ci/c_artifact_journey.py validate-live
           tmp/c-artifact-live-journey.json
           tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
 
       - name: Assemble and independently validate all 14 canonical steps
         run: |
@@ -3053,16 +3053,16 @@ jobs:
             tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
             tmp/c-artifact-live-journey.json \
             tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz \
+            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz \
             > tmp/c-artifact-acceptance-report.json
           python scripts/ci/c_artifact_journey.py validate-acceptance \
             tmp/c-artifact-acceptance-report.json \
             tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
             tmp/c-artifact-live-journey.json \
             tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
 
       - name: Upload immutable non-publishing live artifact evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

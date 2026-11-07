@@ -246,8 +246,8 @@ def test_profile_lane_steps_run_on_their_own_profile_job() -> None:
         for name in (
             "Run concurrency guide TypeQL snippets",
             "Run concurrency guide races as staged plans",
-            "Run C ABI 1.7 staged contract plans",
-            "Run C ABI 1.7 builder purchase race",
+            "Run C ABI 2.0 staged contract plans",
+            "Run C ABI 2.0 builder purchase race",
             "Run SDK writes in four languages",
             "Upload SDK writes reports",
         )
@@ -264,11 +264,11 @@ def test_profile_lane_steps_run_on_their_own_profile_job() -> None:
             "staged_plans_race_like_the_concurrency_guide_on_3_13_6",
             "-p type-bridge-orm --test plan_race_live",
         ),
-        "Run C ABI 1.7 staged contract plans": (
+        "Run C ABI 2.0 staged contract plans": (
             "live_c17_consumer_stages_and_commits_contract_plans",
             "-p type-bridge-c --test schema_package_abi",
         ),
-        "Run C ABI 1.7 builder purchase race": (
+        "Run C ABI 2.0 builder purchase race": (
             "live_c17_consumer_builds_stages_and_races_the_purchase",
             "-p type-bridge-c --test schema_package_abi",
         ),
@@ -292,8 +292,8 @@ def test_profile_lane_steps_run_on_their_own_profile_job() -> None:
         assert target in command
         assert steps[name]["env"]["TYPEDB_HTTP_PORT"] == "8000"
     for name in (
-        "Run C ABI 1.7 staged contract plans",
-        "Run C ABI 1.7 builder purchase race",
+        "Run C ABI 2.0 staged contract plans",
+        "Run C ABI 2.0 builder purchase race",
     ):
         assert steps[name]["env"]["TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER"] == "1"
     for name in (

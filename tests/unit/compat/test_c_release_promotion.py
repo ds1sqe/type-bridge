@@ -7,6 +7,7 @@ import hashlib
 import importlib
 import io
 import json
+import re
 import stat
 import sys
 import tomllib
@@ -93,7 +94,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         )
     for step in (
         "Run concurrency guide races as staged plans",
-        "Run C ABI 1.7 staged contract plans",
+        "Run C ABI 2.0 staged contract plans",
         "Run SDK writes in four languages",
     ):
         assert selected["ci_jobs"]["Staged plans live (typedb/typedb:3.14.0)"][step] == "skipped"
@@ -530,3 +531,11 @@ def test_policy_refuses_stale_abi_contract(tmp_path: Path, monkeypatch, field: s
     monkeypatch.setattr(policy, "ROOT", tmp_path)
     with pytest.raises(ValueError, match="disagrees with the public header"):
         policy.abi_contract()
+
+
+def test_ci_consumes_exact_current_c_artifact_names() -> None:
+    source = policy.CI.read_text()
+    runtime_names = set(re.findall(r"type-bridge-c-runtime-abi-[\w.-]+\.tar\.gz", source))
+    generated_names = set(re.findall(r"tb_sdk\w*-c-[0-9a-f]+\.tar\.gz", source))
+    assert runtime_names == {policy.RUNTIME}
+    assert generated_names == {policy.GENERATED}
