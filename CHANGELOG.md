@@ -1606,6 +1606,10 @@ add the limits argument described in the upgrade guide.
 
 ### Fixed
 
+- Exact manager reads of relations with many roles now split their fetch
+  projection within the effective query limits, using one transaction.
+  Results preserve all fields and role players; in-budget plans are unchanged.
+
 - Provider statement TRACE now covers manager, streaming, split, counted, and
   migration-assertion paths with prepared input redaction.
 - Node debug listeners no longer silently lose events under synchronous load.

@@ -985,6 +985,13 @@ the session's limits can help. The
 [typed-query contract](../development/typed-query-contract.md#query-limits)
 lists every limit with its default.
 
+Manager reads, including `get_by_iid`, split relation role projections that
+exceed the effective query budget. All fetch statements share one transaction,
+and the engine combines their evidence before returning a complete model.
+In-budget reads retain one fetch. An explicit statement ceiling still applies;
+an unset ceiling accommodates the prepared fetch stack. Shapes that cannot fit
+even a single role within the limits are still refused.
+
 ## Safety contract
 
 - Schema and projection fingerprints are verified at package installation.
