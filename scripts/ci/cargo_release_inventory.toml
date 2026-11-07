@@ -7,6 +7,8 @@ repository = "https://github.com/ds1sqe/type-bridge"
 # This is the closed Cargo product inventory. Publication order is dependency
 # order; private bindings and tooling are classified here so they cannot
 # silently enter a crates.io release.
+# Retired in 3.0: type-bridge-migration and type-bridge-toml-transpiler.
+# Their replacements are the canonical schema-migration and Split-YAML APIs.
 
 [[packages]]
 name = "type-bridge-contract"

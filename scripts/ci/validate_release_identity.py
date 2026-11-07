@@ -261,7 +261,7 @@ def release_identity_versions(tag: str, release_channel: str) -> tuple[str, str]
     expected_tag = f"v{semver_version}"
     if tag != expected_tag:
         raise ValidationError(
-            "Rust SSOT V2 release identity is not armed for this channel: "
+            "Release identity is not armed for this channel: "
             f"tag={tag!r}, release_channel={release_channel!r}, expected={expected_tag!r}"
         )
     return semver_version, python_version
@@ -1725,7 +1725,7 @@ def validate_release_identity(
         },
         "rust_publication_blockers": publication_blockers,
         "unpublished_crates": sorted(set(by_name) - expected_publishable),
-        "unpublished_v2_crates": list(UNPUBLISHED_CORE_CRATES),
+        "retired_crates": ["type-bridge-migration", "type-bridge-toml-transpiler"],
         "status": ("blocked" if crates_io_mutation and publication_blockers else "ok"),
         "tag": tag,
         "node_package_lock_version": node_lock_version,

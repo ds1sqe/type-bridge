@@ -188,7 +188,9 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
     assert report["crates_io_mutation"] is True
     assert report["cargo_publication_plan"] == list(validator.EXPECTED_NEW_CRATES)
     assert report["cargo_manifest_publishable_crates"] == list(validator.PUBLISHED_CRATES)
-    assert report["unpublished_v2_crates"] == []
+    assert "unpublished_v2_crates" not in report
+    assert report["retired_crates"] == ["type-bridge-migration", "type-bridge-toml-transpiler"]
+    assert not set(report["retired_crates"]) & set(report["cargo_publication_plan"])
     assert validator.PREEXISTING_CRATES == ()
     assert not set(validator.PREEXISTING_CRATES) & set(validator.EXPECTED_NEW_CRATES)
     assert report["unpublished_crates"] == [

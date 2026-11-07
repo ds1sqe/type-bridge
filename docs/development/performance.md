@@ -14,7 +14,7 @@ Every producer writes one `perf-result/v1` JSON file per run: a `run` block
 `python -m perf.harness.validate FILE...` checks a file.
 
 A metric id is a stable dotted name that starts with its family, for
-example `micro.core.compilation.insert_entity`. Build ids with
+example `micro.core.validation.identifier`. Build ids with
 `perf.harness.schema.metric_id`. Keep ids stable: the history is keyed by
 id.
 
@@ -461,6 +461,14 @@ primary signal; Criterion wall times are noisier. The advisory job-summary table
 lists regressions first and uploads both raw result files. It never comments on
 the PR or writes history, and uses a read-only token without checkout credentials.
 A base predating the perf harness is skipped with a notice.
+
+The 3.0 baseline retires `micro.core.compilation.*`,
+`binding.python.compilation.*` and `binding.python.marshalling.*` with the
+removed raw-query compiler and binding bridges. Keep their historical rows;
+do not rename or map them onto plan execution, or fill missing results with
+zero. Other ids whose producer was removed are likewise retired. The comparison
+lists them under "Only in base"; new plan-path ids start independent baselines.
+Compare retained ids only when their units and measured operation still agree.
 
 Markers apply only beyond these noise thresholds: instructions and bytes 1%,
 nanoseconds 10%, seconds 15%, and throughput (`ops_per_s`, higher is better) 10%.
