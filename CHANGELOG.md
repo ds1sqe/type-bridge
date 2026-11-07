@@ -1358,7 +1358,8 @@ add the limits argument described in the upgrade guide.
   C adds direct/proxy open functions taking named query-limit overrides;
   existing configuration layouts retain their meanings.
 
-- `OwnedTransaction::execute_plans` and `EagerTransaction::execute_plans`
+- `TransactionContext::execute_plans`, `OwnedTransaction::execute_plans`,
+  and `EagerTransaction::execute_plans`
   accept write plans in caller-owned Write and Schema transactions, sharing
   answer budgets and rollback-only latches.
 

@@ -53,21 +53,21 @@ schema package:
 cmake_minimum_required(VERSION 3.20)
 project(example LANGUAGES C CXX)
 find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)
-find_package(tb_sdkv3 1.0.0 EXACT CONFIG REQUIRED)
+find_package(tb_sdk 1.0.0 EXACT CONFIG REQUIRED)
 add_executable(example main.c)
 set_target_properties(example PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED YES)
-target_link_libraries(example PRIVATE tb_sdkv3::schema)
+target_link_libraries(example PRIVATE tb_sdk::schema)
 ```
 
 Set `TypeBridge_DIR` to the runtime's `lib/cmake/TypeBridge` directory and
-`tb_sdkv3_DIR` to the example package's `lib/cmake/tb_sdkv3` directory. Include
-`<tb_sdkv3/tb_sdkv3.h>` from the application. Use the package name emitted for
+`tb_sdk_DIR` to the example package's `lib/cmake/tb_sdk` directory. Include
+`<tb_sdk/tb_sdk.h>` from the application. Use the package name emitted for
 your own schema when replacing the example.
 
 For pkg-config, add both packages' `lib/pkgconfig` directories to
 `PKG_CONFIG_PATH`. Compile the source returned by
-`pkg-config --variable=generated_source tb_sdkv3` together with your application,
-using `pkg-config --cflags --libs tb_sdkv3`. Configure the dynamic loader to find
+`pkg-config --variable=generated_source tb_sdk` together with your application,
+using `pkg-config --cflags --libs tb_sdk`. Configure the dynamic loader to find
 the installed runtime's `lib` directory.
 
 ## Run a query on a database or a TypeBridge server

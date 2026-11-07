@@ -268,7 +268,7 @@ jobs:
         run: >-
           python scripts/ci/standalone_cli_artifact.py build
           --output "$GITHUB_WORKSPACE/tmp/perf-cli"
-      # The release C helper remains frozen to 1.6 until 2.3 release prep.
+      # Measure the current ABI runtime using the release Cargo build flags.
       - name: Archive current CMake runtime install with release Cargo flags
         run: |
           python - <<'PY'

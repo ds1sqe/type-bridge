@@ -1,4 +1,4 @@
-"""Run generated filtered updates and deletes."""
+"""Fetch filtered models, then update and delete them in bulk."""
 
 from app_models import Age, Aliases, Person
 
