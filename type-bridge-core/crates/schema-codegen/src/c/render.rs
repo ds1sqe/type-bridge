@@ -26,7 +26,7 @@ const C_SIMULTANEOUS_MACRO_MAX: usize = 4_095;
 const C_HOSTED_OBJECT_BYTES_MIN: usize = 65_535;
 const C_EMBEDDED_BYTE_CHUNK_MAX: usize = 32_768;
 const C_CREATE_ARGS_VERSION: u32 = 1;
-const C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 623;
+const C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 624;
 const C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 361;
 // Windows Clang exposes 1580 predefined and stddef/stdint platform macros.
 // Reserve space above that measured count while keeping the complete macro
