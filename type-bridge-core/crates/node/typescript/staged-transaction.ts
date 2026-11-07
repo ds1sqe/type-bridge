@@ -60,6 +60,9 @@ export class Pending<R = PlanAnswer> {
    * Mutating the returned JSON cannot change the retained native answer.
    */
   documents(): readonly Readonly<Record<string, unknown>>[] {
+    if (this.#typedQuery) {
+      throw new TypeError("plan_result_shape: a typed query has no document plan answer");
+    }
     const answer = JSON.parse(planNativeCall(() => this.#native.getJson())) as PlanAnswer;
     if (answer.kind !== "documents") {
       throw new TypeError("plan_result_shape: the committed answer is not documents");

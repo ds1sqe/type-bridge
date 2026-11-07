@@ -85,9 +85,12 @@ See the [complete explanation shape](../reference/query-plan.md#explaining-a-pla
 For a staged plan that returns documents, `pending.documents()` exposes the
 raw documents from that execution in Python, TypeScript, and Rust. Call it
 after a successful commit, alongside `pending.result()` for the hydrated
-result. It performs no additional query or model hydration. It reports the
-pending transaction failure before a successful commit and rejects answers
-such as counts that do not contain documents.
+result. It performs no additional query or model hydration. A pending plan
+reports a lifecycle error before commit and the recorded execution failure
+if commit fails. After commit, a non-document answer (such as a count)
+reports `plan_result_shape`. Python and TypeScript also reject typed-query
+pendings with `plan_result_shape`, without resolving them; Rust exposes
+this method only on plan pendings.
 
 Python returns a list of dictionaries, TypeScript a readonly array of JSON
 objects, and Rust a borrowed `&[serde_json::Value]`. Python and TypeScript

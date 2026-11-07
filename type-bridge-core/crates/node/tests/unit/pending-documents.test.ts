@@ -28,3 +28,13 @@ test("documents observes the same answer without invoking its typed decoder", ()
   answer = { kind: "count", documents: [] };
   assert.throws(() => pending.documents(), /plan_result_shape/);
 });
+
+
+test("documents rejects typed-query pendings with the shared plan shape diagnostic", () => {
+  const unexpected = (): never => { throw new Error("documents must not resolve a typed query"); };
+  const native: NativePendingPlanAnswer = {
+    getJson: unexpected, getProjection: unexpected, getQueryResult: unexpected,
+  };
+  const pending = new Pending(native, unexpected, true);
+  assert.throws(() => pending.documents(), /^TypeError: plan_result_shape:/);
+});

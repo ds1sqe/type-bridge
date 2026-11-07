@@ -12882,6 +12882,50 @@ class StructBase:
     }
 
     #[test]
+    fn typed_query_documents_reports_plan_shape_before_and_after_commit() {
+        Python::initialize();
+        Python::attach(|py| {
+            let (_, package) = install_ordered(py);
+            let (registry, request) = person_query(&package);
+            let (backend, _) = OriginRecordingBackend::new(vec![QueryResult::Documents(vec![
+                serde_json::json!({"_iid":"0xabc", "_type":"person", "attributes":{"tag":["source-tag"]}}),
+            ])]);
+            let database = Database::with_backend(Box::new(backend), "pending-documents-shape");
+            let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+            let transaction = crate::staged_transaction_runtime::PyStagedTransaction::new(
+                database.transaction(Default::default()),
+                runtime,
+                None,
+                false,
+            )
+            .with_origin(ProjectedQueryOrigin::for_database(&database));
+            let pending = transaction
+                .stage_typed_query(
+                    py,
+                    Some(Arc::clone(&package.projection)),
+                    request,
+                    registry,
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                    py.eval(c"lambda result: result", None, None)
+                        .unwrap()
+                        .unbind(),
+                )
+                .unwrap();
+            let transaction = Py::new(py, transaction).unwrap();
+            let pending = Py::new(py, pending).unwrap();
+            for committed in [false, true] {
+                if committed {
+                    transaction.bind(py).call_method0("commit").unwrap();
+                }
+                let error = pending.bind(py).call_method0("documents").unwrap_err();
+                assert!(error.to_string().contains("plan_result_shape:"));
+                assert!(!error.to_string().contains("pending_answer_kind"));
+            }
+        });
+    }
+
+    #[test]
     fn staged_query_decoder_deadline_failure_does_not_poison_later_result_calls() {
         Python::initialize();
         Python::attach(|py| {
