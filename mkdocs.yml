@@ -137,6 +137,7 @@ nav:
       - Overview: guide/operations.md
       - Server Container: guide/server-container.md
       - Debugging Plans: guide/debugging.md
+      - Worked Examples: guide/worked-examples.md
       - Logging: guide/logging.md
       - Upgrading to 3.0: guide/upgrade-3.0.md
       - Upgrading to 2.3: guide/upgrade-2.3.md
