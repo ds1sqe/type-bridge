@@ -117,10 +117,11 @@ setDebugListener((event) => console.debug(event.name, event.fields));
 setDebugListener(null);
 ```
 
-Python and Node deliver logging asynchronously through bounded queues. A slow
-logger can lose debug records when its queue fills; logging never blocks a
-transaction. Queued records may arrive after an operation returns or a Node listener is
-cleared.
+Node events are queued while JavaScript is busy, so memory grows with event
+volume only while a listener is attached. Python delivers logging asynchronously
+through a bounded queue; a slow logger can lose debug records when it fills.
+Logging never blocks a transaction. Queued records may arrive after an operation
+returns or a Node listener is cleared.
 
 Rust applications keep ownership of their `tracing` subscriber. Enable the
 `type_bridge` targets through the host's filter. An existing subscriber keeps

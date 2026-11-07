@@ -13,7 +13,8 @@ pub fn set_debug_listener(callback: Option<Function<'_, String, ()>>) -> napi::R
                 .build_threadsafe_function::<String>()
                 .callee_handled::<false>()
                 .weak::<true>()
-                .max_queue_size::<1024>()
+                // Synchronous JS calls cannot drain callbacks until native work returns.
+                .max_queue_size::<0>()
                 .build()?;
             Some(Arc::new(move |event: &type_bridge_orm::debug::DebugEvent| {
                 if let Ok(json) = serde_json::to_string(event) {

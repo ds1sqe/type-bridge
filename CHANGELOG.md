@@ -5,6 +5,7 @@ All notable changes to TypeBridge will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Node debug listeners no longer silently lose events under synchronous load.
 - Provider panics during shared controlled write commits now report an unknown
   commit outcome across C, Rust, Python, and Node, preserving durability
   uncertainty instead of surfacing a generic panic.

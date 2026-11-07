@@ -4315,3 +4315,66 @@ print(json.dumps(normalize(docs)))`;
     finally { await rm(stage, { recursive: true, force: true }); }
   }
 });
+
+
+test("debug listener delivers a manager statement after synchronous bulk hydration", { timeout: 360_000 }, async () => {
+  // Subscriber filters are fixed at native initialization, so isolate the TRACE setting.
+  if (process.env.TYPE_BRIDGE_DEBUG_LISTENER_TEST_CHILD !== "1") {
+    const environment: NodeJS.ProcessEnv = { ...process.env, RUST_LOG: "type_bridge=trace", TYPE_BRIDGE_DEBUG_LISTENER_TEST_CHILD: "1" };
+    delete environment.NODE_TEST_CONTEXT;
+    const child = spawnSync(process.execPath, ["--test", "--test-name-pattern=^debug listener delivers", fileURLToPath(import.meta.url)], {
+      cwd: NODE_SOURCE_PACKAGE, encoding: "utf8", timeout: 330_000, env: environment,
+    });
+    assert.equal(child.status, 0, child.stdout + child.stderr);
+    assert.match(child.stdout, /debug listener delivers a manager statement/);
+    return;
+  }
+  const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
+  const stage = suppliedStage === undefined
+    ? await mkdtemp(join(tmpdir(), "type-bridge-node-debug-")) : resolve(suppliedStage);
+  const runtime = await import(pathToFileURL(resolve(NODE_RUNTIME_PACKAGE, "dist/public.js")).href);
+  let database;
+  let created = false;
+  try {
+    if (suppliedStage === undefined) {
+      run(resolve(ROOT, "scripts/ci/prepare_generated_live_fixture.sh"), ["node", stage], ROOT);
+      const scope = resolve(stage, "node_modules/@type-bridge");
+      await mkdir(scope, { recursive: true });
+      await symlink(NODE_RUNTIME_PACKAGE, resolve(scope, "node"), "dir");
+      run(resolve(NODE_SOURCE_PACKAGE, "node_modules/.bin/tsc"),
+        ["--project", resolve(stage, "generated_ordered/tsconfig.json")], stage);
+    }
+    const generated = await import(pathToFileURL(resolve(stage, "generated_ordered/dist/index.js")).href);
+    database = runtime.Database.connect(TYPEDB_ADDRESS, `${INTG_DATABASE}_debug_${randomUUID().replaceAll("-", "")}`, {
+      username: TYPEDB_USERNAME, password: TYPEDB_PASSWORD, httpPort: TYPEDB_HTTP_PORT,
+    });
+    assert.equal(database.createDatabaseOutcome(), "created");
+    created = true;
+    await defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
+    const statements: string[] = [];
+    runtime.setDebugListener((event: { name: string; fields: Record<string, unknown> }) => {
+      if (event.name === "type_bridge.io.provider.statement") statements.push(String(event.fields.statement));
+    });
+    const manager = generated.Counter.manager(database);
+    const values = manager.insertMany(Array.from({ length: 2048 }, (_, i) => generated.Counter.create({
+      counterValue: generated.CounterValue.create(BigInt(i)),
+    }))).items;
+    // No await: JS cannot drain native callbacks between hydration and this insert.
+    const inserted = manager.insert(generated.Counter.create({ counterValue: generated.CounterValue.create(9000n) })).items;
+    assert.equal(values.length, 2048);
+    assert.equal(inserted.length, 1);
+    const deadline = Date.now() + 10_000;
+    while (statements.length < 2 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(statements.length, 2, "both the bulk and immediate manager insert must reach the listener");
+    assert.ok(statements.every(statement => statement.includes("insert")));
+  } finally {
+    runtime.setDebugListener(null);
+    try { if (created) database.deleteDatabase(); }
+    finally {
+      database?.close();
+      if (suppliedStage === undefined) await rm(stage, { recursive: true, force: true });
+    }
+  }
+});
