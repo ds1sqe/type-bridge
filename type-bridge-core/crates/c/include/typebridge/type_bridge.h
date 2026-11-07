@@ -1741,6 +1741,17 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_plan_builder_hold(type_bridge_plan_builder_t *builder,
                               uint32_t kind, uint32_t binding,
                               uint32_t model_ordinal, uint32_t *out_selection);
+/* Inspect the exact held typed selection (the recording/selection fields of a
+ * generated plan marker). Reuses the cached program used by typed staging and
+ * freezes the recording. Returns an owned plan for canonical_bytes/explain;
+ * free it with type_bridge_plan_free. It may outlive the builder. Split, empty,
+ * and multi-plan programs return plan_batch_split; inspect their TRACE events.
+ * Output slots must be disjoint and must not overlap the builder or its inputs. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_selection_plan(
+    type_bridge_plan_builder_t *builder, uint32_t selection,
+    type_bridge_plan_t **out_plan,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_staged_transaction_stage_selection(
     type_bridge_staged_transaction_t *transaction,

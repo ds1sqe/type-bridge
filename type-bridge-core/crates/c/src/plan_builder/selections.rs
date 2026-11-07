@@ -353,9 +353,167 @@ impl AuthoredPending {
     }
 }
 
+/// Inspect the exact compiled program of one held typed selection.
+///
+/// Inspection freezes the recording and reuses the same cached source as typed
+/// staging. The returned owned plan outlives the recording. Split, empty, or
+/// multi-plan selections have no single wire plan and return `plan_batch_split`.
+///
+/// # Safety
+/// The builder is live and exclusively borrowed. Both output slots are writable,
+/// disjoint, and do not overlap the builder or its borrowed package ranges.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_plan_builder_selection_plan(
+    builder: *mut TypeBridgePlanBuilder,
+    selection: u32,
+    out_plan: *mut *mut TypeBridgePlan,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let inputs = |outputs: &DirectOutputPreflight| {
+        if !builder.is_null() {
+            outputs.check_bytes(builder.cast(), size_of::<TypeBridgePlanBuilder>())?;
+            // SAFETY: the complete live builder was fenced above.
+            unsafe { &*builder }.check_borrowed_ranges(outputs)?;
+        }
+        Ok(())
+    };
+    // SAFETY: owner outputs are fenced before either is initialized.
+    if let Err(status) = unsafe { prepare_handle_outputs(out_plan, out_diagnostics, inputs) } {
+        return status;
+    }
+    if builder.is_null() {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    guarded(|| {
+        // SAFETY: the caller lends the live recording exclusively.
+        let source = match unsafe { &mut *builder }.finish_selection(selection) {
+            Ok(source) => source,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
+        let [plan] = AsRef::<[QueryPlan]>::as_ref(source.as_ref()) else {
+            return return_execution_error(
+                invalid(
+                    "plan_batch_split",
+                    "A split, empty, or multi-plan selection has no single wire plan",
+                ),
+                out_diagnostics,
+            );
+        };
+        let canonical = match plan.canonical_bytes() {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return return_execution_error(
+                    contract_error(&error, "The selected plan cannot be encoded"),
+                    out_diagnostics,
+                );
+            }
+        };
+        let plan = Box::new(TypeBridgePlan::new(plan.clone(), canonical));
+        // SAFETY: the output was fenced and initialized above.
+        unsafe { out_plan.write_unaligned(Box::into_raw(plan)) };
+        TypeBridgeStatus::Ok
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selection_inspection_refuses_empty_and_split_bulk_without_a_partial_plan() {
+        use crate::execution_diagnostic::{
+            type_bridge_execution_diagnostics_close, type_bridge_execution_diagnostics_get_v1,
+        };
+        let package = crate::entity_crud::tests::package("inspect_bulk");
+        for count in [0, 10_000] {
+            let mut recording = TypeBridgePlanBuilder::new();
+            recording.package = Some(Arc::clone(package.state()));
+            let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+            let identifier =
+                OwnsFactId::new(person.clone(), AttributeId::new("identifier").unwrap()).unwrap();
+            let inserted = recording.core.insert(person);
+            recording.core.bind_model_rows(
+                inserted,
+                (0..count)
+                    .map(|i| {
+                        vec![(
+                            identifier.clone(),
+                            CanonicalValue::String(CanonicalString::new(format!("P{i}")).unwrap()),
+                        )]
+                    })
+                    .collect(),
+            );
+            let selection = recording.hold(Selection::Matched).unwrap();
+            let (mut plan, mut diagnostics) = (ptr::null_mut(), ptr::null_mut());
+            // SAFETY: all inputs and owner outputs are live, distinct objects.
+            unsafe {
+                assert_ne!(
+                    type_bridge_plan_builder_selection_plan(
+                        &mut recording,
+                        selection,
+                        &mut plan,
+                        &mut diagnostics
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+                assert!(plan.is_null());
+                assert!(recording.frozen);
+                let mut view = std::mem::MaybeUninit::uninit();
+                assert_eq!(
+                    type_bridge_execution_diagnostics_get_v1(diagnostics, 0, view.as_mut_ptr()),
+                    TypeBridgeStatus::Ok
+                );
+                let view = view.assume_init();
+                assert_eq!(
+                    std::slice::from_raw_parts(view.code.data, view.code.length),
+                    b"plan_batch_split"
+                );
+                type_bridge_execution_diagnostics_close(&mut diagnostics);
+            }
+        }
+    }
+
+    #[test]
+    fn selection_inspection_fences_aliased_outputs_before_writing() {
+        let mut recording = TypeBridgePlanBuilder::new();
+        let mut plan = ptr::dangling_mut::<TypeBridgePlan>();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: the intentionally aliased outputs point into complete live objects;
+        // preflight must reject them without changing any bytes.
+        unsafe {
+            assert_eq!(
+                type_bridge_plan_builder_selection_plan(
+                    &mut recording,
+                    0,
+                    &mut plan,
+                    (&mut plan as *mut *mut TypeBridgePlan).cast()
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(plan, ptr::dangling_mut());
+            assert_eq!(
+                type_bridge_plan_builder_selection_plan(
+                    &mut recording,
+                    0,
+                    (&mut recording as *mut TypeBridgePlanBuilder).cast(),
+                    &mut diagnostics
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert!(!recording.frozen);
+            assert_eq!(
+                type_bridge_plan_builder_selection_plan(
+                    ptr::null_mut(),
+                    0,
+                    &mut plan,
+                    &mut diagnostics
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert!(plan.is_null());
+            assert!(diagnostics.is_null());
+        }
+    }
+
     #[test]
     fn held_terminals_compile_once_in_any_order_and_keep_the_source_alive() {
         let package = crate::entity_crud::tests::package("held");
@@ -435,6 +593,23 @@ mod tests {
                 ),
                 TypeBridgeStatus::Ok
             );
+            let mut inspection = ptr::null_mut();
+            assert_eq!(
+                type_bridge_plan_builder_selection_plan(
+                    &mut recording,
+                    count,
+                    &mut inspection,
+                    &mut diagnostic
+                ),
+                TypeBridgeStatus::Ok
+            );
+            assert!(recording.frozen);
+            let inspected = &*inspection;
+            let inspected_bytes = inspected.source.canonical.clone();
+            let inspected_statements =
+                type_bridge_orm::plan_explain::explain(&inspected.source.plan)
+                    .unwrap()
+                    .statements;
             let mut pending = [ptr::null_mut(); 3];
             for (slot, selected) in pending.iter_mut().zip([exists, count, count]) {
                 assert_eq!(
@@ -465,6 +640,12 @@ mod tests {
                 Arc::clone(&pending.source)
             };
             assert!(Arc::ptr_eq(&source(pending[1]), &source(pending[2])));
+            assert_eq!(
+                inspected_bytes,
+                AsRef::<[QueryPlan]>::as_ref(source(pending[1]).as_ref())[0]
+                    .canonical_bytes()
+                    .unwrap()
+            );
             assert_eq!(fixture.state.query_count(), 0);
             assert_eq!(
                 type_bridge_plan_builder_exists(&mut recording),
@@ -485,6 +666,18 @@ mod tests {
                 TypeBridgeStatus::Ok
             );
             assert!(diagnostic.is_null());
+            assert_eq!(
+                &fixture.state.query_texts()[1..],
+                [
+                    inspected_statements[0].clone(),
+                    inspected_statements[0].clone()
+                ]
+            );
+            assert_eq!(
+                inspected.source.canonical, inspected_bytes,
+                "owned inspection survives recording drop and execution"
+            );
+            type_bridge_plan_free(&mut inspection);
             let mut exists_value = false;
             let mut count_value = 0;
             assert_eq!(

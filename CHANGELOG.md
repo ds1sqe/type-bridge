@@ -11,6 +11,8 @@ All notable changes to TypeBridge will be documented in this file.
   uncertainty instead of surfacing a generic panic.
 
 ### Added
+- C held typed selections expose their exact executable plan through
+  `type_bridge_plan_builder_selection_plan` for canonical bytes and explain.
 - Typed pending plans expose `documents()` in Python, TypeScript, and Rust
   to inspect the raw documents of the same committed execution without
   another query or model hydration.

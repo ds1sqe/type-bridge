@@ -2531,3 +2531,143 @@ fn bound_raw_build_accepts_matching_fingerprints_and_refuses_foreign_packages_wi
     }
     assert!(raw.build(&foreign).is_ok());
 }
+
+/// The public selection inspector is usable from strict C and C++, with owned
+/// inspection handles remaining valid after the generated recording is freed.
+#[cfg(unix)]
+#[test]
+fn typed_selection_inspection_runs_in_strict_c17_and_cpp17() {
+    let Some(library) = native_library() else {
+        return;
+    };
+    let fixture = purchase_package();
+    let stage = TempDirectory::new("selection_inspection");
+    for (path, bytes) in fixture.package.files() {
+        let target = stage.path().join(path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, bytes).unwrap();
+    }
+    let source = stage.path().join("inspect.c");
+    fs::write(&source, format!(r#"
+#include <stdlib.h>
+#include <string.h>
+#include <typebridge/type_bridge.h>
+#include <{PREFIX}/models.h>
+int main(void) {{
+  type_bridge_plan_builder_t *recording = NULL;
+  type_bridge_plan_t *first = NULL, *second = NULL;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
+  type_bridge_canonical_bytes_t *explanation = NULL;
+  type_bridge_count_plan_t selected;
+  type_bridge_byte_view_t label = {{ (const uint8_t *)"item", 4u }};
+  type_bridge_byte_view_t text = {{ NULL, 0u }};
+  uint32_t model = 0u, binding = 0u;
+  size_t first_size = 0u, second_size = 0u;
+  uint8_t *first_bytes, *second_bytes;
+  if ({PREFIX}_plan_open(NULL, &recording, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 1;
+  if (type_bridge_plan_builder_type(recording, TYPE_BRIDGE_PLAN_THING_ENTITY, label, &model) != TYPE_BRIDGE_STATUS_OK) return 2;
+  if (type_bridge_plan_builder_exact(recording, model, &binding) != TYPE_BRIDGE_STATUS_OK) return 3;
+  if (type_bridge_plan_count(recording, &selected) != TYPE_BRIDGE_STATUS_OK) return 4;
+  if (type_bridge_plan_builder_selection_plan(recording, selected.selection, &first, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 5;
+  if (type_bridge_plan_builder_require_open(recording) != TYPE_BRIDGE_STATUS_INVALID_ARGUMENT) return 6;
+  if (type_bridge_plan_builder_selection_plan(recording, selected.selection, &second, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 7;
+  type_bridge_plan_builder_free(&recording);
+  (void)type_bridge_plan_canonical_bytes(first, NULL, 0u, &first_size);
+  (void)type_bridge_plan_canonical_bytes(second, NULL, 0u, &second_size);
+  if (first_size == 0u || first_size != second_size) return 8;
+  first_bytes = (uint8_t *)malloc(first_size);
+  second_bytes = (uint8_t *)malloc(second_size);
+  if (first_bytes == NULL || second_bytes == NULL) return 9;
+  if (type_bridge_plan_canonical_bytes(first, first_bytes, first_size, &first_size) != TYPE_BRIDGE_STATUS_OK) return 10;
+  if (type_bridge_plan_canonical_bytes(second, second_bytes, second_size, &second_size) != TYPE_BRIDGE_STATUS_OK) return 11;
+  if (memcmp(first_bytes, second_bytes, first_size) != 0) return 12;
+  if (type_bridge_plan_explain(first, &explanation, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 13;
+  if (type_bridge_canonical_bytes_view(explanation, &text) != TYPE_BRIDGE_STATUS_OK || text.length == 0u) return 14;
+  free(first_bytes);
+  free(second_bytes);
+  type_bridge_canonical_bytes_close(&explanation);
+  type_bridge_plan_free(&first);
+  type_bridge_plan_free(&second);
+  return 0;
+}}
+"#)).unwrap();
+    let include = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
+    let directory = library.parent().unwrap();
+    for (compiler, standard, language) in [
+        ("gcc", "c17", "c"),
+        ("clang", "c17", "c"),
+        ("g++", "c++17", "c++"),
+        ("clang++", "c++17", "c++"),
+    ] {
+        if cfg!(target_os = "macos") && compiler.starts_with('g') {
+            continue;
+        }
+        let executable = stage.path().join(format!("inspect-{compiler}"));
+        let models = stage.path().join(format!("models-{compiler}.o"));
+        let c_compiler = if compiler.starts_with("clang") {
+            "clang"
+        } else {
+            "gcc"
+        };
+        let output = Command::new(c_compiler)
+            .args([
+                "-std=c17",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-pedantic-errors",
+                "-c",
+            ])
+            .arg("-I")
+            .arg(&include)
+            .arg("-I")
+            .arg(stage.path().join("include"))
+            .arg(stage.path().join("src/models.c"))
+            .arg("-o")
+            .arg(&models)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{c_compiler}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(compiler)
+            .arg(format!("-std={standard}"))
+            .args([
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-pedantic-errors",
+                "-x",
+                language,
+            ])
+            .arg("-I")
+            .arg(&include)
+            .arg("-I")
+            .arg(stage.path().join("include"))
+            .arg(&source)
+            .args(["-x", "none"])
+            .arg(&models)
+            .arg("-L")
+            .arg(directory)
+            .arg("-ltype_bridge_c")
+            .arg(format!("-Wl,-rpath,{}", directory.display()))
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{compiler}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(executable).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{compiler}: {:?} {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
