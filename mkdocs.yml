@@ -149,6 +149,7 @@ nav:
     - Development Setup: development/setup.md
     - Testing: development/testing.md
     - C Release Procedure: development/c-release.md
+    - Releasing 3.0: development/releasing-3.0.md
     - Architecture:
       - Internals: development/internals.md
       - Core Engine: development/core-engine.md
