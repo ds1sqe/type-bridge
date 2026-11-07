@@ -957,13 +957,21 @@ def test_core_sdist_rejects_non_generated_symbolic_and_nonregular_inputs(
         validator.core_sdist_source_authorities(tmp_path)
 
 
-@pytest.mark.parametrize("root", ["crates/orm-derive", "crates/perf-stages"])
+@pytest.mark.parametrize("root", ["crates/orm-derive"])
 def test_core_sdist_optional_path_sources_are_exact_raw_includes(root: str) -> None:
     assert root in validator.CORE_SDIST_SOURCE_ROOTS
     assert root in validator.CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS
     assert root not in validator.CORE_SDIST_WORKSPACE_MEMBERS
     assert f"{root}/Cargo.toml" not in validator.CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS
     assert f"{root}/LICENSE" not in validator.CORE_SDIST_GENERATED_LICENSES
+
+
+def test_core_sdist_perf_stages_is_a_packaged_workspace_member() -> None:
+    root = "crates/perf-stages"
+    assert root in validator.CORE_SDIST_WORKSPACE_MEMBERS
+    assert root not in validator.CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS
+    assert f"{root}/Cargo.toml" in validator.CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS
+    assert f"{root}/LICENSE" in validator.CORE_SDIST_GENERATED_LICENSES
 
 
 def test_core_sdist_rejects_changed_raw_optional_derive_manifest(tmp_path: Path) -> None:
