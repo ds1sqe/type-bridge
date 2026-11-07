@@ -55,7 +55,7 @@ assert not selected_rows.writes()
 with Plan() as p:
     Item.by_iid(Iid("0xAb12"))
     iid_plan = p.count()
-assert b'0xAb12' in iid_plan.canonical_bytes()
+assert b"0xAb12" in iid_plan.canonical_bytes()
 with Plan():
     try:
         Item.by_iid("0xAb12")

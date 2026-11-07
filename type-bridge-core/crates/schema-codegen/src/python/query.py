@@ -916,7 +916,12 @@ class ExchangeConnection(_Frozen):
 
 
 type QueryConnection = (
-    Database | TransactionContext | MigrationTransaction | ProxyConnection | ExchangeConnection | StagedTransaction
+    Database
+    | TransactionContext
+    | MigrationTransaction
+    | ProxyConnection
+    | ExchangeConnection
+    | StagedTransaction
 )
 
 
@@ -1008,7 +1013,14 @@ class _ExchangeTarget(_Frozen):
         return await asyncio.to_thread(pending.decode_reply, response)
 
 
-type _Target = Database | TransactionContext | MigrationTransaction | ProxyConnection | _ExchangeTarget | StagedTransaction
+type _Target = (
+    Database
+    | TransactionContext
+    | MigrationTransaction
+    | ProxyConnection
+    | _ExchangeTarget
+    | StagedTransaction
+)
 
 
 def _target(
@@ -1018,7 +1030,10 @@ def _target(
 ) -> _Target:
     if isinstance(connection, ExchangeConnection):
         return _ExchangeTarget(connection, resources, cancellation)
-    if isinstance(connection, (Database, TransactionContext, MigrationTransaction, ProxyConnection, StagedTransaction)):
+    if isinstance(
+        connection,
+        (Database, TransactionContext, MigrationTransaction, ProxyConnection, StagedTransaction),
+    ):
         return connection
     raise TypeError(
         "generated QuerySession requires a Database, TransactionContext, MigrationTransaction, "

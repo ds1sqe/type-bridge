@@ -93,7 +93,9 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
     assert hashlib.sha256(previous.read_bytes()).hexdigest() == (
         "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"
     )
-    previous_exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", previous.read_text()))
+    previous_exports: set[str] = set(
+        re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", previous.read_text())
+    )
     # ABI 2.0 renames the typed query entry points retained from ABI 1.6.
     previous_exports = {
         name.removesuffix("_v1")

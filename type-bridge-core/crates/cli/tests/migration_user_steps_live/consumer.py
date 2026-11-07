@@ -72,7 +72,9 @@ catalog.register("derive-gender", derive, reverse)
 try:
     plan([ids[0]], [ids[1]]).execute(db, "python-error")
 except Exception as e:
-    assert "migration_user_step_failed" in str(e) and "RuntimeError: private failure detail" in str(e), str(e)
+    assert "migration_user_step_failed" in str(e) and "RuntimeError: private failure detail" in str(
+        e
+    ), str(e)
 else:
     raise AssertionError("callback error accepted")
 assert not db.execute_query('match $p isa person, has gender $g; fetch {"gender":$g};', "read")[

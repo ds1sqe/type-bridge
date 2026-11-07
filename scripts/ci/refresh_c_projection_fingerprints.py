@@ -29,7 +29,9 @@ def replace_once(body: str, old: str, new: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bindings", nargs="+", choices=("c", "python", "node", "rust"), default=["c"])
+    parser.add_argument(
+        "--bindings", nargs="+", choices=("c", "python", "node", "rust"), default=["c"]
+    )
     bindings = parser.parse_args().bindings
     if len(set(bindings)) != len(bindings) or ("c" in bindings and len(bindings) != 1):
         parser.error("select C alone or Python/Node/Rust")
