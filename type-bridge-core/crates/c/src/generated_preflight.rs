@@ -388,17 +388,7 @@ impl DirectOutputPreflight {
         &self,
         package: &SchemaPackageState,
     ) -> Result<(), TypeBridgeStatus> {
-        for bytes in [
-            package.authority_json.as_slice(),
-            package.projection_json.as_slice(),
-            package.semantic_fingerprint_json.as_slice(),
-            package.binding_fingerprint_json.as_slice(),
-            package.managed_scope.as_slice(),
-            package.semantic_profile.as_slice(),
-        ] {
-            self.check_bytes(bytes.as_ptr().cast(), bytes.len())?;
-        }
-        Ok(())
+        BorrowedRangeVisitor::check_package_borrowed_ranges(self, package)
     }
 }
 
@@ -1694,5 +1684,145 @@ mod tests {
             TypeBridgeStatus::Ok
         );
         assert_eq!(caller_output, [0x5a; 16]);
+    }
+}
+
+/// The existing byte-range rules shared by a live preflight and an immutable
+/// retained-storage index. Collection performs the same pointer/length checks.
+pub(crate) trait BorrowedRangeVisitor {
+    fn check_bytes(&self, pointer: *const c_void, length: usize) -> Result<(), TypeBridgeStatus>;
+
+    fn check_package_borrowed_ranges(
+        &self,
+        package: &SchemaPackageState,
+    ) -> Result<(), TypeBridgeStatus> {
+        for bytes in [
+            package.authority_json.as_slice(),
+            package.projection_json.as_slice(),
+            package.semantic_fingerprint_json.as_slice(),
+            package.binding_fingerprint_json.as_slice(),
+            package.managed_scope.as_slice(),
+            package.semantic_profile.as_slice(),
+        ] {
+            self.check_bytes(bytes.as_ptr().cast(), bytes.len())?;
+        }
+        Ok(())
+    }
+}
+impl BorrowedRangeVisitor for DirectOutputPreflight {
+    fn check_bytes(&self, pointer: *const c_void, length: usize) -> Result<(), TypeBridgeStatus> {
+        DirectOutputPreflight::check_bytes(self, pointer, length)
+    }
+}
+
+/// Addresses of immutable allocations retained by one answer owner. Merging
+/// overlaps preserves the exact union of protected bytes, including gaps.
+pub(crate) struct RetainedRangeIndex {
+    ranges: Vec<MemoryRange>,
+}
+impl RetainedRangeIndex {
+    pub(crate) fn collect(
+        visit: impl FnOnce(&dyn BorrowedRangeVisitor) -> Result<(), TypeBridgeStatus>,
+    ) -> Result<Self, TypeBridgeStatus> {
+        struct Collector(std::cell::RefCell<Vec<MemoryRange>>);
+        impl BorrowedRangeVisitor for Collector {
+            fn check_bytes(
+                &self,
+                pointer: *const c_void,
+                length: usize,
+            ) -> Result<(), TypeBridgeStatus> {
+                if length == 0 {
+                    return Ok(());
+                }
+                let range = MemoryRange::checked(pointer, length)
+                    .ok_or(TypeBridgeStatus::InvalidArgument)?;
+                self.0.borrow_mut().push(range);
+                Ok(())
+            }
+        }
+        let collector = Collector(std::cell::RefCell::new(Vec::new()));
+        visit(&collector)?;
+        let mut ranges = collector.0.into_inner();
+        ranges.sort_unstable_by_key(|range| range.start);
+        let mut merged: Vec<MemoryRange> = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            if let Some(last) = merged.last_mut()
+                && range.start <= last.start + last.length
+            {
+                last.length =
+                    (range.start + range.length).max(last.start + last.length) - last.start;
+            } else {
+                merged.push(range);
+            }
+        }
+        Ok(Self { ranges: merged })
+    }
+    pub(crate) fn check(&self, outputs: &DirectOutputPreflight) -> Result<(), TypeBridgeStatus> {
+        self.check_with(outputs, || {})
+    }
+    fn check_with(
+        &self,
+        outputs: &DirectOutputPreflight,
+        mut compared: impl FnMut(),
+    ) -> Result<(), TypeBridgeStatus> {
+        for output in &outputs.ranges[..outputs.count] {
+            let end = output.start + output.length;
+            let index = self.ranges.partition_point(|range| {
+                compared();
+                range.start < end
+            });
+            if index > 0 {
+                compared();
+                if self.ranges[index - 1].overlaps(*output) {
+                    return Err(TypeBridgeStatus::InvalidArgument);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod retained_range_tests {
+    use super::*;
+    #[test]
+    fn merged_index_preserves_exact_alias_boundaries_and_checks_logarithmically() {
+        let inputs = [(100, 8), (102, 2), (106, 6), (112, 4), (120, 4)];
+        let index = RetainedRangeIndex::collect(|collector| {
+            for (start, length) in inputs {
+                collector.check_bytes(start as *const c_void, length)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(index.ranges.len(), 2);
+        for start in 90..130 {
+            for length in 1..12 {
+                let outputs =
+                    DirectOutputPreflight::new(&[(start as *mut c_void, length)]).unwrap();
+                let expected = inputs.iter().all(|&(pointer, length)| {
+                    outputs
+                        .check_bytes(pointer as *const c_void, length)
+                        .is_ok()
+                });
+                assert_eq!(index.check(&outputs).is_ok(), expected, "{start} {length}");
+            }
+        }
+        let index = RetainedRangeIndex::collect(|collector| {
+            for n in 1..=10_000 {
+                collector.check_bytes((n * 32) as *const c_void, 8)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        for address in [31, 32, 40, 160_000, 320_008, 400_000] {
+            let outputs = DirectOutputPreflight::new(&[(address as *mut c_void, 1)]).unwrap();
+            let mut comparisons = 0;
+            let _ = index.check_with(&outputs, || comparisons += 1);
+            assert!(
+                comparisons <= 16,
+                "{comparisons} comparisons for 10k ranges"
+            );
+        }
     }
 }

@@ -458,6 +458,7 @@ fn all_scalar_getters(source: Arc<CompiledSelection>) {
     ];
     let result = TypeBridgeRowsResult {
         state: Arc::new(RowsResultState {
+            retained_index: OnceLock::new(),
             source,
             models: None,
             cells: vec![

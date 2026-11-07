@@ -11,7 +11,9 @@ use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_orm::session::staged::{Pending, PlanAnswer};
 
 use crate::abi::{TypeBridgeByteView, TypeBridgeStatus, guarded};
-use crate::generated_preflight::{DirectOutputPreflight, direct_output_preflight};
+use crate::generated_preflight::{
+    BorrowedRangeVisitor, DirectOutputPreflight, RetainedRangeIndex, direct_output_preflight,
+};
 use crate::staged::{TypeBridgePending, answer_status};
 
 const INVALID: TypeBridgeStatus = TypeBridgeStatus::InvalidArgument;
@@ -177,6 +179,7 @@ impl AnswerViews {
             shape,
             roles,
             ranges: OnceLock::new(),
+            retained_index: OnceLock::new(),
         });
         let views = match storage.answer.as_ref() {
             PlanAnswer::Documents(documents) => AnswerViews::Documents(
@@ -217,16 +220,25 @@ struct AnswerStorage {
     shape: Option<Arc<FetchDocumentShape>>,
     roles: usize,
     ranges: OnceLock<Vec<(usize, usize)>>,
+    retained_index: OnceLock<Result<RetainedRangeIndex, TypeBridgeStatus>>,
 }
 
 impl AnswerStorage {
     fn fence(&self, preflight: &DirectOutputPreflight) -> Result<(), TypeBridgeStatus> {
-        if let Some(ranges) = self.ranges.get() {
-            for &(pointer, length) in ranges {
-                preflight.check_bytes(pointer as *const _, length)?;
-            }
-        }
-        check_answer(preflight, &self.answer)
+        self.retained_index
+            .get_or_init(|| {
+                RetainedRangeIndex::collect(|collector| {
+                    if let Some(ranges) = self.ranges.get() {
+                        for &(pointer, length) in ranges {
+                            collector.check_bytes(pointer as *const _, length)?;
+                        }
+                    }
+                    check_answer(collector, &self.answer)
+                })
+            })
+            .as_ref()
+            .map_err(|status| *status)?
+            .check(preflight)
     }
 }
 
@@ -454,7 +466,7 @@ fn view(value: &str) -> TypeBridgeByteView {
     }
 }
 
-fn check_json(preflight: &DirectOutputPreflight, value: &Value) -> Result<(), TypeBridgeStatus> {
+fn check_json(preflight: &dyn BorrowedRangeVisitor, value: &Value) -> Result<(), TypeBridgeStatus> {
     preflight.check_bytes((value as *const Value).cast(), size_of_val(value))?;
     match value {
         Value::String(text) => preflight.check_bytes(text.as_ptr().cast(), text.len())?,
@@ -476,7 +488,7 @@ fn check_json(preflight: &DirectOutputPreflight, value: &Value) -> Result<(), Ty
 }
 
 fn check_answer(
-    preflight: &DirectOutputPreflight,
+    preflight: &dyn BorrowedRangeVisitor,
     answer: &PlanAnswer,
 ) -> Result<(), TypeBridgeStatus> {
     if let PlanAnswer::Documents(values) | PlanAnswer::Rows(values) = answer {
@@ -957,6 +969,66 @@ plays:
         // SAFETY: the test keeps the owning answer alive.
         String::from_utf8(unsafe { std::slice::from_raw_parts(value.data, value.length) }.to_vec())
             .unwrap()
+    }
+
+    #[test]
+    fn cached_ranges_protect_other_documents_and_metadata_until_the_owner_drops() {
+        let plan = plan();
+        let mut second = answer();
+        second["attributes"]["key"] =
+            json!("a retained value long enough to cover an output byte view");
+        let answer = Arc::new(PlanAnswer::Documents(vec![answer(), second]));
+        let weak = Arc::downgrade(&answer);
+        let views = AnswerViews::new(
+            Arc::clone(&answer),
+            plan.fetch_document_shape().cloned().map(Arc::new),
+            2,
+        );
+        drop(answer);
+        let AnswerViews::Documents(docs) = views else {
+            panic!("documents")
+        };
+        let first = &docs[0];
+        let second = &docs[1];
+        let mut text = EMPTY_VIEW;
+        // SAFETY: every tested output names live retained storage of sufficient
+        // size; aliased calls must reject before writing. No freed cursor is used.
+        unsafe {
+            assert_eq!(
+                type_bridge_document_attribute_string(second, view("key"), 0, &mut text),
+                TypeBridgeStatus::Ok
+            );
+            let before = std::slice::from_raw_parts(text.data, text.length).to_vec();
+            assert_eq!(
+                type_bridge_document_type(first, text.data.cast_mut().cast()),
+                INVALID
+            );
+            assert_eq!(std::slice::from_raw_parts(text.data, text.length), before);
+            let metadata = (second as *const TypeBridgeDocument).cast_mut().cast();
+            assert_eq!(type_bridge_document_iid(first, metadata), INVALID);
+            let mut kind = TypeBridgeValueKind::String as u32;
+            assert_eq!(
+                type_bridge_row_value_kind(
+                    (first as *const TypeBridgeDocument).cast(),
+                    view("key"),
+                    &mut kind
+                ),
+                INVALID
+            );
+            assert_eq!(kind, TypeBridgeValueKind::Absent as u32);
+            assert_eq!(
+                type_bridge_document_iid(first, &mut text),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(self::text(text), "0x01");
+        }
+        assert!(first.storage.retained_index.get().is_some());
+        assert!(weak.upgrade().is_some());
+        drop(docs);
+        assert!(
+            weak.upgrade().is_none(),
+            "the address index does not extend or escape the answer lifetime"
+        );
     }
 
     #[test]

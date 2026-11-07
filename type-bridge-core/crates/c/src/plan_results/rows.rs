@@ -14,6 +14,7 @@ pub(crate) struct RowsResultState {
     models: Option<Arc<ModelResultState>>,
     cells: Vec<Vec<Option<TypedScalar>>>,
     columns: usize,
+    retained_index: OnceLock<Result<RetainedRangeIndex, TypeBridgeStatus>>,
 }
 struct TypedScalar {
     domain: ValueTypeTag,
@@ -89,6 +90,7 @@ impl RowsResultState {
             models,
             cells,
             columns,
+            retained_index: OnceLock::new(),
         })
     }
     pub(crate) fn fence(&self, outputs: &DirectOutputPreflight) -> Result<(), TypeBridgeStatus> {
@@ -96,12 +98,23 @@ impl RowsResultState {
         if let Some(models) = &self.models {
             models.fence(outputs)?;
         }
-        for cell in self.cells.iter().flatten().flatten() {
-            if let Scalar::Text(text) = &cell.value {
-                outputs.check_bytes(text.as_ptr().cast(), text.as_bytes_with_nul().len())?;
-            }
-        }
-        Ok(())
+        self.retained_index
+            .get_or_init(|| {
+                RetainedRangeIndex::collect(|collector| {
+                    for cell in self.cells.iter().flatten().flatten() {
+                        if let Scalar::Text(text) = &cell.value {
+                            collector.check_bytes(
+                                text.as_ptr().cast(),
+                                text.as_bytes_with_nul().len(),
+                            )?;
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .as_ref()
+            .map_err(|status| *status)?
+            .check(outputs)
     }
     fn cell(
         &self,

@@ -6,11 +6,13 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::mem::size_of;
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::abi::{SchemaPackageState, TypeBridgeStatus, guarded};
 use crate::execution_diagnostic::{TypeBridgeExecutionDiagnostics, return_execution_error};
-use crate::generated_preflight::{DirectOutputPreflight, direct_output_preflight};
+use crate::generated_preflight::{
+    BorrowedRangeVisitor, DirectOutputPreflight, RetainedRangeIndex, direct_output_preflight,
+};
 use crate::plan_builder::selections::{AuthoredAnswers, AuthoredPending, CompiledSelection};
 use crate::projected_token::TypeBridgeProjectedTokenV1;
 use crate::staged::{TypeBridgePending, invalid, prepare_handle_outputs};
@@ -35,6 +37,7 @@ pub(crate) struct ModelResultState {
     _projected: ProjectedQueryValue,
     models: Vec<Vec<ModelViewData>>,
     views: Option<views::ViewStorage>,
+    retained_index: OnceLock<Result<RetainedRangeIndex, TypeBridgeStatus>>,
 }
 
 /// Borrowed model view. This object and all returned strings borrow a result owner.
@@ -138,7 +141,7 @@ impl ModelViewData {
             roles: BTreeMap::new(),
         })
     }
-    fn fence(&self, outputs: &DirectOutputPreflight) -> Result<(), TypeBridgeStatus> {
+    fn fence(&self, outputs: &dyn BorrowedRangeVisitor) -> Result<(), TypeBridgeStatus> {
         outputs.check_bytes((self as *const Self).cast(), size_of::<Self>())?;
         outputs.check_package_borrowed_ranges(&self.package)?;
         outputs.check_bytes(self.iid.as_ptr().cast(), self.iid.as_bytes_with_nul().len())?;
@@ -219,6 +222,7 @@ impl ModelResultState {
             _projected: projected,
             models,
             views,
+            retained_index: OnceLock::new(),
         })
     }
     pub(crate) fn fence(&self, outputs: &DirectOutputPreflight) -> Result<(), TypeBridgeStatus> {
@@ -226,12 +230,20 @@ impl ModelResultState {
         if let Some(views) = &self.views {
             views.fence(outputs)?;
         }
-        for row in &self.models {
-            for model in row {
-                model.fence(outputs)?;
-            }
-        }
-        Ok(())
+        self.retained_index
+            .get_or_init(|| {
+                RetainedRangeIndex::collect(|collector| {
+                    for row in &self.models {
+                        for model in row {
+                            model.fence(collector)?;
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .as_ref()
+            .map_err(|status| *status)?
+            .check(outputs)
     }
 }
 impl AuthoredPending {
@@ -458,8 +470,12 @@ mod tests {
     #[test]
     fn model_results_share_one_owner_cache_and_borrow_after_pending_and_recording_drop() {
         let doc = person_document("0x01");
+        let mut other = person_document("0x02");
+        other["attributes"]["identifier"] = serde_json::json!("grace");
         let fixture = fixture(
-            (0..8).map(|_| documents(vec![doc.clone()])).collect(),
+            (0..8)
+                .map(|_| documents(vec![doc.clone(), other.clone()]))
+                .collect(),
             COMMIT_SUCCESS,
         );
         let digest = type_bridge_contract::projection::c_view::CViewLayouts::for_projection(
@@ -561,7 +577,7 @@ mod tests {
                 type_bridge_plan_result_count(second, &mut count),
                 TypeBridgeStatus::Ok
             );
-            assert_eq!(count, 1);
+            assert_eq!(count, 2);
             #[repr(C)]
             struct PersonView {
                 iid: *const c_char,
@@ -611,6 +627,31 @@ mod tests {
                     size_of::<PersonView>()
                 ),
                 TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(
+                type_bridge_plan_result_view(
+                    second,
+                    0,
+                    &fixture.token,
+                    stored.row(1).unwrap().as_ptr().cast_mut().cast(),
+                    size_of::<PersonView>()
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            let mut other_view = std::mem::MaybeUninit::<PersonView>::uninit();
+            assert_eq!(
+                type_bridge_plan_result_view(
+                    second,
+                    1,
+                    &fixture.token,
+                    other_view.as_mut_ptr().cast(),
+                    size_of::<PersonView>()
+                ),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                CStr::from_ptr(other_view.assume_init().identifier).to_bytes(),
+                b"grace"
             );
             type_bridge_plan_result_free(&mut second);
         }
