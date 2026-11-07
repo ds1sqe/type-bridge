@@ -15,7 +15,7 @@ pub enum CommitFailureCertainty {
 ///
 /// Ordinary commit callers receive provider failures as
 /// [`OrmError::Transaction`]; callers that must distinguish a proven abort
-/// can opt into [`crate::Transaction::commit_classified`].
+/// can opt into [`crate::OwnedTransaction::commit_classified`].
 #[derive(Debug, Error)]
 pub enum ClassifiedCommitError {
     /// An ORM transaction-lifecycle error without stronger commit evidence.

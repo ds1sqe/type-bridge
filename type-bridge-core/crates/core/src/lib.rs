@@ -1,16 +1,16 @@
 //! # type-bridge-core-lib
 //!
-//! Pure-Rust core library for **type-bridge**, providing a TypeQL AST,
-//! schema parser, query compiler, value coercer, and validation engine.
+//! Shared core for **type-bridge**, providing typed query operations,
+//! checked TypeQL construction, value coercion, and validation.
+//! The upstream TypeQL representation and rendering remain private.
 //!
 //! ## Modules
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! | [`ast`] | TypeQL Abstract Syntax Tree — patterns, statements, clauses, and values |
+//! | [`ast`] | Typed query operands, predicates, and operations |
 //! | [`validation`] | Schema-aware query validation plus a custom validation-rule DSL |
-//! | [`compiler`] | Compiles an AST back into a TypeQL query string |
-//! | [`query_parser`] | Parses a TypeQL query string into the AST |
+//! | [`compiler`] | Checked lowering of typed query operations |
 //! | [`value_coercion`] | Coerces raw values into TypeDB value-types and formats TypeQL literals |
 //! | [`reserved_words`] | TypeQL reserved-word detection |
 //! | [`version`] | TypeDB compatibility window, protocol-band map, and version gate (SSOT) |
@@ -36,7 +36,7 @@ pub mod compiler;
 /// Canonical TypeDB decimal parsing and semantic comparison.
 pub mod decimal;
 mod parser;
-/// Plaintext or TLS HTTP client for a TypeBridge proxy's `/v2` routes.
+/// Plaintext or TLS HTTP client for a TypeBridge proxy's `/v3` routes.
 pub mod proxy_http;
 /// TypeQL reserved-word detection.
 pub mod reserved_words;

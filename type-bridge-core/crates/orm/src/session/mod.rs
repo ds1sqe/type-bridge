@@ -1,8 +1,8 @@
 //! Session layer for TypeDB connectivity.
 //!
 //! Provides [`Database`] for connecting to TypeDB, [`Transaction`] for
-//! individual operations, and [`TransactionContext`] for grouping multiple
-//! operations into a shared transaction.
+//! staged plans, and [`TransactionContext`] for grouping operations in a
+//! caller-owned transaction.
 
 pub mod backend;
 pub mod context;
