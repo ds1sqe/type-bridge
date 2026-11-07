@@ -65,3 +65,12 @@ the proxy. It runs on packages generated from
 `tests/contracts/sdk_conformance/writes/purchase`; the SDK `writes`
 conformance suite builds and runs all four and compares their plan bytes and
 results (see that directory's README).
+
+## Trace each call end to end
+
+[`walkthrough/`](walkthrough) runs purchase, subtype deletion, a 10,000-row
+bulk insert, manager calls and a dependent staged transaction in all four
+SDKs. Set `TYPEDB_ADDRESS` and `TYPEDB_HTTP_PORT`, then run
+`bash scripts/walkthrough.sh` from the repository root. The runner creates
+and removes its own databases, compares plans and results, and checks the
+[worked examples page](../docs/guide/worked-examples.md) against live output.

@@ -64,3 +64,41 @@ def test_comparison_requires_authored_raw_documents_and_compares_their_values() 
     second["purchase"]["raw"] = [{"stock": 5}]
     with pytest.raises(ValueError, match="purchase/raw differs"):
         compare.compare({"python": first, "typescript": second})
+
+
+def test_page_checks_exact_statement_bytes_and_rejects_missing_or_duplicate_blocks(
+    tmp_path: Path,
+) -> None:
+    case = {
+        "purchase": {
+            "call": "Item.insert(sku='I1')",
+            "plan": {"source": "canonical_bytes", "plan": {"bindings": []}},
+            "explain": {
+                "statements": ["insert $x isa item;\nfetch { $x.* };"],
+                "given": {"row_count": 1, "canonical_bytes": 12},
+                "inputs": [],
+            },
+            "raw": [{"_iid": "0xaa"}],
+            "models": [{"iid": "0xaa", "stock": 4}],
+        }
+    }
+    transcripts = {"python": case, "c": deepcopy(case)}
+    blocks = compare.page_blocks(transcripts)
+    page = "\n\n".join(
+        f"<!-- walkthrough:{marker} -->\n```{language}\n{value}\n```"
+        for marker, (language, value) in blocks.items()
+    )
+    path = tmp_path / "page.md"
+    path.write_text(page)
+    compare.check_page(path, transcripts)
+    compare.check_page(path, {"python": case})
+    for changed, message in [
+        (page.replace("insert $x isa item;", "insert  $x isa item;"), "differs byte for byte"),
+        (page.replace('"bindings": []', '"bindings": [ ]'), "differs byte for byte"),
+        (page.replace("walkthrough:purchase:plan", "unmarked:purchase:plan"), "missing page block"),
+        (page + "\n" + page, "duplicate page block"),
+        (page.replace("\n", "\r\n"), "missing page block"),
+    ]:
+        path.write_bytes(changed.encode())
+        with pytest.raises(ValueError, match=message):
+            compare.check_page(path, transcripts)

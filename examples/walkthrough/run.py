@@ -34,6 +34,7 @@ def main() -> None:
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    print(f"Walkthrough output: {output}", flush=True)
     workspace = output / "workspace"
     workspace.mkdir()
     for name in ("typebridge.yaml", "schema.yaml", "documents.yaml"):
@@ -185,10 +186,23 @@ type-bridge = {{ path = "{ROOT / "type-bridge-core/crates/rust"}" }}
             try:
                 if created:
                     db.delete_database()
+                    if db.database_exists():
+                        raise RuntimeError(
+                            f"walkthrough database still exists after deletion: {name}"
+                        )
+                    print(f"Deleted walkthrough database: {name}", flush=True)
             finally:
                 db.close()
-    if len(transcripts) > 1:
-        run([sys.executable, str(HERE / "compare.py"), *map(str, transcripts)], env=environment)
+    run(
+        [
+            sys.executable,
+            str(HERE / "compare.py"),
+            "--page",
+            str(ROOT / "docs/guide/worked-examples.md"),
+            *map(str, transcripts),
+        ],
+        env=environment,
+    )
 
 
 if __name__ == "__main__":
