@@ -5,6 +5,8 @@ All notable changes to TypeBridge will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Provider statement TRACE now covers manager, streaming, split, counted, and
+  migration-assertion paths with prepared input redaction.
 - Node debug listeners no longer silently lose events under synchronous load.
 - Provider panics during shared controlled write commits now report an unknown
   commit outcome across C, Rust, Python, and Node, preserving durability

@@ -2692,6 +2692,7 @@ impl RuntimeTransaction {
             },
             ScalarJsonEncoding::DriverDisplay,
             consumer,
+            None,
         )
     }
 
@@ -2707,6 +2708,7 @@ impl RuntimeTransaction {
             limits,
             ScalarJsonEncoding::Canonical,
             consumer,
+            None,
         )
     }
 
@@ -2739,9 +2741,6 @@ impl RuntimeTransaction {
         statement_display: Option<&str>,
     ) -> Result<QueryResult> {
         let started = std::time::Instant::now();
-        if canonical {
-            tracing::trace!(target: "type_bridge.io", statement = statement_display.unwrap_or(typeql), "type_bridge.io.provider.statement");
-        }
         let mut items = Vec::new();
         let mut consumer = |item| {
             items.push(item);
@@ -2756,10 +2755,26 @@ impl RuntimeTransaction {
                 self.query_with_rows_bounded(typeql, rows, limits.answer, &mut consumer)
                     .await
             }
-            (None, true) => self.query_plan_bounded(typeql, limits, &mut consumer).await,
+            (None, true) => {
+                self.query_bounded_with_scalar_encoding(
+                    typeql,
+                    limits,
+                    ScalarJsonEncoding::Canonical,
+                    &mut consumer,
+                    Some(statement_display.unwrap_or(typeql)),
+                )
+                .await
+            }
             (Some(rows), true) => {
-                self.query_plan_with_rows_bounded(typeql, rows, limits, &mut consumer)
-                    .await
+                self.query_with_rows_bounded_with_scalar_encoding(
+                    typeql,
+                    rows,
+                    limits,
+                    ScalarJsonEncoding::Canonical,
+                    &mut consumer,
+                    Some(statement_display.unwrap_or(typeql)),
+                )
+                .await
             }
         };
         let stats = match stats {
@@ -2779,6 +2794,7 @@ impl RuntimeTransaction {
         limits: QueryRuntimeAnswerLimits,
         scalar_encoding: ScalarJsonEncoding,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
+        statement_display: Option<&'a str>,
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
         let QueryRuntimeAnswerLimits {
             answer: limits,
@@ -2802,6 +2818,9 @@ impl RuntimeTransaction {
                                 driver_b9::QueryOptions::new()
                                     .prefetch_size(BOUNDED_QUERY_PREFETCH_SIZE)
                             };
+                            if let Some(statement) = statement_display {
+                                tracing::trace!(target: "type_bridge.io", statement, "type_bridge.io.provider.statement");
+                            }
                             if let Some(observer) = self.statement_dispatch_observer {
                                 observer();
                             }
@@ -2872,6 +2891,7 @@ impl RuntimeTransaction {
             },
             ScalarJsonEncoding::DriverDisplay,
             consumer,
+            None,
         )
     }
 
@@ -2889,6 +2909,7 @@ impl RuntimeTransaction {
             limits,
             ScalarJsonEncoding::Canonical,
             consumer,
+            None,
         )
     }
 
@@ -2899,6 +2920,7 @@ impl RuntimeTransaction {
         limits: QueryRuntimeAnswerLimits,
         scalar_encoding: ScalarJsonEncoding,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
+        statement_display: Option<&'a str>,
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
         let QueryRuntimeAnswerLimits {
             answer: limits,
@@ -2931,6 +2953,9 @@ impl RuntimeTransaction {
                                 driver_b9::QueryOptions::new()
                                     .prefetch_size(BOUNDED_QUERY_PREFETCH_SIZE)
                             };
+                            if let Some(statement) = statement_display {
+                                tracing::trace!(target: "type_bridge.io", statement, "type_bridge.io.provider.statement");
+                            }
                             if let Some(observer) = self.statement_dispatch_observer {
                                 observer();
                             }
@@ -3851,7 +3876,7 @@ mod tests {
 
     #[cfg(feature = "band9")]
     #[test]
-    fn materialized_plan_paths_keep_redaction_and_raw_paths_do_not_trace() {
+    fn refused_materialized_and_raw_queries_do_not_trace_statements() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
@@ -3881,11 +3906,7 @@ mod tests {
                         );
                     })
                 });
-                assert_eq!(events.len(), usize::from(canonical));
-                assert!(!events.join("\n").contains("REGEX_SECRET"));
-                if canonical {
-                    assert!(events[0].contains("<input:needle>"));
-                }
+                assert!(events.is_empty(), "a consumed transaction cannot dispatch");
             }
         }
     }

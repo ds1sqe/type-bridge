@@ -221,74 +221,23 @@ impl TransactionContextMutationLease {
                 "Streaming snapshots use a separate read plan".into(),
             ));
         }
-        tracing::trace!(target: "type_bridge.io", statement = query.redacted_typeql.as_deref().unwrap_or(&query.typeql), "type_bridge.io.provider.statement");
-        match query.rows {
-            Some(rows) => {
-                if query.writes || self.phase == MutationLeasePhase::PossibleEffect {
-                    self.mutate_v2_with_rows_bounded(&query.typeql, rows, limits, consumer)
-                        .await
-                } else {
-                    self.query_plan_with_rows_bounded(&query.typeql, rows, limits, consumer)
-                        .await
-                }
-            }
-            None => {
-                if self.phase == MutationLeasePhase::Finished {
-                    return Err(OrmError::Transaction(
-                        "Completed mutation lease cannot dispatch provider work".into(),
-                    ));
-                }
-                if query.writes {
-                    self.phase = MutationLeasePhase::PossibleEffect;
-                }
-                self.transaction()?
-                    .query_plan_bounded(&query.typeql, limits, consumer)
-                    .await
-            }
-        }
-    }
-
-    /// Execute a bounded scalar-`given` prerequisite while retaining the
-    /// exclusive lifecycle fence. This does not arm rollback-only because no
-    /// mutation has yet been dispatched.
-    pub(crate) async fn query_plan_with_rows_bounded(
-        &mut self,
-        typeql: &str,
-        rows: GivenRowsSpec,
-        limits: AnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        if self.phase != MutationLeasePhase::PreDispatch {
-            return Err(OrmError::Transaction(
-                "Mutation prerequisites must precede mutation dispatch".into(),
-            ));
-        }
-        self.transaction()?
-            .query_plan_with_rows_bounded(typeql, rows, limits, consumer)
-            .await
-    }
-
-    /// Arm the cancellation-safe poison latch synchronously, then dispatch one
-    /// bounded mutation. Every later provider call remains inside the armed
-    /// lease through complete hydration and output construction.
-    pub(crate) async fn mutate_v2_with_rows_bounded(
-        &mut self,
-        typeql: &str,
-        rows: GivenRowsSpec,
-        limits: AnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
         if self.phase == MutationLeasePhase::Finished {
             return Err(OrmError::Transaction(
                 "Completed mutation lease cannot dispatch provider work".into(),
             ));
         }
-        if self.phase == MutationLeasePhase::PreDispatch {
+        if query.writes {
             self.phase = MutationLeasePhase::PossibleEffect;
         }
-        self.transaction()?
-            .query_plan_with_rows_bounded(typeql, rows, limits, consumer)
-            .await
+        let tx = self.transaction()?;
+        tracing::trace!(target: "type_bridge.io", statement = query.redacted_typeql.as_deref().unwrap_or(&query.typeql), "type_bridge.io.provider.statement");
+        match query.rows {
+            Some(rows) => {
+                tx.query_plan_with_rows_bounded(&query.typeql, rows, limits, consumer)
+                    .await
+            }
+            None => tx.query_plan_bounded(&query.typeql, limits, consumer).await,
+        }
     }
 
     /// Retain the first exact redacted failure observed after mutation became
@@ -2517,6 +2466,34 @@ mod tests {
             context.lifecycle_state().await,
             TransactionContextState::Committed
         );
+    }
+
+    #[tokio::test]
+    async fn finished_mutation_leases_never_trace_refused_statements() {
+        use tracing::instrument::WithSubscriber;
+        for given in [false, true] {
+            for writes in [false, true] {
+                let (context, calls) = active_context();
+                let mut lease = context.acquire_mutation_lease().await.unwrap();
+                lease.phase = MutationLeasePhase::Finished;
+                let mut query =
+                    super::super::staged::StagedQuery::new("match $x isa thing;", writes);
+                query.rows = given.then(|| GivenRowsSpec {
+                    variables: vec![],
+                    rows: vec![],
+                });
+                let (events, dispatch) = crate::debug::capture_statements();
+                let mut consumer = |_item| Ok(super::super::backend::AnswerControl::Continue);
+                let error = lease
+                    .dispatch_plan_bounded(query, AnswerLimits::default(), &mut consumer)
+                    .with_subscriber(dispatch)
+                    .await
+                    .unwrap_err();
+                assert!(error.to_string().contains("Completed mutation lease"));
+                assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+                assert!(events.lock().unwrap().is_empty());
+            }
+        }
     }
 
     #[tokio::test]
