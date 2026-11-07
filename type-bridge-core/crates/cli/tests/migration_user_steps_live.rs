@@ -125,7 +125,7 @@ fn four_generated_sdks_share_atomic_user_callback_transactions() {
 
         let generated = workspace.join("generated/rust");
         let manifest = generated.join("Cargo.toml");
-        fs::write(&manifest,fs::read_to_string(&manifest).unwrap().replace("type-bridge = { version = \"=2.3.2\", default-features = false }",&format!("type-bridge = {{ path = {:?} }}\ntokio = {{ version = \"1\", features = [\"full\"] }}\nserde_json = \"1\"",root.join("type-bridge-core/crates/rust")))).unwrap();
+        fs::write(&manifest,fs::read_to_string(&manifest).unwrap().replace("type-bridge = { version = \"=3.0.0\", default-features = false }",&format!("type-bridge = {{ path = {:?} }}\ntokio = {{ version = \"1\", features = [\"full\"] }}\nserde_json = \"1\"",root.join("type-bridge-core/crates/rust")))).unwrap();
         fs::copy(
             root.join("type-bridge-core/Cargo.lock"),
             generated.join("Cargo.lock"),

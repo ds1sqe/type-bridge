@@ -36,9 +36,9 @@ the exact dependency authority.
 
 | Package | Responsibility | Use it directly when |
 | --- | --- | --- |
-| [`type-bridge`](https://crates.io/crates/type-bridge/2.3.2) · [rustdoc](https://docs.rs/type-bridge/2.3.2) | Generated Rust SDK runtime and public client facade | Building an application from generated Rust bindings |
-| [`type-bridge-cli`](https://crates.io/crates/type-bridge-cli/2.3.2) · [rustdoc](https://docs.rs/type-bridge-cli/2.3.2) | Reusable CLI library plus the thin `type-bridge` binary | Embedding or installing Split-YAML, generation, and migration commands |
-| [`type-bridge-server`](https://crates.io/crates/type-bridge-server/2.3.2) · [rustdoc](https://docs.rs/type-bridge-server/2.3.2) | Generic query-server library and production binary | Serving generated V2 query authority over the supported transport |
+| [`type-bridge`](https://crates.io/crates/type-bridge/3.0.0) · [rustdoc](https://docs.rs/type-bridge/3.0.0) | Generated Rust SDK runtime and public client facade | Building an application from generated Rust bindings |
+| [`type-bridge-cli`](https://crates.io/crates/type-bridge-cli/3.0.0) · [rustdoc](https://docs.rs/type-bridge-cli/3.0.0) | Reusable CLI library plus the thin `type-bridge` binary | Embedding or installing Split-YAML, generation, and migration commands |
+| [`type-bridge-server`](https://crates.io/crates/type-bridge-server/3.0.0) · [rustdoc](https://docs.rs/type-bridge-server/3.0.0) | Generic query-server library and production binary | Serving generated V2 query authority over the supported transport |
 
 ## Supporting packages
 
@@ -48,18 +48,18 @@ bindings. They are not separate products with independent version lines.
 
 | Package | Layer responsibility | Intended direct consumers |
 | --- | --- | --- |
-| [`type-bridge-contract`](https://crates.io/crates/type-bridge-contract/2.3.2) · [rustdoc](https://docs.rs/type-bridge-contract/2.3.2) | Binding-neutral identifiers, values, diagnostics, and wire contracts | Alternative bindings and protocol tooling |
-| [`type-bridge-core-lib`](https://crates.io/crates/type-bridge-core-lib/2.3.2) · [rustdoc](https://docs.rs/type-bridge-core-lib/2.3.2) | Shared compatibility engine retained below public language surfaces | TypeBridge adapters that need the established core implementation |
-| [`type-bridge-schema`](https://crates.io/crates/type-bridge-schema/2.3.2) · [rustdoc](https://docs.rs/type-bridge-schema/2.3.2) | Lossless Split-YAML schema documents, normalization, and safety classification | Schema tools that operate before provider execution |
-| [`type-bridge-query`](https://crates.io/crates/type-bridge-query/2.3.2) · [rustdoc](https://docs.rs/type-bridge-query/2.3.2) | Immutable provider-neutral query plans and validation | Generated query facades and alternate executors |
-| [`type-bridge-schema-migration`](https://crates.io/crates/type-bridge-schema-migration/2.3.2) · [rustdoc](https://docs.rs/type-bridge-schema-migration/2.3.2) | Provider-neutral schema migration manifests, profiles, and lowering | Migration planners and provider adapters |
-| [`type-bridge-schema-compat`](https://crates.io/crates/type-bridge-schema-compat/2.3.2) · [rustdoc](https://docs.rs/type-bridge-schema-compat/2.3.2) | One-way compatibility parsers into the V2 schema fact graph | Importers for retained released schema formats |
-| [`type-bridge-schema-codegen`](https://crates.io/crates/type-bridge-schema-codegen/2.3.2) · [rustdoc](https://docs.rs/type-bridge-schema-codegen/2.3.2) | Python, TypeScript, and Rust source projection from compiled schema authority | Generators and build integrations |
-| [`type-bridge-orm-derive`](https://crates.io/crates/type-bridge-orm-derive/2.3.2) · [rustdoc](https://docs.rs/type-bridge-orm-derive/2.3.2) | Procedural derives for Rust ORM model metadata | Generated Rust model crates through re-exported derives |
-| [`type-bridge-typedb-runtime`](https://crates.io/crates/type-bridge-typedb-runtime/2.3.2) · [rustdoc](https://docs.rs/type-bridge-typedb-runtime/2.3.2) | TypeDB driver-band selection and provider execution primitives | TypeDB-backed executors and server integrations |
-| [`type-bridge-orm`](https://crates.io/crates/type-bridge-orm/2.3.2) · [rustdoc](https://docs.rs/type-bridge-orm/2.3.2) | Async model CRUD, transactions, hooks, and query execution | Generated Rust models and generated runtime integrations |
-| [`type-bridge-schema-migration-typedb`](https://crates.io/crates/type-bridge-schema-migration-typedb/2.3.2) · [rustdoc](https://docs.rs/type-bridge-schema-migration-typedb/2.3.2) | TypeDB lowering and execution adapter for provider-neutral schema migrations | TypeDB migration runners |
-| [`type-bridge-workspace`](https://crates.io/crates/type-bridge-workspace/2.3.2) · [rustdoc](https://docs.rs/type-bridge-workspace/2.3.2) | Split-YAML workspace discovery, configuration, and generated artifact paths | CLI and workspace-aware build tooling |
+| [`type-bridge-contract`](https://crates.io/crates/type-bridge-contract/3.0.0) · [rustdoc](https://docs.rs/type-bridge-contract/3.0.0) | Binding-neutral identifiers, values, diagnostics, and wire contracts | Alternative bindings and protocol tooling |
+| [`type-bridge-core-lib`](https://crates.io/crates/type-bridge-core-lib/3.0.0) · [rustdoc](https://docs.rs/type-bridge-core-lib/3.0.0) | Shared compatibility engine retained below public language surfaces | TypeBridge adapters that need the established core implementation |
+| [`type-bridge-schema`](https://crates.io/crates/type-bridge-schema/3.0.0) · [rustdoc](https://docs.rs/type-bridge-schema/3.0.0) | Lossless Split-YAML schema documents, normalization, and safety classification | Schema tools that operate before provider execution |
+| [`type-bridge-query`](https://crates.io/crates/type-bridge-query/3.0.0) · [rustdoc](https://docs.rs/type-bridge-query/3.0.0) | Immutable provider-neutral query plans and validation | Generated query facades and alternate executors |
+| [`type-bridge-schema-migration`](https://crates.io/crates/type-bridge-schema-migration/3.0.0) · [rustdoc](https://docs.rs/type-bridge-schema-migration/3.0.0) | Provider-neutral schema migration manifests, profiles, and lowering | Migration planners and provider adapters |
+| [`type-bridge-schema-compat`](https://crates.io/crates/type-bridge-schema-compat/3.0.0) · [rustdoc](https://docs.rs/type-bridge-schema-compat/3.0.0) | One-way compatibility parsers into the V2 schema fact graph | Importers for retained released schema formats |
+| [`type-bridge-schema-codegen`](https://crates.io/crates/type-bridge-schema-codegen/3.0.0) · [rustdoc](https://docs.rs/type-bridge-schema-codegen/3.0.0) | Python, TypeScript, and Rust source projection from compiled schema authority | Generators and build integrations |
+| [`type-bridge-orm-derive`](https://crates.io/crates/type-bridge-orm-derive/3.0.0) · [rustdoc](https://docs.rs/type-bridge-orm-derive/3.0.0) | Procedural derives for Rust ORM model metadata | Generated Rust model crates through re-exported derives |
+| [`type-bridge-typedb-runtime`](https://crates.io/crates/type-bridge-typedb-runtime/3.0.0) · [rustdoc](https://docs.rs/type-bridge-typedb-runtime/3.0.0) | TypeDB driver-band selection and provider execution primitives | TypeDB-backed executors and server integrations |
+| [`type-bridge-orm`](https://crates.io/crates/type-bridge-orm/3.0.0) · [rustdoc](https://docs.rs/type-bridge-orm/3.0.0) | Async model CRUD, transactions, hooks, and query execution | Generated Rust models and generated runtime integrations |
+| [`type-bridge-schema-migration-typedb`](https://crates.io/crates/type-bridge-schema-migration-typedb/3.0.0) · [rustdoc](https://docs.rs/type-bridge-schema-migration-typedb/3.0.0) | TypeDB lowering and execution adapter for provider-neutral schema migrations | TypeDB migration runners |
+| [`type-bridge-workspace`](https://crates.io/crates/type-bridge-workspace/3.0.0) · [rustdoc](https://docs.rs/type-bridge-workspace/3.0.0) | Split-YAML workspace discovery, configuration, and generated artifact paths | CLI and workspace-aware build tooling |
 
 ## Retained compatibility packages
 

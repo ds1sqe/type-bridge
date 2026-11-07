@@ -133,7 +133,7 @@ def test_closed_archive_inventory_requires_all_19_exact_files(tmp_path: Path) ->
         validator.validate_archive_inventory(tmp_path, inventory)
 
     (tmp_path / missing).touch()
-    (tmp_path / "unexpected-2.3.2.crate").touch()
+    (tmp_path / "unexpected-3.0.0.crate").touch()
     with pytest.raises(validator.ExternalConsumerError, match="unexpected"):
         validator.validate_archive_inventory(tmp_path, inventory)
 
@@ -216,11 +216,11 @@ def test_generated_consumers_have_only_exact_registry_declarations(tmp_path: Pat
         features=("axum-transport",),
     )
     assert tomllib.loads(no_default.read_text())["dependencies"]["type-bridge-server"] == {
-        "version": "=2.3.2",
+        "version": "=3.0.0",
         "default-features": False,
     }
     assert tomllib.loads(transport_only.read_text())["dependencies"]["type-bridge-server"] == {
-        "version": "=2.3.2",
+        "version": "=3.0.0",
         "default-features": False,
         "features": ["axum-transport"],
     }
@@ -309,12 +309,12 @@ def test_metadata_rejects_source_tree_or_non_registry_resolution(tmp_path: Path)
 def test_server_feature_probes_are_isolated(
     features: list[str], expected_transport: bool, accepted: bool
 ) -> None:
-    package_id = "path+file:///server#type-bridge-server@2.3.2"
+    package_id = "path+file:///server#type-bridge-server@3.0.0"
     metadata = {
         "packages": [
             {
                 "name": "type-bridge-server",
-                "version": "2.3.2",
+                "version": "3.0.0",
                 "id": package_id,
             }
         ],
@@ -323,13 +323,13 @@ def test_server_feature_probes_are_isolated(
 
     if accepted:
         validator.validate_server_features(
-            metadata, version="2.3.2", expected_transport=expected_transport
+            metadata, version="3.0.0", expected_transport=expected_transport
         )
     else:
         with pytest.raises(validator.ExternalConsumerError):
             validator.validate_server_features(
                 metadata,
-                version="2.3.2",
+                version="3.0.0",
                 expected_transport=expected_transport,
             )
 
@@ -348,9 +348,9 @@ def test_installed_binary_version_must_be_exact(tmp_path: Path) -> None:
     with pytest.raises(validator.ExternalConsumerError, match="version output drifted"):
         validator._install_and_run_binary(
             cargo=("cargo", "+1.94.1"),
-            package_root=tmp_path / "type-bridge-cli-2.3.2",
+            package_root=tmp_path / "type-bridge-cli-3.0.0",
             binary="type-bridge",
-            expected_version="2.3.2",
+            expected_version="3.0.0",
             install_root=tmp_path / "installed",
             work_root=tmp_path,
             environment={},
@@ -392,7 +392,7 @@ def test_release_wires_external_consumers_between_archive_and_identity_gates() -
     ("old", "new"),
     [
         ("", ""),
-        ("type-bridge 2.3.2", "type-bridge 2.1.0"),
+        ("type-bridge 3.0.0", "type-bridge 2.1.0"),
         ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"),
         ("typedb-3.12.1/v1,typedb-3.13.6/v1", "typedb-3.12.1/v1"),
         ("source-commit: development-uncommitted", "source-commit: wrong"),
@@ -407,7 +407,7 @@ def test_installed_cli_checks_the_complete_build_identity(
     tmp_path: Path, old: str, new: str
 ) -> None:
     report = (
-        "type-bridge 2.3.2\n"
+        "type-bridge 3.0.0\n"
         "target: x86_64-unknown-linux-gnu\n"
         "semantic-profiles: typedb-3.12.1/v1,typedb-3.13.6/v1\n"
         "source-commit: development-uncommitted\n"
@@ -426,9 +426,9 @@ def test_installed_cli_checks_the_complete_build_identity(
     def validate() -> None:
         validator._install_and_run_binary(
             cargo=("cargo", "+1.94.1"),
-            package_root=tmp_path / "type-bridge-cli-2.3.2",
+            package_root=tmp_path / "type-bridge-cli-3.0.0",
             binary="type-bridge",
-            expected_version="2.3.2",
+            expected_version="3.0.0",
             install_root=tmp_path / "installed",
             work_root=tmp_path,
             environment={},

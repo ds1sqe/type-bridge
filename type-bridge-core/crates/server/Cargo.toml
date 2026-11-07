@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-server"
-version = "2.3.2"
+version = "3.0.0"
 edition = "2024"
 description = "Query-intercepting proxy server for TypeDB with validation and audit logging"
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
 readme = "README.md"
-documentation = "https://docs.rs/type-bridge-server/2.3.2"
+documentation = "https://docs.rs/type-bridge-server/3.0.0"
 rust-version = "1.88"
 
 [lib]
@@ -36,12 +36,12 @@ axum-transport = [
 ]
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "2.3.2" }
-type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.3.2", default-features = false, optional = true }
-type-bridge-contract = { path = "../contract", version = "2.3.2" }
-type-bridge-orm = { path = "../orm", version = "2.3.2", default-features = false }
-type-bridge-schema = { path = "../schema", version = "2.3.2" }
-type-bridge-schema-compat = { path = "../schema-compat", version = "2.3.2", optional = true }
+type-bridge-core-lib = { path = "../core", version = "3.0.0" }
+type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "3.0.0", default-features = false, optional = true }
+type-bridge-contract = { path = "../contract", version = "3.0.0" }
+type-bridge-orm = { path = "../orm", version = "3.0.0", default-features = false }
+type-bridge-schema = { path = "../schema", version = "3.0.0" }
+type-bridge-schema-compat = { path = "../schema-compat", version = "3.0.0", optional = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -80,8 +80,8 @@ name = "staged_integration_tests"
 required-features = ["typedb", "axum-transport"]
 
 [dev-dependencies]
-type-bridge-schema-migration = { path = "../schema-migration", version = "2.3.2" }
-type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb", version = "2.3.2" }
+type-bridge-schema-migration = { path = "../schema-migration", version = "3.0.0" }
+type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb", version = "3.0.0" }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

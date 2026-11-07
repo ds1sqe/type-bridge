@@ -944,7 +944,7 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
         raise ValidationError(f"Release workflow is missing or non-regular: {workflow}")
     source = workflow.read_text(encoding="utf-8")
     preamble = source.split("\njobs:\n", maxsplit=1)[0]
-    alias_selector = "  SERVER_OCI_MINOR_ALIAS: '2.3'"
+    alias_selector = "  SERVER_OCI_MINOR_ALIAS: '3.0'"
     if preamble.count(alias_selector) != 1:
         raise ValidationError("Release workflow has no exact OCI minor-alias selector")
 
@@ -1020,10 +1020,10 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
         server, "Sign exact platform and multi-platform digests"
     )
     scoped_requirements = (
-        (alias_step, 'for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do', "alias loop"),
+        (alias_step, 'for alias in "$SERVER_OCI_MINOR_ALIAS" 3 latest; do', "alias loop"),
         (
             metadata_step,
-            '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],',
+            '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "3", "latest"],',
             "release metadata aliases",
         ),
         (metadata_step, 'alias_markdown = ", ".join(', "release-note aliases"),
