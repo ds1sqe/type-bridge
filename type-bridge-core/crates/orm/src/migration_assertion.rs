@@ -1355,6 +1355,39 @@ limit 1;\nselect $person;\n"
     }
 
     #[tokio::test]
+    async fn assertion_trace_contains_declared_constants_but_no_runtime_evidence() {
+        use tracing::instrument::WithSubscriber;
+        let fixture = schema_fixture();
+        let validated = validated_all_outputs(&fixture);
+        let available = capabilities(&validated);
+        let context = MigrationAssertionExecutionContext::new(
+            &fixture.declared,
+            &fixture.managed,
+            &available,
+            StructuralLimits::CANONICAL,
+        );
+        let mut row = all_category_row(Some("0xfeed"));
+        row["name"]["value"] = Value::String("RUNTIME_EVIDENCE_SECRET".into());
+        let mut provider = FakeProvider::returning(QueryResult::Rows(vec![row]));
+        let (events, dispatch) = crate::debug::capture_statements();
+        let error = execute_with_provider(&mut provider, &validated, context)
+            .with_subscriber(dispatch)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            MigrationAssertionExecutionError::AssertionFailed(_)
+        ));
+        let events = events.lock().unwrap();
+        assert_eq!(*events, provider.statements);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].contains("blocked"));
+        assert!(events[0].contains(r#"Ada\n\"Lovelace\""#));
+        assert!(!events[0].contains("RUNTIME_EVIDENCE_SECRET"));
+        assert!(!events[0].contains("0xfeed"));
+    }
+
+    #[tokio::test]
     async fn empty_passes_and_first_conforming_row_returns_typed_stable_evidence() {
         let fixture = schema_fixture();
         let validated = validated(&fixture);
