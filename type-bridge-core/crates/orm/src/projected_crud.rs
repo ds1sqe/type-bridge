@@ -3281,6 +3281,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let ManagerRead::Fetch(stack) = program else {
             unreachable!("exact model fetch")
         };
+        ledger.limits = stack.execution_limits(ledger.limits);
         let mut answers = Vec::with_capacity(stack.plans().len());
         for plan in stack.plans() {
             control.check(type_id)?;
@@ -3296,7 +3297,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                     transaction,
                     type_id,
                     &query,
-                    ControlledAnswerKind::Documents,
+                    if plan.fetch_document_shape().is_some() {
+                        ControlledAnswerKind::Documents
+                    } else {
+                        ControlledAnswerKind::Rows
+                    },
                     control,
                     ledger,
                 )
@@ -6208,6 +6213,362 @@ fn sdk_name(value: &'static str) -> SdkDiagnosticName {
 
 #[cfg(test)]
 mod tests {
+    fn wide_read_projection(count: usize) -> InstalledRuntimeProjection {
+        wide_read_projection_with_subtype(count, false)
+    }
+
+    fn wide_read_projection_with_subtype(
+        count: usize,
+        subtype: bool,
+    ) -> InstalledRuntimeProjection {
+        let mut source = String::from(
+            "format: typebridge.schema/v2\nattributes:\n  note: { value: string }\nentities:\n  person: {}\nrelations:\n  membership:\n    owns:\n      note: { card: { min: 0, max: 1 } }\n    relates:\n",
+        );
+        for index in 0..count {
+            source.push_str(&format!("      member-{index}: {{ card: {{ min: 0 }} }}\n"));
+        }
+        if subtype {
+            source.push_str("  special-membership:\n    sub: membership\n    owns:\n      extra: { card: { min: 0, max: 1 } }\n");
+            source = source.replacen(
+                "attributes:\n",
+                "attributes:\n  extra: { value: string }\n",
+                1,
+            );
+        }
+        source.push_str("plays:\n  person:\n    membership: [");
+        source.push_str(
+            &(0..count)
+                .map(|index| format!("member-{index}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        source.push_str("]\n");
+        controlled_installed_from(&source)
+    }
+
+    fn wide_read_responses(program: &ManagerRead) -> Vec<ControlledProviderResponse> {
+        use type_bridge_contract::query_plan::Stage;
+        program.plans().iter().map(|plan| {
+            let fetch = plan.pipeline().iter().find_map(|stage| match stage {
+                Stage::Fetch(document) => Some(document), _ => None,
+            });
+            let items = if let Some(fetch) = fetch {
+                (0..2).map(|player| {
+                    let mut document = json!({"_iid":"0x20", "_type":"membership", "attributes":{"note":"wide"}});
+                    for (index, _) in fetch.roles.iter().enumerate() {
+                        document[format!("_role_{index}_iid")] = json!(if player == 0 { "0x10" } else { "0x11" });
+                        document[format!("_role_{index}_type")] = json!("person");
+                        document[format!("_role_{index}_attributes")] = json!({});
+                    }
+                    AnswerItem::Document(document)
+                }).collect()
+            } else {
+                vec![AnswerItem::Row(json!({"root0":{"kind":"thing","iid":"0x20","type_id":{"kind":"relation","label":"membership"}}}))]
+            };
+            ControlledProviderResponse::Items(items)
+        }).collect()
+    }
+
+    #[tokio::test]
+    async fn exact_read_splits_300_roles_under_default_limits() {
+        let installed = wide_read_projection(300);
+        let executor = ProjectedCrudExecutor::new(&installed);
+        let model = controlled_type(TypeKind::Relation);
+        let mut results = Vec::new();
+        for raised in [false, true] {
+            let mut policy = type_bridge_contract::limits::QueryLimits::PLAN;
+            if raised {
+                policy.structural.boolean_terms = 1024;
+                policy.structural.bindings = 1024;
+                policy.structural.selected_slots = 1024;
+            }
+            let (_, program) = executor
+                .manager_read_program(
+                    &model,
+                    Some("0x20"),
+                    ReadTerminal::Fetch,
+                    Some(&Arc::new(policy)),
+                )
+                .unwrap();
+            assert_eq!(program.plans().len(), if raised { 1 } else { 4 });
+            let (database, state) = controlled_database(wide_read_responses(&program));
+            let database = database.with_query_limits(policy).unwrap();
+            let result = executor
+                .get_relation_by_iid_controlled(
+                    &database,
+                    &model,
+                    "0x20",
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.roles().len(), 300);
+            assert!(result.roles().values().all(|players| players.len() == 2));
+            let fields = result
+                .fields()
+                .iter()
+                .map(|(field, values)| {
+                    (
+                        field.clone(),
+                        values.iter().map(|v| v.value().clone()).collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let roles = result
+                .roles()
+                .iter()
+                .map(|(role, players)| {
+                    (
+                        role.clone(),
+                        players
+                            .iter()
+                            .map(|p| (p.type_id().clone(), p.iid().to_owned()))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            results.push((
+                result.iid().to_owned(),
+                result.type_id().clone(),
+                fields,
+                roles,
+            ));
+            let state = state.lock().unwrap();
+            assert_eq!(state.opens.len(), 1);
+            assert_eq!(state.queries.len(), program.plans().len());
+            assert!(state.responses.is_empty());
+        }
+        assert_eq!(results[0], results[1]);
+    }
+
+    #[test]
+    fn exact_read_in_budget_bytes_and_unsplittable_limits() {
+        let installed = wide_read_projection(20);
+        let executor = ProjectedCrudExecutor::new(&installed);
+        let model = controlled_type(TypeKind::Relation);
+        let mut raised = type_bridge_contract::limits::QueryLimits::PLAN;
+        raised.structural.boolean_terms = 1024;
+        raised.structural.bindings = 1024;
+        raised.structural.selected_slots = 1024;
+        let (_, original) = executor
+            .manager_read_program(&model, Some("0x20"), ReadTerminal::Fetch, None)
+            .unwrap();
+        let (_, generous) = executor
+            .manager_read_program(
+                &model,
+                Some("0x20"),
+                ReadTerminal::Fetch,
+                Some(&Arc::new(raised)),
+            )
+            .unwrap();
+        assert_eq!(original.plans().len(), 1);
+        assert_eq!(
+            original.plans()[0].canonical_bytes().unwrap(),
+            generous.plans()[0].canonical_bytes().unwrap()
+        );
+        let mut tight = type_bridge_contract::limits::QueryLimits::PLAN;
+        tight.structural.boolean_terms = 1;
+        let error = executor.manager_read_program(
+            &model,
+            Some("0x20"),
+            ReadTerminal::Fetch,
+            Some(&Arc::new(tight)),
+        );
+        let Err(error) = error else {
+            panic!("unsplittable match must refuse");
+        };
+        assert_eq!(error.code().as_str(), "query_plan_write_term_limit");
+    }
+
+    #[tokio::test]
+    async fn exact_read_split_rejects_conflicts_missing_roots_and_explicit_statement_limit() {
+        let installed = wide_read_projection(300);
+        let executor = ProjectedCrudExecutor::new(&installed);
+        let model = controlled_type(TypeKind::Relation);
+        let (_, program) = executor
+            .manager_read_program(&model, Some("0x20"), ReadTerminal::Fetch, None)
+            .unwrap();
+        for case in 0..3 {
+            let mut responses = wide_read_responses(&program);
+            let ControlledProviderResponse::Items(last) = responses.last_mut().unwrap() else {
+                unreachable!()
+            };
+            if case == 0 {
+                for item in last {
+                    let AnswerItem::Document(document) = item else {
+                        unreachable!()
+                    };
+                    document["attributes"] = json!({"note":"conflicting"});
+                }
+            } else if case == 1 {
+                last.clear();
+            }
+            let (database, _) = controlled_database(responses);
+            let mut limits = QueryExecutionResourceLimits::default();
+            if case == 2 {
+                limits.statements = Some(3);
+            }
+            let error = executor
+                .get_relation_by_iid_controlled(
+                    &database,
+                    &model,
+                    "0x20",
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.code().as_str(),
+                if case == 2 {
+                    "projected_crud_statement_limit"
+                } else {
+                    "duplicate_hydrated_concept"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn split_read_preserves_mixed_subtype_fields_and_roles() {
+        use type_bridge_contract::query_plan::Stage;
+        let installed = wide_read_projection_with_subtype(300, true);
+        let registry = installed.manager_registry().unwrap();
+        let mut results = Vec::new();
+        for raised in [false, true] {
+            let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
+            if raised {
+                limits.structural.boolean_terms = 1024;
+            }
+            let program = ManagerPlans::new(Arc::clone(&registry))
+                .with_query_limits(Some(&Arc::new(limits)))
+                .read(
+                    "membership",
+                    false,
+                    &[],
+                    &[],
+                    None,
+                    None,
+                    &[],
+                    ReadTerminal::Fetch,
+                )
+                .unwrap();
+            let ManagerRead::Fetch(stack) = program else {
+                unreachable!()
+            };
+            let answers = stack.plans().iter().enumerate().map(|(plan_index, plan)| {
+                let fetch = plan.pipeline().iter().find_map(|stage| match stage { Stage::Fetch(fetch) => Some(fetch), _ => None });
+                let answer = if let Some(fetch) = fetch {
+                    let documents = [("membership", "0x20"), ("special-membership", "0x21")].into_iter().filter(|(label, _)| {
+                        stack.partitions.iter().find(|(index, _, _)| *index == plan_index).unwrap().2.contains(&TypeId::new(TypeKind::Relation, *label).unwrap())
+                    }).map(|(label, iid)| {
+                        let mut document = json!({"_iid":iid,"_type":label,"attributes":{"note":"wide"}});
+                        if label == "special-membership" { document["attributes"]["extra"] = json!("subtype"); }
+                        for (index, _) in fetch.roles.iter().enumerate() {
+                            document[format!("_role_{index}_iid")] = json!("0x10");
+                            document[format!("_role_{index}_type")] = json!("person");
+                            document[format!("_role_{index}_attributes")] = json!({});
+                        }
+                        document
+                    }).collect();
+                    QueryResult::Documents(documents)
+                } else {
+                    QueryResult::Rows([("membership", "0x20"), ("special-membership", "0x21")].into_iter().map(|(label, iid)| json!({"root0":{"kind":"thing","iid":iid,"type_id":{"kind":"relation","label":label}}})).collect())
+                };
+                TransactionContext::resolve_plan(plan, answer).unwrap_or_else(|error| panic!("{error:?}; pipeline={:?}; output={:?}", plan.pipeline(), plan.output()))
+            }).collect::<Vec<_>>();
+            let proof = stack
+                .resolve(
+                    &registry,
+                    &answers,
+                    stack.execution_limits(QueryExecutionResourceLimits::default()),
+                )
+                .unwrap();
+            results.push(proof.result().for_request(proof.request()).unwrap().clone());
+        }
+        assert_eq!(results[0], results[1]);
+        let crate::match_request::MatchResult::Rows { rows } = &results[0] else {
+            unreachable!()
+        };
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[cfg(feature = "typedb")]
+    #[tokio::test]
+    #[ignore = "requires TYPE_BRIDGE_WIDE_READ_DATABASE, TYPEDB_ADDRESS and TYPEDB_HTTP_PORT"]
+    async fn exact_read_300_roles_live() {
+        let name = std::env::var("TYPE_BRIDGE_WIDE_READ_DATABASE").unwrap();
+        let database = Arc::new(
+            Database::connect_with_options(
+                &std::env::var("TYPEDB_ADDRESS").unwrap(),
+                &name,
+                "admin",
+                "password",
+                crate::ConnectOptions {
+                    http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        database.create_database().await.unwrap();
+        let result = tokio::spawn({
+            let database = Arc::clone(&database);
+            async move {
+                let mut schema = String::from("define attribute note, value string; entity person");
+                for index in 0..300 {
+                    schema.push_str(&format!(", plays membership:member-{index}"));
+                }
+                schema.push_str("; relation membership, owns note @card(0..1)");
+                for index in 0..300 {
+                    schema.push_str(&format!(", relates member-{index} @card(0..)"));
+                }
+                schema.push(';');
+                database.execute_raw(&schema, TxType::Schema).await.unwrap();
+                let mut insert =
+                    String::from("insert $p isa person; $r isa membership, has note \"wide\"");
+                for index in 0..300 {
+                    insert.push_str(&format!(", links (member-{index}: $p)"));
+                }
+                insert.push(';');
+                database.execute_raw(&insert, TxType::Write).await.unwrap();
+                let QueryResult::Documents(rows) = database
+                    .execute_raw(
+                        "match $r isa membership; fetch { \"iid\": iid($r) };",
+                        TxType::Read,
+                    )
+                    .await
+                    .unwrap()
+                else {
+                    panic!("IID document");
+                };
+                let iid = rows[0]["iid"].as_str().unwrap();
+                let installed = wide_read_projection(300);
+                let executor = ProjectedCrudExecutor::new(&installed);
+                let result = executor
+                    .get_relation_by_iid_controlled(
+                        &database,
+                        &controlled_type(TypeKind::Relation),
+                        iid,
+                        QueryExecutionResourceLimits::default(),
+                        AnswerCancellation::default(),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(result.roles().len(), 300);
+                assert!(result.roles().values().all(|players| players.len() == 1));
+                assert_eq!(result.fields().len(), 1);
+            }
+        })
+        .await;
+        database.delete_database().await.unwrap();
+        result.unwrap();
+    }
+
     use super::*;
     use std::collections::VecDeque;
     use std::future::pending;
@@ -6350,7 +6711,11 @@ mod tests {
             let response = self.response();
             Box::pin(async move {
                 let mut collector = ControlledAnswerCollector::new(
-                    ControlledAnswerKind::Documents,
+                    if typeql.contains("fetch {") {
+                        ControlledAnswerKind::Documents
+                    } else {
+                        ControlledAnswerKind::Rows
+                    },
                     "native exact read",
                 );
                 stream_controlled_response(response, limits.answer, &mut collector, typeql).await?;

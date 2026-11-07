@@ -306,20 +306,26 @@ pub(crate) fn build_under_authority(
             binding,
             first_roles.unwrap(),
         )));
-        return Ok(PlanFetchStack {
-            plans: vec![rebuild(plan, pipeline, vec![], authority)?],
-            selection: None,
-            mapping: None,
-            partitions: vec![(
-                0,
-                binding,
-                hydration.bindings()[0].concrete_descriptors().to_vec(),
-            )],
-            hydration,
-            model_slots: slots,
-            schema_proof: None,
-            bulk: None,
-        });
+        match rebuild(plan, pipeline, vec![], authority) {
+            Ok(fetch) => {
+                return Ok(PlanFetchStack {
+                    plans: vec![fetch],
+                    selection: None,
+                    mapping: None,
+                    partitions: vec![(
+                        0,
+                        binding,
+                        hydration.bindings()[0].concrete_descriptors().to_vec(),
+                    )],
+                    hydration,
+                    model_slots: slots,
+                    schema_proof: None,
+                    bulk: None,
+                });
+            }
+            Err(error) if error.code().as_str() == "query_plan_write_term_limit" => {}
+            Err(error) => return Err(error),
+        }
     }
     let mut source = retain_inputs(plan, authority)?;
     let mut prefix = source.pipeline().to_vec();
@@ -1011,7 +1017,11 @@ impl PlanFetchStack {
             max_role_players: limits.role_players,
         };
         let mut graph = GraphBuilder::new(reply_limits);
-        for (index, binding, concrete) in &self.partitions {
+        for partitions in self
+            .partitions
+            .chunk_by(|left, right| left.1 == right.1 && left.2 == right.2)
+        {
+            let (index, binding, concrete) = &partitions[0];
             let expected = mapping
                 .iter()
                 .map(|row| {
@@ -1042,13 +1052,31 @@ impl PlanFetchStack {
             let Some(PlanAnswer::Documents(documents)) = answers.get(*index) else {
                 return Err(fail());
             };
-            let actual = insert_plan_documents(
-                &mut graph,
-                &authority,
-                binding.get(),
-                &self.plans()[*index],
-                documents,
-            )
+            let actual = if partitions.len() == 1 {
+                insert_plan_documents(
+                    &mut graph,
+                    &authority,
+                    binding.get(),
+                    &self.plans()[*index],
+                    documents,
+                )
+            } else {
+                let pieces = partitions
+                    .iter()
+                    .map(|(index, _, _)| {
+                        let Some(PlanAnswer::Documents(documents)) = answers.get(*index) else {
+                            return Err(fail());
+                        };
+                        Ok((&self.plans()[*index], documents.as_slice()))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                super::plan_hydration::insert_partitioned_plan_documents(
+                    &mut graph,
+                    &authority,
+                    binding.get(),
+                    &pieces,
+                )
+            }
             .map_err(shared)?
             .into_iter()
             .collect::<BTreeSet<_>>();
@@ -1443,15 +1471,51 @@ pub(crate) fn append_hydration_partitions(
             } else {
                 prefix.source.bindings().to_vec()
             };
-            pipeline.push(Stage::Fetch(ThingDocument::new(binding.binding(), roles)));
-            partitions.push((plans.len(), binding.binding(), concretes));
-            plans.push(rebuild_with_bindings(
-                prefix.source,
-                bindings,
-                pipeline,
-                vec![],
-                authority,
-            )?);
+            let build = |roles: &[type_bridge_contract::query_plan::DocumentRole]| {
+                let mut stages = pipeline.clone();
+                stages.push(Stage::Fetch(ThingDocument::new(
+                    binding.binding(),
+                    roles.to_vec(),
+                )));
+                rebuild_with_bindings(prefix.source, bindings.clone(), stages, vec![], authority)
+            };
+            let mut remaining = roles.as_slice();
+            loop {
+                let (fetch, count) = match build(remaining) {
+                    Ok(fetch) => (fetch, remaining.len()),
+                    Err(error)
+                        if error.code().as_str() == "query_plan_write_term_limit"
+                            && remaining.len() > 1 =>
+                    {
+                        // Validation measures all effective limits; pack the longest valid prefix.
+                        let mut best = build(&remaining[..1])?;
+                        let (mut low, mut high) = (1, remaining.len());
+                        while low + 1 < high {
+                            let middle = low + (high - low) / 2;
+                            match build(&remaining[..middle]) {
+                                Ok(fetch) => {
+                                    best = fetch;
+                                    low = middle;
+                                }
+                                Err(error)
+                                    if error.code().as_str() == "query_plan_write_term_limit" =>
+                                {
+                                    high = middle
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        (best, low)
+                    }
+                    Err(error) => return Err(error),
+                };
+                partitions.push((plans.len(), binding.binding(), concretes.clone()));
+                plans.push(fetch);
+                if count == remaining.len() {
+                    break;
+                }
+                remaining = &remaining[count..];
+            }
         }
     }
     Ok(partitions)

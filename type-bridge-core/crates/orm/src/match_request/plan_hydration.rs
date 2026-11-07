@@ -1726,6 +1726,125 @@ pub(crate) fn validate_plan_documents(
     Ok(())
 }
 
+/// Assemble disjoint role subsets before the complete-model hydration checks.
+pub(crate) fn insert_partitioned_plan_documents(
+    graph: &mut GraphBuilder,
+    authority: &HydrationAuthority<'_>,
+    binding: u16,
+    partitions: &[(&type_bridge_contract::query_plan::QueryPlan, &[JsonValue])],
+) -> ExecResult<Vec<String>> {
+    use type_bridge_contract::query_plan::{DocumentRole, Stage, ThingDocument};
+    let conflict = || {
+        evidence_error(
+            "query_plan_hydration_conflict",
+            "split model fetch carries contradictory or incomplete evidence",
+        )
+    };
+    let mut roles = Vec::new();
+    let mut seen_roles = BTreeSet::new();
+    let mut roots: BTreeMap<String, JsonValue> = BTreeMap::new();
+    let mut players: BTreeMap<(String, usize), BTreeMap<String, JsonValue>> = BTreeMap::new();
+    let mut expected = None;
+    for (plan, documents) in partitions {
+        let document = plan
+            .pipeline()
+            .iter()
+            .find_map(|stage| match stage {
+                Stage::Fetch(document) => Some(document),
+                _ => None,
+            })
+            .ok_or_else(conflict)?;
+        let offset = roles.len();
+        for role in &document.roles {
+            if !seen_roles.insert(role.role.clone()) {
+                return Err(conflict());
+            }
+            roles.push(DocumentRole::collected(role.role.clone()));
+        }
+        let mut actual = BTreeSet::new();
+        for value in *documents {
+            let iid = value
+                .get("_iid")
+                .and_then(json_string)
+                .ok_or_else(conflict)?;
+            actual.insert(iid.to_owned());
+            // The unchanged thing-document wire format repeats root attributes in every subset.
+            let root = serde_json::json!({"_iid": iid, "_type": value["_type"], "attributes": value["attributes"]});
+            if let Some(previous) = roots.get(iid) {
+                if previous != &root {
+                    return Err(conflict());
+                }
+            } else {
+                roots.insert(iid.to_owned(), root);
+            }
+            for (index, role) in document.roles.iter().enumerate() {
+                let listed = if role.collect {
+                    value
+                        .get(format!("_role_{index}_players"))
+                        .and_then(JsonValue::as_array)
+                        .ok_or_else(conflict)?
+                        .clone()
+                } else if let Some(player) = value
+                    .get(format!("_role_{index}_iid"))
+                    .and_then(json_string)
+                {
+                    vec![
+                        serde_json::json!({"_iid": player, "_type": value[format!("_role_{index}_type")], "attributes": value[format!("_role_{index}_attributes")]}),
+                    ]
+                } else {
+                    vec![]
+                };
+                for player in listed {
+                    let player_iid = player
+                        .get("_iid")
+                        .and_then(json_string)
+                        .ok_or_else(conflict)?
+                        .to_owned();
+                    let role_players = players.entry((iid.to_owned(), offset + index)).or_default();
+                    if let Some(previous) = role_players.get(&player_iid) {
+                        if previous != &player {
+                            return Err(conflict());
+                        }
+                    } else {
+                        role_players.insert(player_iid, player);
+                    }
+                }
+            }
+        }
+        if expected
+            .as_ref()
+            .is_some_and(|expected| expected != &actual)
+        {
+            return Err(conflict());
+        }
+        expected = Some(actual);
+    }
+    let mut documents = Vec::with_capacity(roots.len());
+    for (iid, mut root) in roots {
+        for index in 0..roles.len() {
+            root[format!("_role_{index}_players")] = JsonValue::Array(
+                players
+                    .remove(&(iid.clone(), index))
+                    .unwrap_or_default()
+                    .into_values()
+                    .collect(),
+            );
+        }
+        documents.push(root);
+    }
+    insert_thing_documents(
+        graph,
+        authority,
+        binding,
+        &ThingDocument::new(
+            type_bridge_contract::migration_assertion::BindingId::new(binding)
+                .map_err(|_| conflict())?,
+            roles,
+        ),
+        &documents,
+    )
+}
+
 pub(crate) fn insert_plan_documents(
     graph: &mut GraphBuilder,
     authority: &HydrationAuthority<'_>,
@@ -1747,6 +1866,16 @@ pub(crate) fn insert_plan_documents(
                 "model materialization requires a thing fetch",
             )
         })?;
+    insert_thing_documents(graph, authority, binding, document, documents)
+}
+
+fn insert_thing_documents(
+    graph: &mut GraphBuilder,
+    authority: &HydrationAuthority<'_>,
+    binding: u16,
+    document: &type_bridge_contract::query_plan::ThingDocument,
+    documents: &[JsonValue],
+) -> ExecResult<Vec<String>> {
     // TypeDB 3 unordered roles are sets of player IIDs: repeated links add no occurrence.
     // Coalesce Cartesian fan-out across other roles, keeping each role index separate.
     type PlayerDocuments = BTreeMap<(usize, String), JsonValue>;
