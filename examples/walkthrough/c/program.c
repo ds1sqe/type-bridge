@@ -307,8 +307,9 @@ static void show(const char *name, type_bridge_plan_builder_t *p,
     OK(type_bridge_plan_builder_selection_plan(p, selection, &inspection,
                                                &diagnostics));
     size_t n = 0;
-    assert(type_bridge_plan_canonical_bytes(inspection, NULL, 0, &n) ==
-           TYPE_BRIDGE_STATUS_RESOURCE_LIMIT);
+    const type_bridge_status_t size_status =
+        type_bridge_plan_canonical_bytes(inspection, NULL, 0, &n);
+    assert(size_status == TYPE_BRIDGE_STATUS_RESOURCE_LIMIT);
     char *bytes = malloc(n + 1);
     assert(bytes);
     OK(type_bridge_plan_canonical_bytes(inspection, (uint8_t *)bytes, n, &n));
@@ -963,8 +964,9 @@ static void staged_dependency(void) {
     type_bridge_byte_view_t text;
     OK(type_bridge_plan_builder_selection_plan(p[i], selection[i], &inspection,
                                                &diagnostics));
-    assert(type_bridge_plan_canonical_bytes(inspection, NULL, 0, &n) ==
-           TYPE_BRIDGE_STATUS_RESOURCE_LIMIT);
+    const type_bridge_status_t size_status =
+        type_bridge_plan_canonical_bytes(inspection, NULL, 0, &n);
+    assert(size_status == TYPE_BRIDGE_STATUS_RESOURCE_LIMIT);
     bytes[i] = malloc(n + 1);
     assert(bytes[i]);
     OK(type_bridge_plan_canonical_bytes(inspection, (uint8_t *)bytes[i], n,

@@ -2,7 +2,7 @@
 import { Database, Plan, setDebugListener } from "@type-bridge/node";
 import type { DebugEvent } from "@type-bridge/node";
 import { Account, Document, Item, Memo, OrderLine, OrderId, Price, Quantity, Report, Sku, Stock } from "./index.js";
-import type { CompleteFacet } from "./runtime.js";
+import type { CompleteFacet } from "./index.js";
 
 declare const process: {
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -19,6 +19,8 @@ async function finish(expected: number): Promise<DebugEvent["fields"][]> {
   while (captured.length < expected && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+  // Let the host queue settle so a late duplicate fails this case.
+  if (captured.length === expected) await new Promise(resolve => setTimeout(resolve, 50));
   if (captured.length !== expected) throw new Error(`expected ${expected} provider statements, captured ${captured.length}`);
   const events = captured;
   captured = [];

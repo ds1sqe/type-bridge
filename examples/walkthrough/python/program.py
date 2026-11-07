@@ -44,6 +44,9 @@ class Statements(logging.Handler):
         deadline = time.monotonic() + 10
         while len(self.events) < expected and time.monotonic() < deadline:
             time.sleep(0.01)
+        # Let the host queue settle so a late duplicate fails this case.
+        if len(self.events) == expected:
+            time.sleep(0.05)
         if len(self.events) != expected:
             raise AssertionError(
                 f"expected {expected} provider statements, captured {len(self.events)}"
