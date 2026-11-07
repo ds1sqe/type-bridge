@@ -3,12 +3,12 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
-use type_bridge_schema_codegen::{PythonEmitter, TypeScriptEmitter};
+use type_bridge_schema_codegen::{PythonEmitter, RustEmitter, TypeScriptEmitter};
 
 /// Emit evidence through the native projection pipeline, never from pinned digests.
 #[test]
 #[ignore = "invoked by the projection fingerprint refresh tool"]
-fn produce_python_node_projection_fingerprints() {
+fn produce_projection_fingerprints() {
     let mut evidence = serde_json::Map::new();
     for profile in ["typedb-3.12.1/v1", "typedb-3.13.6/v1"] {
         let mut suites = serde_json::Map::new();
@@ -42,7 +42,16 @@ fn produce_python_node_projection_fingerprints() {
                 &node.code_resources_for(&resolved).unwrap(),
             )
             .unwrap();
-            suites.insert(suite.to_owned(), json!({"semantic": python.semantic_fingerprint(), "python": python.projection_fingerprint(), "node": node.projection_fingerprint()}));
+            let rust = RustEmitter::new();
+            let rust = project(
+                &resolved,
+                BindingTarget::Rust,
+                &ProjectionConfig::rust(),
+                &rust.generator_handlers_for(&resolved),
+                &rust.code_resources_for(&resolved).unwrap(),
+            )
+            .unwrap();
+            suites.insert(suite.to_owned(), json!({"semantic": python.semantic_fingerprint(), "python": python.projection_fingerprint(), "node": node.projection_fingerprint(), "rust": rust.projection_fingerprint()}));
         }
         evidence.insert(profile.to_owned(), suites.into());
     }

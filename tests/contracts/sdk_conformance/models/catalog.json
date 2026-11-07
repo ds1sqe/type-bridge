@@ -61,14 +61,14 @@
         "algorithm": "sha256",
         "canonicalization": "typebridge.binding-projection/v1",
         "semantic_profile": "typedb-3.12.1/v1",
-        "digest": "ba0102068e91b21196834254f5d0206f26cf3059b8bef2e5df0ed42c28b1f1a6"
+        "digest": "a5d9495ad74c79304bd4dbf135606219a69ef8e0e7dff80e58ae818d26fdb467"
       },
       "rust": {
         "domain": "typebridge.binding.projection",
         "algorithm": "sha256",
         "canonicalization": "typebridge.binding-projection/v1",
         "semantic_profile": "typedb-3.12.1/v1",
-        "digest": "ebe0163091fca7c9c8fd3d46e172109642ca0e495bde475902f740f147352bce"
+        "digest": "9e8ffa06fe85ea392fe652a2cedd63501ec5483eb2ec504ee708503dd792f9be"
       },
       "c": {
         "domain": "typebridge.binding.projection",

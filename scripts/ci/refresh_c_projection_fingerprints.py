@@ -29,14 +29,14 @@ def replace_once(body: str, old: str, new: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bindings", nargs="+", choices=("c", "python", "node"), default=["c"])
+    parser.add_argument("--bindings", nargs="+", choices=("c", "python", "node", "rust"), default=["c"])
     bindings = parser.parse_args().bindings
     if len(set(bindings)) != len(bindings) or ("c" in bindings and len(bindings) != 1):
-        parser.error("select C alone or Python/Node")
+        parser.error("select C alone or Python/Node/Rust")
     native_test, producer = (
         ("c_projection_live", "produce_c_projection_fingerprints")
         if bindings == ["c"]
-        else ("projection_fingerprints", "produce_python_node_projection_fingerprints")
+        else ("projection_fingerprints", "produce_projection_fingerprints")
     )
     with tempfile.TemporaryDirectory(prefix="typebridge-c-fingerprints-") as directory:
         output = Path(directory) / "fingerprints.json"
