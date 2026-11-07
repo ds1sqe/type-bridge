@@ -317,6 +317,8 @@ async fn execute_with_provider<P: AssertionProviderCall + ?Sized>(
         // resumable TypeDB answer stream.
         Ok(AnswerControl::Continue)
     };
+    // Assertion plans contain declared constants, not transported caller inputs.
+    tracing::trace!(target: "type_bridge.io", statement = lowered.typeql(), "type_bridge.io.provider.statement");
     let provider_result = provider
         .query_plan_bounded(
             lowered.typeql(),

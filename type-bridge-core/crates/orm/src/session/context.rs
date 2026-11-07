@@ -221,6 +221,7 @@ impl TransactionContextMutationLease {
                 "Streaming snapshots use a separate read plan".into(),
             ));
         }
+        tracing::trace!(target: "type_bridge.io", statement = query.redacted_typeql.as_deref().unwrap_or(&query.typeql), "type_bridge.io.provider.statement");
         match query.rows {
             Some(rows) => {
                 if query.writes || self.phase == MutationLeasePhase::PossibleEffect {
@@ -547,6 +548,7 @@ impl TransactionContext {
         self.check_schema_annotation_support(&query.typeql)?;
         let mut guard = self.inner.lock().await;
         let tx = active_transaction(&mut guard)?;
+        tracing::trace!(target: "type_bridge.io", statement = query.redacted_typeql.as_deref().unwrap_or(&query.typeql), "type_bridge.io.provider.statement");
         match query.rows.as_ref() {
             Some(rows) => {
                 tx.query_plan_with_rows_bounded(&query.typeql, rows.clone(), limits, consumer)
@@ -1195,6 +1197,14 @@ mod tests {
     }
 
     impl TransactionOps for LifecycleTransaction {
+        fn query_with_rows(
+            &mut self,
+            typeql: &str,
+            _: GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult>> {
+            self.query(typeql)
+        }
+
         fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult>> {
             self.calls.queries.fetch_add(1, Ordering::SeqCst);
             let gate = self.deletion_gate.clone();
@@ -2507,6 +2517,57 @@ mod tests {
             context.lifecycle_state().await,
             TransactionContextState::Committed
         );
+    }
+
+    #[tokio::test]
+    async fn streaming_plan_trace_uses_redacted_regex_once_per_dispatch() {
+        use tracing::instrument::WithSubscriber;
+        use type_bridge_contract::migration_assertion::ValueComparator;
+        for mutation in [false, true] {
+            for given in [false, true] {
+                let plan = crate::query_plan_exec::race::string_read(
+                    ValueComparator::Like,
+                    &["REGEX_SECRET"],
+                );
+                let mut query = crate::query_plan_exec::staged_query(&plan, true).unwrap();
+                if !given {
+                    // Exercise the no-given dispatch with an already-inlined input.
+                    query.typeql = "match $d isa doctor, has name $n; $n like \"REGEX_SECRET\"; fetch { \"name\": $n };".into();
+                    query.redacted_typeql =
+                        Some(query.typeql.replace("REGEX_SECRET", "<input:needle>"));
+                    query.rows = None;
+                }
+                let expected = query.redacted_typeql.clone().unwrap();
+                query.writes = mutation;
+                let (context, calls) = active_context();
+                let (events, dispatch) = crate::debug::capture_statements();
+                async {
+                    let mut consumer = |_item| Ok(super::super::backend::AnswerControl::Continue);
+                    if mutation {
+                        let mut lease = context.acquire_mutation_lease().await.unwrap();
+                        lease
+                            .dispatch_plan_bounded(query, AnswerLimits::default(), &mut consumer)
+                            .await
+                            .unwrap();
+                    } else {
+                        context
+                            .dispatch_read_plan_bounded(
+                                &query,
+                                AnswerLimits::default(),
+                                &mut consumer,
+                            )
+                            .await
+                            .unwrap();
+                    }
+                }
+                .with_subscriber(dispatch)
+                .await;
+                let events = events.lock().unwrap();
+                assert_eq!(*events, [expected]);
+                assert_eq!(events.len(), calls.queries.load(Ordering::SeqCst));
+                assert!(!events[0].contains("REGEX_SECRET"));
+            }
+        }
     }
 
     #[tokio::test]

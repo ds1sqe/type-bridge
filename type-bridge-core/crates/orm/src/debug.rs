@@ -201,6 +201,24 @@ pub fn dispatch(callback: DebugListener) -> tracing::Dispatch {
 }
 
 #[cfg(test)]
+pub(crate) fn capture_statements() -> (Arc<std::sync::Mutex<Vec<String>>>, tracing::Dispatch) {
+    let statements = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = Arc::clone(&statements);
+    let layer = DebugLayer(Arc::new(move |event| {
+        if event.name == "type_bridge.io.provider.statement" {
+            captured
+                .lock()
+                .unwrap()
+                .push(event.fields["statement"].as_str().unwrap().to_owned());
+        }
+    }));
+    (
+        statements,
+        tracing::Dispatch::new(tracing_subscriber::registry().with(layer)),
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;

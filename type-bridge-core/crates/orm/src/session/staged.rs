@@ -193,6 +193,7 @@ impl StagedQuery {
             .then(|| crate::answer_meter::AnswerMeter::new(&limits.answer));
         let snapshot = if let Some((typeql, plan)) = &self.snapshot {
             let answer = if count && let Some(rows) = &self.rows {
+                tracing::trace!(target: "type_bridge.io", statement = self.redacted_snapshot.as_deref().unwrap_or(typeql), "type_bridge.io.provider.statement");
                 collect_counted_given(
                     ops,
                     typeql,
@@ -236,6 +237,7 @@ impl StagedQuery {
         };
         let streamed = count && self.rows.is_some();
         let answer = if let Some(rows) = self.rows.as_ref().filter(|_| streamed) {
+            tracing::trace!(target: "type_bridge.io", statement = self.redacted_typeql.as_deref().unwrap_or(&self.typeql), "type_bridge.io.provider.statement");
             collect_counted_given(
                 ops,
                 &self.typeql,
@@ -4636,6 +4638,37 @@ mod tests {
             assert_eq!(explanation.statements, state.given_queries);
             assert_eq!(explanation.read_statements, usize::from(snapshot));
             assert_eq!(explanation.write_statements, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn counted_plan_trace_uses_redacted_regex_and_one_event_per_statement() {
+        use tracing::instrument::WithSubscriber;
+        use type_bridge_contract::migration_assertion::ValueComparator;
+        for snapshot in [false, true] {
+            let plan = if snapshot {
+                crate::query_plan_exec::race::delete_named_doctors_returning(&["DELETE_SECRET"])
+            } else {
+                crate::query_plan_exec::race::string_read(ValueComparator::Like, &["REGEX_SECRET"])
+            };
+            let query = crate::query_plan_exec::staged_query(&plan, true).unwrap();
+            let explanation = crate::plan_explain::explain(&plan).unwrap();
+            let state = Arc::new(Mutex::new(State {
+                given: true,
+                snapshot_documents: Some(vec![]),
+                ..Default::default()
+            }));
+            let mut provider = Fake(Arc::clone(&state));
+            let (events, dispatch) = crate::debug::capture_statements();
+            query
+                .execute_counted(&mut provider, AnswerLimits::default(), None)
+                .with_subscriber(dispatch)
+                .await
+                .unwrap();
+            let events = events.lock().unwrap();
+            assert_eq!(*events, explanation.statements);
+            assert_eq!(events.len(), state.lock().unwrap().given_queries.len());
+            assert!(!events.join("\n").contains("SECRET"));
         }
     }
 

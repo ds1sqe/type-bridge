@@ -3814,6 +3814,82 @@ mod tests {
         String::from_utf8(bytes).expect("tracing formatter emits UTF-8")
     }
 
+    fn statement_events(run: impl FnOnce()) -> Vec<String> {
+        use tracing_subscriber::layer::SubscriberExt;
+        #[derive(Clone, Default)]
+        struct Statements(Arc<Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Statements {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _context: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct Visitor<'a>(&'a Mutex<Vec<String>>);
+                impl tracing::field::Visit for Visitor<'_> {
+                    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {
+                    }
+                    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                        if field.name() == "statement" {
+                            self.0.lock().unwrap().push(value.to_owned());
+                        }
+                    }
+                }
+                if event.metadata().target() == "type_bridge.io" {
+                    event.record(&mut Visitor(&self.0));
+                }
+            }
+        }
+        let _guard = TRACE_CAPTURE_LOCK.lock().unwrap();
+        let statements = Statements::default();
+        let subscriber = tracing_subscriber::registry().with(statements.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            run();
+        });
+        statements.0.lock().unwrap().clone()
+    }
+
+    #[cfg(feature = "band9")]
+    #[test]
+    fn materialized_plan_paths_keep_redaction_and_raw_paths_do_not_trace() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for given in [false, true] {
+            for canonical in [false, true] {
+                let events = statement_events(|| {
+                    runtime.block_on(async {
+                        let mut tx = RuntimeTransaction {
+                            statement_dispatch_observer: None,
+                            inner: RuntimeTransactionInner::B9(None),
+                            driver_lease: None,
+                        };
+                        let rows = given.then(|| GivenRowsSpec {
+                            variables: vec![],
+                            rows: vec![],
+                        });
+                        assert!(
+                            tx.query_materialized_bounded(
+                                "match $d isa doctor, has name $n; $n like \"REGEX_SECRET\"; fetch { \"name\": $n };",
+                                rows,
+                                Default::default(),
+                                canonical,
+                                Some("match $d isa doctor, has name $n; $n like \"<input:needle>\"; fetch { \"name\": $n };")
+                            )
+                            .await
+                            .is_err()
+                        );
+                    })
+                });
+                assert_eq!(events.len(), usize::from(canonical));
+                assert!(!events.join("\n").contains("REGEX_SECRET"));
+                if canonical {
+                    assert!(events[0].contains("<input:needle>"));
+                }
+            }
+        }
+    }
+
     #[test]
     fn driver_drop_close_warning_drops_hostile_provider_text() {
         const PROVIDER_SENTINEL: &str = "TB_DROP_CLOSE_PROVIDER_SECRET";

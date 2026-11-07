@@ -2300,6 +2300,80 @@ plays:
     }
 
     #[cfg(feature = "typedb")]
+    #[tokio::test]
+    #[ignore = "requires a live TypeDB (TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS / TYPEDB_HTTP_PORT)"]
+    async fn direct_manager_streaming_statements_match_explain() {
+        use crate::_manager::DynamicEntityManager;
+        use crate::{AttributeValue, ConnectOptions, Database, TxType};
+        use std::sync::Mutex;
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        #[derive(Clone, Default)]
+        struct Statements(Arc<Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Statements {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct Visitor<'a>(&'a Mutex<Vec<String>>);
+                impl tracing::field::Visit for Visitor<'_> {
+                    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {
+                    }
+                    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                        if field.name() == "statement" {
+                            self.0.lock().unwrap().push(value.to_owned());
+                        }
+                    }
+                }
+                if event.metadata().target() == "type_bridge.io" {
+                    event.record(&mut Visitor(&self.0));
+                }
+            }
+        }
+        let db = Database::connect_with_options(
+            &std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap(),
+            &crate::live_database::name("manager_trace"),
+            "admin",
+            "password",
+            ConnectOptions {
+                http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        db.create_database().await.unwrap();
+        let outcome = async {
+            db.execute_raw("define attribute identifier, value string; attribute note, value string; entity person, owns identifier @key, plays membership:member, plays employment:worker; entity employee sub person, owns note @card(0..1); relation membership, relates member @card(1), owns note @card(0..1); relation employment sub membership, relates worker as member @card(1);", TxType::Schema).await?;
+            let plans = read_fixture();
+            let manager = DynamicEntityManager::from_registry(&db, Arc::clone(&plans.registry), plans.registry.entity("employee").unwrap());
+            let attributes = vec![("identifier".into(), AttributeValue::String("trace-employee".into()))];
+            let insert = plans.single_write("employee", super::super::bulk_write::WriteKind::Insert, None, &attributes, &[])?;
+            let expected_insert = crate::plan_explain::explain(insert.local()).unwrap().statements;
+            let read = plans.read("employee", false, &[], &[], None, None, &[], ReadTerminal::Fetch)?;
+            let expected_read: Vec<_> = read.plans().iter().flat_map(|plan| crate::plan_explain::explain(plan).unwrap().statements).collect();
+            let events = Statements::default();
+            let subscriber = tracing_subscriber::registry().with(events.clone());
+            let result = async {
+                let inserted = manager.insert(&attributes).await?;
+                let insert_events = std::mem::take(&mut *events.0.lock().unwrap());
+                let selected = manager.all().await?;
+                let read_events = std::mem::take(&mut *events.0.lock().unwrap());
+                Ok::<_, crate::OrmError>((inserted.count(), selected.len(), insert_events, read_events))
+            }.with_subscriber(subscriber).await?;
+            Ok::<_, crate::OrmError>((result, expected_insert, expected_read))
+        }.await;
+        db.delete_database().await.unwrap();
+        let (result, expected_insert, expected_read) = outcome.unwrap();
+        assert_eq!(result.0, 1);
+        assert_eq!(result.1, 1);
+        assert_eq!(result.2, expected_insert);
+        assert_eq!(result.3, expected_read);
+    }
+
+    #[cfg(feature = "typedb")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires a live TypeDB (TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS / TYPEDB_HTTP_PORT)"]
     async fn specialized_role_manager_callers_preserve_exact_and_inclusive_mutations() {
