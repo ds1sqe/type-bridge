@@ -236,7 +236,8 @@ const pairs = await session
 ```ts
 const transaction = db.transaction("write");
 try {
-  const person = Person.manager(transaction).put(ada);
+  const person = Person.manager(transaction).put(ada).item;
+  if (person === null) throw new Error("expected exactly one person");
   Employment.manager(transaction).insert(
     Employment.create({ employee: person, employer: acme }),
   );

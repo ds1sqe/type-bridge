@@ -43,8 +43,9 @@ cardinality constrains how often a player participates in that role.
 from app_models import Company, CompanyId, Employment, Person, PersonId, Since
 from datetime import date
 
-ada = Person.manager(db).put(Person(person_id=PersonId("ada")))
-acme = Company.manager(db).put(Company(company_id=CompanyId("acme")))
+ada = Person.manager(db).put(Person(person_id=PersonId("ada"))).item
+acme = Company.manager(db).put(Company(company_id=CompanyId("acme"))).item
+assert ada is not None and acme is not None
 
 employment = Employment(
     employee=ada,

@@ -12,7 +12,7 @@ def main() -> None:
     manager = Person.manager(db)
     first = manager.put(ada)
     second = manager.put(ada)
-    print(first.iid, second.iid)
+    print([item.iid for item in first.items], [item.iid for item in second.items])
 
 
 if __name__ == "__main__":

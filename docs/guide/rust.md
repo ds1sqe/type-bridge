@@ -115,8 +115,9 @@ let create = PersonCreate::try_new(
     EmployeeId::new("EMP-001".to_owned())?,
 )?;
 
-// put is idempotent by the generated key and returns a complete model.
-let ada = db.entities::<Person>().put(create).await?;
+// put is idempotent by the generated key; retain its complete result.
+let result = db.entities::<Person>().put(create).await?;
+let ada = result.item().expect("expected exactly one person");
 let iid = ada.iid().to_owned();
 
 let same = db
