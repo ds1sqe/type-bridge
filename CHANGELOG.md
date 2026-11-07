@@ -2,341 +2,9 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
-## [Unreleased]
-
-### Fixed
-- Provider statement TRACE now covers manager, streaming, split, counted, and
-  migration-assertion paths with prepared input redaction.
-- Node debug listeners no longer silently lose events under synchronous load.
-- Provider panics during shared controlled write commits now report an unknown
-  commit outcome across C, Rust, Python, and Node, preserving durability
-  uncertainty instead of surfacing a generic panic.
-
-### Added
-- C held typed selections expose their exact executable plan through
-  `type_bridge_plan_builder_selection_plan` for canonical bytes and explain.
-- Typed pending plans expose `documents()` in Python, TypeScript, and Rust
-  to inspect the raw documents of the same committed execution without
-  another query or model hydration.
-- Generated C projected batches execute insert, put, update, and delete
-  through proxy connections with the same nominal results as direct writes.
-- Generated C entity and relation managers expose single and many returning
-  deletes with nominal snapshot results and typed IID inputs.
-- C managers expose typed-IID `delete_returning` and `delete_many_returning`
-  on database, write transaction, and proxy targets. Results retain deleted
-  snapshots, omit missing IIDs, and perform no provider I/O for an empty list.
-- Generated C managers expose canonical `insert`, `put`, filtered `update`,
-  and filtered `delete` methods for database, write transaction, and proxy
-  targets, preserving complete write results and exact-model validation.
-- Generated C managers expose typed `filter_iid` and `filter_iids` builders.
-  IID lists retain empty-list matches-none behavior and fence both the pointer
-  array and each IID owner before initializing outputs.
-- C manager filters expose exact-model validation against a manager root and
-  generated token, rejecting foreign package brands before dispatch.
-- C proxy connections execute projected batches and returning delete batches
-  through the shared staged path, preserving remote commit diagnostics.
-- C canonical manager `insert` and `put` terminals accept database, borrowed
-  write, and proxy targets and return complete write results through the
-  shared single-write executor.
-- C canonical filter `update` and `delete` terminals support database, borrowed
-  write, and proxy targets. Updates return every root through the common write
-  result; direct result mapping finishes before commit. Empty IID filters
-  perform no provider requests.
-- C canonical manager `all`, `first`, `count`, and `exists` terminals accept
-  database, borrowed read/write, and proxy connection targets. Owned read
-  results expose nominal `count`/`at`/`close`; empty IID filters skip provider
-  requests, and borrowed provider panics poison the transaction.
-- C immutable manager filters expose `type_bridge_manager_filter_open`,
-  `_iid`, `_iids`, `_compare`, and `_close`. Predicates use validated IID
-  owners and nominal field/value tokens; an empty IID list matches none.
-- C `type_bridge_database_projected_batch_delete_returning` and
-  `type_bridge_write_transaction_projected_batch_delete_returning` return
-  complete deleted roots from entity or relation delete batches, omitting
-  missing IIDs. The common result accessors retain the deleted objects.
-- C projected write results expose `type_bridge_projected_batch_result_item`
-  and generated `*_batch_result_item` accessors: an independently owned item
-  for exactly one root, otherwise a successful null result.
-- C `type_bridge_iid_open`, `type_bridge_iid_text`, and `type_bridge_iid_close`
-  own validated TypeDB identities and preserve their original spelling.
-- C unchecked TypeQL supports database/proxy `execute_query` and owned raw
-  transactions for read, write, and schema work. Results retain exact provider
-  JSON bytes; diagnostics retain provider details and commit certainty. Direct
-  transactions support multiple queries, while proxy contexts accept one.
-- C execution policies accept signed millisecond timeouts: nonpositive values
-  disable the deadline, and omitted policies now default to 60 seconds. Proxy
-  admission windows are independent; query and staged policies can collect
-  execution timelines exposed through read-only diagnostic accessors.
-- Node `executeQuery(text, kind)` and `rawTransaction(kind)` expose unchecked
-  TypeQL on direct and proxy connections. Provider answers preserve unsafe
-  integer tokens as `bigint`, with safe integers and doubles as `number`.
-  `RawQueryError` retains provider details and commit certainty. Direct raw
-  contexts support atomic multi-query work; proxy contexts accept one query.
-- Python `raw_transaction(kind)` and `RawTransaction.execute_query` share the
-  unchecked core with database-level `execute_query`, including proxy contexts
-  and `RawQueryError` provider details/commit certainty. Python integers retain
-  full provider precision; context-manager exit supports explicit rollback.
-- Rust SDK unchecked TypeQL pair: `Database::execute_query` and
-  `RawTransaction::execute_query`, also on proxy/configured connections.
-  Direct raw contexts retain atomic multi-query transactions; proxy contexts
-  allow one query, refuse a second with `raw_transaction_single_query`, and
-  refuse rollback after a write with `raw_transaction_already_committed`.
-  `RawQueryError` preserves provider details and uncertain commit outcomes.
-
-- Node canonical and explicit keyword filters expose `update(replacement)` for
-  every match, returning one `WriteResult`. IID `update(iid, replacement)`
-  permanently redirects to `filter({ iid }).update(replacement)`. Hydration
-  remains inside the mutation lease; unfiltered one-argument updates refuse.
-
-- Node canonical filters and explicit keyword filters expose `delete()` for all
-  matches. IID `delete(iid)` permanently redirects to `filter({ iid }).delete()`;
-  existing keyword predicates are retained. Unfiltered zero-argument manager
-  deletion is refused; use an explicit `filter({})` or `where()` to select all.
-
-- Python canonical manager filters expose `delete()` and `update(replacement)`
-  for all matches through the shared native mutation path. These terminals run
-  no instance CRUD hooks;
-  use an explicit read followed by instance operations when hooks are needed.
-
-- Read-only V3 plans may match after a validated reduction, retaining typed
-  group bindings and Long count outputs. Bindings dropped by the reduction
-  cannot be reused; write plans retain their existing stage restrictions.
-
-- The V3 staged contract carries typed IID result references. Singleton
-  answers broadcast; one fixed template row inherits every row from its single
-  IID source. Other larger answers zip only with equal template row counts.
-  Forward, scalar, incompatible-type and cross-source references are refused.
-  Rust, Python and Node builders author invocation templates and queue them
-  with `stage_stack` / `stageStack`; future IID cells remain absent until execution.
-
-- Direct manager connections accept independently configured `QueryLimits`;
-  borrowed transactions and projected single/batch writes inherit them.
-  Raising every needed dimension keeps wide rows in one statement; an
-  unchanged dimension retains bounded pieces in the same transaction.
-  Python and Node connection options and generated direct policies expose
-  the same full policy. Proxy ceilings intersect the staged advertisement.
-  C adds direct/proxy open functions taking named query-limit overrides;
-  existing configuration layouts retain their meanings.
-
-- `TransactionContext::execute_plans`, `OwnedTransaction::execute_plans` and
-  `EagerTransaction::execute_plans` accept write plans in caller-owned Write
-  and Schema transactions, sharing answer budgets and rollback-only latches.
-
-### Fixed
-
-- Node generated `manager.filter(...).where(...)` retains keyword predicates.
-  The 2.3.3 chain discarded them and could read extra rows. Wider lookups refuse
-  the canonical path with `unsupported_manager_filter`; read their matches
-  before explicit instance or IID batch operations.
-
-- Python generated `manager.filter(...).where(...)` now retains the keyword
-  predicates. In 2.3.3, this chain discarded those predicates and could read
-  extra rows. Unsupported wider lookups refuse the canonical path; use the
-  keyword filter's read terminal and explicit instance operations instead.
-
-### Changed
-- C typed-IID update/delete exports now redirect to canonical filter terminals.
-  Legacy insert/put exports also use the shared controlled single-write path.
-- C entity/relation get-by-IID exports now redirect to an IID filter and the
-  canonical `first` terminal, retaining the existing typed-IID signatures.
-
-- C `type_bridge_projected_batch_builder_add_v1` and generated update/delete
-  batch builders take validated IID owners. Insert/put pass a null IID; each
-  added update/delete row copies its identity before the owner can close.
-
-- C batch insert/put/update results count and retain every returned root,
-  including missing inputs and several roots from one input. Additional
-  result storage is reserved before commit.
-
-- C database and write-transaction entity/relation `insert`, `put`, and
-  `update` functions (including `_v2` forms) return an owned projected result
-  instead of one thing. Use `count`, `thing_at`, and optional `item`, then
-  close the result. Generated wrappers expose operation-specific result types.
-  Zero or multiple roots no longer cause a binding cardinality refusal;
-  complete result storage is prepared before commit.
-
-- Canonical manager filter reads accept borrowed read or write transactions
-  across SDKs, preserving read-after-write; borrowed schema targets remain
-  refused and transaction ownership is unchanged.
-
-- Python projected single writes hydrate and stage facade publication under
-  Core's controlled write mapper. A failed write restores the input facade;
-  zero or multiple roots leave it unchanged.
-
-- Rust single writes retain the mutation lease through generated model
-  materialization. A failed materializer makes a borrowed transaction
-  rollback-only and preserves the original binding error.
-
-- Node projected single-write envelopes materialize inside Core's controlled
-  write mapper and use the connection-selected direct or proxy target.
-
-- Proxy staged commit failures retain a caller-owned transport error as
-  their source while keeping `commit_outcome_unknown` as the outcome.
-  Rust SDK conversion preserves that cause and the typed commit failure.
-  Application error text remains absent from public diagnostics and rendering.
-  Proxy stack materialization failures and post-mapping cancellation retain
-  an indeterminate outcome after remote commit, with the typed cause available.
-
-- Single writes that match nothing now return `count: 0`, empty `items`, and
-  absent `item`, including missing-player inserts and absent-root updates.
-  The zero-answer `provider_identity_cardinality_invalid`,
-  `mutation_rehydration_missing`, `provider_hydration_failed`,
-  `projected_batch_mutation_result_missing`, and
-  `projected_batch_reference_missing` refusals and their diagnostic lookup
-  are removed from single writes. Input validation and the rare split-wide
-  existence guard remain.
-
-- Manager `all()` keeps the caller's authored window across direct and proxy
-  targets. Proxy execution ceilings stay outside plan bytes and refuse an
-  oversized answer without silently truncating it.
-
-- `TransactionContext::execute_plans` now accepts write plans in caller-owned
-  Write and Schema transactions. A write plan on a Read context fails with
-  `query_plan_read_only`; the old `borrowed_target_not_read_only` refusal is
-  removed.
-- Typed Long SUM/MEAN share exact high/low partial aggregates, preventing
-  native integer wrap without an extra query. SUM checks the final `i64`
-  domain (`reduction_overflow`); MEAN divides the exact total by the count in
-  binary64. More than 2^31 inputs per group fails as `reduction_input_bound`.
-  Long MEDIAN/STD share a binary64 input projection, matching the 2.x numeric
-  domain; MIN/MAX retain exact Long values.
-- Native floating aggregates can differ from 2.x in the last bit.
-  Witness-dependent reductions keep the bounded client reducer and choose
-  the minimum witness IID per root/group.
-- V3 native output columns now default to the binding ceiling (256), allowing
-  complete hidden-witness identity evidence. The configured column ceiling
-  cannot exceed the binding ceiling. Frozen V1/V2 outputs and released typed
-  model selections retain 16 slots; lower advertised V3 caps remain binding.
-- Explicit V3 staged byte/item budgets can rise to the shared answer-policy
-  maxima, while defaults and independent codec/envelope hard caps stay fixed.
-- Typed reads execute native plan stacks directly and through `/v3/staged`.
-  Proxy `stage_match` shares the tightest program, connection and transaction
-  budget across the complete commit and reports which bound constrained it;
-  projection failures after commit publish no partial results.
-- Explicitly raised string limits now survive final model projection and size
-  measurement, including nested role-player keys and scalar group values.
-- Unset typed-read statement limits now cover the complete static adapter
-  stack, with a minimum of three. Explicit limits remain strict; Rust stores
-  `statements: Option<u32>` and Python/Node preserve an omitted value.
-  The supported explicit maximum is 4,096. An explicitly advertised
-  `statements: 3` remains distinct from an unset ceiling; a 2.x receiver
-  refuses that explicit advertisement as noncanonical.
-- Typed string values default to a 1 MiB ceiling in 3.0. The existing
-  `canonical_string_bytes` query-limit option can raise it up to the complete
-  artifact budget (16 MiB by default); servers retain their own configured
-  maximum and refusals name the limit. In 2.x, typed predicate strings could
-  reach the caller's artifact ceiling. V3 requests carrying strings above
-  1 MiB require `query.input.wide-strings`.
-
 ## [3.0.0] - Unreleased
 
-### Changed
-
-- Typed-plan execution timeouts now default to 60,000 ms on direct and proxy
-  connections, with no 24-hour maximum. Signed timeout inputs of zero or
-  less mean no deadline; Rust uses `QueryTimeout`. Server ceilings remain
-  tighten-only, and a dispatched commit runs to its actual outcome. Raw and
-  schema calls retain their previous defaults. C ABI 2.0 uses the same
-  60,000 ms default and signed timeout semantics. Frozen parity tests pass
-  their historical policy values explicitly.
-- Proxy request freshness is independent of execution duration. Configure
-  `admission_window_milliseconds` on the client and server (default 60,000 ms);
-  the server ceiling wins and even unbounded calls retain finite replay expiry.
-
-- Plan calls report the failing execution phase and total elapsed time on
-  deadline and cancellation diagnostics. Enable `collect_phase_timestamps`
-  (Node: `collectPhaseTimestamps`) or a plan tracing subscriber for full
-  UTC-anchored monotonic timelines, including each dispatched statement.
-  Default execution retains scalar phase state without per-phase clock reads.
-
-### Fixed
-
-- The server `/health` response reports its actual crate version instead of
-  the stale `1.5.11` literal.
-
-- Signed staged proxy cancellations retain their `cancelled` category and
-  original diagnostic code when surfaced to callers and pending answers.
-- Server call deadlines remain absolute while plans are staged. Preparing a
-  transaction no longer refreshes its remaining execution time before commit.
-
-### Added
-
-- Python, Node, and Rust expose a nominal `Iid` value validated by the shared
-  engine. Construction rejects malformed provider identifiers before I/O and
-  preserves the exact accepted hexadecimal spelling. Rust entity and relation
-  filters expose `delete()` and `update(replacement)` terminals and accept
-  `iid(&Iid)` and `iids(&[Iid])` predicates; an empty IID set matches nothing
-  without a provider request. Rust subtype managers expose the same read filter
-  terminals and retain their concrete leaf or family result types.
-- Python `filter(iid=...)` and `filter(iid__in=...)` retain their selection
-  through `.where()` and expose canonical `delete()` and `update(replacement)`
-  terminals directly. Empty IID lists
-  match nothing without provider work; list iterators are consumed once.
-
-- V3 `DocumentScalar` fetch fields accept bound entities and relations and
-  return their canonical IID. Optional thing bindings omit the field when
-  absent, preserving source identity evidence across key-changing writes.
-
-- Opt-in server `/v3/raw`, enabled by `[staged].raw_enabled` (false by
-  default), with `query.remote.raw` discovery, finite nonce admission,
-  host `on_v3_raw` authorization and raw-text auditing. Shared runtime
-  `execute_raw` / `query_raw` return TypeDB HTTP query-answer JSON for
-  unchecked TypeQL without generated-model admission or hydration. Raw
-  write/schema requests use staged write vouching; every refusal is audited.
-  `execute_raw_with_options` accepts host deadline and answer-byte bounds;
-  remote raw answers fit the remote-envelope ceiling without truncation.
-  `RawQueryError::commit_outcome` preserves uncertain commit durability.
-
-- Generated plan idioms in Python, TypeScript, Rust, and C bind caller values
-  as typed given inputs and retain the shared builder's canonical bytes.
-  Model and mixed model/scalar selections publish only after the full Core
-  fetch proof succeeds, before commit; SDKs share its row and model ordinals.
-- C ABI 2.0 includes typed scalar carriers, held model/scalar/tuple selections,
-  frozen recording caches, and borrowed model views checked against generated
-  layout digests. Result owners may outlive recordings and transactions.
-  Regenerate old packages and rebuild consumers for the ABI 2.0 target.
-
-- Generated C authoring handles stay 16 bytes regardless of model width and reuse
-  per-recording model metadata. Boolean unset selections and nominal unordered
-  role edits treat zeroed structs as no change; role arrays are borrowed only
-  during the call.
-- Explicit `fetch` terminals in the Python, TypeScript, Rust and C plan
-  builders; plain writes keep their matched-count default.
-- C ABI 2.0 includes borrowed row and document cursors with typed scalar
-  getters, attribute-kind queries and optional role-player access.
-- Fetch documents on direct and staged query-plan execution, with schema-derived
-  validation, bounded answers, and Python, TypeScript and Rust answer variants.
-- The staged endpoint advertises `query.fetch.thing` and `query.write.attach`.
-- Opt-in deletion snapshots: a fetch immediately before a terminal delete
-  captures documents in the same transaction and requires
-  `query.write.delete-snapshot`. Plain deletion keeps its existing behavior.
-- `delete_returning` and `delete_many_returning` in Rust and Python, and
-  `deleteReturning` / `deleteManyReturning` in generated TypeScript managers.
-  Snapshots retain stored fields and relation players; deleted roots refuse
-  further mutation with `thing_deleted`.
-
-- Registry-backed Rust dynamic and handwritten managers execute native plans,
-  retaining descriptor and registry authority without per-call descriptor copies.
-- Add capability-fenced nested IID operands, subtype-inclusive Put, optional
-  attach items, key attachments, typed fetch scalar fields, collected unordered
-  role documents, and Select/Distinct between write stages. Existing constructor
-  defaults and canonical plan bytes remain unchanged.
-
-### Fixed
-
-- Provider datetime ingress accepts one through nine fractional digits and
-  normalizes insignificant trailing zeros without losing precision. Canonical
-  wire datetime parsing remains strict.
-- Polymorphic relation `delete_returning` and `delete_many_returning` now
-  capture complete subtype snapshots in one plan, preserving optional roles
-  instead of refusing with `plan_returning_models_given_window`.
-- Refuse nonliteral IID predicates under negation on the TypeDB 3.12 profile
-  before dispatch (`query_plan_negated_given_iid_unsupported`), avoiding a
-  provider connection failure. Positive, optional, and literal IID filters
-  retain their existing lowering.
-- Preserve nullable `given` columns in native V3 lowering so sparse batch cells
-  bind as absent instead of failing at the provider.
-- Refuse playerless projected relation creates with `relation_requires_player`
-  before I/O: TypeDB accepts their insertion but removes them at commit.
+See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration steps.
 
 ### Breaking
 
@@ -1580,7 +1248,291 @@ add the limits argument described in the upgrade guide.
 
 <!-- --8<-- [end:breaking-3-0] -->
 
+### Added
+
+- C held typed selections expose their exact executable plan through
+  `type_bridge_plan_builder_selection_plan` for canonical bytes and explain.
+- Typed pending plans expose `documents()` in Python, TypeScript, and Rust
+  to inspect the raw documents of the same committed execution without
+  another query or model hydration.
+- Generated C projected batches execute insert, put, update, and delete
+  through proxy connections with the same nominal results as direct writes.
+- Generated C entity and relation managers expose single and many returning
+  deletes with nominal snapshot results and typed IID inputs.
+- C managers expose typed-IID `delete_returning` and `delete_many_returning`
+  on database, write transaction, and proxy targets. Results retain deleted
+  snapshots, omit missing IIDs, and perform no provider I/O for an empty list.
+- Generated C managers expose canonical `insert`, `put`, filtered `update`,
+  and filtered `delete` methods for database, write transaction, and proxy
+  targets, preserving complete write results and exact-model validation.
+- Generated C managers expose typed `filter_iid` and `filter_iids` builders.
+  IID lists retain empty-list matches-none behavior and fence both the pointer
+  array and each IID owner before initializing outputs.
+- C manager filters expose exact-model validation against a manager root and
+  generated token, rejecting foreign package brands before dispatch.
+- C proxy connections execute projected batches and returning delete batches
+  through the shared staged path, preserving remote commit diagnostics.
+- C canonical manager `insert` and `put` terminals accept database, borrowed
+  write, and proxy targets and return complete write results through the
+  shared single-write executor.
+- C canonical filter `update` and `delete` terminals support database, borrowed
+  write, and proxy targets. Updates return every root through the common write
+  result; direct result mapping finishes before commit. Empty IID filters
+  perform no provider requests.
+- C canonical manager `all`, `first`, `count`, and `exists` terminals accept
+  database, borrowed read/write, and proxy connection targets. Owned read
+  results expose nominal `count`/`at`/`close`; empty IID filters skip provider
+  requests, and borrowed provider panics poison the transaction.
+- C immutable manager filters expose `type_bridge_manager_filter_open`,
+  `_iid`, `_iids`, `_compare`, and `_close`. Predicates use validated IID
+  owners and nominal field/value tokens; an empty IID list matches none.
+- C `type_bridge_database_projected_batch_delete_returning` and
+  `type_bridge_write_transaction_projected_batch_delete_returning` return
+  complete deleted roots from entity or relation delete batches, omitting
+  missing IIDs. The common result accessors retain the deleted objects.
+- C projected write results expose `type_bridge_projected_batch_result_item`
+  and generated `*_batch_result_item` accessors: an independently owned item
+  for exactly one root, otherwise a successful null result.
+- C `type_bridge_iid_open`, `type_bridge_iid_text`, and `type_bridge_iid_close`
+  own validated TypeDB identities and preserve their original spelling.
+- C unchecked TypeQL supports database/proxy `execute_query` and owned raw
+  transactions for read, write, and schema work. Results retain exact provider
+  JSON bytes; diagnostics retain provider details and commit certainty. Direct
+  transactions support multiple queries, while proxy contexts accept one.
+- C execution policies accept signed millisecond timeouts: nonpositive values
+  disable the deadline, and omitted policies now default to 60 seconds. Proxy
+  admission windows are independent; query and staged policies can collect
+  execution timelines exposed through read-only diagnostic accessors.
+- Node `executeQuery(text, kind)` and `rawTransaction(kind)` expose unchecked
+  TypeQL on direct and proxy connections. Provider answers preserve unsafe
+  integer tokens as `bigint`, with safe integers and doubles as `number`.
+  `RawQueryError` retains provider details and commit certainty. Direct raw
+  contexts support atomic multi-query work; proxy contexts accept one query.
+- Python `raw_transaction(kind)` and `RawTransaction.execute_query` share the
+  unchecked core with database-level `execute_query`, including proxy contexts
+  and `RawQueryError` provider details/commit certainty. Python integers retain
+  full provider precision; context-manager exit supports explicit rollback.
+- Rust SDK unchecked TypeQL pair: `Database::execute_query` and
+  `RawTransaction::execute_query`, also on proxy/configured connections.
+  Direct raw contexts retain atomic multi-query transactions; proxy contexts
+  allow one query, refuse a second with `raw_transaction_single_query`, and
+  refuse rollback after a write with `raw_transaction_already_committed`.
+  `RawQueryError` preserves provider details and uncertain commit outcomes.
+
+- Node canonical and explicit keyword filters expose `update(replacement)` for
+  every match, returning one `WriteResult`. IID `update(iid, replacement)`
+  permanently redirects to `filter({ iid }).update(replacement)`. Hydration
+  remains inside the mutation lease; unfiltered one-argument updates refuse.
+
+- Node canonical filters and explicit keyword filters expose `delete()` for all
+  matches. IID `delete(iid)` permanently redirects to `filter({ iid }).delete()`;
+  existing keyword predicates are retained. Unfiltered zero-argument manager
+  deletion is refused; use an explicit `filter({})` or `where()` to select all.
+
+- Python canonical manager filters expose `delete()` and `update(replacement)`
+  for all matches through the shared native mutation path. These terminals run
+  no instance CRUD hooks;
+  use an explicit read followed by instance operations when hooks are needed.
+
+- Read-only query plans may match after a validated reduction, retaining typed
+  group bindings and Long count outputs. Bindings dropped by the reduction
+  cannot be reused; write plans retain their existing stage restrictions.
+
+- The staged contract carries typed IID result references. Singleton
+  answers broadcast; one fixed template row inherits every row from its single
+  IID source. Other larger answers zip only with equal template row counts.
+  Forward, scalar, incompatible-type and cross-source references are refused.
+  Rust, Python and Node builders author invocation templates and queue them
+  with `stage_stack` / `stageStack`; future IID cells remain absent until execution.
+
+- Direct manager connections accept independently configured `QueryLimits`;
+  borrowed transactions and projected single/batch writes inherit them.
+  Raising every needed dimension keeps wide rows in one statement; an
+  unchanged dimension retains bounded pieces in the same transaction.
+  Python and Node connection options and generated direct policies expose
+  the same full policy. Proxy ceilings intersect the staged advertisement.
+  C adds direct/proxy open functions taking named query-limit overrides;
+  existing configuration layouts retain their meanings.
+
+- `OwnedTransaction::execute_plans` and `EagerTransaction::execute_plans`
+  accept write plans in caller-owned Write and Schema transactions, sharing
+  answer budgets and rollback-only latches.
+
+
+- Python, Node, and Rust expose a nominal `Iid` value validated by the shared
+  engine. Construction rejects malformed provider identifiers before I/O and
+  preserves the exact accepted hexadecimal spelling. Rust entity and relation
+  filters expose `delete()` and `update(replacement)` terminals and accept
+  `iid(&Iid)` and `iids(&[Iid])` predicates; an empty IID set matches nothing
+  without a provider request. Rust subtype managers expose the same read filter
+  terminals and retain their concrete leaf or family result types.
+- Python `filter(iid=...)` and `filter(iid__in=...)` retain their selection
+  through `.where()` and expose canonical `delete()` and `update(replacement)`
+  terminals directly. Empty IID lists
+  match nothing without provider work; list iterators are consumed once.
+
+- `DocumentScalar` fetch fields accept bound entities and relations and
+  return their canonical IID. Optional thing bindings omit the field when
+  absent, preserving source identity evidence across key-changing writes.
+
+- Opt-in server `/v3/raw`, enabled by `[staged].raw_enabled` (false by
+  default), with `query.remote.raw` discovery, finite nonce admission,
+  host `on_raw` authorization and raw-text auditing. Shared runtime
+  `execute_raw` / `query_raw` return TypeDB HTTP query-answer JSON for
+  unchecked TypeQL without generated-model admission or hydration. Raw
+  write/schema requests use staged write vouching; every refusal is audited.
+  `execute_raw_with_options` accepts host deadline and answer-byte bounds;
+  remote raw answers fit the remote-envelope ceiling without truncation.
+  `RawQueryError::commit_outcome` preserves uncertain commit durability.
+
+- Generated plan idioms in Python, TypeScript, Rust, and C bind caller values
+  as typed given inputs and retain the shared builder's canonical bytes.
+  Model and mixed model/scalar selections publish only after the full Core
+  fetch proof succeeds, before commit; SDKs share its row and model ordinals.
+- C ABI 2.0 includes typed scalar carriers, held model/scalar/tuple selections,
+  frozen recording caches, and borrowed model views checked against generated
+  layout digests. Result owners may outlive recordings and transactions.
+  Regenerate old packages and rebuild consumers for the ABI 2.0 target.
+
+- Generated C authoring handles stay 16 bytes regardless of model width and reuse
+  per-recording model metadata. Boolean unset selections and nominal unordered
+  role edits treat zeroed structs as no change; role arrays are borrowed only
+  during the call.
+- Explicit `fetch` terminals in the Python, TypeScript, Rust and C plan
+  builders; plain writes keep their matched-count default.
+- C ABI 2.0 includes borrowed row and document cursors with typed scalar
+  getters, attribute-kind queries and optional role-player access.
+- Fetch documents on direct and staged query-plan execution, with schema-derived
+  validation, bounded answers, and Python, TypeScript and Rust answer variants.
+- The staged endpoint advertises `query.fetch.thing` and `query.write.attach`.
+- Opt-in deletion snapshots: a fetch immediately before a terminal delete
+  captures documents in the same transaction and requires
+  `query.write.delete-snapshot`. Plain deletion keeps its existing behavior.
+- `delete_returning` and `delete_many_returning` in Rust and Python, and
+  `deleteReturning` / `deleteManyReturning` in generated TypeScript managers.
+  Snapshots retain stored fields and relation players; deleted roots refuse
+  further mutation with `thing_deleted`.
+
+- Registry-backed Rust dynamic and handwritten managers execute native plans,
+  retaining descriptor and registry authority without per-call descriptor copies.
+- Add capability-fenced nested IID operands, subtype-inclusive Put, optional
+  attach items, key attachments, typed fetch scalar fields, collected unordered
+  role documents, and Select/Distinct between write stages. Existing constructor
+  defaults and canonical plan bytes remain unchanged.
+
 ### Changed
+
+- C typed-IID update/delete exports now redirect to canonical filter terminals.
+  Insert/put exports also use the shared controlled single-write path.
+- C entity/relation get-by-IID exports now redirect to an IID filter and the
+  canonical `first` terminal, retaining the existing typed-IID signatures.
+
+- C `type_bridge_projected_batch_builder_add_v1` and generated update/delete
+  batch builders take validated IID owners. Insert/put pass a null IID; each
+  added update/delete row copies its identity before the owner can close.
+
+- C batch insert/put/update results count and retain every returned root,
+  including missing inputs and several roots from one input. Additional
+  result storage is reserved before commit.
+
+- C database and write-transaction entity/relation `insert`, `put`, and
+  `update` functions return an owned projected result
+  instead of one thing. Use `count`, `thing_at`, and optional `item`, then
+  close the result. Generated wrappers expose operation-specific result types.
+  Zero or multiple roots no longer cause a binding cardinality refusal;
+  complete result storage is prepared before commit.
+
+- Canonical manager filter reads accept borrowed read or write transactions
+  across SDKs, preserving read-after-write; borrowed schema targets remain
+  refused and transaction ownership is unchanged.
+
+- Python projected single writes hydrate and stage facade publication under
+  Core's controlled write mapper. A failed write restores the input facade;
+  zero or multiple roots leave it unchanged.
+
+- Rust single writes retain the mutation lease through generated model
+  materialization. A failed materializer makes a borrowed transaction
+  rollback-only and preserves the original binding error.
+
+- Node projected single-write envelopes materialize inside Core's controlled
+  write mapper and use the connection-selected direct or proxy target.
+
+- Proxy staged commit failures retain a caller-owned transport error as
+  their source while keeping `commit_outcome_unknown` as the outcome.
+  Rust SDK conversion preserves that cause and the typed commit failure.
+  Application error text remains absent from public diagnostics and rendering.
+  Proxy stack materialization failures and post-mapping cancellation retain
+  an indeterminate outcome after remote commit, with the typed cause available.
+
+- Single writes that match nothing now return `count: 0`, empty `items`, and
+  absent `item`, including missing-player inserts and absent-root updates.
+  The zero-answer `provider_identity_cardinality_invalid`,
+  `mutation_rehydration_missing`, `provider_hydration_failed`,
+  `projected_batch_mutation_result_missing`, and
+  `projected_batch_reference_missing` refusals and their diagnostic lookup
+  are removed from single writes. Input validation and the rare split-wide
+  existence guard remain.
+
+- Manager `all()` keeps the caller's authored window across direct and proxy
+  targets. Proxy execution ceilings stay outside plan bytes and refuse an
+  oversized answer without silently truncating it.
+
+- `TransactionContext::execute_plans` now accepts write plans in caller-owned
+  Write and Schema transactions. A write plan on a Read context fails with
+  `query_plan_read_only`; the old `borrowed_target_not_read_only` refusal is
+  removed.
+- Typed Long SUM/MEAN share exact high/low partial aggregates, preventing
+  native integer wrap without an extra query. SUM checks the final `i64`
+  domain (`reduction_overflow`); MEAN divides the exact total by the count in
+  binary64. More than 2^31 inputs per group fails as `reduction_input_bound`.
+  Long MEDIAN/STD share a binary64 input projection, matching the 2.x numeric
+  domain; MIN/MAX retain exact Long values.
+- Native floating aggregates can differ from 2.x in the last bit.
+  Witness-dependent reductions keep the bounded client reducer and choose
+  the minimum witness IID per root/group.
+- Native output columns now default to the binding ceiling (256), allowing
+  complete hidden-witness identity evidence. The configured column ceiling
+  cannot exceed the binding ceiling. Lower advertised plan caps remain binding.
+- Explicit staged byte/item budgets can rise to the shared answer-policy
+  maxima, while defaults and independent codec/envelope hard caps stay fixed.
+- Typed reads execute native plan stacks directly and through `/v3/staged`.
+  Proxy `stage_match` shares the tightest program, connection and transaction
+  budget across the complete commit and reports which bound constrained it;
+  projection failures after commit publish no partial results.
+- Explicitly raised string limits now survive final model projection and size
+  measurement, including nested role-player keys and scalar group values.
+- Unset typed-read statement limits now cover the complete static adapter
+  stack, with a minimum of three. Explicit limits remain strict; Rust stores
+  `statements: Option<u32>` and Python/Node preserve an omitted value.
+  The supported explicit maximum is 4,096. An explicitly advertised
+  `statements: 3` remains distinct from an unset ceiling; a 2.x receiver
+  refuses that explicit advertisement as noncanonical.
+- Typed string values default to a 1 MiB ceiling in 3.0. The existing
+  `canonical_string_bytes` query-limit option can raise it up to the complete
+  artifact budget (16 MiB by default); servers retain their own configured
+  maximum and refusals name the limit. In 2.x, typed predicate strings could
+  reach the caller's artifact ceiling. Plan requests carrying strings above
+  1 MiB require `query.input.wide-strings`.
+
+
+
+- Typed-plan execution timeouts now default to 60,000 ms on direct and proxy
+  connections, with no 24-hour maximum. Signed timeout inputs of zero or
+  less mean no deadline; Rust uses `QueryTimeout`. Server ceilings remain
+  tighten-only, and a dispatched commit runs to its actual outcome. Raw and
+  schema calls retain their previous defaults. C ABI 2.0 uses the same
+  60,000 ms default and signed timeout semantics. Frozen parity tests pass
+  their historical policy values explicitly.
+- Proxy request freshness is independent of execution duration. Configure
+  `admission_window_milliseconds` on the client and server (default 60,000 ms);
+  the server ceiling wins and even unbounded calls retain finite replay expiry.
+
+- Plan calls report the failing execution phase and total elapsed time on
+  deadline and cancellation diagnostics. Enable `collect_phase_timestamps`
+  (Node: `collectPhaseTimestamps`) or a plan tracing subscriber for full
+  UTC-anchored monotonic timelines, including each dispatched statement.
+  Default execution retains scalar phase state without per-phase clock reads.
+
 
 - Manager writes preserve TypeQL fan-out and repeated-player behavior.
   Multiple answered roots no longer cause `provider_identity_cardinality_invalid`,
@@ -1646,9 +1598,51 @@ add the limits argument described in the upgrade guide.
 - Standalone scalar entity insert/put plans correlate fetched rows with their
   canonical inputs before commit. Inconsistent replies roll back direct and
   proxy writes; the same check applies to explicit core-builder plans.
-  Legacy entity inserts with zero or multiple returned rows now report
-  `query_remote_v3_document_value` before commit, replacing
-  `missing_post_write_row` and `provider_identity_cardinality_invalid`.
+
+### Fixed
+
+- Provider statement TRACE now covers manager, streaming, split, counted, and
+  migration-assertion paths with prepared input redaction.
+- Node debug listeners no longer silently lose events under synchronous load.
+- Provider panics during shared controlled write commits now report an unknown
+  commit outcome across C, Rust, Python, and Node, preserving durability
+  uncertainty instead of surfacing a generic panic.
+
+
+- Node generated `manager.filter(...).where(...)` retains keyword predicates.
+  The 2.3.3 chain discarded them and could read extra rows. Wider lookups refuse
+  the canonical path with `unsupported_manager_filter`; read their matches
+  before explicit instance or IID batch operations.
+
+- Python generated `manager.filter(...).where(...)` now retains the keyword
+  predicates. In 2.3.3, this chain discarded those predicates and could read
+  extra rows. Unsupported wider lookups refuse the canonical path; use the
+  keyword filter's read terminal and explicit instance operations instead.
+
+
+- The server `/health` response reports its actual crate version instead of
+  the stale `1.5.11` literal.
+
+- Signed staged proxy cancellations retain their `cancelled` category and
+  original diagnostic code when surfaced to callers and pending answers.
+- Server call deadlines remain absolute while plans are staged. Preparing a
+  transaction no longer refreshes its remaining execution time before commit.
+
+
+- Provider datetime ingress accepts one through nine fractional digits and
+  normalizes insignificant trailing zeros without losing precision. Canonical
+  wire datetime parsing remains strict.
+- Polymorphic relation `delete_returning` and `delete_many_returning` now
+  capture complete subtype snapshots in one plan, preserving optional roles
+  instead of refusing with `plan_returning_models_given_window`.
+- Refuse nonliteral IID predicates under negation on the TypeDB 3.12 profile
+  before dispatch (`query_plan_negated_given_iid_unsupported`), avoiding a
+  provider connection failure. Positive, optional, and literal IID filters
+  retain their existing lowering.
+- Preserve nullable `given` columns in native plan lowering so sparse batch cells
+  bind as absent instead of failing at the provider.
+- Refuse playerless projected relation creates with `relation_requires_player`
+  before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ## [2.3.3] - 2026-10-27
 

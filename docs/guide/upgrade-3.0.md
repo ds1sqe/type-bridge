@@ -1,6 +1,6 @@
 # Upgrading to 3.0
 
-This draft covers the 3.0 breaking changes. Regenerate every language package
+This guide covers the 3.0 breaking changes. Regenerate every language package
 from its Split-YAML workspace, upgrade the matching runtime, and rebuild your
 application. Generated projection resources and nominal types must come from
 one package generation; mixing old resources with a new runtime is unsupported.

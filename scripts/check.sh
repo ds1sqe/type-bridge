@@ -86,6 +86,8 @@ run_rust() {
 run_python() {
     printf "${BOLD}━━━ Python ━━━${RESET}\n\n"
 
+    run_step "3.0 upgrade guide coverage" python scripts/ci/check_upgrade_guide.py
+
     run_step "ruff check ." \
         uv run ruff check .
 
