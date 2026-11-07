@@ -9,6 +9,7 @@
 //! - `SMOKE_TYPEDB_USERNAME` / `SMOKE_TYPEDB_PASSWORD`
 //! - `SMOKE_DATABASE` — existing database name
 //! - `SMOKE_AUTHORITY_B64` — base64 canonical schema-authority bytes
+//! - `SMOKE_AUTHORITY_FILE` — schema-authority file instead of an environment payload
 //! - `SMOKE_ALLOW_RAW` — exact `true` enables the unchecked raw endpoint
 //! - `SMOKE_ALLOW_STAGED_WRITES` — exact `true` enables fixture writes
 //! - `SMOKE_PORT` — listen port on 127.0.0.1
@@ -209,7 +210,10 @@ async fn main() {
     // validated server types below receive only physical paths.
     let tls_mode = typedb_tls_mode();
 
-    let authority_bytes = decode_b64(&env("SMOKE_AUTHORITY_B64"));
+    let authority_bytes = match std::env::var_os("SMOKE_AUTHORITY_FILE") {
+        Some(path) => std::fs::read(path).expect("SMOKE_AUTHORITY_FILE reads"),
+        None => decode_b64(&env("SMOKE_AUTHORITY_B64")),
+    };
     let mut available_capabilities = query_plan_capability_vocabulary();
     for capability in BUILTIN_SCHEMA_CAPABILITY_IDS {
         available_capabilities.insert(CapabilityId::new(*capability).expect("built-in capability"));

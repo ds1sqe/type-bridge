@@ -6275,10 +6275,10 @@ mod tests {
         let executor = ProjectedCrudExecutor::new(&installed);
         let model = controlled_type(TypeKind::Relation);
         let mut results = Vec::new();
-        for raised in [false, true] {
+        for budget in [256, 1024, 64] {
             let mut policy = type_bridge_contract::limits::QueryLimits::PLAN;
-            if raised {
-                policy.structural.boolean_terms = 1024;
+            policy.structural.boolean_terms = budget;
+            if budget == 1024 {
                 policy.structural.bindings = 1024;
                 policy.structural.selected_slots = 1024;
             }
@@ -6290,7 +6290,14 @@ mod tests {
                     Some(&Arc::new(policy)),
                 )
                 .unwrap();
-            assert_eq!(program.plans().len(), if raised { 1 } else { 4 });
+            assert_eq!(
+                program.plans().len(),
+                if budget > 300 {
+                    1
+                } else {
+                    2 + 300usize.div_ceil(budget - 1)
+                }
+            );
             let (database, state) = controlled_database(wide_read_responses(&program));
             let database = database.with_query_limits(policy).unwrap();
             let result = executor
@@ -6338,9 +6345,23 @@ mod tests {
             let state = state.lock().unwrap();
             assert_eq!(state.opens.len(), 1);
             assert_eq!(state.queries.len(), program.plans().len());
+            let explained = program
+                .plans()
+                .iter()
+                .flat_map(|plan| crate::plan_explain::explain(plan).unwrap().statements)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                explained,
+                state
+                    .queries
+                    .iter()
+                    .map(|(query, _)| query.clone())
+                    .collect::<Vec<_>>()
+            );
             assert!(state.responses.is_empty());
         }
         assert_eq!(results[0], results[1]);
+        assert_eq!(results[0], results[2]);
     }
 
     #[test]
