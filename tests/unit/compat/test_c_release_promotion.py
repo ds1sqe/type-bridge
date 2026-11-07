@@ -61,85 +61,7 @@ def run_snapshot() -> dict[str, Any]:
 def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
     selected = policy.selected_policy()
     frozen = json.loads(policy.POLICY.read_text())
-    if frozen["ci_workflow_sha256"] == selected["ci_workflow_sha256"]:
-        assert frozen == selected
-    else:
-        # frozen 2.3.2 policy; the active policy moves in milestone 07
-        for key in frozen.keys() | selected.keys():
-            if key not in {"ci_workflow_sha256", "ci_jobs"}:
-                assert frozen[key] == selected[key], key
-        frozen_steps = {
-            (job, step): outcome
-            for job, steps in frozen["ci_jobs"].items()
-            for step, outcome in steps.items()
-        }
-        current_steps = {
-            (job, step): outcome
-            for job, steps in selected["ci_jobs"].items()
-            for step, outcome in steps.items()
-        }
-        retired_server = "typedb/typedb:3.11.5"
-        retired_jobs = {
-            *(
-                f"Python Integration ({suite}, {retired_server})"
-                for suite in ("schema", "queries", "expressions", "session")
-            ),
-            "Python Integration (expressions, typedb/typedb:3.12.3)",
-            f"Rust integration ({retired_server})",
-            f"Node integration ({retired_server})",
-            "Band feature check (band8)",
-            "TLS transport (band8-packaging)",
-            "Version gate (NEG-driver-band9)",
-            "Version gate (POS-grpc-fallback-band8)",
-        }
-        assert len(retired_jobs) == 11
-        assert frozen["ci_jobs"].keys() - selected["ci_jobs"].keys() == retired_jobs
-        assert selected["ci_jobs"].keys() - frozen["ci_jobs"].keys() == {
-            "Version gate (NEG-http-discovery)",
-            "Four-SDK walkthrough (TypeDB 3.13.6)",
-            "Four-SDK walkthrough (TypeDB 3.14.0)",
-        }
-        skipped_retired_probe = (
-            "Rust integration (typedb/typedb:3.12.3)",
-            "Prove unsupported migration apply creates no databases",
-        )
-        assert frozen_steps[skipped_retired_probe] == "skipped"
-        legacy_steps = {
-            key
-            for key in frozen_steps
-            if key[1]
-            in {
-                "Run legacy adoption and evolution lifecycle",
-                "Run shipped Python converter to native adoption lifecycle",
-                "Run production V1 + V2 server live smoke",
-                "Run fetch write commit failure regression",
-                "Run classified commit isolation conflict regression",
-            }
-        }
-        assert len(legacy_steps) == 10
-        retired = {
-            key: outcome
-            for key, outcome in frozen_steps.items()
-            if key[0] in retired_jobs or key == skipped_retired_probe or key in legacy_steps
-        }
-        # The removed typed-query diagnostics script no longer has a CI step.
-        retired_query_checks = {
-            ("Python Type Check (examples)", "Check intentional typed Query API diagnostics"),
-            ("Python Type Check (tests)", "Check intentional typed Query API diagnostics"),
-            ("Python Type Check (type_bridge)", "Check intentional typed Query API diagnostics"),
-        }
-        retired.update({key: frozen_steps[key] for key in retired_query_checks})
-        renamed_steps = {
-            "Run V3 staged server live acceptance": "Run staged server live acceptance",
-            "Run Rust SDK plan builder over the V3 staged proxy": "Run Rust SDK plan builder over the staged proxy",
-        }
-        renamed = {key: outcome for key, outcome in frozen_steps.items() if key[1] in renamed_steps}
-        assert len(renamed) == 4
-        for (job, step), outcome in renamed.items():
-            assert current_steps[(job, renamed_steps[step])] == outcome
-        retired.update(renamed)
-        assert frozen_steps.items() - current_steps.items() == retired.items()
-        assert (frozen_steps.items() - retired.items()) < current_steps.items()
+    assert frozen == selected
     # V1/V2 server probes are replaced by the staged binary and raw gates.
     assert (
         selected["ci_jobs"]["Rust integration (typedb/typedb:3.12.3)"][
@@ -203,12 +125,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         ]
         == "success"
     )
-    assert (
-        frozen["ci_jobs"]["Python Integration (schema, typedb/typedb:3.11.5)"][
-            "Upload Python queries report"
-        ]
-        == "skipped"
-    )
+    assert not any("3.11.5" in job for job in selected["ci_jobs"])
 
 
 @pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
@@ -220,7 +137,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         ("head_sha", "c" * 40),
         ("head_branch", "develop"),
         ("head_branch", "release/c-sdk-readiness"),
-        ("head_branch", "v2.3.2"),
+        ("head_branch", "v3.0.0"),
         ("path", ".github/workflows/release.yml"),
         ("event", "pull_request"),
         ("event", "schedule"),
@@ -421,10 +338,10 @@ def test_verified_bundle_rejects_substitution(tmp_path: Path, change: str) -> No
 
 
 def test_tag_requires_an_annotated_direct_same_source_target() -> None:
-    reference = {"ref": "refs/tags/v2.3.2", "object": {"type": "tag", "sha": "c" * 40}}
+    reference = {"ref": "refs/tags/v3.0.0", "object": {"type": "tag", "sha": "c" * 40}}
     tag = {
         "sha": "c" * 40,
-        "tag": "v2.3.2",
+        "tag": "v3.0.0",
         "object": {
             "type": "commit",
             "sha": SOURCE,
@@ -451,7 +368,7 @@ def test_workflow_keeps_publish_protected_and_without_builders() -> None:
     assert workflow["permissions"] == {"contents": "read", "actions": "read"}
     publish = workflow["jobs"]["publish"]
     assert publish["environment"] == "release"
-    assert publish["if"] == "inputs.mode == 'publish' && github.ref == 'refs/tags/v2.3.2'"
+    assert publish["if"] == "inputs.mode == 'publish' && github.ref == 'refs/tags/v3.0.0'"
     assert publish["permissions"] == {"contents": "write", "actions": "read", "id-token": "write"}
     assert all(job["runs-on"] == "ubuntu-24.04" for job in workflow["jobs"].values())
     source = json.dumps(publish)
@@ -553,10 +470,10 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
             "files": [promotion.record(payloads / name) for name in files],
         },
     )
-    reference = {"ref": "refs/tags/v2.3.2", "object": {"type": "tag", "sha": "c" * 40}}
+    reference = {"ref": "refs/tags/v3.0.0", "object": {"type": "tag", "sha": "c" * 40}}
     tag = {
         "sha": "c" * 40,
-        "tag": "v2.3.2",
+        "tag": "v3.0.0",
         "object": {
             "type": "commit",
             "sha": SOURCE,
@@ -571,7 +488,7 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
         "id": 999,
         "draft": True,
         "prerelease": False,
-        "tag_name": "v2.3.2",
+        "tag_name": "v3.0.0",
         "target_commitish": SOURCE,
         "body": "Ordinary release",
         "assets": [
@@ -598,3 +515,18 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
     with pytest.raises(promotion.PromotionError, match="bytes conflict"):
         promotion.publish(tmp_path)
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("field", ["header_sha256", "exports", "version"])
+def test_policy_refuses_stale_abi_contract(tmp_path: Path, monkeypatch, field: str) -> None:
+    contract = json.loads((ROOT / "tests/contracts/c-abi.json").read_text())
+    header = tmp_path / contract["header"]
+    header.parent.mkdir(parents=True)
+    header.write_bytes((ROOT / contract["header"]).read_bytes())
+    contract[field] = [] if field == "exports" else "stale"
+    path = tmp_path / "tests/contracts/c-abi.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(contract))
+    monkeypatch.setattr(policy, "ROOT", tmp_path)
+    with pytest.raises(ValueError, match="disagrees with the public header"):
+        policy.abi_contract()

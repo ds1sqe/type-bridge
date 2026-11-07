@@ -5,6 +5,10 @@ from its Split-YAML workspace, upgrade the matching runtime, and rebuild your
 application. Generated projection resources and nominal types must come from
 one package generation; mixing old resources with a new runtime is unsupported.
 
+The C release example now uses `tb_sdk` / `TB_SDK`, replacing `tb_sdkv3` /
+`TB_SDKV3`. Regenerate its consumers and update includes, symbols, CMake and
+pkg-config package names together.
+
 ## Runtime and server migration
 
 - General TypeDB admission starts at 3.12.0. Supported lines are 3.12–3.14;

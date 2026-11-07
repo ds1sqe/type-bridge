@@ -11,15 +11,15 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-POLICY = ROOT / ".github/release/c-2.3.2.json"
+POLICY = ROOT / ".github/release/c-3.0.0.json"
 CI = ROOT / ".github/workflows/ci.yml"
-VERSION = "2.3.2"
-# Runtime ABI; installed pkg-config metadata stays on the frozen 1.6.0 line.
-ABI = "1.7.0"
+VERSION = "3.0.0"
+# Runtime and installed package metadata share ABI 2.0.
+ABI = "2.0.0"
 TARGET = "x86_64-unknown-linux-gnu"
 CLI = f"type-bridge-cli-artifact-{TARGET}.tar.gz"
-RUNTIME = f"type-bridge-c-runtime-abi-1.6-{TARGET}.tar.gz"
-GENERATED = "tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz"
+RUNTIME = f"type-bridge-c-runtime-abi-2.0-{TARGET}.tar.gz"
+GENERATED = "tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz"
 SECURITY_FILES = [
     "artifact-manifest.json",
     "cli.spdx.json",
@@ -42,7 +42,7 @@ ARTIFACTS = {
 }
 PUBLIC_FILES = {
     CLI: f"type-bridge-cli-{VERSION}-{TARGET}.tar.gz",
-    RUNTIME: f"type-bridge-c-runtime-{VERSION}-abi-1.6-{TARGET}.tar.gz",
+    RUNTIME: f"type-bridge-c-runtime-{VERSION}-abi-2.0-{TARGET}.tar.gz",
     GENERATED: f"type-bridge-c-sdk-example-{VERSION}.tar.gz",
 }
 EVIDENCE = f"type-bridge-c-evidence-{VERSION}.tar.gz"
@@ -139,6 +139,22 @@ def workflow_jobs() -> dict[str, dict[str, str]]:
     return result
 
 
+def abi_contract() -> dict[str, Any]:
+    """Bind the selected runtime to the complete current public header."""
+    contract = json.loads((ROOT / "tests/contracts/c-abi.json").read_text())
+    header = (ROOT / contract["header"]).read_bytes()
+    exports = sorted(
+        set(re.findall(r"TYPE_BRIDGE_CALL\s+(type_bridge_[a-z0-9_]+)\s*\(", header.decode()))
+    )
+    if (
+        contract["version"] != ABI
+        or contract["header_sha256"] != hashlib.sha256(header).hexdigest()
+        or contract["exports"] != exports
+    ):
+        raise ValueError("C ABI contract disagrees with the public header")
+    return {key: contract[key] for key in ("header", "header_sha256", "exports")}
+
+
 def selected_policy() -> dict[str, Any]:
     import yaml
 
@@ -150,6 +166,7 @@ def selected_policy() -> dict[str, Any]:
         "repository_id": 1085407082,
         "tag": f"v{VERSION}",
         "abi": ABI,
+        "abi_contract": abi_contract(),
         "target": TARGET,
         "runner": "ubuntu-24.04",
         "linkage": "shared",

@@ -32,9 +32,8 @@ NOTICE_PATH = CORE / "crates/c/THIRD_PARTY_NOTICES.md"
 TARGET = "x86_64-unknown-linux-gnu"
 RUNTIME_NAME = "type-bridge-c-runtime"
 RUNTIME_LIBRARY = "libtype_bridge_c.so"
-# Published C asset name. The app label below must stay `sdkv3` so the
-# generator emits the tb_sdkv3 prefix this name and the release record use.
-PACKAGE_NAME = "tb_sdkv3"
+# The generated example uses the unversioned prefix selected for ABI 2.0.
+PACKAGE_NAME = "tb_sdk"
 PACKAGE_VERSION = "1.0.0"
 # Installed package metadata matches the native runtime ABI.
 ABI_VERSION = "2.0.0"
@@ -459,7 +458,7 @@ def build_generation_workspace(root: Path) -> Path:
         "schema:\n  root: schema/schema.yaml\n  ownership: exclusive\n"
         "  managed-scope: models-package\n"
         "compatibility:\n  semantic-profile: typedb-3.12.1/v1\n"
-        "migrations:\n  directory: migrations/v2\n  app-label: sdkv3\n"
+        "migrations:\n  directory: migrations/v2\n  app-label: sdk\n"
         "bindings:\n  c:\n    output: generated/c\n",
         encoding="utf-8",
     )

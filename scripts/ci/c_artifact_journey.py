@@ -83,10 +83,10 @@ def adapted_fixture(path: Path) -> bytes:
         raise JourneyError(f"fixture symbol authority drifted: {path.name}")
     source = source.replace(
         "#include <fixture/models.h>",
-        "#include <tb_sdkv3/tb_sdkv3.h>",
+        "#include <tb_sdk/tb_sdk.h>",
     )
-    source = source.replace("fixture_", "tb_sdkv3_")
-    source = source.replace("FIXTURE_", "TB_SDKV3_")
+    source = source.replace("fixture_", "tb_sdk_")
+    source = source.replace("FIXTURE_", "TB_SDK_")
     if path == FULL_CONSUMER:
         # The predecessor query fixture allowed arbitrary nickname strings.
         # Models freezes the field to Ada/Dana. Preserve the one
@@ -99,18 +99,18 @@ def adapted_fixture(path: Path) -> bytes:
         old_check = """if (is_query_dana) {
     CHECK(nickname == NULL);
   } else {
-    CHECK(tb_sdkv3_nickname_value(nickname, &text, out_diagnostics) ==
+    CHECK(tb_sdk_nickname_value(nickname, &text, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(same_text(text, is_query_ada ? "Ada" : expected_identifier));
-    CHECK(tb_sdkv3_nickname_close(&nickname) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(tb_sdk_nickname_close(&nickname) == TYPE_BRIDGE_STATUS_OK);
   }"""
         new_check = """if (!is_query_ada) {
     CHECK(nickname == NULL);
   } else {
-    CHECK(tb_sdkv3_nickname_value(nickname, &text, out_diagnostics) ==
+    CHECK(tb_sdk_nickname_value(nickname, &text, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(same_text(text, "Ada"));
-    CHECK(tb_sdkv3_nickname_close(&nickname) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(tb_sdk_nickname_close(&nickname) == TYPE_BRIDGE_STATUS_OK);
   }"""
         if source.count(old_check) != 1:
             raise JourneyError("full consumer nickname-check seam drifted")
@@ -124,41 +124,41 @@ def adapted_fixture(path: Path) -> bytes:
         if source.count(old_alias_input) != 1:
             raise JourneyError("full consumer ordered-alias input seam drifted")
         source = source.replace(old_alias_input, "args.field_aliases_chunks = NULL;", 1)
-        old_alias_check = """CHECK(tb_sdkv3_person_aliases_count(person, &aliases_count,
+        old_alias_check = """CHECK(tb_sdk_person_aliases_count(person, &aliases_count,
                                      out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(aliases_count == 1u);
-  CHECK(tb_sdkv3_person_aliases_at(person, 0u, &alias, out_diagnostics) ==
+  CHECK(tb_sdk_person_aliases_at(person, 0u, &alias, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(tb_sdkv3_aliases_value(alias, &text, out_diagnostics) ==
+  CHECK(tb_sdk_aliases_value(alias, &text, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(same_text(text, expected_alias_value));
-  CHECK(tb_sdkv3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
-        new_alias_check = """CHECK(tb_sdkv3_person_aliases_count(person, &aliases_count,
+  CHECK(tb_sdk_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
+        new_alias_check = """CHECK(tb_sdk_person_aliases_count(person, &aliases_count,
                                      out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(aliases_count == 0u);
-  CHECK(tb_sdkv3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(tb_sdk_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);
   (void)expected_alias_value;"""
         if source.count(old_alias_check) != 1:
             raise JourneyError("full consumer ordered-alias check seam drifted")
         source = source.replace(old_alias_check, new_alias_check, 1)
-        old_alias_observation = """CHECK(tb_sdkv3_person_aliases_count(person, &alias_count, out_diagnostics) ==
+        old_alias_observation = """CHECK(tb_sdk_person_aliases_count(person, &alias_count, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(alias_count != 0u);
-  CHECK(tb_sdkv3_person_aliases_at(person, 0u, &alias, out_diagnostics) ==
+  CHECK(tb_sdk_person_aliases_at(person, 0u, &alias, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(tb_sdkv3_aliases_value(alias, &value, out_diagnostics) ==
+  CHECK(tb_sdk_aliases_value(alias, &value, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(copy_stable_text(value, observation->first_alias,
                          sizeof(observation->first_alias)));
-  CHECK(tb_sdkv3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
-        new_alias_observation = """CHECK(tb_sdkv3_person_aliases_count(person, &alias_count, out_diagnostics) ==
+  CHECK(tb_sdk_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
+        new_alias_observation = """CHECK(tb_sdk_person_aliases_count(person, &alias_count, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(alias_count == 0u);
   CHECK(snprintf(observation->first_alias, sizeof(observation->first_alias),
                  "%s", "ordered-omitted") > 0);
-  CHECK(tb_sdkv3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
+  CHECK(tb_sdk_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
         if source.count(old_alias_observation) != 1:
             raise JourneyError("full consumer ordered-alias observation seam drifted")
         source = source.replace(old_alias_observation, new_alias_observation, 1)
@@ -169,8 +169,8 @@ def adapted_flat_package() -> bytes:
     source = QUERY_PACKAGE.read_text(encoding="utf-8")
     if source.count('#include "src/models.c"') != 1:
         raise JourneyError("flat package source include authority drifted")
-    source = source.replace('#include "src/models.c"', '#include "src/tb_sdkv3.c"')
-    source = source.replace("fixture_", "tb_sdkv3_")
+    source = source.replace('#include "src/models.c"', '#include "src/tb_sdk.c"')
+    source = source.replace("fixture_", "tb_sdk_")
     return source.encode()
 
 
@@ -212,11 +212,11 @@ def _compile(
 
 
 def lifecycle_source() -> bytes:
-    return b"""#include <string.h>\n#include <tb_sdkv3/tb_sdkv3.h>\nint main(void) {\n  type_bridge_schema_package_t *package = NULL;\n  type_bridge_execution_diagnostics_t *diagnostics = NULL;\n  type_bridge_cancellation_t *cancellation = NULL;\n  tb_sdkv3_identifier *identifier = NULL;\n  type_bridge_byte_view_t input = {(const uint8_t *)"artifact", 8u};\n  type_bridge_byte_view_t output = {0};\n  uint8_t requested = 0u;\n  if (tb_sdkv3_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 10;\n  if (tb_sdkv3_identifier_open(package, input, &identifier, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 11;\n  if (tb_sdkv3_identifier_value(identifier, &output, &diagnostics) != TYPE_BRIDGE_STATUS_OK || output.length != 8u || memcmp(output.data, "artifact", 8u) != 0) return 12;\n  if (tb_sdkv3_identifier_close(&identifier) != TYPE_BRIDGE_STATUS_OK || identifier != NULL) return 13;\n  if (tb_sdkv3_identifier_close(&identifier) != TYPE_BRIDGE_STATUS_OK) return 14;\n  if (type_bridge_cancellation_open(&cancellation) != TYPE_BRIDGE_STATUS_OK) return 15;\n  if (type_bridge_cancellation_request(cancellation) != TYPE_BRIDGE_STATUS_OK || type_bridge_cancellation_is_requested(cancellation, &requested) != TYPE_BRIDGE_STATUS_OK || requested != 1u) return 16;\n  if (type_bridge_cancellation_close(&cancellation) != TYPE_BRIDGE_STATUS_OK || cancellation != NULL) return 17;\n  if (type_bridge_cancellation_close(&cancellation) != TYPE_BRIDGE_STATUS_OK) return 18;\n  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL) return 19;\n  return diagnostics == NULL ? 0 : 20;\n}\n"""
+    return b"""#include <string.h>\n#include <tb_sdk/tb_sdk.h>\nint main(void) {\n  type_bridge_schema_package_t *package = NULL;\n  type_bridge_execution_diagnostics_t *diagnostics = NULL;\n  type_bridge_cancellation_t *cancellation = NULL;\n  tb_sdk_identifier *identifier = NULL;\n  type_bridge_byte_view_t input = {(const uint8_t *)"artifact", 8u};\n  type_bridge_byte_view_t output = {0};\n  uint8_t requested = 0u;\n  if (tb_sdk_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 10;\n  if (tb_sdk_identifier_open(package, input, &identifier, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 11;\n  if (tb_sdk_identifier_value(identifier, &output, &diagnostics) != TYPE_BRIDGE_STATUS_OK || output.length != 8u || memcmp(output.data, "artifact", 8u) != 0) return 12;\n  if (tb_sdk_identifier_close(&identifier) != TYPE_BRIDGE_STATUS_OK || identifier != NULL) return 13;\n  if (tb_sdk_identifier_close(&identifier) != TYPE_BRIDGE_STATUS_OK) return 14;\n  if (type_bridge_cancellation_open(&cancellation) != TYPE_BRIDGE_STATUS_OK) return 15;\n  if (type_bridge_cancellation_request(cancellation) != TYPE_BRIDGE_STATUS_OK || type_bridge_cancellation_is_requested(cancellation, &requested) != TYPE_BRIDGE_STATUS_OK || requested != 1u) return 16;\n  if (type_bridge_cancellation_close(&cancellation) != TYPE_BRIDGE_STATUS_OK || cancellation != NULL) return 17;\n  if (type_bridge_cancellation_close(&cancellation) != TYPE_BRIDGE_STATUS_OK) return 18;\n  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL) return 19;\n  return diagnostics == NULL ? 0 : 20;\n}\n"""
 
 
 def negative_source() -> bytes:
-    return b"""#include <tb_sdkv3/tb_sdkv3.h>\nvoid rejected(tb_sdkv3_person *person) {\n  tb_sdkv3_membership *relation = person;\n  (void)relation;\n}\n"""
+    return b"""#include <tb_sdk/tb_sdk.h>\nvoid rejected(tb_sdk_person *person) {\n  tb_sdk_membership *relation = person;\n  (void)relation;\n}\n"""
 
 
 def loader_source() -> bytes:
@@ -226,7 +226,7 @@ def loader_source() -> bytes:
 
 
 def _tls_source_template() -> bytes:
-    return b"""#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <tb_sdkv3/tb_sdkv3.h>\n+static type_bridge_byte_view_t view(const char *text) { type_bridge_byte_view_t value = {(const uint8_t *)text, strlen(text)}; return value; }\n+int main(int argc, char **argv) {\n+  FILE *stream; long length; uint8_t *pem = NULL; type_bridge_schema_package_t *package = NULL;\n+  type_bridge_execution_diagnostics_t *diagnostics = NULL; type_bridge_runtime_t *runtime = NULL; type_bridge_database_t *database = NULL;\n+  type_bridge_byte_view_t version = {0}; type_bridge_runtime_config_v1_t runtime_config = {0}; type_bridge_database_config_t config = {0};\n+  type_bridge_query_execution_limits_v1_t limits = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;\n+  if (argc != 8) return 10; stream = fopen(argv[6], \"rb\"); if (stream == NULL) return 11;\n+  if (fseek(stream, 0, SEEK_END) != 0 || (length = ftell(stream)) <= 0 || length > TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX || fseek(stream, 0, SEEK_SET) != 0) return 12;\n+  pem = (uint8_t *)malloc((size_t)length); if (pem == NULL || fread(pem, 1u, (size_t)length, stream) != (size_t)length || fclose(stream) != 0) return 13;\n+  if (tb_sdkv3_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 14;\n+  runtime_config.struct_size = sizeof(runtime_config); runtime_config.version = TYPE_BRIDGE_RUNTIME_CONFIG_VERSION; runtime_config.worker_threads = TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN;\n+  if (type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 15;\n+  config.struct_size = sizeof(config); config.version = TYPE_BRIDGE_DATABASE_CONFIG_VERSION; config.address = view(argv[1]); config.http_port = (uint32_t)strtoul(argv[2], NULL, 10);\n+  config.database = view(argv[3]); config.username = view(argv[4]); config.password = view(argv[5]); config.tls_mode = TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA;\n+  config.custom_root_ca_pem.data = pem; config.custom_root_ca_pem.length = (size_t)length; config.connection_limits = limits; config.answer_limits = limits;\n+  if (type_bridge_database_open(runtime, package, &config, NULL, &database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 16;\n+  memset(pem, 0xa5, (size_t)length); free(pem); pem = NULL;\n+  if (type_bridge_database_server_version(database, &version) != TYPE_BRIDGE_STATUS_OK || version.length != strlen(argv[7]) || memcmp(version.data, argv[7], version.length) != 0) return 17;\n+  if (type_bridge_database_close(&database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || database != NULL) return 18;\n+  if (type_bridge_runtime_close(&runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK || runtime != NULL) return 19;\n+  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL || diagnostics != NULL) return 20;\n+  puts(\"custom-root TLS direct artifact connection: passed\"); return 0;\n+}\n"""
+    return b"""#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <tb_sdk/tb_sdk.h>\n+static type_bridge_byte_view_t view(const char *text) { type_bridge_byte_view_t value = {(const uint8_t *)text, strlen(text)}; return value; }\n+int main(int argc, char **argv) {\n+  FILE *stream; long length; uint8_t *pem = NULL; type_bridge_schema_package_t *package = NULL;\n+  type_bridge_execution_diagnostics_t *diagnostics = NULL; type_bridge_runtime_t *runtime = NULL; type_bridge_database_t *database = NULL;\n+  type_bridge_byte_view_t version = {0}; type_bridge_runtime_config_v1_t runtime_config = {0}; type_bridge_database_config_t config = {0};\n+  type_bridge_query_execution_limits_v1_t limits = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;\n+  if (argc != 8) return 10; stream = fopen(argv[6], \"rb\"); if (stream == NULL) return 11;\n+  if (fseek(stream, 0, SEEK_END) != 0 || (length = ftell(stream)) <= 0 || length > TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX || fseek(stream, 0, SEEK_SET) != 0) return 12;\n+  pem = (uint8_t *)malloc((size_t)length); if (pem == NULL || fread(pem, 1u, (size_t)length, stream) != (size_t)length || fclose(stream) != 0) return 13;\n+  if (tb_sdk_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 14;\n+  runtime_config.struct_size = sizeof(runtime_config); runtime_config.version = TYPE_BRIDGE_RUNTIME_CONFIG_VERSION; runtime_config.worker_threads = TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN;\n+  if (type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 15;\n+  config.struct_size = sizeof(config); config.version = TYPE_BRIDGE_DATABASE_CONFIG_VERSION; config.address = view(argv[1]); config.http_port = (uint32_t)strtoul(argv[2], NULL, 10);\n+  config.database = view(argv[3]); config.username = view(argv[4]); config.password = view(argv[5]); config.tls_mode = TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA;\n+  config.custom_root_ca_pem.data = pem; config.custom_root_ca_pem.length = (size_t)length; config.connection_limits = limits; config.answer_limits = limits;\n+  if (type_bridge_database_open(runtime, package, &config, NULL, &database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 16;\n+  memset(pem, 0xa5, (size_t)length); free(pem); pem = NULL;\n+  if (type_bridge_database_server_version(database, &version) != TYPE_BRIDGE_STATUS_OK || version.length != strlen(argv[7]) || memcmp(version.data, argv[7], version.length) != 0) return 17;\n+  if (type_bridge_database_close(&database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || database != NULL) return 18;\n+  if (type_bridge_runtime_close(&runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK || runtime != NULL) return 19;\n+  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL || diagnostics != NULL) return 20;\n+  puts(\"custom-root TLS direct artifact connection: passed\"); return 0;\n+}\n"""
 
 
 def tls_source() -> bytes:
@@ -281,7 +281,7 @@ def tls_probe(
     _compile(
         "cc",
         "-std=c17",
-        [generated / "src/tb_sdkv3.c", source],
+        [generated / "src/tb_sdk.c", source],
         executable,
         runtime,
         generated,
@@ -350,7 +350,7 @@ def connected(
         _write(runtime_files, runtime)
         _write(generated_files, generated)
         environment["LD_LIBRARY_PATH"] = str(runtime / "lib")
-        generated_source = generated / "src/tb_sdkv3.c"
+        generated_source = generated / "src/tb_sdk.c"
         tls_values = (tls_address, tls_http_port, tls_root_ca)
         if any(value is not None for value in tls_values) and not all(
             value is not None for value in tls_values
@@ -742,7 +742,7 @@ def provider_free(
         _write(generated_files, generated)
         source = root / "consumer"
         source.mkdir()
-        generated_source = generated / "src/tb_sdkv3.c"
+        generated_source = generated / "src/tb_sdk.c"
 
         lifecycle = source / "lifecycle.c"
         lifecycle.write_bytes(lifecycle_source())

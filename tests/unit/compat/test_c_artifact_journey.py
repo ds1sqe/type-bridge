@@ -139,14 +139,14 @@ def test_canonical_consumers_adapt_only_package_identity() -> None:
         source = JOURNEY.adapted_fixture(fixture).decode()
         assert "fixture_" not in source
         assert "FIXTURE_" not in source
-        assert "#include <tb_sdkv3/tb_sdkv3.h>" in source
-        assert "tb_sdkv3_schema_package_open" in source
+        assert "#include <tb_sdk/tb_sdk.h>" in source
+        assert "tb_sdk_schema_package_open" in source
         if fixture == JOURNEY.FULL_CONSUMER:
             assert "ordered-omitted" in source
             assert "args.field_aliases_chunks = NULL;" in source
     flat = JOURNEY.adapted_flat_package().decode()
-    assert '#include "src/tb_sdkv3.c"' in flat
-    assert "tb_sdkv3_schema_package_chunks_v1" in flat
+    assert '#include "src/tb_sdk.c"' in flat
+    assert "tb_sdk_schema_package_chunks_v1" in flat
 
 
 def test_tls_consumer_captures_custom_root_without_template_markers() -> None:

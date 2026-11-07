@@ -10,6 +10,10 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
 
 <!-- --8<-- [start:breaking-3-0] -->
 
+- The generated C release example uses `tb_sdk` / `TB_SDK` in place of
+  `tb_sdkv3` / `TB_SDKV3`. Regenerate C consumers and update includes,
+  symbols and package names for the ABI 2.0 runtime.
+
 - Migrations write the companion suffix `__tb_journal` and
   `typebridge-internal-*` labels in place of `__tbv2_journal` and
   `typebridge-internal-v2-*`. Stop all 2.x migration runners before the first

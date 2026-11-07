@@ -102,6 +102,10 @@ def control(*, publishing: bool = False) -> tuple[str, str, dict[str, Any]]:
         "Changed artifact selection",
     )
     require(selected["ci_workflow_sha256"] == digest(policy.CI), "Stale CI policy")
+    require(
+        selected["abi"] == policy.ABI and selected["abi_contract"] == policy.abi_contract(),
+        "Changed C ABI contract",
+    )
     source = command(["git", "rev-parse", "HEAD"])
     tree = command(["git", "rev-parse", "HEAD^{tree}"])
     require(re.fullmatch(r"[0-9a-f]{40}", source) is not None, "Malformed source")

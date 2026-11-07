@@ -524,7 +524,7 @@
   "source_authorities": [
     {
       "path": "type-bridge-core/crates/c/Cargo.toml",
-      "sha256": "5e5b519b66784a402337253eee64741af6b587ce787c7a4c7c85d94d8f4dafcd"
+      "sha256": "8d797b6f5bb2472daeef91594444b55a6017633760720641264065d1bb249229"
     },
     {
       "path": "type-bridge-core/crates/c/CMakeLists.txt",

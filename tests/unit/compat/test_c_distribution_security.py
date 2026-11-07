@@ -47,8 +47,8 @@ def test_pruned_artifact_lock_contains_only_runtime_closure() -> None:
     lock = tomllib.loads(SECURITY.pruned_lock_payload(metadata, closure).decode())
     packages = {(item["name"], item["version"]) for item in lock["package"]}
 
-    assert ("type-bridge-cli", "2.3.2") in packages
-    assert ("type-bridge-c", "2.3.2") in packages
+    assert ("type-bridge-cli", "3.0.0") in packages
+    assert ("type-bridge-c", "3.0.0") in packages
     assert ("pyo3", "0.23.5") not in packages
     assert ("h2", "0.4.16") in packages
     assert ("rustls-webpki", "0.103.16") in packages

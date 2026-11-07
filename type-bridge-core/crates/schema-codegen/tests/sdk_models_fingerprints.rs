@@ -286,9 +286,9 @@ fn sdk_catalog_uses_current_emitter_resources() {
         .iter()
         .map(|(binding, value)| (*binding, value.projection_fingerprint()))
         .collect::<BTreeMap<_, _>>();
-    let artifact = projections_for(SOURCE, "tb_sdkv3");
+    let artifact = projections_for(SOURCE, "tb_sdk");
     let archive = format!(
-        "tb_sdkv3-c-{}.tar.gz",
+        "tb_sdk-c-{}.tar.gz",
         artifact["c"]
             .projection_fingerprint()
             .as_fingerprint()
