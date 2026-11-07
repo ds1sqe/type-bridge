@@ -1152,3 +1152,232 @@ fn generic_model_partition_refuses_exhausted_binding_budget_before_io() {
         "plan_returning_models_binding_limit"
     );
 }
+
+fn wide_relation_registry(roles: usize) -> Arc<DescriptorRegistry> {
+    let registry = registry();
+    registry
+        .register_relation(RelationDescriptor {
+            type_name: "wide-relation".into(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![],
+            roles: (0..roles)
+                .map(|index| RoleDescriptor {
+                    role_name: format!("player-{index}"),
+                    player_type_names: vec!["person".into()],
+                    ..Default::default()
+                })
+                .collect(),
+            doc: None,
+            meta: Default::default(),
+        })
+        .unwrap();
+    registry
+}
+
+fn wide_relation_request(
+    registry: &DescriptorRegistry,
+    grouped: bool,
+    limits: type_bridge_contract::limits::QueryLimits,
+) -> crate::match_request::ValidatedMatchRequest {
+    let mut plan = MatchPlan {
+        bindings: vec![MatchBinding {
+            id: V1BindingId::new(0),
+            descriptor: DescriptorId::new("relation:wide-relation"),
+            thing_kind: ThingKind::Relation,
+            match_mode: MatchMode::Exact,
+        }],
+        predicate: None,
+        allowed_cross_joins: BTreeSet::new(),
+    };
+    if grouped {
+        plan.bindings.push(MatchBinding {
+            id: V1BindingId::new(1),
+            descriptor: DescriptorId::new("entity:person"),
+            thing_kind: ThingKind::Entity,
+            match_mode: MatchMode::Exact,
+        });
+        plan.predicate = Some(MatchExpr::RoleEdge {
+            id: RoleEdgeId::new(0),
+            relation: V1BindingId::new(0),
+            role: V1RoleId::new(DescriptorId::new("relation:wide-relation"), "player-0"),
+            player: V1BindingId::new(1),
+        });
+    }
+    crate::match_request::validate_match_request_with_limits(
+        registry,
+        MatchRequest::v1(
+            plan,
+            if grouped {
+                MatchOperation::ReduceBy {
+                    root: V1BindingId::new(1),
+                    group: Some(V1BindingId::new(0)),
+                    reducers: vec![crate::match_request::ReduceTerm {
+                        reduction: crate::match_request::Reduction::Count,
+                        input: None,
+                    }],
+                }
+            } else {
+                MatchOperation::FetchRows {
+                    output: FetchShape::Positional {
+                        slots: vec![FetchSlot::One {
+                            binding: V1BindingId::new(0),
+                        }],
+                    },
+                    order: vec![],
+                    window: Window {
+                        offset: 0,
+                        limit: 5,
+                    },
+                    cardinality: RowCardinality::Complete,
+                }
+            },
+        ),
+        limits,
+    )
+    .unwrap()
+}
+
+#[test]
+fn wide_relation_fetch_and_grouped_reduction_equal_raised_limits() {
+    use crate::match_request::plan_adapter::{Layout, adapt_match_request};
+    use crate::query_plan_exec::PlanAnswer;
+    use serde_json::json;
+    use type_bridge_contract::query_plan::Stage;
+    let registry = wide_relation_registry(300);
+    for grouped in [false, true] {
+        let mut results = Vec::new();
+        for budget in [256, 1024] {
+            let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
+            limits.structural.boolean_terms = budget;
+            let request = wide_relation_request(&registry, grouped, limits);
+            let stack = adapt_match_request(&registry, &request).unwrap();
+            assert!(if grouped {
+                matches!(stack.layout, Layout::Reduction { .. })
+            } else {
+                matches!(stack.layout, Layout::Fetch { .. })
+            });
+            let fetches = stack
+                .plans
+                .iter()
+                .filter(|plan| plan.fetch_document_shape().is_some())
+                .count();
+            assert_eq!(fetches, if budget == 256 { 2 } else { 1 });
+            let answers = stack.plans.iter().map(|plan| {
+                if let Some(Stage::Fetch(fetch)) = plan.pipeline().last() {
+                    let documents = [("0x10", "Alice"), ("0x11", "Bob")].into_iter().map(|(iid, name)| {
+                    let mut document = json!({"_iid":"0x20", "_type":"wide-relation", "attributes":{}});
+                    for (index, role) in fetch.roles.iter().enumerate() {
+                        if role.collect {
+                            document[format!("_role_{index}_players")] = json!([
+                                {"_iid":"0x10", "_type":"person", "attributes":{"person-name":"Alice"}},
+                                {"_iid":"0x11", "_type":"person", "attributes":{"person-name":"Bob"}}
+                            ]);
+                        } else {
+                            document[format!("_role_{index}_iid")] = json!(iid);
+                            document[format!("_role_{index}_type")] = json!("person");
+                            document[format!("_role_{index}_attributes")] = json!({"person-name":name});
+                        }
+                    }
+                    document
+                    }).collect();
+                    PlanAnswer::Documents(documents)
+                } else {
+                    let QueryOutput::Rows { columns } = plan.output() else { panic!("rows") };
+                    let row = columns.iter().map(|column| {
+                        let value = if column.get() == 0 {
+                            json!({"kind":"thing", "iid":"0x20", "type_id":{"kind":"relation", "label":"wide-relation"}})
+                        } else { serde_json::to_value(type_bridge_contract::query_remote::RemoteValue::Value { value: type_bridge_contract::value::CanonicalValue::Long(1) }).unwrap() };
+                        (format!("b{}",column.get()),value)
+                    }).collect::<serde_json::Map<_,_>>();
+                    PlanAnswer::Rows(vec![row.into()])
+                }
+            }).collect::<Vec<_>>();
+            let result =
+                crate::match_request::result_validation::validated_match_result_from_plan_stack(
+                    &registry,
+                    &request,
+                    &stack,
+                    &answers,
+                    crate::QueryExecutionResourceLimits::default()
+                        .for_adapter_statements(stack.plans.len()),
+                )
+                .unwrap();
+            results.push(result.for_request(&request).unwrap().clone());
+        }
+        assert_eq!(results[0], results[1]);
+    }
+}
+
+#[test]
+fn wide_relation_single_role_refuses_after_root_and_prefix_fit() {
+    use crate::match_request::plan_adapter::adapt_match_request;
+    use crate::match_request::plan_fetch_stack::{FetchPrefix, append_hydration_partitions};
+    use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+    use type_bridge_contract::query_plan::{Operation, PlanSpec, QueryPlan, Stage, ThingDocument};
+    let registry = wide_relation_registry(1);
+    let request = wide_relation_request(
+        &registry,
+        false,
+        type_bridge_contract::limits::QueryLimits::PLAN,
+    );
+    let stack = adapt_match_request(&registry, &request).unwrap();
+    let authority = MatchRequestAdapterAuthority::from_registry(&registry).unwrap();
+    let binding = BindingId::new(0).unwrap();
+    let isa = Stage::Match {
+        patterns: vec![
+            QueryPattern::Isa {
+                binding,
+                type_id: TypeId::new(TypeKind::Relation, "wide-relation").unwrap(),
+                include_subtypes: false,
+            }
+            .into(),
+        ],
+    };
+    let prefix = vec![
+        isa.clone(),
+        Stage::Select {
+            bindings: vec![binding],
+        },
+        Stage::Distinct,
+    ];
+    let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
+    limits.structural.boolean_terms = 1;
+    let build = |pipeline, columns| {
+        QueryPlan::new_with_limits(
+            PlanSpec {
+                bindings: vec![AssertionBinding::new(
+                    binding,
+                    QueryVariable::new("root").unwrap(),
+                )],
+                inputs: vec![],
+                given_rows: None,
+                operation: Operation::Rows,
+                pipeline,
+                output: QueryOutput::Rows { columns },
+                managed_semantics: stack.plans[0].managed_semantics().clone(),
+                functions: vec![],
+            },
+            authority.declared(),
+            limits,
+        )
+    };
+    let source = build(prefix.clone(), vec![binding]).expect("selection prefix fits");
+    let mut root_only = prefix.clone();
+    root_only.extend([isa, Stage::Fetch(ThingDocument::new(binding, vec![]))]);
+    build(root_only, vec![]).expect("root fetch plus the exact hydration prefix fits");
+    let error = append_hydration_partitions(
+        FetchPrefix {
+            source: &source,
+            stages: &prefix,
+            rematch: &[],
+            baseline: Some(binding),
+        },
+        stack.hydration.bindings(),
+        &stack.hydration,
+        &authority,
+        &mut vec![],
+    )
+    .unwrap_err();
+    assert_eq!(error.code().as_str(), "query_plan_write_term_limit");
+}

@@ -946,8 +946,9 @@ impl PlanFetchStack {
         normalized: &[&type_bridge_contract::query_remote::StagedAnswer],
         limits: crate::QueryExecutionResourceLimits,
     ) -> Result<PlanFetchResult<'a>, Diagnostic> {
-        use super::plan_hydration::{GraphBuilder, HydrationAuthority, insert_plan_documents};
-        use crate::query_plan_exec::PlanAnswer;
+        use super::plan_hydration::{
+            GraphBuilder, HydrationAuthority, insert_hydration_partitions,
+        };
         use type_bridge_contract::query_model_evidence::ModelOutcome;
         use type_bridge_contract::query_model_evidence::{HydratedRow, HydrationSlot};
         use type_bridge_contract::query_model_limits::ModelReplyDecodeLimits;
@@ -1017,17 +1018,21 @@ impl PlanFetchStack {
             max_role_players: limits.role_players,
         };
         let mut graph = GraphBuilder::new(reply_limits);
-        for partitions in self
-            .partitions
-            .chunk_by(|left, right| left.1 == right.1 && left.2 == right.2)
+        for (binding, concrete, actual) in insert_hydration_partitions(
+            &mut graph,
+            &authority,
+            &self.partitions,
+            self.plans(),
+            answers,
+        )
+        .map_err(shared)?
         {
-            let (index, binding, concrete) = &partitions[0];
             let expected = mapping
                 .iter()
                 .map(|row| {
                     let position = mapping_columns
                         .iter()
-                        .position(|candidate| candidate == binding)
+                        .position(|candidate| *candidate == binding)
                         .ok_or_else(fail)?;
                     match row.get(position) {
                         Some(RemoteValue::Thing { iid, type_id }) if concrete.contains(type_id) => {
@@ -1049,37 +1054,7 @@ impl PlanFetchStack {
                 .into_iter()
                 .flatten()
                 .collect::<BTreeSet<_>>();
-            let Some(PlanAnswer::Documents(documents)) = answers.get(*index) else {
-                return Err(fail());
-            };
-            let actual = if partitions.len() == 1 {
-                insert_plan_documents(
-                    &mut graph,
-                    &authority,
-                    binding.get(),
-                    &self.plans()[*index],
-                    documents,
-                )
-            } else {
-                let pieces = partitions
-                    .iter()
-                    .map(|(index, _, _)| {
-                        let Some(PlanAnswer::Documents(documents)) = answers.get(*index) else {
-                            return Err(fail());
-                        };
-                        Ok((&self.plans()[*index], documents.as_slice()))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                super::plan_hydration::insert_partitioned_plan_documents(
-                    &mut graph,
-                    &authority,
-                    binding.get(),
-                    &pieces,
-                )
-            }
-            .map_err(shared)?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
+            let actual = actual.into_iter().collect::<BTreeSet<_>>();
             if expected != actual {
                 return Err(fail());
             }

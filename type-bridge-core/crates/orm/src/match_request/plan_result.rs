@@ -4,7 +4,8 @@ use super::plan_adapter::{AdaptedMatchRequest, Layout};
 use super::plan_hydration::{
     GraphBuilder, HydrationAuthority, PredicateWitnesses, SlotDraft, Solution,
     charge_selected_solution_semantics, evaluate_pattern_with_witnesses, finish_hydrated_rows,
-    insert_plan_documents, try_sort_iids, validate_plan_documents, validate_solution_order,
+    insert_hydration_partitions, insert_plan_documents, try_sort_iids, validate_plan_documents,
+    validate_solution_order,
 };
 use super::{MatchOperation, RowCardinality, ValidatedMatchRequest};
 use crate::QueryExecutionResourceLimits;
@@ -349,28 +350,20 @@ pub(crate) fn resolve(
                 ));
             }
         }
+        for (index, _, _) in hydration {
+            validate_plan_documents(&stack.plans[*index], documents(answers, *index)?, limits)
+                .map_err(shared)?;
+        }
         let mut root_partitions = Vec::new();
-        for (answer, binding, concrete) in hydration {
-            let documents = documents(answers, *answer)?;
-            validate_plan_documents(&stack.plans[*answer], documents, limits).map_err(shared)?;
-            if documents.iter().any(|document| {
-                !concrete.iter().any(|type_id| {
-                    document.get("_type").and_then(Value::as_str) == Some(type_id.label().as_str())
-                })
-            }) {
-                return Err(failure(
-                    "query_plan_result_type",
-                    "concrete hydration partition returned another type",
-                ));
-            }
-            let actual = insert_plan_documents(
-                &mut graph,
-                &authority,
-                binding.get(),
-                &stack.plans[*answer],
-                documents,
-            )
-            .map_err(shared)?;
+        for (binding, concrete, actual) in insert_hydration_partitions(
+            &mut graph,
+            &authority,
+            hydration,
+            &stack.plans,
+            &answers.iter().collect::<Vec<_>>(),
+        )
+        .map_err(shared)?
+        {
             let actual_set = actual.iter().cloned().collect::<BTreeSet<_>>();
             let expected = types
                 .iter()
@@ -963,15 +956,21 @@ fn resolve_reduction(
             expected.insert(iid.clone());
         }
     }
+    for (index, _, _) in hydration {
+        validate_plan_documents(&stack.plans[*index], documents(answers, *index)?, limits)
+            .map_err(shared)?;
+    }
     let mut observed = BTreeSet::new();
-    for (index, binding, _) in hydration {
-        let plan = &stack.plans[*index];
-        let docs = documents(answers, *index)?;
-        validate_plan_documents(plan, docs, limits).map_err(shared)?;
-        observed.extend(
-            insert_plan_documents(&mut graph, &authority, binding.get(), plan, docs)
-                .map_err(shared)?,
-        );
+    for (_, _, iids) in insert_hydration_partitions(
+        &mut graph,
+        &authority,
+        hydration,
+        &stack.plans,
+        &answers.iter().collect::<Vec<_>>(),
+    )
+    .map_err(shared)?
+    {
+        observed.extend(iids);
     }
     if expected != observed {
         return Err(failure(

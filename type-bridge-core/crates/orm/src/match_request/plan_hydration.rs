@@ -11,6 +11,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
+use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_model_evidence::{
     HydratedRow, HydrationAttributeEvidence, HydrationGraph, HydrationNode, HydrationNodeId,
     HydrationNodeKind, HydrationReference, HydrationRoleEvidence, HydrationSlot,
@@ -1726,8 +1727,56 @@ pub(crate) fn validate_plan_documents(
     Ok(())
 }
 
-/// Assemble disjoint role subsets before the complete-model hydration checks.
-pub(crate) fn insert_partitioned_plan_documents(
+type HydratedPartition<'a> = (BindingId, &'a [TypeId], Vec<String>);
+
+/// Assemble wire-validated role subsets before the complete-model hydration checks.
+pub(crate) fn insert_hydration_partitions<'a>(
+    graph: &mut GraphBuilder,
+    authority: &HydrationAuthority<'_>,
+    partitions: &'a [(usize, BindingId, Vec<TypeId>)],
+    plans: &[type_bridge_contract::query_plan::QueryPlan],
+    answers: &[&crate::query_plan_exec::PlanAnswer],
+) -> ExecResult<Vec<HydratedPartition<'a>>> {
+    let mut hydrated = Vec::new();
+    for group in partitions.chunk_by(|left, right| left.1 == right.1 && left.2 == right.2) {
+        let (_, binding, concrete) = &group[0];
+        let pieces = group
+            .iter()
+            .map(|(index, _, _)| {
+                let Some(crate::query_plan_exec::PlanAnswer::Documents(documents)) =
+                    answers.get(*index)
+                else {
+                    return Err(evidence_error(
+                        "query_plan_result_documents",
+                        "hydration plan did not return documents",
+                    ));
+                };
+                let plan = &plans[*index];
+                if documents.iter().any(|document| {
+                    !concrete.iter().any(|type_id| {
+                        document.get("_type").and_then(JsonValue::as_str)
+                            == Some(type_id.label().as_str())
+                    })
+                }) {
+                    return Err(evidence_error(
+                        "query_plan_result_type",
+                        "concrete hydration partition returned another type",
+                    ));
+                }
+                Ok((plan, documents.as_slice()))
+            })
+            .collect::<ExecResult<Vec<_>>>()?;
+        let iids = if let [(plan, documents)] = pieces.as_slice() {
+            insert_plan_documents(graph, authority, binding.get(), plan, documents)?
+        } else {
+            insert_partitioned_plan_documents(graph, authority, binding.get(), &pieces)?
+        };
+        hydrated.push((*binding, concrete.as_slice(), iids));
+    }
+    Ok(hydrated)
+}
+
+fn insert_partitioned_plan_documents(
     graph: &mut GraphBuilder,
     authority: &HydrationAuthority<'_>,
     binding: u16,
@@ -1836,11 +1885,7 @@ pub(crate) fn insert_partitioned_plan_documents(
         graph,
         authority,
         binding,
-        &ThingDocument::new(
-            type_bridge_contract::migration_assertion::BindingId::new(binding)
-                .map_err(|_| conflict())?,
-            roles,
-        ),
+        &ThingDocument::new(BindingId::new(binding).map_err(|_| conflict())?, roles),
         &documents,
     )
 }
