@@ -215,7 +215,7 @@ pub unsafe extern "C" fn type_bridge_plan_builder_type_token(
             .query_tokens()
             .fields()
             .values()
-            .map(|field| push(&mut builder.fields, Some(field.id().clone())))
+            .map(|field| push(&mut builder.fields, Some(field.declaring_id().clone())))
             .collect();
         let roles = projection
             .query_tokens()
@@ -415,6 +415,119 @@ mod layout_tests {
             assert!(diagnostics.is_null());
             assert!((*builder).view_layouts.is_some());
             type_bridge_plan_builder_free(&mut builder);
+        }
+    }
+    #[test]
+    fn subtype_insert_update_and_filter_use_declaring_field_tokens() {
+        use crate::plan_builder::idioms::*;
+        use crate::plan_builder::selections::Selection;
+        use type_bridge_contract::query_plan::QueryPlan;
+        let package = crate::entity_crud::tests::package_from_source(
+            "inherited",
+            "format: typebridge.schema/v2\nattributes:\n  doc-id: { value: string }\n  status: { value: string }\nentities:\n  document:\n    abstract: true\n    owns:\n      doc-id: { key: true }\n      status: { card: 1 }\n  report:\n    sub: document\n",
+        );
+        let report = TypeId::new(TypeKind::Entity, "report").unwrap();
+        let document = TypeId::new(TypeKind::Entity, "document").unwrap();
+        let token = crate::entity_crud::tests::model_token(&package, report);
+        let bytes = crate::entity_crud::tests::byte_view;
+        for operation in ["insert", "update", "filter"] {
+            let mut builder = TypeBridgePlanBuilder::new();
+            builder.package = Some(Arc::clone(package.state()));
+            let (mut model, mut binding) = (0, 0);
+            // SAFETY: the recording, token and output slots are live and disjoint.
+            unsafe {
+                assert_eq!(
+                    type_bridge_plan_builder_type_token(
+                        &mut builder,
+                        &token,
+                        bytes(b"inherited_plan_open"),
+                        &mut model
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+                let key = type_bridge_plan_builder_model_field(&mut builder, token.ordinal, 0);
+                let status = type_bridge_plan_builder_model_field(&mut builder, token.ordinal, 1);
+                assert_eq!(builder.field_id(key).unwrap().owner(), &document);
+                assert_eq!(builder.field_id(status).unwrap().owner(), &document);
+                let key_value = type_bridge_plan_string_literal(bytes(b"R1"));
+                let status_value = type_bridge_plan_string_literal(bytes(b"archived"));
+                if operation == "insert" {
+                    assert_eq!(
+                        type_bridge_plan_builder_insert(&mut builder, model, &mut binding),
+                        TypeBridgeStatus::Ok
+                    );
+                    assert_eq!(
+                        type_bridge_plan_string_create_field(&mut builder, binding, key, key_value),
+                        TypeBridgeStatus::Ok
+                    );
+                    assert_eq!(
+                        type_bridge_plan_string_create_field(
+                            &mut builder,
+                            binding,
+                            status,
+                            status_value
+                        ),
+                        TypeBridgeStatus::Ok
+                    );
+                } else {
+                    assert_eq!(
+                        type_bridge_plan_builder_exact(&mut builder, model, &mut binding),
+                        TypeBridgeStatus::Ok
+                    );
+                    let condition = type_bridge_plan_string_eq(
+                        type_bridge_plan_string_field(&mut builder, binding, key),
+                        key_value,
+                    );
+                    assert_eq!(
+                        type_bridge_plan_require(&mut builder, condition),
+                        TypeBridgeStatus::Ok
+                    );
+                    if operation == "update" {
+                        assert_eq!(
+                            type_bridge_plan_string_set(
+                                &mut builder,
+                                binding,
+                                status,
+                                status_value
+                            ),
+                            TypeBridgeStatus::Ok
+                        );
+                    } else {
+                        let condition = type_bridge_plan_string_eq(
+                            type_bridge_plan_string_field(&mut builder, binding, status),
+                            status_value,
+                        );
+                        assert_eq!(
+                            type_bridge_plan_require(&mut builder, condition),
+                            TypeBridgeStatus::Ok
+                        );
+                    }
+                }
+            }
+            let selected = builder
+                .hold(if operation == "filter" {
+                    Selection::Count
+                } else {
+                    Selection::Matched
+                })
+                .unwrap();
+            let compiled = builder.finish_selection(selected).unwrap();
+            let [plan] = AsRef::<[QueryPlan]>::as_ref(compiled.as_ref()) else {
+                panic!("one plan");
+            };
+            let explanation = type_bridge_orm::plan_explain::explain(plan).unwrap();
+            assert!(
+                explanation
+                    .statements
+                    .iter()
+                    .any(|text| text.contains("report"))
+            );
+            assert!(
+                explanation
+                    .statements
+                    .iter()
+                    .any(|text| text.contains("status"))
+            );
         }
     }
 }
