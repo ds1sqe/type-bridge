@@ -988,6 +988,9 @@ lists every limit with its default.
 Manager reads, including `get_by_iid`, split relation role projections that
 exceed the effective query budget. All fetch statements share one transaction,
 and the engine combines their evidence before returning a complete model.
+For one concrete relation type, a split read uses
+`2 + ceil(roles / per-fetch capacity)` statements: selection, mapping, then
+bounded fetches.
 In-budget reads retain one fetch. An explicit statement ceiling still applies;
 an unset ceiling accommodates the prepared fetch stack. Shapes that cannot fit
 even a single role within the limits are still refused.

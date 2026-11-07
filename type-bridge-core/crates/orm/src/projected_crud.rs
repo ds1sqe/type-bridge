@@ -358,6 +358,8 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 let ManagerRead::Fetch(stack) = program else {
                     unreachable!("exact model fetch")
                 };
+                ledger.limits = stack.execution_limits(ledger.limits);
+                ledger.require_statements(stack.plans().len())?;
                 let answers = proxy
                     .execute_read_plans(
                         stack.plans(),
@@ -3282,6 +3284,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             unreachable!("exact model fetch")
         };
         ledger.limits = stack.execution_limits(ledger.limits);
+        ledger.require_statements(stack.plans().len())?;
         let mut answers = Vec::with_capacity(stack.plans().len());
         for plan in stack.plans() {
             control.check(type_id)?;
@@ -5270,17 +5273,23 @@ impl ControlledCrudLedger {
         })
     }
 
-    fn charge_statement(&mut self, request_bytes: u64) -> Result<(), SdkExecutionDiagnostic> {
-        let statements = self.statements.saturating_add(1);
-        if statements > self.limits.statement_limit() {
+    fn require_statements(&self, count: usize) -> Result<(), SdkExecutionDiagnostic> {
+        let statements = u64::from(self.statements).saturating_add(count as u64);
+        if statements > u64::from(self.limits.statement_limit()) {
             return Err(crud_resource_limit(
                 "projected_crud_statement_limit",
                 "Controlled CRUD exceeds the provider statement ceiling",
                 "statements",
-                u64::from(statements),
+                statements,
                 u64::from(self.limits.statement_limit()),
             ));
         }
+        Ok(())
+    }
+
+    fn charge_statement(&mut self, request_bytes: u64) -> Result<(), SdkExecutionDiagnostic> {
+        self.require_statements(1)?;
+        let statements = self.statements.saturating_add(1);
         self.charge_bytes(
             request_bytes,
             "projected_crud_transport_byte_limit",
@@ -6222,7 +6231,7 @@ mod tests {
         subtype: bool,
     ) -> InstalledRuntimeProjection {
         let mut source = String::from(
-            "format: typebridge.schema/v2\nattributes:\n  note: { value: string }\nentities:\n  person: {}\nrelations:\n  membership:\n    owns:\n      note: { card: { min: 0, max: 1 } }\n    relates:\n",
+            "format: typebridge.schema/v2\nattributes:\n  note: { value: string }\nentities:\n  person:\n    owns:\n      note: { card: { min: 0, max: 1 } }\nrelations:\n  membership:\n    owns:\n      note: { card: { min: 0, max: 1 } }\n    relates:\n",
         );
         for index in 0..count {
             source.push_str(&format!("      member-{index}: {{ card: {{ min: 0 }} }}\n"));
@@ -6385,6 +6394,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(original.plans().len(), 1);
+        // Captured from the original 8e5122f9 sources with this same schema and IID.
+        assert_eq!(
+            original.plans()[0].canonical_bytes().unwrap(),
+            include_bytes!("../tests/fixtures/exact-read-in-budget-8e5122f9.json").as_slice(),
+        );
         assert_eq!(
             original.plans()[0].canonical_bytes().unwrap(),
             generous.plans()[0].canonical_bytes().unwrap()
@@ -6403,6 +6417,25 @@ mod tests {
         assert_eq!(error.code().as_str(), "query_plan_write_term_limit");
     }
 
+    #[test]
+    fn exact_read_role_budget_boundary() {
+        let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
+        limits.structural.boolean_terms = 21;
+        for (roles, statements) in [(20, 1), (21, 4)] {
+            let installed = wide_read_projection(roles);
+            let executor = ProjectedCrudExecutor::new(&installed);
+            let (_, program) = executor
+                .manager_read_program(
+                    &controlled_type(TypeKind::Relation),
+                    Some("0x20"),
+                    ReadTerminal::Fetch,
+                    Some(&Arc::new(limits)),
+                )
+                .unwrap();
+            assert_eq!(program.plans().len(), statements);
+        }
+    }
+
     #[tokio::test]
     async fn exact_read_split_rejects_conflicts_missing_roots_and_explicit_statement_limit() {
         let installed = wide_read_projection(300);
@@ -6411,13 +6444,13 @@ mod tests {
         let (_, program) = executor
             .manager_read_program(&model, Some("0x20"), ReadTerminal::Fetch, None)
             .unwrap();
-        for case in 0..3 {
+        for case in 0..4 {
             let mut responses = wide_read_responses(&program);
             let ControlledProviderResponse::Items(last) = responses.last_mut().unwrap() else {
                 unreachable!()
             };
             if case == 0 {
-                for item in last {
+                for item in last.iter_mut() {
                     let AnswerItem::Document(document) = item else {
                         unreachable!()
                     };
@@ -6426,7 +6459,15 @@ mod tests {
             } else if case == 1 {
                 last.clear();
             }
-            let (database, _) = controlled_database(responses);
+            if case == 3 {
+                for item in last {
+                    let AnswerItem::Document(document) = item else {
+                        unreachable!()
+                    };
+                    document["_role_0_attributes"] = json!({"note":"conflicting player"});
+                }
+            }
+            let (database, state) = controlled_database(responses);
             let mut limits = QueryExecutionResourceLimits::default();
             if case == 2 {
                 limits.statements = Some(3);
@@ -6441,6 +6482,9 @@ mod tests {
                 )
                 .await
                 .unwrap_err();
+            if case == 2 {
+                assert!(state.lock().unwrap().queries.is_empty());
+            }
             assert_eq!(
                 error.code().as_str(),
                 if case == 2 {
@@ -6539,7 +6583,9 @@ mod tests {
         let result = tokio::spawn({
             let database = Arc::clone(&database);
             async move {
-                let mut schema = String::from("define attribute note, value string; entity person");
+                let mut schema = String::from(
+                    "define attribute note, value string; entity person, owns note @card(0..1)",
+                );
                 for index in 0..300 {
                     schema.push_str(&format!(", plays membership:member-{index}"));
                 }
@@ -7670,6 +7716,78 @@ plays:
         assert_eq!(state.bounded_reads, 0);
         assert_eq!(state.unbounded_queries, 0);
         assert_eq!(state.closes, 1);
+    }
+
+    #[tokio::test]
+    async fn proxy_wide_read_refuses_statement_ceiling_without_transport() {
+        use crate::plan_authority::QueryAuthority;
+        use crate::{ProxyQueryConnection, QueryTarget};
+        use type_bridge_contract::capability::CapabilityId;
+        use type_bridge_contract::query_remote::{
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED, RemoteCapabilities,
+            RemoteExecutorBinding,
+        };
+        let installed = wide_read_projection(300);
+        let schema = installed.plan_authority().unwrap().declared().clone();
+        let context = type_bridge_schema::ManagedDeltaContext::new(
+            type_bridge_contract::managed_scope::ManagedScopeId::new("wide-read-budget").unwrap(),
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            type_bridge_schema::schema_authority_capability_vocabulary(),
+        );
+        let verified = type_bridge_schema::build_schema_authority(
+            &schema,
+            schema.required_capabilities(),
+            &context,
+        )
+        .unwrap();
+        let installed = installed.with_schema_authority(&verified);
+        let authority = Arc::new(
+            QueryAuthority::from_declared_bytes(
+                &type_bridge_contract::schema::encode_declared_schema(&schema).unwrap(),
+                "wide-read-budget",
+                "typedb-3.12.1/v1",
+            )
+            .unwrap(),
+        );
+        let mut capabilities = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
+        }
+        let signer = crate::remote_signing::RemoteReplySigningKey::from_secret_bytes([73; 32]);
+        let advertisement = RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("wide-read-budget", "wide-read-budget-epoch").unwrap(),
+            signer.public_key(),
+        );
+        // No transport is installed: any attempted exchange would fail with another diagnostic.
+        let connection = ProxyQueryConnection::with_exchange(
+            advertisement.encode().unwrap(),
+            authority,
+            QueryExecutionResourceLimits::default(),
+        )
+        .unwrap();
+        let error = ProjectedCrudExecutor::new(&installed)
+            .get_by_iid_on_target(
+                QueryTarget::Proxy(&connection),
+                &controlled_type(TypeKind::Relation),
+                "0x20",
+                ProjectedCrudInvocationControl::capture(
+                    QueryExecutionResourceLimits {
+                        statements: Some(3),
+                        ..Default::default()
+                    },
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .into_diagnostic(SdkProviderOperation::Read)
+                .code()
+                .as_str(),
+            "projected_crud_statement_limit"
+        );
     }
 
     #[tokio::test]
