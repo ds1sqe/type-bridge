@@ -776,7 +776,7 @@ def smoke(runtime_archive: Path, generated_archive: Path) -> dict[str, object]:
             f"find_package({PACKAGE_NAME} 1.0.0 EXACT CONFIG REQUIRED)\n",
             encoding="utf-8",
         )
-        for incompatible in ("1.5.0", "2.0.0"):
+        for incompatible in ("1.7.0", "2.1.0"):
             fake_runtime = root / f"fake runtime {incompatible}"
             fake_runtime.mkdir()
             sentinel = fake_runtime / "provider-io-sentinel"
@@ -841,7 +841,7 @@ def smoke(runtime_archive: Path, generated_archive: Path) -> dict[str, object]:
         "generated-artifact-id": generated_manifest_value["artifact-id"],
         "pkg-config-c17": True,
         "relocation": True,
-        "runtime-range-rejection": ["1.5.0", "2.0.0"],
+        "runtime-range-rejection": ["1.7.0", "2.1.0"],
         "runtime-artifact-id": runtime_manifest_value["artifact-id"],
         "uninstall": "clean",
     }
