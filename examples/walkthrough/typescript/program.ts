@@ -29,17 +29,29 @@ function emit(name: string, step: string, value: unknown): void {
   process.stdout.write(`${JSON.stringify({ case: name, step, value })}\n`);
 }
 
-function snapshot(item: CompleteFacet<string>): unknown {
-  let bytes: Uint8Array;
+function modelRecord(item: CompleteFacet<string>): unknown {
+  const identity = { iid: item.iid?.toString() ?? null, deleted: item.deleted };
   switch (item.__typebridgeModel) {
-    case Account.typeKey: bytes = Account.encodeSnapshot(item as Account); break;
-    case Item.typeKey: bytes = Item.encodeSnapshot(item as Item); break;
-    case OrderLine.typeKey: bytes = OrderLine.encodeSnapshot(item as OrderLine); break;
-    case Report.typeKey: bytes = Report.encodeSnapshot(item as Report); break;
-    case Memo.typeKey: bytes = Memo.encodeSnapshot(item as Memo); break;
+    case Account.typeKey: {
+      const value = item as Account;
+      return { ...identity, type: "account", account_id: value.accountId.value, balance: value.balance === null ? null : Number(value.balance.value) };
+    }
+    case Item.typeKey: {
+      const value = item as Item;
+      return { ...identity, type: "item", sku: value.sku.value, price: value.price === null ? null : Number(value.price.value), stock: value.stock === null ? null : Number(value.stock.value) };
+    }
+    case OrderLine.typeKey: {
+      const value = item as OrderLine;
+      return { ...identity, type: "order-line", order_id: value.orderId?.value ?? null, quantity: value.quantity === null ? null : Number(value.quantity.value),
+        buyer: value.buyer === null ? null : { type: "account", iid: value.buyer.iid?.toString() ?? null },
+        item: value.item === null ? null : { type: "item", iid: value.item.iid?.toString() ?? null } };
+    }
+    case Report.typeKey: case Memo.typeKey: {
+      const value = item as Report | Memo;
+      return { ...identity, type: item.__typebridgeModel === Report.typeKey ? "report" : "memo", doc_id: value.docId.value, status: value.status.value };
+    }
     default: throw new Error(`unexpected model ${item.__typebridgeModel}`);
   }
-  return { deleted: item.deleted, record: JSON.parse(new TextDecoder().decode(bytes)).record };
 }
 
 function trace(name: string, events: DebugEvent["fields"][]): void {
@@ -67,7 +79,7 @@ async function show<R extends CompleteFacet<string>>(db: Database, name: string,
     }
     emit(name, "raw", pending.documents());
     const result = pending.result();
-    emit(name, "models", result.map(snapshot));
+    emit(name, "models", result.map(modelRecord));
     return result;
   } finally { tx.close(); }
 }
@@ -78,14 +90,16 @@ async function manager<R extends CompleteFacet<string>>(name: string, call: stri
   trace(name, await finish(statements));
   const values = "items" in result ? result.items : result;
   emit(name, "raw", "raw documents: not exposed by manager result");
-  emit(name, "models", values.map(snapshot));
+  emit(name, "models", values.map(modelRecord));
   return values;
 }
 
 function purchase(): Plan<OrderLine[]> {
   return Plan.build(() => {
     const item = Item.match("I1").where(Item.stock.gt(0n));
-    const buyer = Account.match("A1").where(Account.balance.ge(item.price));
+    let buyer = Account.match("A1");
+    const balance = buyer.balance;
+    buyer = buyer.where(balance.ge(item.price));
     item.set({ stock: item.stock.sub(1n) });
     buyer.set({ balance: buyer.balance.sub(item.price) });
     return OrderLine.insert({ orderId: "O1", quantity: 1n, buyer, item });
@@ -94,7 +108,9 @@ function purchase(): Plan<OrderLine[]> {
 
 const purchaseCall = `Plan.build(() => {
   const item = Item.match("I1").where(Item.stock.gt(0n));
-  const buyer = Account.match("A1").where(Account.balance.ge(item.price));
+  let buyer = Account.match("A1");
+  const balance = buyer.balance;
+  buyer = buyer.where(balance.ge(item.price));
   item.set({ stock: item.stock.sub(1n) });
   buyer.set({ balance: buyer.balance.sub(item.price) });
   return OrderLine.insert({ orderId: "O1", quantity: 1n, buyer, item });
@@ -178,7 +194,7 @@ await tx.commit();`);
       emit("staged_transaction", "raw", pending.flatMap(value => value.documents()));
       const values: CompleteFacet<string>[] = [];
       for (const value of pending) values.push(...value.result());
-      emit("staged_transaction", "models", values.map(snapshot));
+      emit("staged_transaction", "models", values.map(modelRecord));
       const order = pending[2]!.result()[0] as OrderLine;
       if (order.buyer?.accountId.value !== "A2" || order.item?.sku.value !== "I2") throw new Error("staged dependency mismatch");
     } finally { tx.close(); }

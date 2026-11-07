@@ -63,10 +63,39 @@ def emit(name: str, step: str, value: object) -> None:
 
 
 def models(values: list[Any]) -> list[dict[str, Any]]:
-    return [
-        {"deleted": item.deleted, "record": json.loads(item.encode_snapshot())["record"]}
-        for item in values
-    ]
+    records = []
+    for item in values:
+        record = {"iid": str(item.iid), "deleted": item.deleted}
+        if isinstance(item, Account):
+            record.update(
+                type="account",
+                account_id=item.account_id.value,
+                balance=item.balance.value if item.balance is not None else None,
+            )
+        elif isinstance(item, Item):
+            record.update(
+                type="item",
+                sku=item.sku.value,
+                price=item.price.value if item.price is not None else None,
+                stock=item.stock.value if item.stock is not None else None,
+            )
+        elif isinstance(item, OrderLine):
+            record.update(
+                type="order-line",
+                order_id=item.order_id.value if item.order_id is not None else None,
+                quantity=item.quantity.value if item.quantity is not None else None,
+                buyer={"type": "account", "iid": str(item.buyer.iid)} if item.buyer else None,
+                item={"type": "item", "iid": str(item.item.iid)} if item.item else None,
+            )
+        else:
+            assert isinstance(item, (Report, Memo))
+            record.update(
+                type="report" if isinstance(item, Report) else "memo",
+                doc_id=item.doc_id.value,
+                status=item.status.value,
+            )
+        records.append(record)
+    return records
 
 
 def trace(name: str, events: list[dict[str, Any]]) -> None:
@@ -118,7 +147,9 @@ def manager(name: str, call: str, execute: Callable[[], Any], *, statements: int
 def purchase() -> Plan[list[OrderLine]]:
     with Plan():
         item = Item.match("I1").where(Item.stock > 0)
-        buyer = Account.match("A1").where(Account.balance >= item.price)
+        buyer = Account.match("A1")
+        balance = buyer.balance
+        buyer = buyer.where(balance >= item.price)
         item.set(stock=item.stock - 1)
         buyer.set(balance=buyer.balance - item.price)
         order = OrderLine.insert(order_id="O1", quantity=1, buyer=buyer, item=item)
@@ -127,7 +158,9 @@ def purchase() -> Plan[list[OrderLine]]:
 
 PURCHASE_CALL = """with Plan():
     item = Item.match("I1").where(Item.stock > 0)
-    buyer = Account.match("A1").where(Account.balance >= item.price)
+    buyer = Account.match("A1")
+    balance = buyer.balance
+    buyer = buyer.where(balance >= item.price)
     item.set(stock=item.stock - 1)
     buyer.set(balance=buyer.balance - item.price)
     order = OrderLine.insert(order_id="O1", quantity=1, buyer=buyer, item=item)"""

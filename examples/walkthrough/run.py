@@ -29,7 +29,7 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sdk", action="append", choices=["python", "typescript"])
+    parser.add_argument("--sdk", action="append", choices=["python", "typescript", "rust", "c"])
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     output = args.output.resolve()
@@ -70,10 +70,10 @@ def main() -> None:
     shutil.copytree(workspace / "generated/python", python_path / "walkthrough_models")
     environment["PYTHONPATH"] = str(python_path)
     transcripts = []
-    for sdk in args.sdk or ["python", "typescript"]:
+    for sdk in args.sdk or ["python", "typescript", "rust", "c"]:
         if sdk == "python":
             command = [sys.executable, str(HERE / "python/program.py")]
-        else:
+        elif sdk == "typescript":
             run(["npm", "run", "build"], cwd=NODE, env=environment)
             generated = workspace / "generated/typescript"
             packages = generated / "node_modules/@type-bridge"
@@ -90,6 +90,71 @@ def main() -> None:
                 env=environment,
             )
             command = ["node", str(generated / "dist/program.js")]
+        elif sdk == "rust":
+            consumer = workspace / "rust-consumer"
+            (consumer / "src").mkdir(parents=True)
+            shutil.copy2(HERE / "rust/main.rs", consumer / "src/main.rs")
+            shutil.copy2(ROOT / "type-bridge-core/Cargo.lock", consumer / "Cargo.lock")
+            (consumer / "Cargo.toml").write_text(f'''[package]
+name = "type-bridge-walkthrough"
+version = "0.0.0"
+edition = "2024"
+[dependencies]
+models = {{ package = "type-bridge-generated-schema", path = "{workspace / "generated/rust"}" }}
+type-bridge = {{ path = "{ROOT / "type-bridge-core/crates/rust"}", features = ["typedb"] }}
+serde = "1"
+serde_json = "1"
+tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
+tracing = "0.1"
+tracing-subscriber = {{ version = "0.3", features = ["registry"] }}
+[patch.crates-io]
+type-bridge = {{ path = "{ROOT / "type-bridge-core/crates/rust"}" }}
+[workspace]
+''')
+            run(
+                ["cargo", "build", "--offline", "--manifest-path", str(consumer / "Cargo.toml")],
+                env=environment,
+            )
+            command = [str(target / "debug/type-bridge-walkthrough")]
+        else:
+            run(
+                [
+                    "cargo",
+                    "build",
+                    "--locked",
+                    "--manifest-path",
+                    str(ROOT / "type-bridge-core/Cargo.toml"),
+                    "-p",
+                    "type-bridge-c",
+                    "--lib",
+                ],
+                env=environment,
+            )
+            executable = output / "c-walkthrough"
+            run(
+                [
+                    environment.get("CC", "cc"),
+                    "-std=c17",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-pedantic-errors",
+                    "-I",
+                    str(ROOT / "type-bridge-core/crates/c/include"),
+                    "-I",
+                    str(workspace / "generated/c/include"),
+                    str(HERE / "c/program.c"),
+                    str(workspace / "generated/c/src/models.c"),
+                    "-L",
+                    str(target / "debug"),
+                    "-ltype_bridge_c",
+                    f"-Wl,-rpath,{target / 'debug'}",
+                    "-o",
+                    str(executable),
+                ],
+                env=environment,
+            )
+            command = [str(executable)]
         name = (
             environment.get("TYPE_BRIDGE_WALKTHROUGH_DATABASE_PREFIX", "type_bridge_walkthrough_")
             + sdk
