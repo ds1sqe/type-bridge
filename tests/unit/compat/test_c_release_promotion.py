@@ -95,7 +95,9 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         assert len(retired_jobs) == 11
         assert frozen["ci_jobs"].keys() - selected["ci_jobs"].keys() == retired_jobs
         assert selected["ci_jobs"].keys() - frozen["ci_jobs"].keys() == {
-            "Version gate (NEG-http-discovery)"
+            "Version gate (NEG-http-discovery)",
+            "Four-SDK walkthrough (TypeDB 3.13.6)",
+            "Four-SDK walkthrough (TypeDB 3.14.0)",
         }
         skipped_retired_probe = (
             "Rust integration (typedb/typedb:3.12.3)",
@@ -152,7 +154,14 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
             ]
             == "success"
         )
-    assert len(selected["ci_jobs"]) == 52
+    assert len(selected["ci_jobs"]) == 54
+    for server in ("3.13.6", "3.14.0"):
+        assert (
+            selected["ci_jobs"][f"Four-SDK walkthrough (TypeDB {server})"][
+                "Compare all SDKs, page blocks and captured statements"
+            ]
+            == "success"
+        )
     for server in ("3.13.6", "3.14.0"):
         assert (
             selected["ci_jobs"][f"Staged plans live (typedb/typedb:{server})"][
