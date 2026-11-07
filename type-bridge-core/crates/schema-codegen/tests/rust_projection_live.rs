@@ -16,6 +16,9 @@ use type_bridge_schema::{
 };
 use type_bridge_schema_codegen::RustEmitter;
 
+#[allow(dead_code)]
+#[path = "support/c_provider.rs"]
+mod c_provider;
 mod support;
 use support::sdk_profile_matrix::{self, SdkProfile};
 use support::{Stage, base64, free_port};
@@ -104,6 +107,25 @@ impl Drop for ServerProcess {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn accept_fixture_setup(output: &std::process::Output, guard: &mut c_provider::IsolatedDatabase) {
+    guard.active = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line == "generated Rust isolated database created");
+    assert!(
+        output.status.success(),
+        "provider schema setup failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        guard.active,
+        "Rust fixture setup omitted its creation marker"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("generated provider schema setup: passed")
+    );
 }
 
 fn toml_string(value: &str) -> String {
@@ -572,6 +594,16 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     fs::write(&fixture_manifest_path, fixture_manifest).expect("fixture manifest is written");
     fs::write(fixture.join("Cargo.lock"), FIXTURE_LOCK).expect("fixture lockfile is staged");
 
+    // Arm cleanup from the flushed creation marker even when schema setup fails.
+    // Declared before the server so unwinding stops the server before deletion.
+    let mut database_guard = c_provider::IsolatedDatabase {
+        cargo: cargo.clone(),
+        manifest: fixture_manifest_path.clone(),
+        target: target_dir.clone(),
+        environment: Vec::new(),
+        active: false,
+        env_prefix: "TYPE_BRIDGE_RUST_PROJECTION_INTG",
+    };
     let fixture_output = Command::new(&cargo)
         .arg("run")
         .arg("--locked")
@@ -583,16 +615,7 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         .output()
         .expect("provider schema setup starts");
 
-    assert!(
-        fixture_output.status.success(),
-        "provider schema setup failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&fixture_output.stdout),
-        String::from_utf8_lossy(&fixture_output.stderr),
-    );
-    assert!(
-        String::from_utf8_lossy(&fixture_output.stdout)
-            .contains("generated provider schema setup: passed")
-    );
+    accept_fixture_setup(&fixture_output, &mut database_guard);
 
     let server_port = env::var("SMOKE_PORT")
         .map(|port| port.parse::<u16>().expect("SMOKE_PORT is a u16"))
@@ -945,6 +968,9 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     println!("generated integer keys and polymorphic role parity: passed");
     println!("generated plain-inherited abstract role parity: passed");
     println!("generated unkeyed entity IID lifecycle and singular query: passed");
+    drop(server);
+    database_guard.cleanup();
+    println!("generated Rust live database cleanup: passed");
 }
 
 #[test]
@@ -968,4 +994,45 @@ fn generated_rust_projection_dependency_graphs_are_frozen() {
     );
     assert!(fixture.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
     assert!(!fixture.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_rust_fixture_setup_cleans_only_a_created_database() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    for created in [false, true] {
+        let stage = Stage::new();
+        let launcher = stage.path().join("fake-cargo");
+        let log = stage.path().join("modes.log");
+        fs::write(&launcher, "#!/bin/sh\nfor argument do mode=$argument; done\nprintf '%s\\n' \"$mode\" >> \"$CLEANUP_LOG\"\nif test \"$mode\" = setup; then\n  if test \"$EMIT_CREATED\" = 1; then printf '%s\\n' 'generated Rust isolated database created'; fi\n  exit 23\nfi\n").unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut guard = c_provider::IsolatedDatabase {
+                cargo: launcher.clone().into_os_string(),
+                manifest: stage.path().join("Cargo.toml"),
+                target: stage.path().join("target"),
+                environment: vec![("CLEANUP_LOG".to_owned(), log.to_string_lossy().into_owned())],
+                active: false,
+                env_prefix: "TYPE_BRIDGE_RUST_PROJECTION_INTG",
+            };
+            let output = Command::new(&launcher)
+                .arg("setup")
+                .env("CLEANUP_LOG", &log)
+                .env("EMIT_CREATED", if created { "1" } else { "0" })
+                .output()
+                .unwrap();
+            accept_fixture_setup(&output, &mut guard);
+        }));
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(log).unwrap(),
+            if created {
+                "setup\ncleanup\n"
+            } else {
+                "setup\n"
+            }
+        );
+    }
 }
