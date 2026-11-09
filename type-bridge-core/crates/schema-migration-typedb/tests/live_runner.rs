@@ -16,7 +16,6 @@ use type_bridge_contract::migration::{
     MigrationAppLabel, MigrationId, MigrationName, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::AssertionExpectation;
-use type_bridge_contract::reserved::LEGACY_WRITER_CUTOVER_MESSAGE;
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId,
     TypeFact,
@@ -29,9 +28,7 @@ use type_bridge_schema::{
     ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, derive_safety_conditions,
     diff_managed, inverse_delta, managed_schema_state, resolve,
 };
-use type_bridge_schema_compat::{
-    LEGACY_LEDGER_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL, typeql_to_declared,
-};
+use type_bridge_schema_compat::{MANAGED_FENCE_SCHEMA_TYPEQL, typeql_to_declared};
 use type_bridge_schema_migration::{
     LeaseHolderId, MigrationApplyApproval, MigrationApplyTarget, MigrationDriftFinding,
     MigrationExecutionOutcome, MigrationRollbackOutcome, MigrationSafetyPolicy,
@@ -84,74 +81,6 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
     support::assert_live_server(&managed);
     support::assert_live_server(&journal);
     (managed, journal)
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
-async fn legacy_writer_fence_survives_a_live_struct_valued_schema_export_on_3_12_3() {
-    let (managed, journal) = databases().await;
-    let fingerprint = "0000000000000000000000000000000000000000000000000000000000000000";
-    let mut schema = managed
-        .schema_transaction()
-        .await
-        .expect("open isolated schema transaction");
-    schema
-        .query(MANAGED_FENCE_SCHEMA_TYPEQL)
-        .await
-        .expect("install exact managed fence schema");
-    schema
-        .query(LEGACY_LEDGER_SCHEMA_TYPEQL)
-        .await
-        .expect("install exact frozen ledger schema");
-    schema
-        .query(
-            "define\n\
-             struct writer-fence-payload: field value string;\n\
-             attribute writer-fence-payload-attr, value writer-fence-payload;",
-        )
-        .await
-        .expect("install structured user value");
-    schema.commit().await.expect("commit structured schema");
-
-    let mut rows = managed
-        .write_transaction()
-        .await
-        .expect("open isolated writer-authority transaction");
-    rows.query(
-        "insert $control isa typebridge-internal-migration-control, has typebridge-internal-control-scope \"live-structured-scope\", has typebridge-internal-lease-fence \"1\", has typebridge-internal-lease-state \"free\";",
-    )
-    .await
-    .expect("insert exact managed control");
-    rows.query(&format!(
-        "insert $anchor isa typebridge-internal-legacy-cutover, has typebridge-internal-legacy-cutover-key \"typebridge-legacy-cutover-anchor/v1\", has typebridge-internal-legacy-cutover-scope \"live-structured-scope\", has typebridge-internal-legacy-cutover-fingerprint \"{fingerprint}\";"
-    ))
-    .await
-    .expect("insert exact cutover anchor");
-    rows.query(&format!(
-        "insert $sentinel isa type_bridge_migration, has migration_id \"type_bridge_v2_internal:__legacy_writer_cutover__\", has migration_app_label \"type_bridge_v2_internal\", has migration_name \"__legacy_writer_cutover__\", has migration_applied_at 1970-01-01T00:00:00.000000000, has migration_checksum \"{fingerprint}\";"
-    ))
-    .await
-    .expect("insert exact cutover sentinel");
-    rows.commit().await.expect("commit writer authority");
-
-    let schema_manager = type_bridge_orm::_schema::SchemaManager::new(managed.as_ref());
-    let error = schema_manager
-        .sync_schema(true, false)
-        .await
-        .expect_err("the exported structured value must not reopen the V1 writer");
-    assert!(
-        error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE),
-        "{error}"
-    );
-
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
-    journal
-        .delete_database()
-        .await
-        .expect("delete isolated journal database");
 }
 
 struct TempDirectory(PathBuf);

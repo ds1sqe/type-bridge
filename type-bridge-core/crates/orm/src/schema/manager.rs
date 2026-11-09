@@ -1,272 +1,42 @@
-//! Schema manager for registering models and syncing schema.
+//! Read-only schema introspection.
 
 use std::collections::BTreeMap;
 
-use crate::_entity::TypeBridgeEntity;
-use crate::_relation::TypeBridgeRelation;
 use crate::error::Result;
+use crate::session::Database;
 use crate::session::backend::TxType;
-use crate::session::{Database, require_legacy_writer_open_in_transaction};
 use type_bridge_core_lib::__internal as tql;
 
-use super::error::SchemaError;
 use super::info::*;
 
-/// Convert a static `(&str, &str)` meta slice into the owned map the schema IR uses.
-fn meta_map(pairs: &[(&'static str, &'static str)]) -> BTreeMap<String, String> {
-    pairs
-        .iter()
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect()
-}
-
-/// Manages schema registration, generation, and synchronization.
+/// Reads a live database schema as [`SchemaInfo`].
 ///
-/// # Example
-///
-/// This example is ignored because it requires a live TypeDB service and
-/// generated schema types supplied by the consuming package.
-///
-/// ```ignore
-/// let mut schema = SchemaManager::new(&db);
-/// schema.register_entity::<Person>();
-/// schema.register_entity::<Company>();
-/// schema.register_relation::<Employment>();
-///
-/// let typeql = schema.generate_schema()?;
-/// schema.sync_schema(false, false).await?;
-/// ```
+/// Schema changes go through Split-YAML and reviewed migrations; this type
+/// never defines schema.
 pub struct SchemaManager<'db> {
     db: &'db Database,
-    info: SchemaInfo,
 }
 
 impl<'db> SchemaManager<'db> {
-    /// Create a new schema manager for the given database.
+    /// Create a schema reader for the given database.
     pub fn new(db: &'db Database) -> Self {
-        Self {
-            db,
-            info: SchemaInfo::default(),
-        }
-    }
-
-    /// Register an entity type, extracting its metadata.
-    #[tracing::instrument(skip(self), fields(entity_type = E::TYPE_NAME))]
-    pub fn register_entity<E: TypeBridgeEntity>(&mut self) {
-        let owned = E::owned_attributes();
-        let owned_entries: Vec<OwnedAttributeEntry> = owned
-            .iter()
-            .map(|a| {
-                // Also register the attribute type
-                self.info
-                    .attributes
-                    .entry(a.attr_name.to_string())
-                    .or_insert_with(|| AttributeSchemaEntry::new(a.attr_name, a.value_type));
-                OwnedAttributeEntry {
-                    attr_name: a.attr_name.to_string(),
-                    value_type: a.value_type,
-                    annotations: a.annotations.to_vec(),
-                    is_ordered: false,
-                    doc: a.doc.map(String::from),
-                    meta: meta_map(a.meta),
-                }
-            })
-            .collect();
-
-        self.info.entities.insert(
-            E::TYPE_NAME.to_string(),
-            EntitySchemaEntry {
-                type_name: E::TYPE_NAME.to_string(),
-                is_abstract: E::IS_ABSTRACT,
-                parent_type: E::PARENT_TYPE.map(String::from),
-                owned_attributes: owned_entries,
-                plays_cardinalities: BTreeMap::new(),
-                doc: E::DOC.map(String::from),
-                meta: meta_map(E::META),
-            },
-        );
-    }
-
-    /// Register a relation type, extracting its metadata and roles.
-    #[tracing::instrument(skip(self), fields(relation_type = R::TYPE_NAME))]
-    pub fn register_relation<R: TypeBridgeRelation>(&mut self) {
-        let owned = R::owned_attributes();
-        let owned_entries: Vec<OwnedAttributeEntry> = owned
-            .iter()
-            .map(|a| {
-                self.info
-                    .attributes
-                    .entry(a.attr_name.to_string())
-                    .or_insert_with(|| AttributeSchemaEntry::new(a.attr_name, a.value_type));
-                OwnedAttributeEntry {
-                    attr_name: a.attr_name.to_string(),
-                    value_type: a.value_type,
-                    annotations: a.annotations.to_vec(),
-                    is_ordered: false,
-                    doc: a.doc.map(String::from),
-                    meta: meta_map(a.meta),
-                }
-            })
-            .collect();
-
-        let roles: Vec<RoleEntry> = R::role_info()
-            .iter()
-            .map(|r| RoleEntry {
-                role_name: r.role_name.to_string(),
-                player_type_names: vec![r.player_type_name.to_string()],
-                doc: r.doc.map(String::from),
-                meta: meta_map(r.meta),
-                ..Default::default()
-            })
-            .collect();
-
-        self.info.relations.insert(
-            R::TYPE_NAME.to_string(),
-            RelationSchemaEntry {
-                type_name: R::TYPE_NAME.to_string(),
-                is_abstract: R::IS_ABSTRACT,
-                parent_type: R::PARENT_TYPE.map(String::from),
-                owned_attributes: owned_entries,
-                roles,
-                plays_cardinalities: BTreeMap::new(),
-                doc: R::DOC.map(String::from),
-                meta: meta_map(R::META),
-            },
-        );
-    }
-
-    /// Get a reference to the collected schema info.
-    pub fn schema_info(&self) -> &SchemaInfo {
-        &self.info
-    }
-
-    /// Validate and generate a TypeQL `define` block.
-    #[tracing::instrument(skip(self))]
-    pub fn generate_schema(&self) -> std::result::Result<String, SchemaError> {
-        self.info.to_typeql()
-    }
-
-    /// Best-effort check whether any registered types already exist in the database.
-    ///
-    /// Tries a simple match query for the first registered entity or relation type.
-    #[tracing::instrument(skip(self))]
-    pub async fn has_existing_schema(&self) -> Result<bool> {
-        use type_bridge_contract::id::TypeKind;
-        let candidate = self
-            .info
-            .entities
-            .keys()
-            .next()
-            .map(|name| (TypeKind::Entity, name))
-            .or_else(|| {
-                self.info
-                    .relations
-                    .keys()
-                    .next()
-                    .map(|name| (TypeKind::Relation, name))
-            });
-        let Some((kind, name)) = candidate else {
-            return Ok(false);
-        };
-        let plan = self.existence_plan(kind, name)?;
-        // Success proves the type exists even when it has no instances.
-        Ok(self
-            .db
-            .execute_plans(
-                &[plan],
-                &crate::QueryExecutionResourceLimits::default(),
-                &crate::session::backend::AnswerCancellation::default(),
-                crate::QueryExecutionDeadline::from_timeout_milliseconds(0),
-            )
-            .await
-            .is_ok())
-    }
-
-    fn existence_plan(
-        &self,
-        kind: type_bridge_contract::id::TypeKind,
-        name: &str,
-    ) -> Result<type_bridge_contract::query_plan::QueryPlan> {
-        use type_bridge_contract::capability::CapabilitySet;
-        use type_bridge_contract::codec::FormatVersion;
-        use type_bridge_contract::fingerprint::SemanticProfileId;
-        use type_bridge_contract::id::TypeId;
-        use type_bridge_contract::migration_assertion::{
-            AssertionBinding, BindingId, QueryVariable,
-        };
-        use type_bridge_contract::query_plan::{Operation, PlanSpec, QueryPlan, Stage};
-        use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
-        use type_bridge_contract::schema::{
-            DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
-        };
-        use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
-        let build = || -> std::result::Result<_, type_bridge_contract::diagnostic::Diagnostic> {
-            let type_id = TypeId::new(kind, name)?;
-            // This probe needs only the registered type's existence. Partial
-            // registrations need not include its parents or role-player types.
-            let schema = DeclaredSchema::from_facts(
-                FormatVersion::V1,
-                CapabilitySet::new(),
-                [SourcedSchemaFact::new(
-                    SchemaFact::Type(TypeFact::new(type_id.clone())?),
-                    SourceSpan::new(DocumentId::new("schema-existence")?, 0, 0, 1, 1, 1, 1)?,
-                )],
-            )
-            .map_err(|_| {
-                crate::plan_lowering::failure(
-                    type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
-                    "query_plan_schema_existence",
-                    "registered type cannot form existence authority",
-                )
-            })?;
-            let root = BindingId::new(0)?;
-            QueryPlan::new(
-                PlanSpec {
-                    bindings: vec![AssertionBinding::new(root, QueryVariable::new("x")?)],
-                    inputs: vec![],
-                    given_rows: None,
-                    operation: Operation::Exists,
-                    pipeline: vec![Stage::Match {
-                        patterns: vec![
-                            QueryPattern::Isa {
-                                binding: root,
-                                type_id,
-                                include_subtypes: true,
-                            }
-                            .into(),
-                        ],
-                    }],
-                    output: QueryOutput::Rows {
-                        columns: vec![root],
-                    },
-                    managed_semantics: ManagedSemanticSchemaFingerprint::compute(
-                        SemanticProfileId::new("typedb-3.12.1/v1")?,
-                        &schema.canonical_identity_bytes()?,
-                    )?,
-                    functions: vec![],
-                },
-                &schema,
-            )
-        };
-        build().map_err(crate::query_plan_exec::plan_diagnostic_error)
+        Self { db }
     }
 
     /// Read the existing schema from the database and return it as [`SchemaInfo`].
     ///
     /// Queries TypeDB's type system for all entity types, relation types,
     /// attribute types, ownership, and roles, then assembles them into a
-    /// [`SchemaInfo`] that can be compared against the registered (desired) schema.
+    /// [`SchemaInfo`].
     ///
     /// # Example
     ///
     /// This example is ignored because schema introspection requires a live
-    /// TypeDB service and generated desired-schema registrations.
+    /// TypeDB service.
     ///
     /// ```ignore
-    /// let schema = SchemaManager::new(&db);
-    /// let live = schema.introspect().await?;
-    /// let diff = schema.schema_info().compare(&live);
-    /// println!("{}", diff.summary());
+    /// let live = SchemaManager::new(&db).introspect().await?;
+    /// println!("{}", expected.compare(&live).summary());
     /// ```
     #[tracing::instrument(skip(self))]
     pub async fn introspect(&self) -> Result<SchemaInfo> {
@@ -428,49 +198,6 @@ impl<'db> SchemaManager<'db> {
             }
         }
         entries
-    }
-
-    /// Synchronize the schema to the database.
-    ///
-    /// - `force`: Skip existence check, always execute.
-    /// - `skip_if_exists`: If types already exist, return Ok silently.
-    #[tracing::instrument(skip(self), fields(force, skip_if_exists))]
-    pub async fn sync_schema(
-        &self,
-        force: bool,
-        skip_if_exists: bool,
-    ) -> std::result::Result<(), crate::error::OrmError> {
-        if !force {
-            match self.has_existing_schema().await {
-                Ok(true) => {
-                    if skip_if_exists {
-                        return Ok(());
-                    }
-                    return Err(crate::error::OrmError::Schema(SchemaError::Sync(
-                        "Schema types already exist. Use force=true to overwrite.".into(),
-                    )));
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    // Existence check failed — probably no schema exists
-                    tracing::debug!("Schema existence check failed (probably no schema): {e}");
-                }
-            }
-        }
-
-        let typeql = self
-            .generate_schema()
-            .map_err(crate::error::OrmError::Schema)?;
-        self.db.check_schema_annotation_support(&typeql)?;
-        tracing::debug!(typeql = %typeql, "Syncing schema to database");
-        let transaction = self.db.transaction_context(TxType::Schema).await?;
-        if let Err(error) = require_legacy_writer_open_in_transaction(&transaction).await {
-            let _ = transaction.close().await;
-            return Err(error);
-        }
-        transaction.query(&typeql).await?;
-        transaction.commit().await?;
-        Ok(())
     }
 }
 
