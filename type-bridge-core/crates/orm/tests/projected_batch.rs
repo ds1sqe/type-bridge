@@ -1357,9 +1357,48 @@ fn unkeyed_insert_update_and_put_keep_equal_rows_distinct() {
     assert_eq!(budget.len(), 2);
     ProjectedBatch::try_new(
         &installed,
-        log,
+        log.clone(),
         ProjectedBatchOperation::Put,
-        vec![row.clone(), row],
+        vec![row.clone(), row.clone()],
+    )
+    .unwrap();
+    // Each keyless put row is its own statement, so a caller statement limit
+    // refuses the batch when it is built; keyed and insert rows share one.
+    let mut limits = full_limits();
+    limits.statements = Some(2);
+    let control = ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default());
+    let error = ProjectedBatch::try_new_for_invocation(
+        &installed,
+        log.clone(),
+        ProjectedBatchOperation::Put,
+        vec![row.clone(), row.clone(), row.clone()],
+        &control,
+    )
+    .unwrap_err();
+    assert_eq!(error.code().as_str(), "batch_statement_limit");
+    let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+        &installed,
+        log.clone(),
+        ProjectedBatchOperation::Put,
+        &control,
+    )
+    .unwrap();
+    budget.try_add_row(&installed, &row).unwrap();
+    budget.try_add_row(&installed, &row).unwrap();
+    assert_eq!(
+        budget
+            .try_add_row(&installed, &row)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "batch_statement_limit"
+    );
+    ProjectedBatch::try_new_for_invocation(
+        &installed,
+        log,
+        ProjectedBatchOperation::Insert,
+        vec![row.clone(), row.clone(), row],
+        &control,
     )
     .unwrap();
 }

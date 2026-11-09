@@ -225,7 +225,8 @@ impl ProjectedBatchBudgetState {
             control,
         )?;
         next_measure.items = item_count;
-        next_measure.statements = statement_forecast(next_row_count);
+        next_measure.statements =
+            statement_forecast(next_row_count, keyless_put(projected_model, self.operation));
         check_control(control)?;
         validate_limits(next_measure, limits)?;
 
@@ -683,7 +684,7 @@ impl ProjectedBatch {
         measure.statements = if SINGLE_WRITE {
             1
         } else {
-            statement_forecast(row_count)
+            statement_forecast(row_count, keyless_put(projected_model, operation))
         };
         check_control(control)?;
         validate_limits(measure, resource_ceiling)?;
@@ -1377,8 +1378,19 @@ fn validate_limits(
     Ok(())
 }
 
-fn statement_forecast(rows: usize) -> u32 {
-    u32::try_from(rows.div_ceil(type_bridge_contract::limits::MAX_INPUT_ROWS)).unwrap_or(u32::MAX)
+/// Forecast statements: one per canonical row chunk, or one per row for a
+/// keyless put, whose rows are separate TypeQL put statements.
+fn statement_forecast(rows: usize, keyless_put: bool) -> u32 {
+    let statements = if keyless_put {
+        rows
+    } else {
+        rows.div_ceil(type_bridge_contract::limits::MAX_INPUT_ROWS)
+    };
+    u32::try_from(statements).unwrap_or(u32::MAX)
+}
+
+fn keyless_put(model: &ModelProjection, operation: ProjectedBatchOperation) -> bool {
+    operation == ProjectedBatchOperation::Put && model.reference_read().key_fields().is_empty()
 }
 
 fn reserved<T>(
@@ -1826,7 +1838,10 @@ plays:
     fn statement_forecast_counts_only_canonical_row_chunks() {
         let ceiling = type_bridge_contract::limits::MAX_INPUT_ROWS;
         for (rows, expected) in [(0, 0), (1, 1), (ceiling, 1), (ceiling + 1, 2)] {
-            assert_eq!(statement_forecast(rows), expected);
+            assert_eq!(statement_forecast(rows, false), expected);
+        }
+        for rows in [0, 1, 65, ceiling + 1] {
+            assert_eq!(statement_forecast(rows, true), u32::try_from(rows).unwrap());
         }
     }
 
