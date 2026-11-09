@@ -2377,7 +2377,10 @@ impl Transaction {
         let (request, bytes) = match built {
             Ok(built) => built,
             Err(diagnostic) => {
-                let error = CommitError::lifecycle(PendingError::InvalidPlan(Box::new(diagnostic)));
+                // A request over the advertised budgets (e.g. more plans than
+                // a staged request admits) keeps its contract diagnostic;
+                // nothing was sent.
+                let error = CommitError::staging(PendingError::InvalidPlan(Box::new(diagnostic)));
                 execution.fail(error.pending());
                 return Err(error);
             }
