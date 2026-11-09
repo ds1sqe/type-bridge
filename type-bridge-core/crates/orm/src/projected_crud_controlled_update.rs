@@ -2833,6 +2833,107 @@ mod tests {
     }
 
     #[test]
+    fn an_over_budget_keyless_single_put_keeps_the_limit_error_not_pieces() {
+        let source = "format: typebridge.schema/v2\nattributes:\n  score: { value: integer }\nentities:\n  counter:\n    owns:\n      score: { card: 1 }\nrelations:\n  event:\n    relates:\n      member: { card: 1 }\n    owns:\n      score: { card: 1 }\nplays:\n  counter:\n    event: [member]\n";
+        let declared = normalize_documents(
+            &SchemaDocumentSet::parse([(DocumentId::new("keyless-budget.yaml").unwrap(), source)])
+                .unwrap(),
+        )
+        .unwrap();
+        let resolved = resolve(
+            &declared,
+            &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+        )
+        .unwrap();
+        let installed = InstalledRuntimeProjection::try_new(
+            project(
+                &resolved,
+                BindingTarget::Python,
+                &ProjectionConfig::python(),
+                &[ProjectionHandler::python_v2()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let model = TypeId::new(TypeKind::Relation, "event").unwrap();
+        let input = ProjectedCreate::try_new(
+            &installed,
+            model.clone(),
+            vec![(
+                OwnsFactId::new(model.clone(), AttributeId::new("score").unwrap()).unwrap(),
+                vec![
+                    ProjectedAttributeValue::try_new(
+                        &installed,
+                        TypeId::new(TypeKind::Attribute, "score").unwrap(),
+                        CanonicalValue::Long(11),
+                    )
+                    .unwrap(),
+                ],
+            )],
+            vec![(
+                RoleId::new("event", "member").unwrap(),
+                vec![
+                    ProjectedReference::try_new(
+                        &installed,
+                        TypeId::new(TypeKind::Entity, "counter").unwrap(),
+                        Some("0x01".into()),
+                        vec![],
+                    )
+                    .unwrap(),
+                ],
+            )],
+        )
+        .unwrap();
+        // The relation and its player need two bindings; allow one.
+        let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
+        limits.structural.bindings = 1;
+        limits.structural.selected_slots = 1;
+        let limits = Arc::new(limits);
+        let control = || {
+            ProjectedBatchInvocationControl::capture(
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )
+        };
+        let executor = ProjectedCrudExecutor::new(&installed);
+        let identity = DatabaseExecutionIdentity::isolated("keyless-budget");
+        let batch = |operation| {
+            executor
+                .single_controlled_write_batch(
+                    &model,
+                    operation,
+                    ProjectedBatchRow::Create(input.clone()),
+                    &control(),
+                )
+                .unwrap()
+        };
+        // An insert falls back to dependency pieces; a keyless put cannot.
+        assert!(
+            executor
+                .prepare_controlled_write(
+                    &batch(ProjectedBatchOperation::Insert),
+                    &identity,
+                    Some(&limits)
+                )
+                .unwrap()
+                .is_none()
+        );
+        let Err(error) = executor.prepare_controlled_write(
+            &batch(ProjectedBatchOperation::Put),
+            &identity,
+            Some(&limits),
+        ) else {
+            panic!("an over-budget keyless put must be refused");
+        };
+        assert_eq!(error.code().as_str(), "query_plan_binding_limit");
+        assert_eq!(
+            error.category(),
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::ResourceLimit
+        );
+    }
+
+    #[test]
     fn controlled_single_entity_and_relation_writes_pin_the_uncontrolled_plan_bytes() {
         let source = "format: typebridge.schema/v2\nattributes:\n  score: { value: integer }\nentities:\n  counter:\n    owns:\n      score: { card: 1 }\nrelations:\n  event:\n    relates:\n      member: { card: 1 }\n    owns:\n      score: { card: 1 }\nplays:\n  counter:\n    event: [member]\n";
         let declared = normalize_documents(

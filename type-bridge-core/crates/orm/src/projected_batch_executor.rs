@@ -3778,4 +3778,106 @@ plays:
             assert_eq!(state.commits, 0);
         }
     }
+
+    #[test]
+    fn an_over_budget_keyless_batch_row_keeps_the_limit_error_not_pieces() {
+        use crate::{ProjectedAttributeValue, ProjectedCreate, ProjectedReference};
+        use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
+        use type_bridge_contract::schema::OwnsFactId;
+        use type_bridge_contract::value::CanonicalValue;
+        let source = "format: typebridge.schema/v2\nattributes:\n  score: { value: integer }\nentities:\n  counter:\n    owns:\n      score: { card: 1 }\nrelations:\n  event:\n    relates:\n      member: { card: 1 }\n    owns:\n      score: { card: 1 }\nplays:\n  counter:\n    event: [member]\n";
+        let declared = normalize_documents(
+            &SchemaDocumentSet::parse([(DocumentId::new("keyless-budget.yaml").unwrap(), source)])
+                .unwrap(),
+        )
+        .unwrap();
+        let resolved = resolve(
+            &declared,
+            &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+        )
+        .unwrap();
+        let installed = InstalledRuntimeProjection::try_new(
+            project(
+                &resolved,
+                BindingTarget::Python,
+                &ProjectionConfig::python(),
+                &[ProjectionHandler::python_v2()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let model = TypeId::new(TypeKind::Relation, "event").unwrap();
+        let input = ProjectedCreate::try_new(
+            &installed,
+            model.clone(),
+            vec![(
+                OwnsFactId::new(model.clone(), AttributeId::new("score").unwrap()).unwrap(),
+                vec![
+                    ProjectedAttributeValue::try_new(
+                        &installed,
+                        TypeId::new(TypeKind::Attribute, "score").unwrap(),
+                        CanonicalValue::Long(11),
+                    )
+                    .unwrap(),
+                ],
+            )],
+            vec![(
+                RoleId::new("event", "member").unwrap(),
+                vec![
+                    ProjectedReference::try_new(
+                        &installed,
+                        TypeId::new(TypeKind::Entity, "counter").unwrap(),
+                        Some("0x01".into()),
+                        vec![],
+                    )
+                    .unwrap(),
+                ],
+            )],
+        )
+        .unwrap();
+        // The relation and its player need two bindings; allow one.
+        let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
+        limits.structural.bindings = 1;
+        limits.structural.selected_slots = 1;
+        let limits = Arc::new(limits);
+        let control = || {
+            ProjectedBatchInvocationControl::capture(
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )
+        };
+        let compile = |operation| {
+            let batch = ProjectedBatch::try_new(
+                &installed,
+                model.clone(),
+                operation,
+                vec![
+                    ProjectedBatchRow::Create(input.clone()),
+                    ProjectedBatchRow::Create(input.clone()),
+                ],
+            )
+            .unwrap();
+            let prepared =
+                PreparedProjectedBatchInvocation::try_new(&installed, &batch, control()).unwrap();
+            BatchPlan::compile(
+                &installed,
+                &prepared,
+                &DatabaseExecutionIdentity::isolated("keyless-budget"),
+                false,
+                Some(&limits),
+            )
+            .map(|plan| plan.statement_count)
+        };
+        // Each keyless put row stays one statement: refused with the plan
+        // limit (a resource limit), never compiled into dependency pieces.
+        let Err(error) = compile(ProjectedBatchOperation::Put) else {
+            panic!("an over-budget keyless row must be refused");
+        };
+        assert_eq!(error.code().as_str(), "query_plan_binding_limit");
+        assert_eq!(
+            error.category(),
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::ResourceLimit
+        );
+    }
 }
