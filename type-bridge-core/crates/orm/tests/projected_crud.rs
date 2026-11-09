@@ -1408,6 +1408,31 @@ async fn owned_entity_put_rehydrates_before_one_classified_commit() {
 }
 
 #[tokio::test]
+async fn owned_keyless_put_matching_two_instances_is_refused_and_rolled_back() {
+    let installed = installed();
+    let create = membership_create(&installed);
+    let (backend, state) = RecordingBackend::new(
+        vec![documents(vec![
+            membership_document("0x20"),
+            membership_document("0x21"),
+        ])],
+        CommitBehavior::Success,
+    );
+    let database = Database::with_backend(Box::new(backend), "test");
+    let error = ProjectedCrudExecutor::new(&installed)
+        .put_relation(&database, &create)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "put_ambiguous_match");
+    assert_eq!(error.category(), SdkDiagnosticCategory::InvalidInput);
+    let state = state.lock().unwrap();
+    assert_eq!(state.queries.len(), 1);
+    assert!(state.queries[0].contains("put $root0 isa! membership"));
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 1);
+}
+
+#[tokio::test]
 async fn owned_relation_put_and_update_rehydrate_before_commit() {
     let installed = installed();
     let create = membership_create(&installed);
@@ -1444,7 +1469,13 @@ async fn owned_relation_put_and_update_rehydrate_before_commit() {
         assert_eq!(state.opens, [TxType::Write]);
         assert_eq!(state.queries.len(), 1);
         assert!(state.queries[0].contains("isa! person"));
-        assert!(state.queries[0].contains("insert"));
+        // Keyless: TypeQL put of the whole pattern on exactly the model type.
+        assert!(
+            state.queries[0].contains("put $root0 isa! membership"),
+            "{}",
+            state.queries[0]
+        );
+        assert!(!state.queries[0].contains("insert"));
         assert!(state.queries[0].contains("fetch"));
         assert_eq!(state.query_modes, ["canonical"]);
         assert_eq!(state.commits, 1);

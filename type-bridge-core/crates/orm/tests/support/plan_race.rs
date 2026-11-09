@@ -18,8 +18,10 @@ use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact,
-    RelatesFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+    DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact, RelatesFactId,
+    SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact,
+    ValueFactId,
 };
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
@@ -142,6 +144,12 @@ fn sub(left: QueryOperand, right: QueryOperand) -> Expr {
 
 /// Declared authority for the race schema.
 pub fn schema() -> DeclaredSchema {
+    schema_with_keys(false)
+}
+
+/// The race schema, optionally with its `@key` annotations declared.
+#[allow(dead_code)] // Used by the crate's plan-builder tests only.
+pub fn schema_with_keys(keys: bool) -> DeclaredSchema {
     let mut facts = Vec::new();
     for type_id in [
         entity("item"),
@@ -178,6 +186,25 @@ pub fn schema() -> DeclaredSchema {
         (purchase_type(), "order-id"),
     ] {
         facts.push(SchemaFact::Owns(OwnsFact::new(owns(owner, name))));
+    }
+    if keys {
+        for (owner, name) in [
+            (entity("item"), "item-id"),
+            (entity("account"), "account-id"),
+            (entity("doctor"), "name"),
+            (purchase_type(), "order-id"),
+        ] {
+            facts.push(SchemaFact::Annotation(
+                AnnotationFact::new(
+                    AnnotationFactId::new(
+                        AnnotationSubjectId::Owns(owns(owner, name)),
+                        AnnotationKindId::Key,
+                    ),
+                    SchemaAnnotationValue::Presence,
+                )
+                .unwrap(),
+            ));
+        }
     }
     for name in ["buyer", "item"] {
         facts.push(SchemaFact::Relates(

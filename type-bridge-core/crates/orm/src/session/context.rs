@@ -1090,12 +1090,7 @@ impl Clone for TransactionContext {
 /// A plan that cannot lower or answer is a contract failure, never provider
 /// prose; it keeps its diagnostic code.
 fn plan_diagnostic_error(diagnostic: type_bridge_contract::diagnostic::Diagnostic) -> OrmError {
-    crate::match_request::MatchError::new(
-        crate::match_request::MatchErrorCategory::ResultDecode,
-        diagnostic.code().as_str(),
-        diagnostic.message(),
-    )
-    .into()
+    crate::execution_diagnostic::plan_answer_error(diagnostic)
 }
 
 #[cfg(test)]

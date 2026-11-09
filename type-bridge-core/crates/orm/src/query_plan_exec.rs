@@ -555,12 +555,7 @@ fn plan_execution_error(code: &'static str, message: &'static str) -> crate::err
 }
 
 pub(crate) fn plan_diagnostic_error(diagnostic: Diagnostic) -> crate::error::OrmError {
-    crate::match_request::MatchError::new(
-        crate::match_request::MatchErrorCategory::ResultDecode,
-        diagnostic.code().as_str(),
-        diagnostic.message(),
-    )
-    .into()
+    crate::execution_diagnostic::plan_answer_error(diagnostic)
 }
 
 /// A staged row value that does not serialize as JSON.
@@ -1274,6 +1269,7 @@ pub(crate) fn resolve_plan_with_wire(
         let QueryResult::Documents(documents) = result else {
             return Err(staged_answer_shape());
         };
+        plan.validate_single_row_put_answer(documents.len())?;
         let documents = documents
             .iter()
             .map(|document| remote_document(document, plan))

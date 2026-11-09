@@ -248,6 +248,142 @@ pub(super) fn standalone_scalar_entity(spec: &PlanSpec, schema: &DeclaredSchema)
     })
 }
 
+/// Whether a write plan puts exactly one thing for at most one input row:
+/// its only write is one `Put` of one thing answered by the terminal fetch,
+/// and its `Match` (if any) binds only that thing's role players, each by
+/// IID or by a key ownership, plus value assignments. Such a plan answers
+/// at most one document unless the put pattern matched several instances.
+pub(super) fn single_row_put(spec: &PlanSpec, schema: &DeclaredSchema) -> bool {
+    if spec.given_rows.as_ref().is_some_and(|rows| rows.len() > 1) {
+        return false;
+    }
+    let (patterns, put, fetch) = match spec.pipeline.as_slice() {
+        [put, Stage::Fetch(fetch)] => (&[][..], put, fetch),
+        [Stage::Match { patterns }, put, Stage::Fetch(fetch)] => (patterns.as_slice(), put, fetch),
+        _ => return false,
+    };
+    let Stage::Put { things, .. } = put else {
+        return false;
+    };
+    let [thing] = things.as_slice() else {
+        return false;
+    };
+    if fetch.thing != thing.binding {
+        return false;
+    }
+    let players = thing
+        .players
+        .iter()
+        .map(|(_, player)| *player)
+        .collect::<BTreeSet<_>>();
+    let index = SchemaIndex::new(schema);
+    let mut reads = Vec::new();
+    let mut by_iid = BTreeSet::new();
+    for pattern in patterns {
+        match pattern {
+            Pattern::Let {
+                binding,
+                expr: Expr::Operand(_),
+            } if !players.contains(binding) => {}
+            Pattern::Iid { binding, .. } if players.contains(binding) => {
+                by_iid.insert(*binding);
+            }
+            Pattern::Read(pattern) => reads.push(pattern.clone()),
+            _ => return false,
+        }
+    }
+    identified_players(&reads, &players, &index).is_some_and(|mut identified| {
+        identified.extend(by_iid);
+        identified == players
+    })
+}
+
+/// The players a conjunction identifies by IID or key, or `None` when it
+/// contains anything else that could bind or multiply rows.
+fn identified_players(
+    patterns: &[QueryPattern],
+    players: &BTreeSet<BindingId>,
+    index: &SchemaIndex<'_>,
+) -> Option<BTreeSet<BindingId>> {
+    let mut types = BTreeMap::new();
+    for pattern in patterns {
+        if let QueryPattern::Isa {
+            binding,
+            include_subtypes: false,
+            type_id,
+        } = pattern
+        {
+            if !players.contains(binding) {
+                return None;
+            }
+            types.insert(*binding, type_id);
+        }
+    }
+    let mut identified = BTreeSet::new();
+    for pattern in patterns {
+        match pattern {
+            QueryPattern::Isa {
+                include_subtypes: false,
+                ..
+            }
+            | QueryPattern::Value {
+                comparator: ValueComparator::Equal,
+                ..
+            } => {}
+            QueryPattern::Iid { binding, .. } if players.contains(binding) => {
+                identified.insert(*binding);
+            }
+            QueryPattern::Has {
+                owner,
+                attribute_id,
+                ..
+            } => {
+                let keyed = index.ancestors(types.get(owner)?).into_iter().any(|owner| {
+                    OwnsFactId::new(owner, attribute_id.clone()).is_ok_and(|field| {
+                        index.annotation(AnnotationSubjectId::Owns(field), AnnotationKindId::Key)
+                    })
+                });
+                if !keyed {
+                    return None;
+                }
+                identified.insert(*owner);
+            }
+            QueryPattern::Or { branches } => {
+                let mut common: Option<BTreeSet<BindingId>> = None;
+                for branch in branches {
+                    let branch = identified_players(branch, players, index)?;
+                    common = Some(match common {
+                        None => branch,
+                        Some(common) => common.intersection(&branch).copied().collect(),
+                    });
+                }
+                identified.extend(common.unwrap_or_default());
+            }
+            _ => return None,
+        }
+    }
+    Some(identified)
+}
+
+fn put_ambiguous_match() -> Diagnostic {
+    failure(
+        DiagnosticCategory::InvalidContract,
+        "put_ambiguous_match",
+        "the put pattern matched more than one existing instance",
+    )
+}
+
+impl QueryPlan {
+    /// Refuse a single-row put whose pattern matched several instances,
+    /// before the provider commits.
+    pub fn validate_single_row_put_answer(&self, documents: usize) -> Result<(), Diagnostic> {
+        if self.single_row_put && documents > 1 {
+            return Err(put_ambiguous_match());
+        }
+        Ok(())
+    }
+}
+
 impl QueryPlan {
     /// Expected present-field multiset derived from a standalone scalar entity write.
     /// The evidence is rebuilt from canonical inputs, including on the proxy server.

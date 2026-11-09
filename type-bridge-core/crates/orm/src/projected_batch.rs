@@ -176,7 +176,7 @@ impl ProjectedBatchBudgetState {
         model: TypeId,
         operation: ProjectedBatchOperation,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        require_batch_model(installed, &model, operation, false)?;
+        require_batch_model(installed, &model, operation)?;
         Ok(Self {
             brand: ProjectionBrand::from_installed(installed),
             model,
@@ -192,7 +192,7 @@ impl ProjectedBatchBudgetState {
         row: &ProjectedBatchRow,
         control: Option<&ProjectedBatchInvocationControl>,
     ) -> Result<(), SdkExecutionDiagnostic> {
-        let projected_model = require_batch_model(installed, &self.model, self.operation, true)?;
+        let projected_model = require_batch_model(installed, &self.model, self.operation)?;
         check_control(control)?;
 
         let next_row_count = self.row_count.checked_add(1).ok_or_else(|| {
@@ -608,7 +608,7 @@ impl ProjectedBatch {
         control: Option<&ProjectedBatchInvocationControl>,
         probe: ProjectedBatchReservationProbe,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        let projected_model = require_batch_model(installed, &model, operation, !rows.is_empty())?;
+        let projected_model = require_batch_model(installed, &model, operation)?;
         let row_count = rows.len();
         let resource_ceiling = control.map_or(QueryExecutionResourceLimits::default(), |control| {
             control.limits
@@ -777,7 +777,7 @@ impl ProjectedBatch {
         installed: &InstalledRuntimeProjection,
     ) -> Result<(), SdkExecutionDiagnostic> {
         self.brand.validate(installed, type_path(&self.model))?;
-        require_batch_model(installed, &self.model, self.operation, !self.is_empty()).map(|_| ())
+        require_batch_model(installed, &self.model, self.operation).map(|_| ())
     }
 }
 
@@ -1048,7 +1048,7 @@ pub(crate) fn validate_filtered_replacement(
     control: &ProjectedBatchInvocationControl,
 ) -> Result<(), SdkExecutionDiagnostic> {
     control.check()?;
-    let projected = require_batch_model(installed, model, ProjectedBatchOperation::Update, true)?;
+    let projected = require_batch_model(installed, model, ProjectedBatchOperation::Update)?;
     validate_create_input(installed, model, ProjectedBatchOperation::Update, 0, create)?;
     let mut measure = ProjectedBatchResourceMeasure {
         items: 1,
@@ -1065,7 +1065,6 @@ fn require_batch_model<'a>(
     installed: &'a InstalledRuntimeProjection,
     type_id: &TypeId,
     operation: ProjectedBatchOperation,
-    has_rows: bool,
 ) -> Result<&'a ModelProjection, SdkExecutionDiagnostic> {
     if !matches!(type_id.kind(), TypeKind::Entity | TypeKind::Relation) {
         return Err(invalid(
@@ -1096,16 +1095,6 @@ fn require_batch_model<'a>(
         return Err(invalid(
             "model_not_creatable",
             "The projected batch operation requires an enabled create facet",
-            type_path(type_id),
-        ));
-    }
-    if has_rows
-        && matches!(operation, ProjectedBatchOperation::Put)
-        && model.reference_read().key_fields().is_empty()
-    {
-        return Err(invalid(
-            "put_requires_projected_key",
-            "Projected put requires an effective reference key",
             type_path(type_id),
         ));
     }

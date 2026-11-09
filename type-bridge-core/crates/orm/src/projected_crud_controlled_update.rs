@@ -35,18 +35,6 @@ impl ProjectedCrudExecutor<'_> {
         row: ProjectedBatchRow,
         control: &ProjectedBatchInvocationControl,
     ) -> Result<ProjectedBatch, SdkExecutionDiagnostic> {
-        let operation = if operation == ProjectedBatchOperation::Put
-            && self
-                .installed
-                .projection()
-                .models()
-                .get(model)
-                .is_some_and(|model| model.reference_read().key_fields().is_empty())
-        {
-            ProjectedBatchOperation::Insert
-        } else {
-            operation
-        };
         ProjectedBatch::try_single_write(self.installed, model.clone(), operation, row, control)
     }
 
@@ -501,6 +489,8 @@ impl ProjectedCrudExecutor<'_> {
         } else {
             None
         };
+        let keyless =
+            batch.operation() == ProjectedBatchOperation::Put && self.is_keyless(batch.model());
         let plan = if let Some((_, ProjectedBatchRow::Update { iid, .. })) = batch.row_at(0) {
             update(
                 authority,
@@ -543,6 +533,20 @@ impl ProjectedCrudExecutor<'_> {
                     },
                 ),
             }
+        } else if keyless {
+            // Never pieces: an over-budget row keeps its limit diagnostic.
+            Ok::<_, Diagnostic>(
+                keyless_put(
+                    authority,
+                    ValueTransport::Given,
+                    batch.model(),
+                    &write.created,
+                    &players,
+                    roles,
+                    None,
+                )
+                .map_err(|error| keyless_put_build_failure(&error, batch.model()))?,
+            )
         } else {
             match &model {
                 WriteModel::Entity(_) => entity_insert(

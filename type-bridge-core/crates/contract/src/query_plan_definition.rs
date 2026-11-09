@@ -625,6 +625,8 @@ pub struct QueryPlan {
     scalar_types: Option<Box<BTreeMap<BindingId, ValueTypeTag>>>,
     #[serde(skip)]
     standalone_scalar_entity: bool,
+    #[serde(skip)]
+    single_row_put: bool,
 }
 
 impl QueryPlan {
@@ -887,6 +889,7 @@ impl QueryPlan {
             )?;
         }
         let standalone_scalar_entity = bulk::standalone_scalar_entity(&spec, schema);
+        let single_row_put = bulk::single_row_put(&spec, schema);
         let scalar_types = match &spec.output {
             QueryOutput::Rows { columns } => scalar_types
                 .into_iter()
@@ -912,6 +915,7 @@ impl QueryPlan {
             binding_types,
             scalar_types,
             standalone_scalar_entity,
+            single_row_put,
         };
         plan.canonical_bytes()?;
         Ok(plan)

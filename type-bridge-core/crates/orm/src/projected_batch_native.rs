@@ -125,7 +125,7 @@ impl BatchPlan<'_> {
             .filter(|(_, projection)| projection.multiplicity().collection_mode().is_unordered())
             .map(|(role, _)| role.clone())
             .collect::<Vec<_>>();
-        let document_roles = self
+        let document_roles: Vec<DocumentRole> = self
             .model
             .complete_read()
             .roles()
@@ -138,6 +138,30 @@ impl BatchPlan<'_> {
                 }
             })
             .collect();
+        if self.operation == ProjectedBatchOperation::Put && keys.is_empty() {
+            // Each keyless row is its own TypeQL put statement, in row order
+            // and one transaction, so later rows see earlier inserts.
+            return self
+                .rows
+                .iter()
+                .zip(&rows)
+                .map(|((ordinal, _), row)| {
+                    crate::plan_builders::put::keyless_put(
+                        authority,
+                        crate::plan_builders::ValueTransport::Given,
+                        self.model.id(),
+                        row.fields,
+                        row.players,
+                        document_roles.clone(),
+                        Some(*ordinal),
+                    )
+                    .map_err(|error| {
+                        crate::projected_crud::keyless_put_build_failure(&error, self.model.id())
+                    })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map(crate::plan_builders::bulk_write::WriteProgram::compact);
+        }
         let kind = match self.operation {
             ProjectedBatchOperation::Insert => WriteKind::Insert,
             ProjectedBatchOperation::Put => WriteKind::Put,
@@ -1131,6 +1155,7 @@ struct Consumer<'a, R> {
     plan: &'a type_bridge_contract::query_plan::QueryPlan,
     reply: Reply,
     deferred: Option<SdkExecutionDiagnostic>,
+    documents: usize,
 }
 
 fn evidence(error: Diagnostic) -> OrmError {
@@ -1164,6 +1189,11 @@ impl<R: FnMut(&AnswerItem) + Send> Consumer<'_, R> {
                     )
                     .into());
                 };
+                self.documents += 1;
+                // A single-row put answering a second document matched several instances.
+                self.plan
+                    .validate_single_row_put_answer(self.documents)
+                    .map_err(crate::execution_diagnostic::plan_answer_error)?;
                 let fields =
                     query_plan_exec::remote_document(&document, self.plan).map_err(evidence)?;
                 let mut document = query_plan_exec::document_json(&fields).map_err(evidence)?;
@@ -1369,6 +1399,7 @@ fn accept_native_answer(
         plan,
         reply,
         deferred: None,
+        documents: 0,
     };
     match (reply, answer) {
         (Reply::MatchedDeletion, crate::query_plan_exec::PlanAnswer::Matched(_))
@@ -1523,6 +1554,7 @@ async fn dispatch_query<R: FnMut(&AnswerItem) + Send>(
         plan,
         reply,
         deferred: None,
+        documents: 0,
     };
     let mut observed = LocallyBoundedConsumer::new(&mut consumer, limits.answer.clone());
     let future = lease.dispatch_plan_bounded(query, limits, &mut observed);
@@ -1758,6 +1790,7 @@ mod native_input_tests {
                             plan: native.local(),
                             reply: Reply::MatchedDeletion,
                             deferred: None,
+                            documents: 0,
                         };
                         assert_eq!(
                             consumer

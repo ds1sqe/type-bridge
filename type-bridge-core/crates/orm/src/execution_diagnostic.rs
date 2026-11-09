@@ -218,6 +218,9 @@ pub fn lower_match_error(error: &MatchError) -> SdkExecutionDiagnostic {
 #[doc(hidden)]
 #[must_use]
 pub fn lower_remote_query_diagnostic(error: Diagnostic) -> SdkExecutionDiagnostic {
+    if error.code().as_str() == PUT_AMBIGUOUS_MATCH {
+        return put_ambiguous_match();
+    }
     if error.code().as_str() == "query_model_exactly_one" {
         let Some(actual) = error.details().get("actual").and_then(|value| match value {
             DiagnosticDetailValue::Long(value) => usize::try_from(*value).ok(),
@@ -475,6 +478,30 @@ fn is_admissible_query_identity_list_detail(key: &str) -> bool {
         key,
         "allowed_type_domains" | "missing" | "unexpected_fields" | "unreachable_bindings"
     )
+}
+
+pub(crate) const PUT_AMBIGUOUS_MATCH: &str = "put_ambiguous_match";
+
+/// A single-row put whose pattern matched several existing instances.
+pub(crate) fn put_ambiguous_match() -> SdkExecutionDiagnostic {
+    invalid_input(
+        PUT_AMBIGUOUS_MATCH,
+        "The put pattern matched more than one existing instance",
+    )
+}
+
+/// Map a plan-answer diagnostic to its ORM error; an ambiguous put is
+/// invalid input, every other answer failure is a result-decode error.
+pub(crate) fn plan_answer_error(diagnostic: Diagnostic) -> OrmError {
+    if diagnostic.code().as_str() == PUT_AMBIGUOUS_MATCH {
+        return OrmError::ExecutionDiagnostic(Box::new(put_ambiguous_match()));
+    }
+    crate::match_request::MatchError::new(
+        crate::match_request::MatchErrorCategory::ResultDecode,
+        diagnostic.code().as_str(),
+        diagnostic.message(),
+    )
+    .into()
 }
 
 fn invalid_input(code: &'static str, message: &'static str) -> SdkExecutionDiagnostic {

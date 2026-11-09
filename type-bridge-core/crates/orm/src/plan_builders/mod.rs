@@ -1700,6 +1700,181 @@ fetch { \"_iid\": iid($thing0), \"_type\": label($PlanFetchType), \"attributes\"
         );
     }
 
+    fn keyed_authority() -> PlanAuthority {
+        PlanAuthority::new(
+            race::schema_with_keys(true),
+            ManagedSemanticSchemaFingerprint::compute(
+                SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                b"plan-builders",
+            )
+            .unwrap(),
+        )
+    }
+
+    fn keyless_purchase(
+        authority: &PlanAuthority,
+        buyer_key: &str,
+        ordinal: Option<usize>,
+    ) -> Result<super::BuiltPlan, type_bridge_contract::diagnostic::Diagnostic> {
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let item = TypeId::new(TypeKind::Entity, "item").unwrap();
+        let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        let key = AttributeId::new(buyer_key).unwrap();
+        let accounts = [account];
+        let items = [item];
+        super::put::keyless_put(
+            authority,
+            ValueTransport::Given,
+            &purchase,
+            &[(
+                OwnsFactId::new(purchase.clone(), AttributeId::new("order-id").unwrap()).unwrap(),
+                text("O1"),
+            )],
+            &[
+                (
+                    RoleId::new("purchase", "buyer").unwrap(),
+                    Reference {
+                        candidates: &accounts,
+                        identity: if buyer_key == "balance" {
+                            ReferenceIdentity::Key {
+                                attribute: &key,
+                                value: CanonicalValue::Long(7),
+                            }
+                        } else {
+                            ReferenceIdentity::Key {
+                                attribute: &key,
+                                value: text("A1"),
+                            }
+                        },
+                    },
+                ),
+                (
+                    RoleId::new("purchase", "item").unwrap(),
+                    Reference {
+                        candidates: &items,
+                        identity: ReferenceIdentity::Iid("0x1e00000000000000000001"),
+                    },
+                ),
+            ],
+            Vec::new(),
+            ordinal,
+        )
+    }
+
+    #[test]
+    fn keyless_put_is_one_exact_typeql_put_of_the_whole_pattern() {
+        let plan = keyless_purchase(&keyed_authority(), "account-id", None).unwrap();
+        let typeql = tql::render(&lower(plan.local()).unwrap().query).unwrap();
+        let expected = "given $in0: string, $in1: string;
+match
+  $player1 isa! account;
+  $player1 has account-id $key2; $key2 isa! account-id;
+  $key2 == $in0;
+  $player3 isa! item;
+  $player3 iid 0x1e00000000000000000001;
+put
+  $root0 isa! purchase, links (buyer: $player1, item: $player3), has order-id == $in1;
+match $root0 isa! $PlanFetchType;
+fetch { \"_iid\": iid($root0), \"_type\": label($PlanFetchType), \"attributes\": { $root0.* } };";
+        assert!(
+            tql::equivalent(&typeql, expected).unwrap(),
+            "lowered:\n{typeql}\nexpected:\n{expected}"
+        );
+        // One row, players bound by key and IID: a second document means the
+        // put pattern matched several instances.
+        plan.local().validate_single_row_put_answer(1).unwrap();
+        let error = plan.local().validate_single_row_put_answer(2).unwrap_err();
+        assert_eq!(error.code().as_str(), "put_ambiguous_match");
+        let mapped = crate::execution_diagnostic::lower_remote_query_diagnostic(error);
+        assert_eq!(mapped.code().as_str(), "put_ambiguous_match");
+        assert_eq!(
+            mapped.category(),
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::InvalidInput
+        );
+
+        // A batch row answers its ordinal and stays a single-row put.
+        let row = keyless_purchase(&keyed_authority(), "account-id", Some(3)).unwrap();
+        let typeql = tql::render(&lower(row.local()).unwrap().query).unwrap();
+        assert!(typeql.contains("\"ordinal\": $ordinal1"), "{typeql}");
+        assert!(
+            row.local()
+                .validate_single_row_put_answer(2)
+                .is_err_and(|error| error.code().as_str() == "put_ambiguous_match")
+        );
+    }
+
+    #[test]
+    fn only_single_row_puts_of_identified_players_refuse_several_documents() {
+        // A player found by a non-key value may bind several things, and
+        // each row then puts its own relation: no ambiguity rule applies.
+        let plan = keyless_purchase(&keyed_authority(), "balance", None).unwrap();
+        // Without the declared key, the account-id lookup proves nothing.
+        keyless_purchase(&authority(), "account-id", None)
+            .unwrap()
+            .local()
+            .validate_single_row_put_answer(2)
+            .unwrap();
+        plan.local().validate_single_row_put_answer(2).unwrap();
+        // A keyed put is not a whole-pattern put.
+        let doctor = TypeId::new(TypeKind::Entity, "doctor").unwrap();
+        let name = OwnsFactId::new(doctor.clone(), AttributeId::new("name").unwrap()).unwrap();
+        let keyed = keyed_entity_put(
+            &authority(),
+            ValueTransport::Given,
+            &KeyedPut {
+                include_subtypes: false,
+                return_document: true,
+                type_id: &doctor,
+                keys: &[(name, text("D1"))],
+                fields: &[],
+                cleared: &[],
+                attached: &[],
+            },
+        )
+        .unwrap();
+        keyed.local().validate_single_row_put_answer(2).unwrap();
+        // An entity put with no match is always single-row.
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let entity = super::put::keyless_put(
+            &authority(),
+            ValueTransport::Literal,
+            &account,
+            &[(balance, CanonicalValue::Long(1))],
+            &[],
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+        let typeql = tql::render(&lower(entity.local()).unwrap().query).unwrap();
+        assert!(
+            typeql.starts_with("put $root0 isa! account, has balance 1;"),
+            "{typeql}"
+        );
+        assert!(entity.local().validate_single_row_put_answer(2).is_err());
+    }
+
+    #[test]
+    fn an_over_budget_keyless_put_is_refused_never_split() {
+        use std::sync::Arc;
+        use type_bridge_contract::limits::QueryLimits;
+        let mut limits = QueryLimits::PLAN;
+        // The pattern needs four bindings: the root and three for players.
+        limits.structural.bindings = 3;
+        limits.structural.selected_slots = 3;
+        let authority = keyed_authority().with_query_limits(Arc::new(limits));
+        let error = keyless_purchase(&authority, "account-id", None).unwrap_err();
+        assert!(super::bulk_write::forces_pieces(&error), "{error:?}");
+        let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        let refused = crate::projected_crud::keyless_put_build_failure(&error, &purchase);
+        assert_eq!(refused.code().as_str(), error.code().as_str());
+        assert_eq!(
+            refused.category(),
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::ResourceLimit
+        );
+    }
+
     #[test]
     fn literal_strings_escape_quotes_and_refuse_control_characters() {
         let (typeql, _) = purchase_order(ValueTransport::Literal, "say \"hi\" \\ back").unwrap();

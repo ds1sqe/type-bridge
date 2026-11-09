@@ -1,5 +1,11 @@
 //! Put plans.
 //!
+//! A keyless put is TypeQL `put` of the whole given pattern: every given
+//! field value and role player. It matches an instance of exactly the
+//! declared type (`isa!`: the manager hydrates one exact model, so a
+//! subtype instance is never taken) or inserts the pattern; it never
+//! updates.
+//!
 //! A keyed put matches the record of exactly the declared type by its key,
 //! or creates it with the key only (`put`), then replaces every non-key
 //! field in the same pipeline: given single-valued fields are updated,
@@ -9,10 +15,11 @@
 
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{RoleId, TypeId};
+use type_bridge_contract::migration_assertion::QueryVariable;
 use type_bridge_contract::query_plan::QueryOutput;
 use type_bridge_contract::query_plan::{
-    AttachItem, DeleteItem, DocumentRole, InsertThing, Operation, Set, Stage, ThingDocument,
-    WriteReturns,
+    AttachItem, DeleteItem, DocumentRole, DocumentScalar, Expr, InsertThing, Operation, Pattern,
+    Set, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
@@ -20,6 +27,79 @@ use type_bridge_contract::value::CanonicalValue;
 use super::authority::PlanAuthority;
 use super::reference::{Reference, reference_binding};
 use super::{BuiltPlan, ValueTransport};
+
+/// Build one keyless put answering the matched or inserted thing's
+/// document. Batch rows pass their `ordinal`, answered as a document scalar.
+/// The whole pattern is one statement, so a row over the plan limits is
+/// refused by the plan validation, never split.
+pub(crate) fn keyless_put(
+    authority: &PlanAuthority,
+    transport: ValueTransport,
+    type_id: &TypeId,
+    fields: &[(OwnsFactId, CanonicalValue)],
+    players: &[(RoleId, Reference<'_>)],
+    document_roles: Vec<DocumentRole>,
+    ordinal: Option<usize>,
+) -> Result<BuiltPlan, Diagnostic> {
+    let mut draft = authority.draft(transport);
+    let thing = draft.bind("root")?;
+    let ordinal_binding = ordinal.map(|_| draft.bind("ordinal")).transpose()?;
+    let mut patterns = Vec::new();
+    let mut bound = Vec::with_capacity(players.len());
+    for (role, reference) in players {
+        bound.push((
+            role.clone(),
+            reference_binding(&mut draft, reference, &mut patterns)?,
+        ));
+    }
+    let fields = fields
+        .iter()
+        .map(|(field, value)| Ok((field.clone(), draft.value(value.clone())?)))
+        .collect::<Result<Vec<_>, Diagnostic>>()?;
+    let mut document = ThingDocument::new(thing, document_roles);
+    if let (Some(ordinal), Some(binding)) = (ordinal, ordinal_binding) {
+        let value = i64::try_from(ordinal).map_err(|_| {
+            Diagnostic::new(
+                type_bridge_contract::diagnostic::DiagnosticCategory::ResourceLimit,
+                type_bridge_contract::diagnostic::DiagnosticCode::new("manager_batch_limit")
+                    .expect("static code"),
+                "Batch ordinal exceeds its scalar domain",
+            )
+        })?;
+        patterns.push(Pattern::Let {
+            binding,
+            expr: Expr::Operand(draft.value(CanonicalValue::Long(value))?),
+        });
+        document.scalars.push(DocumentScalar {
+            key: QueryVariable::new("ordinal")?,
+            binding,
+        });
+    }
+    let mut pipeline = Vec::with_capacity(3);
+    if !patterns.is_empty() {
+        pipeline.push(Stage::Match { patterns });
+    }
+    pipeline.push(Stage::Put {
+        include_subtypes: false,
+        things: vec![InsertThing {
+            binding: thing,
+            type_id: type_id.clone(),
+            fields,
+            players: bound,
+        }],
+    });
+    pipeline.push(Stage::Fetch(document));
+    draft.finish(
+        authority,
+        pipeline,
+        Operation::Write {
+            returns: WriteReturns::Rows,
+        },
+        QueryOutput::Rows {
+            columns: Vec::new(),
+        },
+    )
+}
 
 /// One keyed entity put: `keys` and single-valued `fields` are given
 /// values; `cleared` are the non-key ownerships to empty (omitted, or

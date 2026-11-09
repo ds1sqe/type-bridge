@@ -32,7 +32,9 @@ use crate::plan_builders::ValueTransport;
 use crate::plan_builders::authority::PlanAuthority;
 use crate::plan_builders::insert::relation_insert;
 use crate::plan_builders::manager::{ManagerPlans, ManagerRead, ReadTerminal};
-use crate::plan_builders::put::{KeyedPut, RelationPut, keyed_entity_put, keyed_relation_put};
+use crate::plan_builders::put::{
+    KeyedPut, RelationPut, keyed_entity_put, keyed_relation_put, keyless_put,
+};
 use crate::plan_builders::reference::{Reference, ReferenceIdentity};
 use crate::plan_builders::write::{
     ThingUpdate, UpdateSelection, delete_by_iid, delete_by_iid_returning, entity_insert, update,
@@ -4019,6 +4021,83 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         after_write(transaction, hydrated).await
     }
 
+    /// Whether puts of this model are TypeQL puts of the whole pattern.
+    pub(crate) fn is_keyless(&self, type_id: &TypeId) -> bool {
+        self.installed
+            .projection()
+            .models()
+            .get(type_id)
+            .is_some_and(|model| model.reference_read().key_fields().is_empty())
+    }
+
+    /// Put one keyless entity as one plan: TypeQL `put` of every given value
+    /// on exactly its type, answering the matched or inserted document.
+    async fn keyless_entity_put_prepared(
+        &self,
+        transaction: &TransactionContext,
+        prepared: &PreparedEntityCreate,
+        mode: ExecutionMode<'_>,
+    ) -> Result<WriteResult<ProjectedThing>, SdkExecutionDiagnostic> {
+        let type_id = &prepared.type_id;
+        let authority = self
+            .installed
+            .plan_authority_with_query_limits(transaction.shared_query_limits())
+            .map_err(|error| plan_build_failure(&error, type_id))?;
+        let transport = plan_transport(transaction, type_id, mode).await?;
+        let plan = keyless_put(
+            &authority,
+            transport,
+            type_id,
+            &prepared.plan_write.created,
+            &[],
+            Vec::new(),
+            None,
+        )
+        .map_err(|error| keyless_put_build_failure(&error, type_id))?;
+        let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
+        let hydrated = self.hydrate_entity_documents(
+            transaction.execution_identity(),
+            &prepared.type_id,
+            &prepared.descriptor,
+            &documents,
+            mode,
+        );
+        after_write(transaction, hydrated).await
+    }
+
+    /// Put one keyless relation as one plan whose match resolves every
+    /// role-player reference; the put pattern holds every field and player.
+    async fn keyless_relation_put_by_plan(
+        &self,
+        transaction: &TransactionContext,
+        prepared: &PreparedRelationCreate,
+        authority: &PlanAuthority,
+        mode: ExecutionMode<'_>,
+    ) -> Result<WriteResult<ProjectedThing>, SdkExecutionDiagnostic> {
+        let type_id = &prepared.type_id;
+        let transport = plan_transport(transaction, type_id, mode).await?;
+        let players = plan_references(prepared)?;
+        let plan = keyless_put(
+            authority,
+            transport,
+            type_id,
+            &prepared.plan_write.created,
+            &players,
+            self.document_roles(prepared)?,
+            None,
+        )
+        .map_err(|error| keyless_put_build_failure(&error, type_id))?;
+        let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
+        let hydrated = self.hydrate_relation_documents(
+            transaction.execution_identity(),
+            &prepared.type_id,
+            &prepared.descriptor,
+            &documents,
+            mode,
+        );
+        after_write(transaction, hydrated).await
+    }
+
     async fn put_entity_prepared(
         &self,
         transaction: &TransactionContext,
@@ -4026,6 +4105,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         mode: ExecutionMode<'_>,
     ) -> Result<WriteResult<ProjectedThing>, SdkExecutionDiagnostic> {
         let Some(put) = &prepared.keyed_put else {
+            if self.is_keyless(&prepared.type_id) {
+                return self
+                    .keyless_entity_put_prepared(transaction, prepared, mode)
+                    .await;
+            }
             return self
                 .insert_entity_prepared(transaction, prepared, mode)
                 .await;
@@ -4455,6 +4539,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .plan_authority_with_query_limits(transaction.shared_query_limits())
             .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
         let Some(put) = self.lower_keyed_put(input)? else {
+            if self.is_keyless(&prepared.type_id) {
+                return self
+                    .keyless_relation_put_by_plan(transaction, prepared, &authority, mode)
+                    .await;
+            }
             return self
                 .insert_relation_by_plan(transaction, prepared, &authority, mode)
                 .await;
@@ -5962,6 +6051,22 @@ fn document_iid(
 }
 
 /// A plan that cannot be built is a bridge defect.
+/// A keyless put pattern cannot be split across statements: a row over the
+/// plan limits keeps the plan's own limit diagnostic.
+pub(crate) fn keyless_put_build_failure(
+    diagnostic: &Diagnostic,
+    type_id: &TypeId,
+) -> SdkExecutionDiagnostic {
+    if crate::plan_builders::bulk_write::forces_pieces(diagnostic) {
+        append_path(
+            crate::execution_diagnostic::lower_remote_query_diagnostic(diagnostic.clone()),
+            [SdkDiagnosticPathSegment::Type(type_id.clone())],
+        )
+    } else {
+        plan_build_failure(diagnostic, type_id)
+    }
+}
+
 fn plan_build_failure(_diagnostic: &Diagnostic, type_id: &TypeId) -> SdkExecutionDiagnostic {
     write_plan_invalid(type_id)
 }

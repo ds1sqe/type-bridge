@@ -1761,7 +1761,10 @@ fn validate_written_role_identities(
             .get(role)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        if !plan.single_input && requested.len() != returned.len() {
+        // A keyless put may match an instance with more players than given.
+        let keyless_put = plan.operation == ProjectedBatchOperation::Put
+            && plan.model.reference_read().key_fields().is_empty();
+        if !plan.single_input && !keyless_put && requested.len() != returned.len() {
             return Err(integrity_at_row(
                 "provider_identity_mismatch",
                 "Returned role players differ from the write input",

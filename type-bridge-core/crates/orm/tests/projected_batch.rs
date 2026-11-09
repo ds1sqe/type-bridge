@@ -426,16 +426,19 @@ fn binding_budget_preserves_authority_control_and_row_precedence_before_brand_fe
         ProjectedBatchBindingBudget::try_new(&python, person.clone(), ProjectedBatchOperation::Put)
             .unwrap();
     let row = ProjectedBatchRow::Create(person_create(&unkeyed, "foreign"));
+    // A keyless put is admitted; a foreign row then meets the brand fence.
     let incremental = put.try_add_row(&unkeyed, &row).unwrap_err();
-    let authoritative = ProjectedBatch::try_new(
+    assert_eq!(
+        incremental.code().as_str(),
+        "generated_token_package_mismatch"
+    );
+    ProjectedBatch::try_new(
         &unkeyed,
         person.clone(),
         ProjectedBatchOperation::Put,
         vec![row],
     )
-    .unwrap_err();
-    assert_eq!(incremental, authoritative);
-    assert_eq!(incremental.code().as_str(), "put_requires_projected_key");
+    .unwrap();
     assert!(put.is_empty());
 
     let cancellation = AnswerCancellation::default();
@@ -1291,7 +1294,7 @@ fn decimal_and_datetime_tz_keys_use_semantic_identity() {
 }
 
 #[test]
-fn unkeyed_insert_and_update_keep_equal_rows_distinct_but_only_empty_put_is_allowed() {
+fn unkeyed_insert_update_and_put_keep_equal_rows_distinct() {
     let installed = installed(BindingTarget::Python);
     let log = type_id(TypeKind::Entity, "log");
     let create = || {
@@ -1342,23 +1345,23 @@ fn unkeyed_insert_and_update_keep_equal_rows_distinct_but_only_empty_put_is_allo
     assert!(empty.is_empty());
     assert_eq!(empty.resource_measure().statements(), 0);
     empty.validate_for(&installed).unwrap();
+    // A keyless put is a TypeQL put of each row's whole pattern; equal rows
+    // are admitted and chain at execution.
     let mut budget =
         ProjectedBatchBindingBudget::try_new(&installed, log.clone(), ProjectedBatchOperation::Put)
             .unwrap();
     assert!(budget.is_empty());
     let row = ProjectedBatchRow::Create(create());
-    assert_eq!(
-        budget
-            .try_add_row(&installed, &row)
-            .unwrap_err()
-            .code()
-            .as_str(),
-        "put_requires_projected_key"
-    );
-    assert!(budget.is_empty());
-    let error = ProjectedBatch::try_new(&installed, log, ProjectedBatchOperation::Put, vec![row])
-        .unwrap_err();
-    assert_eq!(error.code().as_str(), "put_requires_projected_key");
+    budget.try_add_row(&installed, &row).unwrap();
+    budget.try_add_row(&installed, &row).unwrap();
+    assert_eq!(budget.len(), 2);
+    ProjectedBatch::try_new(
+        &installed,
+        log,
+        ProjectedBatchOperation::Put,
+        vec![row.clone(), row],
+    )
+    .unwrap();
 }
 
 #[test]
