@@ -32,7 +32,7 @@ borrowed write makes that transaction rollback-only.
 | --- | --- |
 | `insert(value)` | Insert one model and attach its IID. |
 | `insert_many(values)` | Insert one homogeneous batch atomically. |
-| `put(value)` | Idempotently match/insert by the declared key. |
+| `put(value)` | Idempotently match/insert by the declared key; keyless models use TypeQL `put` of the given values. |
 | `put_many(values)` | Put one homogeneous batch atomically. |
 | `update(value)` | Update by attached canonical TypeDB IID. |
 | `delete(value_or_iid)` | Delete by attached canonical TypeDB IID or an `Iid` value. |
@@ -60,7 +60,12 @@ assert manager.get_by_iid(ada.iid) is None
 Python `update`, `update_many`, and model-valued deletion require attached
 canonical TypeDB IIDs. They do not look up detached models or discard inputs.
 Read the desired models first, then pass them to the explicit IID operations.
-`put` requires the generated model's projected key contract.
+A keyed `put` looks up the declared key and replaces the other fields. A
+keyless `put` is TypeQL `put` on the exact model type: it returns an instance
+holding every given value and role player, or inserts the pattern; it never
+updates, does not match subtype instances, and fails with
+`put_ambiguous_match` when several instances match. See
+[Keyless put](upgrade-3.0.md#keyless-put).
 
 The callback `update_with` and no-argument/filtered `delete()` conveniences
 are removed. Use an authored update/delete plan staged in one transaction

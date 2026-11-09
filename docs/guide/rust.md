@@ -143,7 +143,10 @@ players, and IID/key-fallback references.
 Batch methods use the shared native plan executor for both current and older
 generated packages. Repeated Put keys fail with `duplicate_batch_key`;
 repeated Update or Delete IIDs fail with `duplicate_batch_target` before
-provider work. For keyless models, manager `put_many` retains insert behavior.
+provider work. For keyless models, `put` and `put_many` are TypeQL `put` of
+each row's given values on the exact model type: identical rows return the same
+instance, and a row matching several instances refuses the call with
+`put_ambiguous_match`. See [Keyless put](upgrade-3.0.md#keyless-put).
 
 For several operations that must commit together, borrow managers from one
 write transaction:

@@ -287,6 +287,35 @@ then use `result.item()` to borrow the single model, or `result.into_items()` to
 take ownership of all models. Rust exposes `count()`, `items()`, and `item()`
 accessors.
 
+## Keyless put
+
+`put` on a model without a key is TypeQL `put` of the whole given pattern:
+every supplied field value and, for relations, every supplied role player.
+
+- It matches on the given values only. An existing instance with more values
+  or players than the input still matches and is returned as stored.
+- It never updates. If no instance matches the whole pattern, the whole
+  pattern is inserted.
+- It matches the exact model type. The manager hydrates one exact model, so an
+  instance of a subtype is not matched and a new instance of the model is
+  inserted.
+- If the pattern matches more than one existing instance, for example
+  duplicates left by earlier inserts, the call fails with
+  `put_ambiguous_match` before commit and writes nothing.
+- `put_many` runs one put statement per row, in row order, in one transaction
+  with one commit. Identical rows return the same instance. One ambiguous row
+  refuses the whole call; no row is committed.
+- A row too large for one plan is refused with the plan's limit diagnostic;
+  a keyless put pattern is never split.
+- TypeQL `put` does not guard against concurrent writers. Two transactions can
+  each insert the same pattern; declare `@key` or `@unique` on a field when
+  duplicates must be refused at commit.
+
+Previously, single keyless `put` and Rust keyless `put_many` inserted a new
+instance on every call, and Python, Node and C keyless `put_many` failed with
+`put_requires_projected_key`. Code that relied on repeated `put` calls creating
+separate instances must call `insert` instead. Keyed `put` is unchanged.
+
 ## Core manager construction
 
 Construct core query builders through a registry-backed manager’s `.query()`.
@@ -487,8 +516,9 @@ or `relation`; `target` is `database` or `write_transaction` for every row, and
 Generated `{model}_{target}_{operation}` wrappers have the same argument
 order with the implicit `model` argument omitted and nominal input/result
 owners. Regenerate packages; every supported profile now emits these wrappers
-as static inline functions. Unkeyed single `put` wrappers remain available;
-the existing key-admission behavior is unchanged. By-IID reads and mutations
+as static inline functions. Unkeyed single `put` wrappers remain available
+and follow [keyless put](#keyless-put); keyless `put_many` uses the generic
+projected batch with `TYPE_BRIDGE_PROJECTED_BATCH_OPERATION_PUT`. By-IID reads and mutations
 continue to build a typed IID filter and use the shared terminal.
 
 NULL-policy CRUD calls now use the same in-flight cancellation handling as

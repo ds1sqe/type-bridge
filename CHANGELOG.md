@@ -1250,6 +1250,23 @@ add the limits argument described in the upgrade guide.
 - Remove `query_remote_v3_documents_unsupported`: fetch plans now return
   document evidence, with specific document-validation diagnostics.
 
+- Keyless `put` is TypeQL `put` of the whole given pattern on the exact model
+  type in every SDK, direct and through the proxy. Single keyless `put` (all
+  SDKs) and Rust keyless `put_many` change from insert to match-or-insert: an
+  instance of exactly that type holding every given value and role player is
+  returned, otherwise the pattern is inserted. Nothing is updated, and a
+  subtype instance is not matched. The upgrade guide's "Keyless put" section
+  lists the semantics.
+- Python, Node and C keyless `put_many` and explicit batch `Put` change from
+  refused to match-or-insert, one put statement per row in one transaction;
+  identical rows return the same instance. The `put_requires_projected_key`
+  refusal is removed.
+- A keyless put whose pattern matches more than one existing instance fails
+  with `put_ambiguous_match` (invalid input) before commit; in `put_many` the
+  whole call is refused and no row is committed. An authored single-row
+  `[Put, Fetch]` plan that matches several instances now reports
+  `put_ambiguous_match` instead of `query_remote_document_value`.
+
 <!-- --8<-- [end:breaking-3-0] -->
 
 ### Added
