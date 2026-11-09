@@ -157,7 +157,9 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
     are removed with ORM schema sync (below).
     `LEGACY_CUTOVER_SENTINEL_APP_LABEL`, `LEGACY_CUTOVER_SENTINEL_APPLIED_AT`,
     `LEGACY_CUTOVER_SENTINEL_MIGRATION_ID`, `LEGACY_CUTOVER_SENTINEL_NAME` and
-    `LEGACY_WRITER_CUTOVER_MESSAGE` remain in `contract::reserved` for import.
+    `LEGACY_WRITER_CUTOVER_MESSAGE` remain in `contract::reserved`; the
+    first four name the frozen sentinel that import reads, and the message is
+    the text released 2.x writers emit, which nothing in 3.0 reads.
 - Legacy `CopyAttribute` rollback, which removed every destination ownership,
   is removed. Canonical backfill reverse removes only destination values equal
   to the source and preserves other pre-existing destination values.

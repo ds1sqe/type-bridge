@@ -36,7 +36,7 @@ impl<'db> SchemaManager<'db> {
     ///
     /// ```ignore
     /// let live = SchemaManager::new(&db).introspect().await?;
-    /// println!("{}", expected.compare(&live).summary());
+    /// println!("{} entity types", live.entities.len());
     /// ```
     #[tracing::instrument(skip(self))]
     pub async fn introspect(&self) -> Result<SchemaInfo> {

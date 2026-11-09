@@ -75,7 +75,8 @@ pub const LEGACY_CUTOVER_SENTINEL_MIGRATION_ID: &str =
     "type_bridge_v2_internal:__legacy_writer_cutover__";
 /// Deterministic TypeDB datetime carried by the V2 cutover sentinel.
 pub const LEGACY_CUTOVER_SENTINEL_APPLIED_AT: &str = "1970-01-01T00:00:00.000000000";
-/// Stable error text returned when an exact, anchor-bound cutover is observed.
+/// Error text released 2.x writers emit when they observe an exact,
+/// anchor-bound cutover. Nothing in 3.0 reads it; it is kept as a frozen name.
 pub const LEGACY_WRITER_CUTOVER_MESSAGE: &str =
     "legacy migration writes are permanently disabled for this database after V2 adoption";
 
