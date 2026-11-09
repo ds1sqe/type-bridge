@@ -125,19 +125,56 @@ pub async fn seed(
     execute(journal, &format!("insert $record isa typebridge-internal-v2-migration-journal, has typebridge-internal-v2-record-key {}, has typebridge-internal-v2-control-scope {}, has typebridge-internal-v2-record-sequence \"1\", has typebridge-internal-v2-record-kind \"applied\", has typebridge-internal-v2-record-payload {}, has typebridge-internal-v2-record-payload-digest \"{digest}\";", literal(&format!("{scope}#1")), literal(scope), literal(std::str::from_utf8(&payload).unwrap())), TxType::Write).await;
 }
 
-/// Adoption keeps the frozen V1 cutover sentinel that fences released 2.x
-/// writers; later migrations must not remove it.
-pub async fn assert_cutover_sentinel_kept(managed: &Database) {
+/// Released 2.x writers stay fenced: import and later migrations keep the
+/// exact v2 managed-fence schema, its control row, and an anchor whose
+/// fingerprint matches the frozen V1 cutover sentinel.
+pub async fn assert_released_writers_fenced(managed: &Database) {
     use type_bridge_contract::reserved::{
+        LEGACY_CUTOVER_ANCHOR_ENTITY, LEGACY_CUTOVER_ANCHOR_FINGERPRINT,
         LEGACY_CUTOVER_SENTINEL_MIGRATION_ID, LEGACY_LEDGER_APPLIED_ENTITY, LEGACY_LEDGER_CHECKSUM,
-        LEGACY_LEDGER_MIGRATION_ID,
+        LEGACY_LEDGER_MIGRATION_ID, MANAGED_CONTROL_ENTITY, MANAGED_CONTROL_SCOPE,
+        import_legacy_control_label as v2,
     };
-    let query = format!(
-        "match $s isa {LEGACY_LEDGER_APPLIED_ENTITY}, has {LEGACY_LEDGER_MIGRATION_ID} \"{LEGACY_CUTOVER_SENTINEL_MIGRATION_ID}\", has {LEGACY_LEDGER_CHECKSUM} $c; fetch {{ \"checksum\": $c }};"
-    );
-    let rows = managed.execute_raw(&query, TxType::Read).await.unwrap();
+    use type_bridge_orm::session::backend::QueryResult;
+    use type_bridge_schema_compat::{
+        LiveQueryControlPresence, import_legacy_fence_schema_presence,
+    };
+
+    let export = managed.schema_text().await.unwrap();
     assert!(
-        matches!(&rows, type_bridge_orm::session::backend::QueryResult::Documents(rows) if rows.len() == 1),
-        "adopted histories keep exactly one cutover sentinel: {rows:?}"
+        matches!(
+            import_legacy_fence_schema_presence(&export),
+            Ok(LiveQueryControlPresence::ManagedFence)
+        ),
+        "the exact v2 managed-fence schema must remain: {export}"
+    );
+    let rows = |query: String| async move {
+        match managed.execute_raw(&query, TxType::Read).await.unwrap() {
+            QueryResult::Documents(rows) => rows,
+            other => panic!("{query}: expected documents, got {other:?}"),
+        }
+    };
+    let control = rows(format!(
+        "match $c isa {}, has {} $s; fetch {{ \"s\": $s }};",
+        v2(MANAGED_CONTROL_ENTITY),
+        v2(MANAGED_CONTROL_SCOPE)
+    ))
+    .await;
+    assert_eq!(control.len(), 1, "one v2 control row: {control:?}");
+    let anchor = rows(format!(
+        "match $a isa {}, has {} $f; fetch {{ \"f\": $f }};",
+        v2(LEGACY_CUTOVER_ANCHOR_ENTITY),
+        v2(LEGACY_CUTOVER_ANCHOR_FINGERPRINT)
+    ))
+    .await;
+    let sentinel = rows(format!(
+        "match $s isa {LEGACY_LEDGER_APPLIED_ENTITY}, has {LEGACY_LEDGER_MIGRATION_ID} \"{LEGACY_CUTOVER_SENTINEL_MIGRATION_ID}\", has {LEGACY_LEDGER_CHECKSUM} $f; fetch {{ \"f\": $f }};"
+    ))
+    .await;
+    assert_eq!(anchor.len(), 1, "one v2 cutover anchor: {anchor:?}");
+    assert_eq!(sentinel.len(), 1, "one cutover sentinel: {sentinel:?}");
+    assert_eq!(
+        anchor[0]["f"], sentinel[0]["f"],
+        "anchor and sentinel stay bound"
     );
 }

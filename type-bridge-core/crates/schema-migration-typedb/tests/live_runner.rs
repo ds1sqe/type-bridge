@@ -795,7 +795,6 @@ async fn runner_applies_a_completed_legacy_frontier() {
         .execute_raw(MANAGED_FENCE_SCHEMA_TYPEQL, TxType::Schema)
         .await
         .unwrap();
-    adopted_history::assert_cutover_sentinel_kept(&managed).await;
     let old = managed.derived_legacy_journal_database();
     let copied_query = "match $r isa typebridge-internal-migration-journal, has typebridge-internal-record-sequence \"1\", has typebridge-internal-record-payload $p, has typebridge-internal-record-payload-digest $d; fetch { \"payload\": $p, \"digest\": $d };";
     let old_query = copied_query.replace("typebridge-internal-", "typebridge-internal-v2-");
@@ -852,7 +851,7 @@ async fn runner_applies_a_completed_legacy_frontier() {
     assert!(export.contains("entity company"), "{export}");
     assert!(export.contains("owns tag[]"), "{export}");
     assert!(export.contains("@distinct"), "{export}");
-    adopted_history::assert_cutover_sentinel_kept(&managed).await;
+    adopted_history::assert_released_writers_fenced(&managed).await;
     let copied = journal
         .execute_raw(copied_query, TxType::Read)
         .await
