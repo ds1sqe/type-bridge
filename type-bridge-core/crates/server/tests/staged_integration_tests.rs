@@ -2327,3 +2327,217 @@ async fn staged_reads_use_the_old_fence_until_the_import_publishes_the_new_mirro
     old.delete_database().await.unwrap();
     drop_database(db).await;
 }
+
+/// Keyless put through the proxy is TypeQL put, refused before commit when
+/// ambiguous: a single put matching two instances and a batch whose middle
+/// row is ambiguous both fail with `put_ambiguous_match`, and no earlier row
+/// of the batch is visible afterwards. A 65-row keyless batch needs 65
+/// staged plans and is refused before anything runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn keyless_put_over_the_proxy_refuses_before_commit() {
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+    use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
+    use type_bridge_contract::schema::{DocumentId, OwnsFactId};
+    use type_bridge_contract::sdk_diagnostic::SdkProviderOperation;
+    use type_bridge_orm::plan_authority::QueryAuthority;
+    use type_bridge_orm::{
+        AnswerCancellation, InstalledRuntimeProjection, ProjectedAttributeValue, ProjectedBatch,
+        ProjectedBatchExecutor, ProjectedBatchInvocationControl, ProjectedBatchOperation,
+        ProjectedBatchResult, ProjectedBatchRow, ProjectedCreate, ProjectedCrudExecutor,
+        ProxyEndpoint, ProxyQueryConnection, QueryExecutionResourceLimits, QueryTarget,
+    };
+    let name = staged_live::live_database::name("keyless_put_proxy");
+    let database = staged_live::connect(&name).await;
+    database.create_database().await.unwrap();
+    database
+        .execute_raw(
+            "define attribute ktitle, value string; entity ktag, owns ktitle @card(0..1);",
+            TxType::Schema,
+        )
+        .await
+        .unwrap();
+    database
+        .execute_raw(
+            "insert $a isa ktag, has ktitle \"dup\"; $b isa ktag, has ktitle \"dup\";",
+            TxType::Write,
+        )
+        .await
+        .unwrap();
+    let documents = type_bridge_schema::SchemaDocumentSet::parse([(
+        DocumentId::new("keyless-put-proxy.yaml").unwrap(),
+        "format: typebridge.schema/v2\nattributes:\n  ktitle: { value: string }\nentities:\n  ktag:\n    owns:\n      ktitle: { card: { min: 0, max: 1 } }\n",
+    )])
+    .unwrap();
+    let declared = type_bridge_schema::normalize_documents(&documents).unwrap();
+    let profile =
+        SemanticProfileId::new(semantic_profile_id(&database.server_version().unwrap()).unwrap())
+            .unwrap();
+    let resolved = type_bridge_schema::resolve(&declared, &profile).unwrap();
+    let scope = format!("keyless-put-{name}");
+    let verified = type_bridge_schema::build_schema_authority(
+        &declared,
+        declared.required_capabilities(),
+        &type_bridge_schema::ManagedDeltaContext::new(
+            type_bridge_contract::managed_scope::ManagedScopeId::new(&scope).unwrap(),
+            profile.clone(),
+            type_bridge_schema::schema_authority_capability_vocabulary(),
+        ),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        type_bridge_schema::project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap()
+    .with_schema_authority(&verified);
+    let policy = LivePolicy {
+        vouch: true,
+        ..LivePolicy::default()
+    };
+    let commits = Arc::clone(&policy.commits);
+    let proxy = staged_live::proxy_with(&name, policy, false, declared.clone(), &scope).await;
+    let port = serve(&proxy).await;
+    let limits = QueryExecutionResourceLimits::default();
+    let connection = ProxyQueryConnection::connect(
+        &ProxyEndpoint::new(format!("http://127.0.0.1:{port}")),
+        Some(proxy.advertisement.encode().unwrap()),
+        Arc::new(
+            QueryAuthority::from_declared_bytes(
+                &type_bridge_contract::schema::encode_declared_schema(&declared).unwrap(),
+                &scope,
+                profile.as_str(),
+            )
+            .unwrap(),
+        ),
+        limits,
+        limits,
+        &AnswerCancellation::default(),
+    )
+    .await
+    .unwrap();
+    let model = TypeId::new(TypeKind::Entity, "ktag").unwrap();
+    let field = OwnsFactId::new(model.clone(), AttributeId::new("ktitle").unwrap()).unwrap();
+    let tag = |title: &str| {
+        ProjectedCreate::try_new(
+            &installed,
+            model.clone(),
+            vec![(
+                field.clone(),
+                vec![
+                    ProjectedAttributeValue::try_new(
+                        &installed,
+                        TypeId::new(TypeKind::Attribute, "ktitle").unwrap(),
+                        CanonicalValue::String(CanonicalString::new(title).unwrap()),
+                    )
+                    .unwrap(),
+                ],
+            )],
+            vec![],
+        )
+        .unwrap()
+    };
+    let control =
+        || ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default());
+    let count = |title: &str| {
+        let query = format!("match $t isa ktag, has ktitle \"{title}\"; select $t;");
+        let database = &database;
+        async move { row_count(database, &query).await }
+    };
+    let put_many = |titles: &[&str]| {
+        let batch = ProjectedBatch::try_new(
+            &installed,
+            model.clone(),
+            ProjectedBatchOperation::Put,
+            titles
+                .iter()
+                .map(|title| ProjectedBatchRow::Create(tag(title)))
+                .collect(),
+        )
+        .unwrap();
+        let connection = &connection;
+        let installed = &installed;
+        async move {
+            ProjectedBatchExecutor::new(installed)
+                .execute_on_target_mapped(
+                    QueryTarget::Proxy(connection),
+                    &batch,
+                    control(),
+                    ProjectedBatchResult::Deleted,
+                    Ok,
+                )
+                .await
+        }
+    };
+
+    // Identical rows chain; the batch commits once.
+    let ProjectedBatchResult::Things(things) = put_many(&["same", "same"]).await.unwrap() else {
+        panic!("things");
+    };
+    assert_eq!(things.items()[0].iid(), things.items()[1].iid());
+    assert_eq!(count("same").await, 1);
+
+    // An ambiguous single put is refused before commit.
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let single = crud
+        .single_controlled_write_batch(
+            &model,
+            ProjectedBatchOperation::Put,
+            ProjectedBatchRow::Create(tag("dup")),
+            &control(),
+        )
+        .unwrap();
+    let before = commits.lock().unwrap().len();
+    let error = crud
+        .execute_single_write_on_target(QueryTarget::Proxy(&connection), &single, control(), Ok)
+        .await
+        .unwrap_err()
+        .into_diagnostic(SdkProviderOperation::Write);
+    assert_eq!(error.code().as_str(), "put_ambiguous_match");
+    // An ambiguous middle row refuses the whole batch; the first row is gone.
+    let error = put_many(&["before", "dup", "after"])
+        .await
+        .unwrap_err()
+        .into_diagnostic(SdkProviderOperation::Write);
+    assert_eq!(error.code().as_str(), "put_ambiguous_match");
+    assert_eq!(count("before").await, 0);
+    assert_eq!(count("after").await, 0);
+    assert_eq!(count("dup").await, 2);
+    {
+        let commits = commits.lock().unwrap();
+        assert_eq!(commits.len(), before + 2, "{commits:?}");
+        assert!(
+            commits[before..]
+                .iter()
+                .all(|(committed, code, _, _)| !committed && code == "put_ambiguous_match"),
+            "{commits:?}"
+        );
+    }
+
+    // 65 rows need 65 staged plans: refused before the proxy runs anything.
+    let rows = (0..65).map(|row| format!("wide-{row}")).collect::<Vec<_>>();
+    let before = commits.lock().unwrap().len();
+    let error = put_many(&rows.iter().map(String::as_str).collect::<Vec<_>>())
+        .await
+        .unwrap_err()
+        .into_diagnostic(SdkProviderOperation::Write);
+    assert_eq!(error.code().as_str(), "query_remote_plan_limit");
+    assert_eq!(commits.lock().unwrap().len(), before);
+    assert_eq!(
+        row_count(
+            &database,
+            "match $t isa ktag, has ktitle $v; $v like \"^wide-\"; select $t;"
+        )
+        .await,
+        0
+    );
+    drop(proxy);
+    drop_database(database).await;
+}
