@@ -85,9 +85,6 @@ fn lower_orm_error_base(
                 "schema_authority_mismatch",
                 "Schema authority does not match the installed runtime projection",
             ),
-            SchemaError::Sync(_) => {
-                SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Schema)
-            }
         },
         OrmError::Hook(error) => match error {
             HookError::Rejected { .. } => invalid_input(

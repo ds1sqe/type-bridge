@@ -1281,7 +1281,8 @@ add the limits argument described in the upgrade guide.
   only way to create or change a schema. Rust
   `type_bridge_orm::_schema::SchemaManager::{sync_schema, register_entity,
   register_relation, schema_info, generate_schema, has_existing_schema}` are
-  removed; `SchemaManager::new` and the read-only `introspect` remain. The
+  removed; `SchemaManager::new` and the read-only `introspect` remain, and
+  `SchemaError::Sync`, which only sync produced, is removed. The
   2.x writer guard that only sync used is removed with it:
   `require_legacy_writer_open` and `require_legacy_writer_open_in_transaction`
   (crate root and `session`), the `session::legacy_writer` module and the

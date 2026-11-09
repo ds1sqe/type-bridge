@@ -328,7 +328,8 @@ separate instances must call `insert` instead. Keyed `put` is unchanged.
 Rust `SchemaManager` no longer defines schema from models. `sync_schema`,
 `register_entity`, `register_relation`, `schema_info`, `generate_schema` and
 `has_existing_schema` are removed; `SchemaManager::new` and the read-only
-`introspect` remain. Python and Node already had no sync.
+`introspect` remain. `SchemaError::Sync` is removed; exhaustive matches drop
+that arm. Python and Node already had no sync.
 
 Declare the schema in Split-YAML and apply it with a migration (see
 [Schema workflows](schema-workflows.md)):
