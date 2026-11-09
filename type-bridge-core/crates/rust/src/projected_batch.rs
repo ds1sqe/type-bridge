@@ -138,21 +138,8 @@ pub(crate) async fn execute_target_single<M: CompleteModel>(
     })
 }
 
-pub(crate) fn create_operation(
-    installed: &InstalledRuntimeProjection,
-    model: &TypeId,
-    put: bool,
-) -> ProjectedBatchOperation {
-    if put
-        && !installed
-            .projection()
-            .models()
-            .get(model)
-            .expect("validated manager model")
-            .reference_read()
-            .key_fields()
-            .is_empty()
-    {
+pub(crate) fn create_operation(put: bool) -> ProjectedBatchOperation {
+    if put {
         ProjectedBatchOperation::Put
     } else {
         ProjectedBatchOperation::Insert

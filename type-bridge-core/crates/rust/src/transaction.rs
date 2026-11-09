@@ -360,7 +360,7 @@ where
             true,
         )?;
         let rows = create_rows(installed, &id, inputs)?;
-        let operation = create_operation(installed, &id, put);
+        let operation = create_operation(put);
         let batch = prepare_batch(installed, id, operation, rows)?;
         execute_borrowed_things(self.tx, installed, &batch).await
     }
@@ -611,7 +611,7 @@ where
             true,
         )?;
         let rows = create_rows(installed, &id, inputs)?;
-        let operation = create_operation(installed, &id, put);
+        let operation = create_operation(put);
         let batch = prepare_batch(installed, id, operation, rows)?;
         execute_borrowed_things(self.tx, installed, &batch).await
     }

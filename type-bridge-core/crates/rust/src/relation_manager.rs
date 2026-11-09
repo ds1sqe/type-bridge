@@ -377,8 +377,7 @@ where
             ModelValidationPhase::Input,
             true,
         )?;
-        let batch_operation =
-            create_operation(installed, &id, matches!(crud_operation, CrudOperation::Put));
+        let batch_operation = create_operation(matches!(crud_operation, CrudOperation::Put));
         let mut encoded = reserved_binding_vec(inputs.len())?;
         let mut rows = reserved_binding_vec(inputs.len())?;
         for (ordinal, input) in inputs.into_iter().enumerate() {
@@ -435,7 +434,7 @@ where
             true,
         )?;
         let rows = create_rows(installed, &id, inputs)?;
-        let operation = create_operation(installed, &id, put);
+        let operation = create_operation(put);
         let batch = prepare_batch(installed, id, operation, rows)?;
         execute_owned_things(target, installed, &batch).await
     }

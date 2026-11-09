@@ -1972,26 +1972,37 @@ fn projected_batch_error_conversion_preserves_closed_category_code_path_and_deta
 }
 
 #[tokio::test]
-async fn keyless_manager_put_many_inserts_once_and_returns_complete_models_for_both_handlers() {
+async fn keyless_manager_put_many_puts_each_row_and_returns_complete_models_for_both_handlers() {
     let schema = SUCCESSOR_SCHEMA
         .replace("name: { key: true }", "name: { card: 1 }")
         .replace("position: { key: true }", "position: { card: 1 }");
     for rust_v2 in [false, true] {
         for kind in [Kind::Entity, Kind::Relation] {
             for borrowed in [false, true] {
-                let documents = match kind {
+                // Each keyless row is its own TypeQL put statement, in row order.
+                let responses = match kind {
                     Kind::Entity => vec![
-                        person_document(1, "0x11", "second", &["second-tag"]),
-                        person_document(0, "0x10", "first", &["first-tag"]),
+                        Response::Documents(vec![person_document(
+                            0,
+                            "0x10",
+                            "first",
+                            &["first-tag"],
+                        )]),
+                        Response::Documents(vec![person_document(
+                            1,
+                            "0x11",
+                            "second",
+                            &["second-tag"],
+                        )]),
                     ],
                     Kind::Relation => vec![
-                        assignment_document(1, "0x31", "second"),
-                        assignment_document(0, "0x30", "first"),
+                        Response::Documents(vec![assignment_document(0, "0x30", "first")]),
+                        Response::Documents(vec![assignment_document(1, "0x31", "second")]),
                     ],
                 };
                 let (database, state) = fixture_named(
                     "keyless-manager-put",
-                    vec![Response::Documents(documents)],
+                    responses,
                     CommitBehavior::Success,
                     installed_from(&schema, rust_v2),
                 );
@@ -2066,9 +2077,11 @@ async fn keyless_manager_put_many_inserts_once_and_returns_complete_models_for_b
                 {
                     let observed = state.lock().unwrap();
                     assert_eq!(observed.opens, [TxType::Write]);
-                    assert_eq!(observed.calls.len(), 1);
-                    assert!(observed.calls[0].0.contains("insert "));
-                    assert!(!observed.calls[0].0.contains("put "));
+                    assert_eq!(observed.calls.len(), 2);
+                    for (call, _) in &observed.calls {
+                        assert!(call.contains("put "), "{call}");
+                        assert!(!call.contains("insert "), "{call}");
+                    }
                     assert_eq!(observed.commits, usize::from(!borrowed));
                     assert_eq!(observed.rollbacks, 0);
                 }
