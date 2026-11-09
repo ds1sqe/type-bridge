@@ -154,7 +154,7 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
     `is_migration_state_type` move to `type-bridge-schema-migration-typedb`.
     Python's existing state-label helpers retain their frozen legacy meanings.
     `require_legacy_writer_open` and `require_legacy_writer_open_in_transaction`
-    remain in `type-bridge-orm` for retained schema synchronization.
+    are removed with ORM schema sync (below).
     `LEGACY_CUTOVER_SENTINEL_APP_LABEL`, `LEGACY_CUTOVER_SENTINEL_APPLIED_AT`,
     `LEGACY_CUTOVER_SENTINEL_MIGRATION_ID`, `LEGACY_CUTOVER_SENTINEL_NAME` and
     `LEGACY_WRITER_CUTOVER_MESSAGE` remain in `contract::reserved` for import.
@@ -1277,6 +1277,16 @@ add the limits argument described in the upgrade guide.
   that matches several instances now reports `put_ambiguous_match`; a
   single-entity `[Put, Fetch]` plan previously reported
   `query_remote_document_value`.
+- ORM schema sync is removed; Split-YAML through reviewed migrations is the
+  only way to create or change a schema. Rust
+  `type_bridge_orm::_schema::SchemaManager::{sync_schema, register_entity,
+  register_relation, schema_info, generate_schema, has_existing_schema}` are
+  removed; `SchemaManager::new` and the read-only `introspect` remain. The
+  2.x writer guard that only sync used is removed with it:
+  `require_legacy_writer_open` and `require_legacy_writer_open_in_transaction`
+  (crate root and `session`), the `session::legacy_writer` module and the
+  `TransactionOps::schema_snapshot` backend hook. The upgrade guide's "ORM
+  schema sync" section lists the replacement.
 
 <!-- --8<-- [end:breaking-3-0] -->
 

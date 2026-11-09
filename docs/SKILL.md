@@ -175,8 +175,9 @@ with db.transaction(TransactionType.WRITE) as tx:
     Employment.manager(tx).put(employment)
 ```
 
-Do not use `sync_schema(force=True)` as conflict recovery without explicit
-authorization for database recreation and data loss.
+Change schema only through Split-YAML and a reviewed migration; never
+recreate a database to resolve a conflict without explicit authorization for
+data loss.
 
 ## Choose the query surface
 

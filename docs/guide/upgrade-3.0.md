@@ -323,6 +323,27 @@ instance on every call, and Python, Node and C keyless `put_many` failed with
 `put_requires_projected_key`. Code that relied on repeated `put` calls creating
 separate instances must call `insert` instead. Keyed `put` is unchanged.
 
+## ORM schema sync
+
+Rust `SchemaManager` no longer defines schema from models. `sync_schema`,
+`register_entity`, `register_relation`, `schema_info`, `generate_schema` and
+`has_existing_schema` are removed; `SchemaManager::new` and the read-only
+`introspect` remain. Python and Node already had no sync.
+
+Declare the schema in Split-YAML and apply it with a migration (see
+[Schema workflows](schema-workflows.md)):
+
+```bash
+type-bridge migration make --name initial
+type-bridge migration apply --environment <env>
+```
+
+The guard functions `require_legacy_writer_open` and
+`require_legacy_writer_open_in_transaction` existed only for sync and are
+removed. Importing a 2.x database leaves its cutover rows in place, so
+released 2.x writers stay fenced. Custom backends drop their
+`TransactionOps::schema_snapshot` override.
+
 ## Core manager construction
 
 Construct core query builders through a registry-backed manager’s `.query()`.
