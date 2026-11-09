@@ -1133,11 +1133,8 @@ async fn helper_relation_inserts_resolve_references_inside_the_write() {
             ),
         )
         .await
-        .unwrap_err();
-    assert_eq!(
-        missing.code().as_str(),
-        "provider_identity_cardinality_invalid"
-    );
+        .unwrap();
+    assert_eq!(missing.count(), 0);
     assert_eq!(
         crud.count_relations(&db, &membership_type).await.unwrap(),
         4
@@ -2802,12 +2799,11 @@ async fn native_batches_preserve_integer_keys_and_model_ownership_constraints() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn registry_relation_updates_refuse_unresolved_players_and_missing_roots() {
+async fn registry_relation_updates_follow_typeql_player_and_root_matching() {
     use std::sync::Arc;
-    use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticCategory, SdkProviderOperation};
     use type_bridge_orm::_dynamic::DynamicRolePlayerInput;
     use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
-    use type_bridge_orm::{AttributeValue, lower_execution_error};
+    use type_bridge_orm::AttributeValue;
     let Some(db) = live_database("missing_update_players").await else {
         return;
     };
@@ -2904,101 +2900,137 @@ async fn registry_relation_updates_refuse_unresolved_players_and_missing_roots()
         key: Some(("identifier".into(), AttributeValue::String("absent".into()))),
         ..valid.clone()
     };
+    // Each write is one TypeQL statement: an unresolved player or root
+    // matches nothing (count 0, relation unchanged); a non-unique key fans
+    // out to every match; a duplicate alias of one player links it once.
+    // Steps run in order, so each expected state follows from the last.
+    macro_rules! check {
+        ($label:expr, $call:expr, $count:expr, $players:expr, $note:expr) => {{
+            let written = $call.await.unwrap();
+            assert_eq!(written.count(), $count, "{} count", $label);
+            let row = relations.get_by_iid_exact(&iid).await.unwrap();
+            assert_eq!(row.len(), 1, "{} rows", $label);
+            assert_eq!(row[0].role_players.len(), $players, "{} players", $label);
+            assert!(
+                row[0].attributes.contains(&note($note)[0]),
+                "{} note: {:?}",
+                $label,
+                row[0].attributes
+            );
+        }};
+    }
     for player in [missing_iid, missing_key] {
-        for exact in [false, true] {
-            let error = if exact {
-                relations
-                    .update_exact(&iid, &note("after"), std::slice::from_ref(&player))
-                    .await
-                    .unwrap_err()
-            } else {
-                relations
-                    .update(Some(&iid), &note("after"), std::slice::from_ref(&player))
-                    .await
-                    .unwrap_err()
-            };
-            let diagnostic = lower_execution_error(error, SdkProviderOperation::Write);
-            assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
-            assert_eq!(diagnostic.code().as_str(), "provider_hydration_failed");
-        }
-        let error = relations
-            .update(Some(&iid), &vec![], std::slice::from_ref(&player))
-            .await
-            .unwrap_err();
-        assert_eq!(
-            lower_execution_error(error, SdkProviderOperation::Write)
-                .code()
-                .as_str(),
-            "provider_hydration_failed"
+        let player = std::slice::from_ref(&player);
+        check!(
+            "missing update",
+            relations.update(Some(&iid), &note("after"), player),
+            0,
+            1,
+            "before"
         );
-        let error = relations
-            .put_exact(&initial, std::slice::from_ref(&player))
-            .await
-            .unwrap_err();
-        assert_eq!(
-            lower_execution_error(error, SdkProviderOperation::Write)
-                .code()
-                .as_str(),
-            "provider_hydration_failed"
+        check!(
+            "missing update_exact",
+            relations.update_exact(&iid, &note("after"), player),
+            0,
+            1,
+            "before"
+        );
+        check!(
+            "missing players-only update",
+            relations.update(Some(&iid), &vec![], player),
+            0,
+            1,
+            "before"
+        );
+        check!(
+            "missing put_exact",
+            relations.put_exact(&initial, player),
+            0,
+            1,
+            "before"
         );
     }
-    let ambiguous = DynamicRolePlayerInput {
+    let ambiguous = vec![DynamicRolePlayerInput {
         iid: None,
         key: Some(("note".into(), AttributeValue::String("shared".into()))),
         ..valid.clone()
-    };
-    let alias = DynamicRolePlayerInput {
-        iid: None,
-        key: Some((
-            "identifier".into(),
-            AttributeValue::String("existing".into()),
-        )),
-        ..valid.clone()
-    };
-    for players in [vec![ambiguous], vec![valid.clone(), alias]] {
-        for exact in [false, true] {
-            let result = if exact {
-                relations.update_exact(&iid, &note("after"), &players).await
-            } else {
-                relations.update(Some(&iid), &note("after"), &players).await
-            };
-            let diagnostic =
-                lower_execution_error(result.unwrap_err(), SdkProviderOperation::Write);
-            assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
-            assert_eq!(diagnostic.code().as_str(), "provider_hydration_failed");
-        }
-        let error = relations.put_exact(&initial, &players).await.unwrap_err();
-        let reason = format!("{error:?}; players={players:?}");
-        let diagnostic = lower_execution_error(error, SdkProviderOperation::Write);
-        assert_eq!(
-            diagnostic.code().as_str(),
-            "provider_hydration_failed",
-            "{reason}"
-        );
-    }
+    }];
+    let alias = vec![
+        valid.clone(),
+        DynamicRolePlayerInput {
+            iid: None,
+            key: Some((
+                "identifier".into(),
+                AttributeValue::String("existing".into()),
+            )),
+            ..valid.clone()
+        },
+    ];
+    check!(
+        "ambiguous update",
+        relations.update(Some(&iid), &note("after"), &ambiguous),
+        1,
+        1,
+        "after"
+    );
+    check!(
+        "ambiguous update_exact",
+        relations.update_exact(&iid, &note("after"), &ambiguous),
+        1,
+        2,
+        "after"
+    );
+    check!(
+        "ambiguous put_exact",
+        relations.put_exact(&initial, &ambiguous),
+        1,
+        2,
+        "before"
+    );
+    check!(
+        "alias update",
+        relations.update(Some(&iid), &note("after"), &alias),
+        1,
+        2,
+        "after"
+    );
+    check!(
+        "alias update_exact",
+        relations.update_exact(&iid, &note("after"), &alias),
+        1,
+        1,
+        "after"
+    );
+    check!(
+        "alias put_exact",
+        relations.put_exact(&initial, &alias),
+        1,
+        1,
+        "before"
+    );
+    let valid_player = std::slice::from_ref(&valid);
     for attributes in [note("after"), vec![]] {
-        let diagnostic = lower_execution_error(
-            relations
-                .update(Some("0x00"), &attributes, std::slice::from_ref(&valid))
-                .await
-                .unwrap_err(),
-            SdkProviderOperation::Write,
+        check!(
+            "missing root update",
+            relations.update(Some("0x00"), &attributes, valid_player),
+            0,
+            1,
+            "before"
         );
-        assert_eq!(diagnostic.code().as_str(), "provider_hydration_failed");
     }
-    relations
-        .update(Some(&iid), &vec![], std::slice::from_ref(&valid))
-        .await
-        .unwrap();
-    let error = relations
-        .update_exact("0x00", &note("after"), std::slice::from_ref(&valid))
-        .await
-        .unwrap_err();
-    assert_eq!(
-        lower_execution_error(error, SdkProviderOperation::Write)
-            .code()
-            .as_str(),
-        "provider_hydration_failed"
+    check!(
+        "players-only update",
+        relations.update(Some(&iid), &vec![], valid_player),
+        1,
+        1,
+        "before"
+    );
+    check!(
+        "missing root update_exact",
+        relations.update_exact("0x00", &note("after"), valid_player),
+        0,
+        1,
+        "before"
     );
     let row = relations.get_by_iid_exact(&iid).await.unwrap();
     assert_eq!(row.len(), 1);
@@ -3138,8 +3170,10 @@ async fn registry_relation_update_emits_one_root_after_two_values_and_three_play
     let tx = db
         .transaction_context_with_answer_limits(
             TxType::Write,
+            // The hydrated answer is 1 relation + 3 players; a 2 x 3 cross
+            // product of values and players would exceed this limit.
             QueryExecutionResourceLimits {
-                items: 1,
+                items: 4,
                 ..Default::default()
             },
         )
@@ -3150,10 +3184,11 @@ async fn registry_relation_update_emits_one_root_after_two_values_and_three_play
         Arc::clone(&registry),
         registry.relation("membership").unwrap(),
     );
-    manager
+    let updated = manager
         .update_exact(&iid, &notes("new1", "new2"), &players)
         .await
         .unwrap();
+    assert_eq!(updated.count(), 1);
     tx.commit_sdk().await.unwrap();
     let rows = db
         .execute_raw(
