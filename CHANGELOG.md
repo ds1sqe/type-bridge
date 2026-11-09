@@ -1262,9 +1262,10 @@ add the limits argument described in the upgrade guide.
   identical rows return the same instance. The `put_requires_projected_key`
   refusal is removed. Because each row is its own statement, one keyless
   `put_many` holds at most 64 rows through the proxy (one staged plan per row;
-  more is refused with `query_remote_plan_limit` before anything runs) and at
-  most 4096 rows direct; a caller-set `statements` limit counts one statement
-  per row and refuses when the batch is built. A Rust keyless `put_many` of
+  more is refused with `query_remote_plan_limit` before anything runs). A
+  direct call is bounded by its effective resource limits; a caller-set
+  `statements` limit counts one statement per row and refuses when the batch
+  is built. A Rust keyless `put_many` of
   more than 64 rows through the proxy used to succeed as one insert and is now
   refused; split it into calls of at most 64 rows.
 - A keyless put whose pattern matches more than one existing instance fails
@@ -1632,6 +1633,11 @@ add the limits argument described in the upgrade guide.
   proxy writes; the same check applies to explicit core-builder plans.
 
 ### Fixed
+
+- A proxy request that exceeds the advertised budgets, such as more staged
+  plans than one request admits, now reports its contract code (for example
+  `query_remote_plan_limit`) instead of `transaction_state_invalid`. Nothing
+  is sent in either case.
 
 - Exact manager reads of relations with many roles now split their fetch
   projection within the effective query limits, using one transaction.
