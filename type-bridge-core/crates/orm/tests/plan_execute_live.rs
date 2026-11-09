@@ -3300,3 +3300,270 @@ async fn native_control_authority_reads_the_frozen_schema_in_one_transaction() {
     }
     db.delete_database().await.unwrap();
 }
+
+const KEYLESS_PUT_YAML: &str = r#"format: typebridge.schema/v2
+attributes:
+  code: { value: string }
+  title: { value: string }
+  note: { value: string }
+entities:
+  member:
+    owns:
+      code: { key: true }
+  tag:
+    owns:
+      title: { card: { min: 0, max: 1 } }
+      note: { card: { min: 0 } }
+  subtag:
+    sub: tag
+relations:
+  tagging:
+    owns:
+      note: { card: { min: 0 } }
+    relates:
+      tagged: { card: { min: 0, max: 4 } }
+plays:
+  member:
+    tagging: [tagged]
+"#;
+
+const KEYLESS_PUT_TYPEQL: &str = "define attribute code, value string; attribute title, value string; attribute note, value string; entity member, owns code @key, plays tagging:tagged; entity tag, owns title @card(0..1), owns note @card(0..); entity subtag sub tag; relation tagging, owns note @card(0..), relates tagged @card(0..4);";
+
+/// Keyless put is TypeQL put on the exact type: match the whole given
+/// pattern or insert it, never update; several matches refuse the call
+/// before commit, including earlier rows of the same batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyless_put_is_typeql_put_on_the_exact_type_live() {
+    use type_bridge_orm::{
+        ProjectedBatch, ProjectedBatchExecutor, ProjectedBatchInvocationControl,
+        ProjectedBatchOperation as Op, ProjectedBatchResult, ProjectedBatchRow as Row,
+    };
+    let Some(db) = live_database("keyless_put").await else {
+        return;
+    };
+    db.execute_raw(KEYLESS_PUT_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("keyless-put.yaml").unwrap(),
+        KEYLESS_PUT_YAML,
+    )])
+    .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let batches = ProjectedBatchExecutor::new(&installed);
+    let tag = party_type(TypeKind::Entity, "tag");
+    let tagging = party_type(TypeKind::Relation, "tagging");
+    let field = |owner: &TypeId, name: &str| {
+        installed.projection().models()[owner]
+            .query_tokens()
+            .fields()
+            .values()
+            .find(|token| token.declaring_id().attribute().label().as_str() == name)
+            .map(|token| token.id().clone())
+            .unwrap()
+    };
+    let label = |value: &str| {
+        ProjectedCreate::try_new(
+            &installed,
+            tag.clone(),
+            vec![(
+                field(&tag, "title"),
+                vec![party_text(&installed, "title", value)],
+            )],
+            vec![],
+        )
+        .unwrap()
+    };
+    let count = |query: &'static str| {
+        let db = &db;
+        async move {
+            match db.execute_raw(query, TxType::Read).await.unwrap() {
+                QueryResult::Rows(rows) => rows.len(),
+                other => panic!("expected rows, got {other:?}"),
+            }
+        }
+    };
+    let put_many = |rows: Vec<ProjectedCreate>| {
+        let batch = ProjectedBatch::try_new(
+            &installed,
+            tag.clone(),
+            Op::Put,
+            rows.into_iter().map(Row::Create).collect(),
+        )
+        .unwrap();
+        let batches = &batches;
+        let db = &db;
+        async move {
+            batches
+                .execute(
+                    db,
+                    &batch,
+                    ProjectedBatchInvocationControl::capture(
+                        Default::default(),
+                        Default::default(),
+                    ),
+                )
+                .await
+        }
+    };
+    let iids = |result: ProjectedBatchResult| {
+        let ProjectedBatchResult::Things(things) = result else {
+            panic!("expected things")
+        };
+        things
+            .into_items()
+            .into_iter()
+            .map(|thing| thing.iid().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // Run twice: one instance, the same IID.
+    let first = crud.put_entity(&db, &label("red")).await.unwrap();
+    let second = crud.put_entity(&db, &label("red")).await.unwrap();
+    assert_eq!(first.item().unwrap().iid(), second.item().unwrap().iid());
+    assert_eq!(
+        count("match $t isa tag, has title \"red\"; select $t;").await,
+        1
+    );
+
+    // Identical rows chain in row order and return the same IID.
+    let written = iids(
+        put_many(vec![label("blue"), label("blue"), label("red")])
+            .await
+            .unwrap(),
+    );
+    assert_eq!(written.len(), 3);
+    assert_eq!(written[0], written[1]);
+    assert_eq!(written[2], first.item().unwrap().iid());
+    assert_eq!(
+        count("match $t isa tag, has title \"blue\"; select $t;").await,
+        1
+    );
+
+    // A subset pattern matches an instance with more values; nothing updates.
+    db.execute_raw(
+        "insert $t isa tag, has title \"green\", has note \"kept\";",
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+    let green = crud.put_entity(&db, &label("green")).await.unwrap();
+    assert_eq!(
+        green.item().unwrap().fields()[&field(&tag, "note")].len(),
+        1
+    );
+    assert_eq!(
+        count("match $t isa tag, has title \"green\"; select $t;").await,
+        1
+    );
+
+    // Exact type: a subtype instance is not matched; a new tag is inserted.
+    db.execute_raw("insert $t isa subtag, has title \"sub\";", TxType::Write)
+        .await
+        .unwrap();
+    let exact = crud.put_entity(&db, &label("sub")).await.unwrap();
+    assert_eq!(exact.item().unwrap().type_id(), &tag);
+    assert_eq!(
+        count("match $t isa! tag, has title \"sub\"; select $t;").await,
+        1
+    );
+    assert_eq!(
+        count("match $t isa subtag, has title \"sub\"; select $t;").await,
+        1
+    );
+
+    // Ambiguity refuses the call before commit, earlier rows included.
+    db.execute_raw(
+        "insert $a isa tag, has title \"dup\"; $b isa tag, has title \"dup\";",
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+    let single = crud.put_entity(&db, &label("dup")).await.unwrap_err();
+    assert_eq!(single.code().as_str(), "put_ambiguous_match");
+    let many = put_many(vec![label("before"), label("dup"), label("after")])
+        .await
+        .unwrap_err();
+    assert_eq!(many.code().as_str(), "put_ambiguous_match");
+    assert_eq!(
+        many.category(),
+        type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::InvalidInput
+    );
+    assert_eq!(
+        count("match $t isa tag, has title \"before\"; select $t;").await,
+        0
+    );
+    assert_eq!(
+        count("match $t isa tag, has title \"after\"; select $t;").await,
+        0
+    );
+    assert_eq!(
+        count("match $t isa tag, has title \"dup\"; select $t;").await,
+        2
+    );
+
+    // Relations: the pattern holds every given field and player.
+    db.execute_raw("insert $m isa member, has code \"m1\";", TxType::Write)
+        .await
+        .unwrap();
+    let member = ProjectedReference::try_new(
+        &installed,
+        party_type(TypeKind::Entity, "member"),
+        None,
+        vec![(
+            field(&party_type(TypeKind::Entity, "member"), "code"),
+            party_text(&installed, "code", "m1"),
+        )],
+    )
+    .unwrap();
+    let tagged = ProjectedCreate::try_new(
+        &installed,
+        tagging.clone(),
+        vec![],
+        vec![(RoleId::new("tagging", "tagged").unwrap(), vec![member])],
+    )
+    .unwrap();
+    let one = crud.put_relation(&db, &tagged).await.unwrap();
+    let two = crud.put_relation(&db, &tagged).await.unwrap();
+    assert_eq!(one.item().unwrap().iid(), two.item().unwrap().iid());
+    assert_eq!(count("match $r isa tagging; select $r;").await, 1);
+    let batch = ProjectedBatch::try_new(
+        &installed,
+        tagging.clone(),
+        Op::Put,
+        vec![Row::Create(tagged.clone()), Row::Create(tagged)],
+    )
+    .unwrap();
+    let relations = iids(
+        batches
+            .execute(
+                &db,
+                &batch,
+                ProjectedBatchInvocationControl::capture(Default::default(), Default::default()),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        relations,
+        [one.item().unwrap().iid(), one.item().unwrap().iid()]
+    );
+    assert_eq!(count("match $r isa tagging; select $r;").await, 1);
+    db.delete_database().await.unwrap();
+}
