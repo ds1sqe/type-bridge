@@ -305,6 +305,13 @@ every supplied field value and, for relations, every supplied role player.
 - `put_many` runs one put statement per row, in row order, in one transaction
   with one commit. Identical rows return the same instance. One ambiguous row
   refuses the whole call; no row is committed.
+- One statement per row bounds a keyless `put_many`: at most 64 rows through
+  the proxy, where each row is one staged plan (more is refused with
+  `query_remote_plan_limit` before anything runs), and at most 4096 rows
+  direct. A caller-set `statements` limit counts one statement per keyless row
+  and refuses the batch when it is built. Split larger inputs into several
+  calls; each call commits on its own. A Rust keyless `put_many` of more than
+  64 rows through the proxy previously succeeded as a single insert.
 - A row too large for one plan is refused with the plan's limit diagnostic;
   a keyless put pattern is never split.
 - TypeQL `put` does not guard against concurrent writers. Two transactions can
