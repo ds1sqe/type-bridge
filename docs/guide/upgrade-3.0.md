@@ -255,7 +255,8 @@ Dynamic relation lookups using non-key fields can match two players and insert
 two relations. Both appear in `items`; the call does not choose one or reject the
 answer. Generated references remain key-only and cannot fan out by construction,
 but use the same result shape. Repeated references to the same player follow
-TypeQL behavior. Missing references retain their existing typed lookup failure.
+TypeQL behavior. A missing reference matches nothing: the write returns
+`count == 0` and stores nothing.
 No strict mode or additional pre-flight guard is added. The `_many` methods
 continue to return lists.
 

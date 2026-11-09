@@ -1584,8 +1584,9 @@ add the limits argument described in the upgrade guide.
   Multiple answered roots no longer cause `provider_identity_cardinality_invalid`,
   and repeated resolved role-player references no longer cause
   `duplicate_resolved_role_player`. All roots appear in the write result;
-  existing missing-reference lookup failures and split-wide existence guards
-  remain. No strict option or extra pre-flight query is introduced.
+  a missing reference matches nothing and returns `count == 0`, and
+  split-wide existence guards remain. No strict option or extra pre-flight
+  query is introduced.
 
 - Policy-controlled single entity and relation inserts use the same single
   native plan as ordinary inserts, retaining cancellation, resource limits,
