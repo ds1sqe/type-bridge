@@ -6181,7 +6181,9 @@ int main(void) {
         CHECK(fixture_membership_write_transaction_count(
                   write_tx, NULL,  NULL, &count, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
-        CHECK(count == 3u);
+        /* The keyless cara put matched the first membership instead of
+         * inserting a fourth, so two remain after the delete. */
+        CHECK(count == 2u);
         puts("P5 write transaction relation count: passed");
         CHECK(type_bridge_write_transaction_commit(&write_tx, NULL,  NULL,
                                                    &diagnostics) ==
@@ -6201,7 +6203,7 @@ int main(void) {
         CHECK(fixture_membership_read_transaction_count(
                   read_tx, NULL,  NULL, &count, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
-        CHECK(count == 3u);
+        CHECK(count == 2u);
         puts("P5 read transaction relation count: passed");
         CHECK(type_bridge_read_transaction_close(&read_tx, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
