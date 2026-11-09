@@ -130,10 +130,6 @@ impl TransactionOps for GatedTransaction {
         self.inner.supports_given_rows()
     }
 
-    fn schema_snapshot(&mut self) -> BoxFuture<'_, Result<Option<String>, OrmError>> {
-        self.inner.schema_snapshot()
-    }
-
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
         self.inner.query(typeql)
     }

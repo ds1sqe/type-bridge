@@ -167,8 +167,7 @@ pub use session::{
 pub use session::{
     Database, DatabaseConnectionAuthority, GivenColumnType, GivenRowsSpec, GivenValue,
     OwnedTransaction, ProxyEndpoint, ProxyHttpTransport, TlsPolicy, Transaction,
-    TransactionContext, TxType, require_legacy_writer_open,
-    require_legacy_writer_open_in_transaction,
+    TransactionContext, TxType,
 };
 #[cfg(feature = "typedb")]
 pub use session::{

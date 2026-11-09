@@ -588,14 +588,6 @@ impl TransactionContext {
         crate::query_plan_exec::resolve_plan(plan, answer).map_err(plan_diagnostic_error)
     }
 
-    /// Export the schema under this transaction's provider-side schema fence,
-    /// when supported by the backend.
-    pub(crate) async fn schema_snapshot(&self) -> Result<Option<String>> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.schema_snapshot().await
-    }
-
     /// Execute a `given`-stage query with input rows on the shared transaction.
     ///
     /// Requires a band-9 (TypeDB 3.12+) connection; see

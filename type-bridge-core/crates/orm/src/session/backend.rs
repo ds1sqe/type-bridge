@@ -599,16 +599,6 @@ pub trait TransactionOps: Send {
         false
     }
 
-    /// Export the schema while this already-open transaction retains its
-    /// provider-side schema exclusion, when the backend can prove that
-    /// relationship.
-    ///
-    /// The compatibility default returns no authority. Callers must not infer
-    /// managed ownership from a separately observed export or from labels.
-    fn schema_snapshot(&mut self) -> BoxFuture<'_, Result<Option<String>, OrmError>> {
-        Box::pin(async { Ok(None) })
-    }
-
     /// Execute a TypeQL query string.
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>>;
 

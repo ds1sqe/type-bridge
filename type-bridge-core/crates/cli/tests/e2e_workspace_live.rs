@@ -952,7 +952,7 @@ async fn completed_legacy_history_then_evolve_live() {
     let source = "define\nattribute name, value string;\nentity person, owns name;\n";
     let bridge = adopted_history::bridge(&context, source);
     adopted_history::seed(&managed, &journal, &context, &bridge, source).await;
-    adopted_history::assert_writer_closed(&managed).await;
+    adopted_history::assert_cutover_sentinel_kept(&managed).await;
     let workspace = tempfile::tempdir().unwrap();
     let root = workspace.path();
     fs::create_dir_all(root.join("schema/fragments")).unwrap();
@@ -1010,7 +1010,7 @@ async fn completed_legacy_history_then_evolve_live() {
         )
         .await
         .unwrap();
-    adopted_history::assert_writer_closed(&managed).await;
+    adopted_history::assert_cutover_sentinel_kept(&managed).await;
     managed
         .derived_legacy_journal_database()
         .delete_database()

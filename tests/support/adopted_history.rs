@@ -125,16 +125,19 @@ pub async fn seed(
     execute(journal, &format!("insert $record isa typebridge-internal-v2-migration-journal, has typebridge-internal-v2-record-key {}, has typebridge-internal-v2-control-scope {}, has typebridge-internal-v2-record-sequence \"1\", has typebridge-internal-v2-record-kind \"applied\", has typebridge-internal-v2-record-payload {}, has typebridge-internal-v2-record-payload-digest \"{digest}\";", literal(&format!("{scope}#1")), literal(scope), literal(std::str::from_utf8(&payload).unwrap())), TxType::Write).await;
 }
 
-pub async fn assert_writer_closed(managed: &Database) {
-    let writer = managed.transaction_context(TxType::Schema).await.unwrap();
-    let error = type_bridge_orm::require_legacy_writer_open_in_transaction(&writer)
-        .await
-        .expect_err("adopted histories must fence legacy writers");
-    assert!(
-        error
-            .to_string()
-            .contains(type_bridge_contract::reserved::LEGACY_WRITER_CUTOVER_MESSAGE),
-        "{error}"
+/// Adoption keeps the frozen V1 cutover sentinel that fences released 2.x
+/// writers; later migrations must not remove it.
+pub async fn assert_cutover_sentinel_kept(managed: &Database) {
+    use type_bridge_contract::reserved::{
+        LEGACY_CUTOVER_SENTINEL_MIGRATION_ID, LEGACY_LEDGER_APPLIED_ENTITY, LEGACY_LEDGER_CHECKSUM,
+        LEGACY_LEDGER_MIGRATION_ID,
+    };
+    let query = format!(
+        "match $s isa {LEGACY_LEDGER_APPLIED_ENTITY}, has {LEGACY_LEDGER_MIGRATION_ID} \"{LEGACY_CUTOVER_SENTINEL_MIGRATION_ID}\", has {LEGACY_LEDGER_CHECKSUM} $c; fetch {{ \"checksum\": $c }};"
     );
-    writer.close().await.unwrap();
+    let rows = managed.execute_raw(&query, TxType::Read).await.unwrap();
+    assert!(
+        matches!(&rows, type_bridge_orm::session::backend::QueryResult::Documents(rows) if rows.len() == 1),
+        "adopted histories keep exactly one cutover sentinel: {rows:?}"
+    );
 }

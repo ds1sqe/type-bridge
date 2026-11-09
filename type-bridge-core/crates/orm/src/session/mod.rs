@@ -14,7 +14,7 @@ mod direct_connection;
 pub mod eager;
 #[cfg(not(feature = "internal-eager"))]
 pub(crate) mod eager;
-pub mod legacy_writer;
+mod legacy_writer;
 mod proxy_connection;
 pub mod raw;
 pub mod staged;
@@ -34,7 +34,6 @@ pub use database::{
 };
 #[cfg(feature = "typedb")]
 pub use direct_connection::DirectConnectionPolicy;
-pub use legacy_writer::{require_legacy_writer_open, require_legacy_writer_open_in_transaction};
 pub use proxy_connection::{ProxyEndpoint, ProxyHttpTransport};
 pub use staged::Transaction;
 pub use staged_proxy::{StagedExchangeFn, StagedTransport};

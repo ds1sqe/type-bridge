@@ -192,11 +192,7 @@ impl DriverBackend for RealBackend {
             let inner = runtime
                 .open_raw_transaction(&database, runtime_tx_type(kind))
                 .await?;
-            Ok(Box::new(RealTransaction {
-                inner,
-                runtime,
-                database,
-            }) as Box<dyn TransactionOps>)
+            Ok(Box::new(RealTransaction { inner }) as Box<dyn TransactionOps>)
         })
     }
 
@@ -241,11 +237,7 @@ impl DriverBackend for RealBackend {
                 )
                 .await
                 .map_err(OrmError::from)?;
-            Ok(Box::new(RealTransaction {
-                inner,
-                runtime,
-                database,
-            }) as Box<dyn TransactionOps>)
+            Ok(Box::new(RealTransaction { inner }) as Box<dyn TransactionOps>)
         })
     }
 
@@ -337,8 +329,6 @@ fn real_match_capabilities(supports_given_rows: bool) -> CapabilitySet {
 
 struct RealTransaction {
     inner: runtime::RuntimeTransaction,
-    runtime: Arc<runtime::TypeDBRuntime>,
-    database: String,
 }
 
 impl RealTransaction {
@@ -369,18 +359,6 @@ impl TransactionOps for RealTransaction {
 
     fn supports_given_rows(&self) -> bool {
         self.inner.supports_given_rows()
-    }
-
-    fn schema_snapshot(&mut self) -> BoxFuture<'_, Result<Option<String>, OrmError>> {
-        let runtime = Arc::clone(&self.runtime);
-        let database = self.database.clone();
-        Box::pin(async move {
-            runtime
-                .schema_text(&database)
-                .await
-                .map(Some)
-                .map_err(OrmError::from)
-        })
     }
 
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {

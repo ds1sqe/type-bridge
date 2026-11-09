@@ -1,4 +1,4 @@
-//! Native reads for the frozen managed fence and legacy ledger.
+//! Native reads for the frozen managed fence.
 use crate::session::staged::PlanAnswer;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -41,18 +41,10 @@ impl DataQuery {
                     .iter()
                     .zip(row)
                     .map(|(name, value)| {
-                        let text = match value {
-                            CanonicalValue::String(value) => value.as_str().to_owned(),
-                            CanonicalValue::DateTime(value) => {
-                                // The frozen sentinel comparison uses provider nanosecond precision.
-                                let (hour, minute, second, nanos) = value.time().components();
-                                format!(
-                                    "{}T{hour:02}:{minute:02}:{second:02}.{nanos:09}",
-                                    value.date()
-                                )
-                            }
-                            _ => return Err(shape()),
+                        let CanonicalValue::String(value) = value else {
+                            return Err(shape());
                         };
+                        let text = value.as_str().to_owned();
                         Ok((name.clone(), serde_json::Value::String(text)))
                     })
                     .collect::<Result<serde_json::Map<_, _>, _>>()?;
@@ -199,25 +191,4 @@ pub(crate) fn read(
         plan: builder.finish(Operation::Rows, columns)?,
         aliases: bound.iter().map(|(_, name)| (*name).to_owned()).collect(),
     })
-}
-
-pub(crate) fn read_legacy(
-    kind: &str,
-    fixed: &[(&str, &str)],
-    bound: &[(&str, &str)],
-) -> Result<DataQuery, Diagnostic> {
-    use type_bridge_contract::reserved::import_legacy_control_label as label;
-    let fixed_labels: Vec<_> = fixed.iter().map(|(field, _)| label(field)).collect();
-    let bound_labels: Vec<_> = bound.iter().map(|(field, _)| label(field)).collect();
-    let fixed: Vec<_> = fixed_labels
-        .iter()
-        .zip(fixed)
-        .map(|(field, (_, value))| (field.as_ref(), *value))
-        .collect();
-    let bound: Vec<_> = bound_labels
-        .iter()
-        .zip(bound)
-        .map(|(field, (_, alias))| (field.as_ref(), *alias))
-        .collect();
-    read(&label(kind), &fixed, &bound)
 }

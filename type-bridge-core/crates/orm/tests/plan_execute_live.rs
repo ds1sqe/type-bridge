@@ -3252,14 +3252,6 @@ async fn native_control_authority_reads_the_frozen_schema_in_one_transaction() {
     )
     .await
     .unwrap();
-    // The legacy database-deletion guard requires its frozen ledger alongside
-    // managed control state; keep cleanup on the normal database API.
-    db.execute_raw(
-        type_bridge_schema_compat::LEGACY_LEDGER_SCHEMA_TYPEQL,
-        TxType::Schema,
-    )
-    .await
-    .unwrap();
     db.execute_raw(
         "insert $control isa typebridge-internal-migration-control, has typebridge-internal-control-scope \"native-control\", has typebridge-internal-lease-fence \"1\", has typebridge-internal-lease-state \"free\";",
         TxType::Write,
@@ -3274,30 +3266,6 @@ async fn native_control_authority_reads_the_frozen_schema_in_one_transaction() {
     .await
     .unwrap();
     tx.close().await.unwrap();
-    // The legacy guard must read all nine native plans, including the frozen
-    // datetime sentinel, and reject the complete cutover in this transaction.
-    use type_bridge_contract::reserved::*;
-    let fingerprint = "a".repeat(64);
-    db.execute_raw(&format!(
-        "insert $anchor isa {LEGACY_CUTOVER_ANCHOR_ENTITY}, has {LEGACY_CUTOVER_ANCHOR_KEY} \"{LEGACY_CUTOVER_ANCHOR_SINGLETON_KEY}\", has {LEGACY_CUTOVER_ANCHOR_SCOPE} \"native-control\", has {LEGACY_CUTOVER_ANCHOR_FINGERPRINT} \"{fingerprint}\"; $sentinel isa {LEGACY_LEDGER_APPLIED_ENTITY}, has {LEGACY_LEDGER_MIGRATION_ID} \"{LEGACY_CUTOVER_SENTINEL_MIGRATION_ID}\", has {LEGACY_LEDGER_APP_LABEL} \"{LEGACY_CUTOVER_SENTINEL_APP_LABEL}\", has {LEGACY_LEDGER_NAME} \"{LEGACY_CUTOVER_SENTINEL_NAME}\", has {LEGACY_LEDGER_APPLIED_AT} {LEGACY_CUTOVER_SENTINEL_APPLIED_AT}, has {LEGACY_LEDGER_CHECKSUM} \"{fingerprint}\";"
-    ), TxType::Write).await.unwrap();
-    let context = db.transaction_context(TxType::Write).await.unwrap();
-    let error = type_bridge_orm::session::require_legacy_writer_open_in_transaction(&context)
-        .await
-        .unwrap_err();
-    assert!(
-        error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE),
-        "{error}"
-    );
-    context.close().await.unwrap();
-    for label in [LEGACY_CUTOVER_ANCHOR_ENTITY, LEGACY_LEDGER_APPLIED_ENTITY] {
-        db.execute_raw(
-            &format!("match $row isa {label}; delete $row;"),
-            TxType::Write,
-        )
-        .await
-        .unwrap();
-    }
     db.delete_database().await.unwrap();
 }
 

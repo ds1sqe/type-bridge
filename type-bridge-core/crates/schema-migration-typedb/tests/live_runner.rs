@@ -5,7 +5,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{TypeId, TypeKind};
@@ -20,9 +20,7 @@ use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId,
     TypeFact,
 };
-use type_bridge_orm::{
-    ConnectOptions, Database, TxType, require_legacy_writer_open_in_transaction,
-};
+use type_bridge_orm::{ConnectOptions, Database, TxType};
 use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
     ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, derive_safety_conditions,
@@ -645,61 +643,6 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
-async fn legacy_writer_allows_reserved_label_collisions_without_frozen_capabilities_on_3_12_3() {
-    let (managed, journal) = databases().await;
-    let collision_schema = r#"define
-attribute typebridge-internal-control-scope, value string;
-attribute typebridge-internal-lease-holder, value string;
-attribute typebridge-internal-lease-fence, value string;
-attribute typebridge-internal-lease-state, value string;
-attribute typebridge-internal-legacy-cutover-key, value string;
-attribute typebridge-internal-legacy-cutover-scope, value string;
-attribute typebridge-internal-legacy-cutover-fingerprint, value string;
-entity typebridge-internal-migration-control;
-entity typebridge-internal-legacy-cutover;
-"#;
-    let mut setup = managed
-        .schema_transaction()
-        .await
-        .expect("open collision schema transaction");
-    setup
-        .query(collision_schema)
-        .await
-        .expect("install every reserved label without frozen ownership capabilities");
-    setup.commit().await.expect("commit collision schema");
-
-    let writer = managed
-        .transaction_context(TxType::Schema)
-        .await
-        .expect("open released writer transaction");
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        require_legacy_writer_open_in_transaction(&writer),
-    )
-    .await
-    .expect("schema-fenced export must not deadlock an open schema transaction")
-    .expect("labels without exact capabilities must not activate the V2 fence");
-    writer
-        .query("define entity compatibility-proof;")
-        .await
-        .expect("execute legitimate released schema write");
-    writer.commit().await.expect("commit released schema write");
-
-    let export = managed.schema_text().await.expect("read collision export");
-    assert!(export.contains("entity compatibility-proof"), "{export}");
-
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
-    journal
-        .delete_database()
-        .await
-        .expect("delete isolated journal database");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn runner_verifies_the_migration_state_triad_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();
@@ -847,18 +790,16 @@ async fn runner_applies_a_completed_legacy_frontier() {
     let bridge = adopted_history::bridge(&context, source);
     adopted_history::seed(&managed, &journal, &context, &bridge, source).await;
     // An interrupted importer may have installed the new schema without
-    // publishing its mirror; that must not reopen schema sync.
+    // publishing its mirror; the next apply must still import it.
     managed
         .execute_raw(MANAGED_FENCE_SCHEMA_TYPEQL, TxType::Schema)
         .await
         .unwrap();
-    adopted_history::assert_writer_closed(&managed).await;
+    adopted_history::assert_cutover_sentinel_kept(&managed).await;
     let old = managed.derived_legacy_journal_database();
     let copied_query = "match $r isa typebridge-internal-migration-journal, has typebridge-internal-record-sequence \"1\", has typebridge-internal-record-payload $p, has typebridge-internal-record-payload-digest $d; fetch { \"payload\": $p, \"digest\": $d };";
     let old_query = copied_query.replace("typebridge-internal-", "typebridge-internal-v2-");
     let before = old.execute_raw(&old_query, TxType::Read).await.unwrap();
-
-    adopted_history::assert_writer_closed(&managed).await;
     let directory = TempDirectory::new();
     fs::write(directory.path().join("adopted-genesis.typeql"), source).unwrap();
     write_manifest(directory.path(), &bridge);
@@ -911,7 +852,7 @@ async fn runner_applies_a_completed_legacy_frontier() {
     assert!(export.contains("entity company"), "{export}");
     assert!(export.contains("owns tag[]"), "{export}");
     assert!(export.contains("@distinct"), "{export}");
-    adopted_history::assert_writer_closed(&managed).await;
+    adopted_history::assert_cutover_sentinel_kept(&managed).await;
     let copied = journal
         .execute_raw(copied_query, TxType::Read)
         .await

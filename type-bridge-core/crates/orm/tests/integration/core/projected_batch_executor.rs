@@ -912,9 +912,6 @@ impl TransactionOps for CountingTransaction {
     fn supports_given_rows(&self) -> bool {
         !self.literal && self.inner.supports_given_rows()
     }
-    fn schema_snapshot(&mut self) -> BoxFuture<'_, Result<Option<String>, OrmError>> {
-        self.inner.schema_snapshot()
-    }
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
         self.log.lock().unwrap().statements.push(typeql.to_owned());
         self.inner.query(typeql)
