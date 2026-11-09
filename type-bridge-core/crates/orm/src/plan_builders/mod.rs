@@ -1856,6 +1856,103 @@ fetch { \"_iid\": iid($root0), \"_type\": label($PlanFetchType), \"attributes\":
     }
 
     #[test]
+    fn an_unconstrained_key_ownership_does_not_identify_a_player() {
+        use type_bridge_contract::query_plan::{
+            InsertThing, Operation, QueryOutput, QueryPattern, Stage, ThingDocument, WriteReturns,
+        };
+        // match $p isa! account, has account-id $k; put $r isa! purchase,
+        // links (buyer: $p); fetch: every account is a row, each puts its own
+        // relation, so several documents are not an ambiguous match.
+        let authority = keyed_authority();
+        let mut draft = authority.draft(ValueTransport::Given);
+        let root = draft.bind("root").unwrap();
+        let player = draft.bind("player").unwrap();
+        let key = draft.bind("key").unwrap();
+        let plan = draft
+            .finish(
+                &authority,
+                vec![
+                    Stage::Match {
+                        patterns: vec![
+                            QueryPattern::Isa {
+                                binding: player,
+                                include_subtypes: false,
+                                type_id: TypeId::new(TypeKind::Entity, "account").unwrap(),
+                            }
+                            .into(),
+                            QueryPattern::Has {
+                                attribute: key,
+                                attribute_id: AttributeId::new("account-id").unwrap(),
+                                owner: player,
+                            }
+                            .into(),
+                        ],
+                    },
+                    Stage::Put {
+                        include_subtypes: false,
+                        things: vec![InsertThing {
+                            binding: root,
+                            type_id: TypeId::new(TypeKind::Relation, "purchase").unwrap(),
+                            fields: vec![],
+                            players: vec![(RoleId::new("purchase", "buyer").unwrap(), player)],
+                        }],
+                    },
+                    Stage::Fetch(ThingDocument::new(root, Vec::new())),
+                ],
+                Operation::Write {
+                    returns: WriteReturns::Rows,
+                },
+                QueryOutput::Rows { columns: vec![] },
+            )
+            .unwrap();
+        plan.local().validate_single_row_put_answer(2).unwrap();
+        // The builder's shape pins the key to a given value and stays marked,
+        // with both given and literal transport.
+        keyless_purchase(&keyed_authority(), "account-id", None)
+            .unwrap()
+            .local()
+            .validate_single_row_put_answer(2)
+            .unwrap_err();
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let accounts = [account];
+        let item = TypeId::new(TypeKind::Entity, "item").unwrap();
+        let items = [item];
+        let key_id = AttributeId::new("account-id").unwrap();
+        let literal = super::put::keyless_put(
+            &keyed_authority(),
+            ValueTransport::Literal,
+            &TypeId::new(TypeKind::Relation, "purchase").unwrap(),
+            &[],
+            &[
+                (
+                    RoleId::new("purchase", "buyer").unwrap(),
+                    Reference {
+                        candidates: &accounts,
+                        identity: ReferenceIdentity::Key {
+                            attribute: &key_id,
+                            value: text("A1"),
+                        },
+                    },
+                ),
+                (
+                    RoleId::new("purchase", "item").unwrap(),
+                    Reference {
+                        candidates: &items,
+                        identity: ReferenceIdentity::Iid("0x1e00000000000000000001"),
+                    },
+                ),
+            ],
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+        literal
+            .local()
+            .validate_single_row_put_answer(2)
+            .unwrap_err();
+    }
+
+    #[test]
     fn an_over_budget_keyless_put_is_refused_never_split() {
         use std::sync::Arc;
         use type_bridge_contract::limits::QueryLimits;

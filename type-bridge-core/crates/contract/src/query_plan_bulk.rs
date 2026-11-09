@@ -319,6 +319,32 @@ fn identified_players(
             types.insert(*binding, type_id);
         }
     }
+    // An attribute binding pins its owner only when it equals a given value.
+    let given = |operand: &QueryOperand| {
+        matches!(
+            operand,
+            QueryOperand::Literal { .. } | QueryOperand::Input { .. }
+        )
+    };
+    let mut pinned = BTreeSet::new();
+    for pattern in patterns {
+        if let QueryPattern::Value {
+            comparator: ValueComparator::Equal,
+            left,
+            right,
+        } = pattern
+        {
+            match (left, right) {
+                (QueryOperand::Binding { binding }, other)
+                | (other, QueryOperand::Binding { binding })
+                    if given(other) =>
+                {
+                    pinned.insert(*binding);
+                }
+                _ => return None,
+            }
+        }
+    }
     let mut identified = BTreeSet::new();
     for pattern in patterns {
         match pattern {
@@ -330,14 +356,17 @@ fn identified_players(
                 comparator: ValueComparator::Equal,
                 ..
             } => {}
-            QueryPattern::Iid { binding, .. } if players.contains(binding) => {
+            QueryPattern::Iid { binding, iid } if players.contains(binding) && given(iid) => {
                 identified.insert(*binding);
             }
             QueryPattern::Has {
                 owner,
                 attribute_id,
-                ..
+                attribute,
             } => {
+                if !pinned.contains(attribute) {
+                    return None;
+                }
                 let keyed = index.ancestors(types.get(owner)?).into_iter().any(|owner| {
                     OwnsFactId::new(owner, attribute_id.clone()).is_ok_and(|field| {
                         index.annotation(AnnotationSubjectId::Owns(field), AnnotationKindId::Key)
