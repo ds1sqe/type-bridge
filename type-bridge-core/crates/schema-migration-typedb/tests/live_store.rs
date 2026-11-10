@@ -210,6 +210,8 @@ async fn foreign_journal_schema_rejects_without_mutating_either_database() {
     );
     assert_eq!(journal.schema_text().await.unwrap(), journal_before);
     assert_eq!(managed.schema_text().await.unwrap(), managed_before);
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -250,6 +252,8 @@ async fn different_provider_authority_rejects_before_mutating_either_database() 
     let rendered = format!("{error}\n{error:?}");
     assert!(!rendered.contains(&address));
     assert!(!rendered.contains(&alternate));
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -317,6 +321,8 @@ async fn missing_and_wrong_journal_owner_reject_unchanged_before_managed_fence()
     );
     assert_eq!(journal.schema_text().await.unwrap(), journal_schema);
     assert_eq!(managed.schema_text().await.unwrap(), managed_before);
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -398,6 +404,8 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
             .expect("read-only verification resumes against the owned journal")
             .is_empty()
     );
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
