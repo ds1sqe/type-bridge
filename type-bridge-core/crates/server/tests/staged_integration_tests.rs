@@ -2331,8 +2331,9 @@ async fn staged_reads_use_the_old_fence_until_the_import_publishes_the_new_mirro
 /// Keyless put through the proxy is TypeQL put, refused before commit when
 /// ambiguous: a single put matching two instances and a batch whose middle
 /// row is ambiguous both fail with `put_ambiguous_match`, and no earlier row
-/// of the batch is visible afterwards. A 65-row keyless batch needs 65
-/// staged plans and is refused before anything runs.
+/// of the batch is visible afterwards. Distinct rows share one staged plan,
+/// so 1000 rows commit in one request; 65 equal rows each need a plan that
+/// sees the previous insert and are refused before anything runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn keyless_put_over_the_proxy_refuses_before_commit() {
@@ -2521,23 +2522,66 @@ async fn keyless_put_over_the_proxy_refuses_before_commit() {
         );
     }
 
-    // 65 rows need 65 staged plans: refused before the proxy runs anything.
-    let rows = (0..65).map(|row| format!("wide-{row}")).collect::<Vec<_>>();
+    // An ambiguous row in the middle of a large batch refuses the whole call.
+    let mut rows = (0..500).map(|row| format!("mid-{row}")).collect::<Vec<_>>();
+    rows[250] = "dup".to_owned();
     let before = commits.lock().unwrap().len();
     let error = put_many(&rows.iter().map(String::as_str).collect::<Vec<_>>())
         .await
         .unwrap_err()
         .into_diagnostic(SdkProviderOperation::Write);
+    assert_eq!(error.code().as_str(), "put_ambiguous_match");
+    {
+        let commits = commits.lock().unwrap();
+        assert_eq!(commits.len(), before + 1, "{commits:?}");
+        assert!(!commits[before].0, "{commits:?}");
+    }
+    let prefixed = |prefix: &str| {
+        let query = format!("match $t isa ktag, has ktitle $v; $v like \"^{prefix}-\"; select $t;");
+        let database = &database;
+        async move { row_count(database, &query).await }
+    };
+    assert_eq!(prefixed("mid").await, 0);
+
+    // 1000 distinct rows are one staged plan: one request, one commit, 1000
+    // models in call-row order.
+    let rows = (0..1000)
+        .map(|row| format!("wide-{row}"))
+        .collect::<Vec<_>>();
+    let before = commits.lock().unwrap().len();
+    let ProjectedBatchResult::Things(things) =
+        put_many(&rows.iter().map(String::as_str).collect::<Vec<_>>())
+            .await
+            .unwrap()
+    else {
+        panic!("things");
+    };
+    {
+        let commits = commits.lock().unwrap();
+        assert_eq!(commits.len(), before + 1, "{commits:?}");
+        assert!(commits[before].0, "{commits:?}");
+    }
+    let titles = things
+        .items()
+        .iter()
+        .map(|thing| match &thing.fields()[&field][0].value() {
+            CanonicalValue::String(title) => title.as_str().to_owned(),
+            other => panic!("{other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(titles, rows);
+    assert_eq!(prefixed("wide").await, 1000);
+
+    // 65 equal rows need 65 plans, each seeing the previous insert: refused
+    // when the batch is built, before the proxy runs anything.
+    let before = commits.lock().unwrap().len();
+    let error = put_many(&["again"; 65])
+        .await
+        .unwrap_err()
+        .into_diagnostic(SdkProviderOperation::Write);
     assert_eq!(error.code().as_str(), "query_remote_plan_limit");
     assert_eq!(commits.lock().unwrap().len(), before);
-    assert_eq!(
-        row_count(
-            &database,
-            "match $t isa ktag, has ktitle $v; $v like \"^wide-\"; select $t;"
-        )
-        .await,
-        0
-    );
+    assert_eq!(count("again").await, 0);
     drop(proxy);
     drop_database(database).await;
 }

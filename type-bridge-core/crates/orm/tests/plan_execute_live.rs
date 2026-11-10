@@ -3568,5 +3568,36 @@ async fn keyless_put_is_typeql_put_on_the_exact_type_live() {
         [one.item().unwrap().iid(), one.item().unwrap().iid()]
     );
     assert_eq!(count("match $r isa tagging; select $r;").await, 1);
+
+    // Distinct rows share one put stage: 1000 rows, one commit, the models
+    // in call-row order. An ambiguous row among them refuses the whole call.
+    let titles = (0..1000)
+        .map(|row| format!("wide-{row}"))
+        .collect::<Vec<_>>();
+    let mut rows = titles.iter().map(|title| label(title)).collect::<Vec<_>>();
+    rows[500] = label("dup");
+    let error = put_many(rows).await.unwrap_err();
+    assert_eq!(error.code().as_str(), "put_ambiguous_match");
+    let wide = "match $t isa tag, has title $v; $v like \"^wide-\"; select $t;";
+    assert_eq!(count(wide).await, 0);
+    let ProjectedBatchResult::Things(things) =
+        put_many(titles.iter().map(|title| label(title)).collect())
+            .await
+            .unwrap()
+    else {
+        panic!("expected things")
+    };
+    let written = things
+        .items()
+        .iter()
+        .map(
+            |thing| match thing.fields()[&field(&tag, "title")][0].value() {
+                CanonicalValue::String(title) => title.as_str().to_owned(),
+                other => panic!("{other:?}"),
+            },
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(written, titles);
+    assert_eq!(count(wide).await, 1000);
     db.delete_database().await.unwrap();
 }
