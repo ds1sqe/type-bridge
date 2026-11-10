@@ -1972,33 +1972,25 @@ fn projected_batch_error_conversion_preserves_closed_category_code_path_and_deta
 }
 
 #[tokio::test]
-async fn keyless_manager_put_many_puts_each_row_and_returns_complete_models_for_both_handlers() {
+async fn keyless_manager_put_many_puts_rows_in_one_statement_and_returns_complete_models_for_both_handlers()
+ {
     let schema = SUCCESSOR_SCHEMA
         .replace("name: { key: true }", "name: { card: 1 }")
         .replace("position: { key: true }", "position: { card: 1 }");
     for rust_v2 in [false, true] {
         for kind in [Kind::Entity, Kind::Relation] {
             for borrowed in [false, true] {
-                // Each keyless row is its own TypeQL put statement, in row order.
+                // Distinct keyless rows of one shape share one TypeQL put
+                // statement, one given row each, answered by ordinal.
                 let responses = match kind {
-                    Kind::Entity => vec![
-                        Response::Documents(vec![person_document(
-                            0,
-                            "0x10",
-                            "first",
-                            &["first-tag"],
-                        )]),
-                        Response::Documents(vec![person_document(
-                            1,
-                            "0x11",
-                            "second",
-                            &["second-tag"],
-                        )]),
-                    ],
-                    Kind::Relation => vec![
-                        Response::Documents(vec![assignment_document(0, "0x30", "first")]),
-                        Response::Documents(vec![assignment_document(1, "0x31", "second")]),
-                    ],
+                    Kind::Entity => vec![Response::Documents(vec![
+                        person_document(0, "0x10", "first", &["first-tag"]),
+                        person_document(1, "0x11", "second", &["second-tag"]),
+                    ])],
+                    Kind::Relation => vec![Response::Documents(vec![
+                        assignment_document(0, "0x30", "first"),
+                        assignment_document(1, "0x31", "second"),
+                    ])],
                 };
                 let (database, state) = fixture_named(
                     "keyless-manager-put",
@@ -2077,7 +2069,7 @@ async fn keyless_manager_put_many_puts_each_row_and_returns_complete_models_for_
                 {
                     let observed = state.lock().unwrap();
                     assert_eq!(observed.opens, [TxType::Write]);
-                    assert_eq!(observed.calls.len(), 2);
+                    assert_eq!(observed.calls.len(), 1);
                     for (call, _) in &observed.calls {
                         assert!(call.contains("put "), "{call}");
                         assert!(!call.contains("insert "), "{call}");

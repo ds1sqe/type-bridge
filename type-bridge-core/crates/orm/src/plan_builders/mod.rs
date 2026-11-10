@@ -1972,6 +1972,239 @@ fetch { \"_iid\": iid($root0), \"_type\": label($PlanFetchType), \"attributes\":
         );
     }
 
+    fn balance_rows(values: &[i64]) -> (TypeId, Vec<Vec<(OwnsFactId, CanonicalValue)>>) {
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let rows = values
+            .iter()
+            .map(|value| vec![(balance.clone(), CanonicalValue::Long(*value))])
+            .collect();
+        (account, rows)
+    }
+
+    fn keyless_many(
+        authority: &PlanAuthority,
+        type_id: &TypeId,
+        fields: &[Vec<(OwnsFactId, CanonicalValue)>],
+        players: &[Vec<(RoleId, Reference<'_>)>],
+    ) -> Vec<super::BuiltPlan> {
+        let rows = fields
+            .iter()
+            .enumerate()
+            .map(|(ordinal, fields)| super::put::KeylessRow {
+                ordinal,
+                fields,
+                players: players.get(ordinal).map_or(&[], Vec::as_slice),
+            })
+            .collect::<Vec<_>>();
+        super::put::keyless_put_many(authority, type_id, &rows, &[]).unwrap()
+    }
+
+    /// Ordinals a plan's given rows carry, in row order.
+    fn plan_ordinals(plan: &super::BuiltPlan) -> Vec<i64> {
+        use type_bridge_contract::query_plan::{Expr, Pattern, QueryOperand, Stage};
+        let column = plan
+            .local()
+            .pipeline()
+            .iter()
+            .find_map(|stage| match stage {
+                Stage::Match { patterns } => patterns.iter().find_map(|pattern| match pattern {
+                    Pattern::Let {
+                        expr: Expr::Operand(QueryOperand::Input { column }),
+                        ..
+                    } => Some(usize::from(column.get())),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap();
+        plan.local()
+            .given_rows()
+            .unwrap_or_default()
+            .iter()
+            .map(|row| match row.values()[column] {
+                Some(CanonicalValue::Long(ordinal)) => ordinal,
+                ref other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn distinct_keyless_rows_of_one_shape_share_one_put_stage() {
+        let values = (0..1000).collect::<Vec<_>>();
+        let (account, fields) = balance_rows(&values);
+        let plans = keyless_many(&authority(), &account, &fields, &[]);
+        let [plan] = plans.as_slice() else {
+            panic!("{} plans", plans.len());
+        };
+        assert_eq!(plan_ordinals(plan), values);
+        let typeql = tql::render(&lower(plan.local()).unwrap().query).unwrap();
+        let expected = "given $in0: integer, $in1: integer;
+match let $ordinal1 = $in0;
+put $root0 isa! account, has balance == $in1;
+match $root0 isa! $PlanFetchType;
+fetch { \"_iid\": iid($root0), \"_type\": label($PlanFetchType), \"attributes\": { $root0.* }, \"ordinal\": $ordinal1 };";
+        assert!(
+            tql::equivalent(&typeql, expected).unwrap(),
+            "lowered:\n{typeql}\nexpected:\n{expected}"
+        );
+        // A second document per ordinal is an ambiguous match; one per row is not.
+        plan.local().validate_single_row_put_answer(1).unwrap();
+        assert_eq!(
+            plan.local()
+                .validate_single_row_put_answer(2)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "put_ambiguous_match"
+        );
+    }
+
+    #[test]
+    fn a_keyless_group_over_the_row_limit_splits_in_call_row_order() {
+        use std::sync::Arc;
+        use type_bridge_contract::limits::QueryLimits;
+        let mut limits = QueryLimits::PLAN;
+        limits.structural.input_rows = 2;
+        let authority = authority().with_query_limits(Arc::new(limits));
+        let (account, fields) = balance_rows(&[0, 1, 2, 3, 4]);
+        let plans = keyless_many(&authority, &account, &fields, &[]);
+        assert_eq!(
+            plans.iter().map(plan_ordinals).collect::<Vec<_>>(),
+            [vec![0, 1], vec![2], vec![3, 4]]
+        );
+    }
+
+    #[test]
+    fn a_keyless_row_another_row_covers_runs_in_a_later_plan() {
+        // Equal rows: the second must see the first insert.
+        let (account, fields) = balance_rows(&[5, 5]);
+        let plans = keyless_many(&authority(), &account, &fields, &[]);
+        assert_eq!(
+            plans.iter().map(plan_ordinals).collect::<Vec<_>>(),
+            [[0], [1]]
+        );
+        // Rows 0 and 2 cover row 1 ({balance 1} matches {balance 1, id x});
+        // row 3 relates to none and joins the first plan of its shape.
+        let account_id =
+            OwnsFactId::new(account.clone(), AttributeId::new("account-id").unwrap()).unwrap();
+        let balance = fields[0][0].0.clone();
+        let wide = |value, id: &str| {
+            vec![
+                (account_id.clone(), text(id)),
+                (balance.clone(), CanonicalValue::Long(value)),
+            ]
+        };
+        let rows = vec![
+            wide(1, "x"),
+            vec![(balance.clone(), CanonicalValue::Long(1))],
+            wide(1, "y"),
+            vec![(balance.clone(), CanonicalValue::Long(2))],
+        ];
+        let plans = keyless_many(&authority(), &account, &rows, &[]);
+        // Row 1 runs after row 0 and before row 2, whose insert it must not see.
+        assert_eq!(
+            plans.iter().map(plan_ordinals).collect::<Vec<_>>(),
+            [vec![0], vec![1, 3], vec![2]]
+        );
+    }
+
+    #[test]
+    fn keyless_rows_of_mixed_shapes_take_one_plan_per_shape() {
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let account_id =
+            OwnsFactId::new(account.clone(), AttributeId::new("account-id").unwrap()).unwrap();
+        let rows = (0..10)
+            .map(|row| {
+                if row % 2 == 0 {
+                    vec![(balance.clone(), CanonicalValue::Long(row))]
+                } else {
+                    vec![(account_id.clone(), text(&row.to_string()))]
+                }
+            })
+            .collect::<Vec<_>>();
+        let plans = keyless_many(&authority(), &account, &rows, &[]);
+        assert_eq!(
+            plans.iter().map(plan_ordinals).collect::<Vec<_>>(),
+            [vec![0, 2, 4, 6, 8], vec![1, 3, 5, 7, 9]]
+        );
+        // Relation rows with players by IID group too, the IID as an input.
+        let item = TypeId::new(TypeKind::Entity, "item").unwrap();
+        let items = [item];
+        let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        let iids = ["0x1e00000000000000000001", "0x1e00000000000000000002"];
+        let players = iids
+            .iter()
+            .map(|iid| {
+                vec![(
+                    RoleId::new("purchase", "item").unwrap(),
+                    Reference {
+                        candidates: &items,
+                        identity: ReferenceIdentity::Iid(iid),
+                    },
+                )]
+            })
+            .collect::<Vec<_>>();
+        let plans = keyless_many(&keyed_authority(), &purchase, &[vec![], vec![]], &players);
+        let [plan] = plans.as_slice() else {
+            panic!("{} plans", plans.len());
+        };
+        let typeql = tql::render(&lower(plan.local()).unwrap().query).unwrap();
+        assert!(typeql.contains("iid($player2) == $in1"), "{typeql}");
+        plan.local().validate_single_row_put_answer(1).unwrap();
+        plan.local().validate_single_row_put_answer(2).unwrap_err();
+    }
+
+    #[test]
+    fn a_one_row_keyless_put_many_keeps_the_single_row_bytes() {
+        let (account, fields) = balance_rows(&[7]);
+        let plans = keyless_many(&authority(), &account, &fields, &[]);
+        let single = super::put::keyless_put(
+            &authority(),
+            ValueTransport::Given,
+            &account,
+            &fields[0],
+            &[],
+            Vec::new(),
+            Some(0),
+        )
+        .unwrap();
+        let [plan] = plans.as_slice() else {
+            panic!("{} plans", plans.len());
+        };
+        assert_eq!(
+            plan.local().canonical_bytes().unwrap(),
+            single.local().canonical_bytes().unwrap()
+        );
+        let typeql = tql::render(&lower(plan.local()).unwrap().query).unwrap();
+        let expected = "given $in0: integer, $in1: integer;
+match let $ordinal1 = $in1;
+put $root0 isa! account, has balance == $in0;
+match $root0 isa! $PlanFetchType;
+fetch { \"_iid\": iid($root0), \"_type\": label($PlanFetchType), \"attributes\": { $root0.* }, \"ordinal\": $ordinal1 };";
+        assert!(
+            tql::equivalent(&typeql, expected).unwrap(),
+            "lowered:\n{typeql}\nexpected:\n{expected}"
+        );
+    }
+
+    #[test]
+    fn several_put_rows_without_distinct_ordinals_are_not_marked() {
+        // Repeated ordinals can't tell the rows' documents apart.
+        let (account, fields) = balance_rows(&[1, 2]);
+        let plan = &keyless_many(&authority(), &account, &fields, &[])[0];
+        let mut rows = plan.local().given_rows().unwrap().to_vec();
+        rows[1] = rows[0].clone();
+        let repeated = plan
+            .local()
+            .with_given_rows(rows, authority().declared())
+            .unwrap();
+        repeated.validate_single_row_put_answer(2).unwrap();
+    }
+
     #[test]
     fn literal_strings_escape_quotes_and_refuse_control_characters() {
         let (typeql, _) = purchase_order(ValueTransport::Literal, "say \"hi\" \\ back").unwrap();

@@ -139,28 +139,30 @@ impl BatchPlan<'_> {
             })
             .collect();
         if self.operation == ProjectedBatchOperation::Put && keys.is_empty() {
-            // Each keyless row is its own TypeQL put statement, in row order
-            // and one transaction, so later rows see earlier inserts.
-            return self
+            // Keyless rows are TypeQL puts with the answers of sequential
+            // single-row puts, in one transaction.
+            let rows = self
                 .rows
                 .iter()
                 .zip(&rows)
-                .map(|((ordinal, _), row)| {
-                    crate::plan_builders::put::keyless_put(
-                        authority,
-                        crate::plan_builders::ValueTransport::Given,
-                        self.model.id(),
-                        row.fields,
-                        row.players,
-                        document_roles.clone(),
-                        Some(*ordinal),
-                    )
-                    .map_err(|error| {
-                        crate::projected_crud::keyless_put_build_failure(&error, self.model.id())
-                    })
-                })
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map(crate::plan_builders::bulk_write::WriteProgram::compact);
+                .map(
+                    |((ordinal, _), row)| crate::plan_builders::put::KeylessRow {
+                        ordinal: *ordinal,
+                        fields: row.fields,
+                        players: row.players,
+                    },
+                )
+                .collect::<Vec<_>>();
+            return crate::plan_builders::put::keyless_put_many(
+                authority,
+                self.model.id(),
+                &rows,
+                &document_roles,
+            )
+            .map(crate::plan_builders::bulk_write::WriteProgram::compact)
+            .map_err(|error| {
+                crate::projected_crud::keyless_put_build_failure(&error, self.model.id())
+            });
         }
         let kind = match self.operation {
             ProjectedBatchOperation::Insert => WriteKind::Insert,

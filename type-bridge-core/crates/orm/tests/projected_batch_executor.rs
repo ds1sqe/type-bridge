@@ -625,6 +625,47 @@ async fn empty_unkeyed_put_keeps_admission_without_provider_or_transaction_work(
 }
 
 #[tokio::test]
+async fn keyless_put_plans_over_the_statement_limit_refuse_before_provider_work() {
+    let schema = SCHEMA.replace("identifier: { key: true }", "identifier: { card: 1 }");
+    let installed = installed_with_schema(&schema, ProjectionHandler::python_v1());
+    // Each equal row must see the previous insert: three plans.
+    let row = ProjectedBatchRow::Create(person_create(&installed, "same"));
+    let batch = ProjectedBatch::try_new(
+        &installed,
+        type_id(TypeKind::Entity, "person"),
+        ProjectedBatchOperation::Put,
+        vec![row.clone(), row.clone(), row],
+    )
+    .unwrap();
+    assert_eq!(batch.resource_measure().statements(), 1);
+    let (database, state) = fixture(
+        vec![],
+        Version::new(3, 14, 0),
+        true,
+        CommitBehavior::Success,
+    );
+    let limits = QueryExecutionResourceLimits {
+        statements: Some(2),
+        ..Default::default()
+    };
+    let diagnostic = ProjectedBatchExecutor::new(&installed)
+        .execute(
+            &database,
+            &batch,
+            ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        diagnostic.code().as_str(),
+        "projected_batch_statement_limit"
+    );
+    let state = state.lock().unwrap();
+    assert!(state.calls.is_empty());
+    assert_eq!(state.commits, 0);
+}
+
+#[tokio::test]
 async fn empty_mapped_execution_is_infallible_and_never_invokes_the_mapper() {
     let installed = installed();
     let empty = ProjectedBatch::try_new(

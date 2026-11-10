@@ -63,7 +63,7 @@ pub(crate) struct WriteShape<'a> {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct PlayerRoute {
+pub(super) struct PlayerRoute {
     role: RoleId,
     candidates: Vec<TypeId>,
     key: Option<AttributeId>,
@@ -77,7 +77,7 @@ fn invalid(code: &str, message: &str) -> Diagnostic {
     )
 }
 
-fn iid(value: &str) -> Result<CanonicalValue, Diagnostic> {
+pub(super) fn iid(value: &str) -> Result<CanonicalValue, Diagnostic> {
     if !type_bridge_contract::id::is_canonical_thing_iid(value) {
         return Err(invalid(
             "query_plan_invalid_iid",
@@ -89,7 +89,7 @@ fn iid(value: &str) -> Result<CanonicalValue, Diagnostic> {
     )?))
 }
 
-fn player_value(
+pub(super) fn player_value(
     role: &RoleId,
     reference: &Reference<'_>,
 ) -> Result<(PlayerRoute, CanonicalValue), Diagnostic> {
@@ -107,7 +107,7 @@ fn player_value(
     ))
 }
 
-fn reference_patterns(
+pub(super) fn reference_patterns(
     draft: &mut PlanDraft,
     player: type_bridge_contract::migration_assertion::BindingId,
     candidate: &TypeId,

@@ -18,14 +18,14 @@ use type_bridge_contract::id::{RoleId, TypeId};
 use type_bridge_contract::migration_assertion::QueryVariable;
 use type_bridge_contract::query_plan::QueryOutput;
 use type_bridge_contract::query_plan::{
-    AttachItem, DeleteItem, DocumentRole, DocumentScalar, Expr, InsertThing, Operation, Pattern,
-    Set, Stage, ThingDocument, WriteReturns,
+    AttachItem, DeleteItem, DocumentRole, DocumentScalar, Expr, InputRow, InsertThing, Operation,
+    Pattern, QueryPattern, Set, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
 
 use super::authority::PlanAuthority;
-use super::reference::{Reference, reference_binding};
+use super::reference::{Reference, ReferenceIdentity, reference_binding};
 use super::{BuiltPlan, ValueTransport};
 
 /// Build one keyless put answering the matched or inserted thing's
@@ -58,17 +58,9 @@ pub(crate) fn keyless_put(
         .collect::<Result<Vec<_>, Diagnostic>>()?;
     let mut document = ThingDocument::new(thing, document_roles);
     if let (Some(ordinal), Some(binding)) = (ordinal, ordinal_binding) {
-        let value = i64::try_from(ordinal).map_err(|_| {
-            Diagnostic::new(
-                type_bridge_contract::diagnostic::DiagnosticCategory::ResourceLimit,
-                type_bridge_contract::diagnostic::DiagnosticCode::new("manager_batch_limit")
-                    .expect("static code"),
-                "Batch ordinal exceeds its scalar domain",
-            )
-        })?;
         patterns.push(Pattern::Let {
             binding,
-            expr: Expr::Operand(draft.value(CanonicalValue::Long(value))?),
+            expr: Expr::Operand(draft.value(ordinal_value(ordinal)?)?),
         });
         document.scalars.push(DocumentScalar {
             key: QueryVariable::new("ordinal")?,
@@ -99,6 +91,277 @@ pub(crate) fn keyless_put(
             columns: Vec::new(),
         },
     )
+}
+
+/// One row of a keyless `put_many`: its call-row `ordinal` and pattern.
+pub(crate) struct KeylessRow<'a> {
+    pub(crate) ordinal: usize,
+    pub(crate) fields: &'a [(OwnsFactId, CanonicalValue)],
+    pub(crate) players: &'a [(RoleId, Reference<'a>)],
+}
+
+/// Build the keyless puts of one `put_many`, with the answers of
+/// sequential single-row TypeQL puts in call-row order.
+///
+/// Rows of one shape (the same fields and player routes) share a plan, one
+/// `given` row each. Rows of one Put stage don't see each other's inserts,
+/// so a row whose pattern may match another row's instance runs in a later
+/// plan than every earlier such row, and in no earlier plan than a later
+/// one. A one-row plan keeps the single-row bytes.
+pub(crate) fn keyless_put_many(
+    authority: &PlanAuthority,
+    type_id: &TypeId,
+    rows: &[KeylessRow<'_>],
+    document_roles: &[DocumentRole],
+) -> Result<Vec<BuiltPlan>, Diagnostic> {
+    let mut plans: Vec<Vec<usize>> = Vec::new();
+    let mut placed = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        // ponytail: O(rows^2) pair scan, bounded by the batch row limit;
+        // index rows by constraint if large batches get slow.
+        let last = (0..index)
+            .filter(|&earlier| covers(&rows[earlier], row) || covers(row, &rows[earlier]))
+            .map(|earlier| placed[earlier])
+            .max();
+        let target = plans
+            .iter()
+            .enumerate()
+            .skip(last.unwrap_or(0))
+            .find(|(plan, members)| {
+                same_shape(&rows[members[0]], row)
+                    && (Some(*plan) != last
+                        || !members.iter().any(|&member| covers(&rows[member], row)))
+            })
+            .map(|(plan, _)| plan);
+        let plan = target.unwrap_or_else(|| {
+            plans.push(Vec::new());
+            plans.len() - 1
+        });
+        plans[plan].push(index);
+        placed.push(plan);
+    }
+    let mut built = Vec::with_capacity(plans.len());
+    for members in plans {
+        let members = members
+            .iter()
+            .map(|&index| &rows[index])
+            .collect::<Vec<_>>();
+        keyless_put_group(authority, type_id, &members, document_roles, &mut built)?;
+    }
+    Ok(built)
+}
+
+/// Build one shape group, halving it while its input rows exceed the plan
+/// limits: consecutive halves keep call-row order.
+fn keyless_put_group(
+    authority: &PlanAuthority,
+    type_id: &TypeId,
+    rows: &[&KeylessRow<'_>],
+    document_roles: &[DocumentRole],
+    built: &mut Vec<BuiltPlan>,
+) -> Result<(), Diagnostic> {
+    if let [row] = rows {
+        built.push(keyless_put(
+            authority,
+            ValueTransport::Given,
+            type_id,
+            row.fields,
+            row.players,
+            document_roles.to_vec(),
+            Some(row.ordinal),
+        )?);
+        return Ok(());
+    }
+    match keyless_put_rows(authority, type_id, rows, document_roles.to_vec()) {
+        Ok(plan) => built.push(plan),
+        Err(error)
+            if matches!(
+                error.code().as_str(),
+                "query_invocation_input_byte_limit"
+                    | "query_invocation_row_limit"
+                    | "canonical_json_too_large"
+                    | "canonical_collection_too_large"
+            ) =>
+        {
+            let (first, second) = rows.split_at(rows.len() / 2);
+            keyless_put_group(authority, type_id, first, document_roles, built)?;
+            keyless_put_group(authority, type_id, second, document_roles, built)?;
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
+/// One Put stage over several rows of one shape: the ordinal, player
+/// identities (IIDs too) and field values are input columns.
+fn keyless_put_rows(
+    authority: &PlanAuthority,
+    type_id: &TypeId,
+    rows: &[&KeylessRow<'_>],
+    document_roles: Vec<DocumentRole>,
+) -> Result<BuiltPlan, Diagnostic> {
+    use super::bulk_write::{player_value, reference_patterns};
+    let mut draft = authority.draft(ValueTransport::Given);
+    let thing = draft.bind("root")?;
+    let ordinal = draft.bind("ordinal")?;
+    let mut columns = 0_usize;
+    let mut column = |draft: &mut super::PlanDraft, value: &CanonicalValue| {
+        let name = format!("in{columns}");
+        columns += 1;
+        draft.input(&name, value.value_type(), false)
+    };
+    let values = rows
+        .iter()
+        .map(|row| {
+            let mut values = vec![Some(ordinal_value(row.ordinal)?)];
+            for (role, reference) in row.players {
+                values.push(Some(player_value(role, reference)?.1));
+            }
+            values.extend(row.fields.iter().map(|(_, value)| Some(value.clone())));
+            Ok(InputRow::new(values))
+        })
+        .collect::<Result<Vec<_>, Diagnostic>>()?;
+    let first = rows[0];
+    let mut patterns = vec![Pattern::Let {
+        binding: ordinal,
+        expr: Expr::Operand(column(&mut draft, &ordinal_value(first.ordinal)?)?),
+    }];
+    let mut bound = Vec::with_capacity(first.players.len());
+    for (role, reference) in first.players {
+        let player = draft.bind("player")?;
+        let input = column(&mut draft, &player_value(role, reference)?.1)?;
+        let key = match &reference.identity {
+            ReferenceIdentity::Iid(_) => None,
+            ReferenceIdentity::Key { attribute, .. } => Some(*attribute),
+        };
+        let mut branches = reference
+            .candidates
+            .iter()
+            .map(|candidate| reference_patterns(&mut draft, player, candidate, key, &input))
+            .collect::<Result<Vec<_>, Diagnostic>>()?;
+        if let [branch] = branches.as_mut_slice() {
+            patterns.extend(branch.drain(..).map(Pattern::Read));
+        } else {
+            patterns.push(Pattern::Read(QueryPattern::Or { branches }));
+        }
+        bound.push((role.clone(), player));
+    }
+    let fields = first
+        .fields
+        .iter()
+        .map(|(field, value)| Ok((field.clone(), column(&mut draft, value)?)))
+        .collect::<Result<Vec<_>, Diagnostic>>()?;
+    let mut document = ThingDocument::new(thing, document_roles);
+    document.scalars.push(DocumentScalar {
+        key: QueryVariable::new("ordinal")?,
+        binding: ordinal,
+    });
+    draft.finish_rows(
+        authority,
+        vec![
+            Stage::Match { patterns },
+            Stage::Put {
+                include_subtypes: false,
+                things: vec![InsertThing {
+                    binding: thing,
+                    type_id: type_id.clone(),
+                    fields,
+                    players: bound,
+                }],
+            },
+            Stage::Fetch(document),
+        ],
+        Operation::Write {
+            returns: WriteReturns::Rows,
+        },
+        QueryOutput::Rows {
+            columns: Vec::new(),
+        },
+        Some(values),
+    )
+}
+
+fn ordinal_value(ordinal: usize) -> Result<CanonicalValue, Diagnostic> {
+    i64::try_from(ordinal)
+        .map(CanonicalValue::Long)
+        .map_err(|_| ordinal_overflow())
+}
+
+fn ordinal_overflow() -> Diagnostic {
+    Diagnostic::new(
+        type_bridge_contract::diagnostic::DiagnosticCategory::ResourceLimit,
+        type_bridge_contract::diagnostic::DiagnosticCode::new("manager_batch_limit")
+            .expect("static code"),
+        "Batch ordinal exceeds its scalar domain",
+    )
+}
+
+/// Rows share a plan only with the same fields and player routes, in order.
+fn same_shape(left: &KeylessRow<'_>, right: &KeylessRow<'_>) -> bool {
+    let route = |(role, reference): &(RoleId, Reference<'_>)| {
+        (
+            role.clone(),
+            reference.candidates.to_vec(),
+            match &reference.identity {
+                ReferenceIdentity::Iid(_) => None,
+                ReferenceIdentity::Key { attribute, value } => {
+                    Some(((*attribute).clone(), value.value_type()))
+                }
+            },
+        )
+    };
+    left.fields.len() == right.fields.len()
+        && left
+            .fields
+            .iter()
+            .zip(right.fields)
+            .all(|(left, right)| left.0 == right.0 && left.1.value_type() == right.1.value_type())
+        && left
+            .players
+            .iter()
+            .map(route)
+            .eq(right.players.iter().map(route))
+}
+
+/// Whether `row`'s put pattern may match the instance `earlier` inserts:
+/// every field value and player of `row` may equal one of `earlier`'s.
+/// Undecidable equality (a key reference against an IID) counts as equal.
+fn covers(earlier: &KeylessRow<'_>, row: &KeylessRow<'_>) -> bool {
+    row.fields.iter().all(|(field, value)| {
+        earlier
+            .fields
+            .iter()
+            .any(|(other, candidate)| other == field && may_equal(candidate, value))
+    }) && row.players.iter().all(|(role, reference)| {
+        earlier.players.iter().any(|(other, candidate)| {
+            other == role
+                && match (&candidate.identity, &reference.identity) {
+                    (ReferenceIdentity::Iid(left), ReferenceIdentity::Iid(right)) => {
+                        left.eq_ignore_ascii_case(right)
+                    }
+                    (
+                        ReferenceIdentity::Key {
+                            attribute: left_attribute,
+                            value: left,
+                        },
+                        ReferenceIdentity::Key {
+                            attribute: right_attribute,
+                            value: right,
+                        },
+                    ) if left_attribute == right_attribute => may_equal(left, right),
+                    _ => true,
+                }
+        })
+    })
+}
+
+/// Provider equality: semantic within a domain (a time zone or a decimal
+/// scale doesn't make values differ); a domain without one counts as equal.
+fn may_equal(left: &CanonicalValue, right: &CanonicalValue) -> bool {
+    left == right
+        || left
+            .semantic_cmp_same_domain(right)
+            .is_none_or(std::cmp::Ordering::is_eq)
 }
 
 /// One keyed entity put: `keys` and single-valued `fields` are given
