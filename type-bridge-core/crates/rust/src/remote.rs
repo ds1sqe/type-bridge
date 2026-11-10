@@ -51,29 +51,16 @@ pub trait ProxyExchange: Send + Sync + 'static {
         })
     }
 
-    /// Fetch the executor's exact signed capability advertisement.
+    /// Fetch the executor's exact signed `GET /v3/capabilities`
+    /// advertisement.
     fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>>;
 
-    /// Exchange one exact canonical request for one exact signed reply.
+    /// Exchange one exact `POST /v3/staged` request for its exact signed
+    /// reply.
     fn exchange<'a>(
         &'a self,
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>>;
-
-    /// Fetch the executor's staged (`GET /v3/capabilities`) advertisement.
-    /// Defaults to the same advertisement used by typed terminals.
-    fn staged_capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
-        self.capabilities()
-    }
-
-    /// Exchange one exact staged request (`POST /v3/staged`) for its exact
-    /// signed reply. Defaults to the typed terminal exchange.
-    fn exchange_staged<'a>(
-        &'a self,
-        request: &'a [u8],
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
-        self.exchange(request)
-    }
 }
 
 enum ProxyRoute {
@@ -238,7 +225,7 @@ impl StagedTransport for ExchangeTransport {
     > {
         Box::pin(async move {
             self.0
-                .staged_capabilities()
+                .capabilities()
                 .await
                 .map_err(|error| QueryTargetError::Callback(Box::new(error)))
         })
@@ -253,7 +240,7 @@ impl StagedTransport for ExchangeTransport {
     > {
         Box::pin(async move {
             self.0
-                .exchange_staged(bytes)
+                .exchange(bytes)
                 .await
                 .map_err(|error| QueryTargetError::Callback(Box::new(error)))
         })
@@ -305,7 +292,7 @@ impl ProxyDatabase<Unbound> {
                 .await
                 .map_err(connect_error)?,
             (None, ProxyRoute::Exchange(exchange)) => {
-                await_proxy(exchange.staged_capabilities(), &cancellation, deadline).await?
+                await_proxy(exchange.capabilities(), &cancellation, deadline).await?
             }
             (None, ProxyRoute::Endpoint(_)) => unreachable!("the endpoint was opened above"),
         };
@@ -1525,13 +1512,11 @@ mod tests {
     async fn connection_managers_use_one_staged_exchange_per_terminal() {
         let (transport, exchanges) = sdk_queries_transport(0x7b);
         let capabilities = Arc::clone(&transport.capabilities);
-        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
-            StagedOnlyTransport(transport),
-        ))
-        .await
-        .unwrap()
-        .with_schema(package())
-        .unwrap();
+        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(transport))
+            .await
+            .unwrap()
+            .with_schema(package())
+            .unwrap();
         let connection = crate::Connection::Proxy(remote);
         macro_rules! exercise_manager {
             ($manager:expr, $create:expr, $model:ty, $insert_count:expr) => {{
@@ -1710,13 +1695,11 @@ mod tests {
     #[tokio::test]
     async fn proxy_manager_materializer_failure_retains_commit_outcome_and_original_cause() {
         let (transport, exchanges) = sdk_queries_transport(0x7c);
-        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
-            StagedOnlyTransport(transport),
-        ))
-        .await
-        .unwrap()
-        .with_schema(package())
-        .unwrap();
+        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(transport))
+            .await
+            .unwrap()
+            .with_schema(package())
+            .unwrap();
         let error = remote
             .entities::<RejectedPerson>()
             .insert(PersonCreate)
@@ -1757,41 +1740,15 @@ mod tests {
         assert_eq!(exchanges.lock().unwrap().len(), 1);
     }
 
-    struct StagedOnlyTransport(Transport);
-    impl ProxyExchange for StagedOnlyTransport {
-        fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
-            panic!("native proxy connections use the staged advertisement route")
-        }
-        fn exchange<'a>(
-            &'a self,
-            _: &'a [u8],
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
-            panic!("native proxy terminals use the staged exchange route")
-        }
-        fn staged_capabilities(
-            &self,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
-            self.0.capabilities()
-        }
-        fn exchange_staged<'a>(
-            &'a self,
-            bytes: &'a [u8],
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
-            self.0.exchange(bytes)
-        }
-    }
-
     #[tokio::test]
     async fn caller_owned_queries_and_transactions_share_the_staged_transport() {
         let (transport, exchanges) = sdk_queries_transport(0x79);
         let capabilities = Arc::clone(&transport.capabilities);
-        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
-            StagedOnlyTransport(transport),
-        ))
-        .await
-        .unwrap()
-        .with_schema(package())
-        .unwrap();
+        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(transport))
+            .await
+            .unwrap()
+            .with_schema(package())
+            .unwrap();
         let mut session = remote.query().unwrap();
         let person = session.exact::<Person>().unwrap();
         assert_eq!(session.query(person).unwrap().count().await.unwrap(), 7);

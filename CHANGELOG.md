@@ -1298,6 +1298,10 @@ add the limits argument described in the upgrade guide.
   a fetched document exceeds its member budget, is renamed to
   `document_member_limit`, matching `processed_item_limit` and
   `response_byte_limit`. Update code that matches the old string.
+- Rust `ProxyExchange` loses the forwarding `staged_capabilities()` and
+  `exchange_staged()` methods. Implement the required `capabilities()`
+  (`GET /v3/capabilities`) and `exchange()` (`POST /v3/staged`), which every
+  terminal and transaction now calls; move any `staged_*` override into them.
 
 <!-- --8<-- [end:breaking-3-0] -->
 

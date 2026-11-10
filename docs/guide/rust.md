@@ -503,9 +503,9 @@ types as a direct connection.
 
 A host that routes or authenticates requests itself implements
 `ProxyExchange` and passes it to `ProxyConnectionPolicy::with_exchange`.
-Native terminals and transactions call `staged_capabilities()` and
-`exchange_staged()`; their defaults delegate to `capabilities()` and
-`exchange()`. Both use the connection's staged route and advertisement cache.
+`capabilities()` returns the `GET /v3/capabilities` bytes and `exchange()`
+performs one `POST /v3/staged`. Native terminals and transactions both use
+them, with the connection's advertisement cache.
 A staged transaction sends its complete plan stack in one exchange at commit.
 
 ## Classified errors
