@@ -11,15 +11,17 @@ documents for writes that were never stored.
 The [2.2.1 post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
 records the affected earlier release.
 
-The TypeBridge container product is the V2-capable standalone query server:
+The TypeBridge container product is the standalone staged query server:
 
 ```text
-ghcr.io/ds1sqe/type-bridge-server:2.2.5
+ghcr.io/ds1sqe/type-bridge-server:3.0.0
 ```
 
-The image contains retained V1 routes and the public `v2-query` capability.
-`[v2].enabled` adds or hides V2 routes at runtime; it never replaces the V1
-pipeline.
+The image always serves `GET /health`. `[staged].enabled` adds
+`POST /v3/staged` and `GET /v3/capabilities`; with it,
+`[staged].raw_enabled` admits raw TypeQL at `POST /v3/raw`. Every removed
+V1 and V2 route answers HTTP 404 with
+`{"error":"route_removed","use":"/v3/staged"}`.
 
 The generated Rust SDK is source code, and `typedb/typedb:3.12.3` is an
 upstream integration dependency. Neither is republished as another
@@ -71,7 +73,8 @@ docker run --rm \
 
 The credential variables above inherit values from the caller; the command
 does not contain or print them. The image's
-`/etc/type-bridge/server.toml` is a credential-free example with V2 disabled.
+`/etc/type-bridge/server.toml` is a credential-free example with staged
+queries disabled.
 For production, mount a complete operator-owned configuration and its schema
 authority read-only:
 
@@ -126,9 +129,9 @@ server can verify intent without importing an application package or compiling
 raw YAML. Do not edit it or maintain JSON as a second schema; regenerate it with
 every binding package.
 
-## Enable V2
+## Enable staged queries
 
-A V2 production configuration binds live TypeDB to that generated authority:
+A production configuration binds live TypeDB to that generated authority:
 
 ```toml
 [server]
@@ -146,23 +149,23 @@ tls-root-ca = "/run/type-bridge/typedb-root.pem"
 level = "info"
 format = "json"
 
-[v2]
+[staged]
 enabled = true
 schema_authority_file = "/run/type-bridge/schema-authority.json"
 authority_mode = "managed"
 ```
 
 To accept queries beyond the default query limits, or to hold clients to
-stricter ones, name the limits to change under `[v2.query_limits]`:
+stricter ones, name the limits to change under `[staged.query_limits]`:
 
 ```toml
-[v2.query_limits]
+[staged.query_limits]
 canonical_bytes = 67108864       # 64 MiB plans
 remote_request_bytes = 134217728 # 128 MiB request envelopes
 ```
 
 The server validates the table at startup, advertises these limits in
-`/v2/capabilities`, and enforces exactly what it advertises. An unknown name
+`/v3/capabilities`, and enforces exactly what it advertises. An unknown name
 or an unsupported value aborts startup. Clients older than configurable query
 limits cannot read an advertisement that names any, so leave the table out
 until every client is upgraded. Limit names and defaults are listed in the
@@ -170,27 +173,26 @@ until every client is upgraded. Limit names and defaults are listed in the
 
 The server starts from the proxy answer defaults (65,536 items, 32 MiB). To
 let one query return more than they allow, or to hold clients to less, name
-the answer ceilings to change under `[v2.answer_limits]`:
+the answer ceilings to change under `[staged.answer_limits]`:
 
 ```toml
-[v2.answer_limits]
+[staged.answer_limits]
 items = 1000000        # provider items and rows per query
 bytes = 1073741824     # 1 GiB replies
 graph_nodes = 1000000
 ```
 
 The same rules apply: the table is validated at startup, advertised in
-`/v2/capabilities`, and enforced as advertised. A client must raise its own
+`/v3/capabilities`, and enforced as advertised. A client must raise its own
 answer policy too; each request runs under the stricter of the two. Names
 and defaults are listed in the
 [typed-query contract](../development/typed-query-contract.md#answer-limits).
 
-An enabled `[v2]` section also serves staged transactions at `/v3/staged`.
 Staged writes need an interceptor that authenticates the caller; to admit
 them without one, opt in explicitly:
 
 ```toml
-[v2]
+[staged]
 allow_unauthenticated_staged_writes = true
 ```
 
@@ -209,9 +211,8 @@ curl --fail --silent http://127.0.0.1:8080/health
 docker run --rm "$TYPE_BRIDGE_SERVER_IMAGE" --version
 ```
 
-The image deliberately has no shell `HEALTHCHECK`. `/health.version` remains
-the frozen V1 compatibility value `1.5.11`, while `--version`, the exact tag,
-and the OCI version label report `2.2.5`.
+The image deliberately has no shell `HEALTHCHECK`. `/health.version`,
+`--version`, the exact tag, and the OCI version label all report `3.0.0`.
 
 ## Verify supply-chain evidence
 

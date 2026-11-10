@@ -160,10 +160,9 @@ policy admission. Clients must obtain it over authenticated TLS for the
 intended server or pin its bytes or fingerprint out of band. Plain HTTP
 discovery does not authenticate that trust input.
 
-`GET /health` retains the exact body
-`{"status":"ok","version":"1.5.11","typedb_connected":true}` for an open
-connection. The version is the frozen health contract identity; use the
-binary's `--version` for the package version.
+`GET /health` returns
+`{"status":"ok","version":"3.0.0","typedb_connected":true}` for an open
+connection; `version` is the server package version.
 
 The removed `/query`, `/query/raw`, `/query/validate`, `/schema`, and `/v2/*`
 routes return HTTP 404 with `{"error":"route_removed","use":"/v3/staged"}`.

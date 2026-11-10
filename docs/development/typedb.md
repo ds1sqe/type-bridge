@@ -11,7 +11,7 @@ server, newest measured line and fallback profile. Newer lines are
 guarantee compatibility.
 
 The live release matrix uses 3.12.3, 3.13.6 and 3.14.0; 3.14.0 remains
-the recommended server and 3.13.6 the V2 conformance baseline. Newer lines,
+the recommended server and 3.13.6 the conformance baseline. Newer lines,
 including 3.15 and 4.x, reuse `typedb-3.13.6/v1`, protocol band 9 and the newest
 measured accepted-band set `[9]`. These are assumptions, not new support
 claims. Generated Python, TypeScript/Node, Rust and C use the same Rust rule.
@@ -28,9 +28,9 @@ verified tag.
 | Verified tags | 3.12.3, 3.13.6, 3.14.0 |
 | Recommended server | 3.14.0 |
 | Generated CRUD/query acceptance | 3.12.3, 3.13.6 and 3.14.0 |
-| Connected V2 migration execution | Profile floors below; newest profile also admits newer lines |
+| Connected migration execution | Profile floors below; newest profile also admits newer lines |
 | Protocol providers | band 9 |
-| V2 conformance baseline | 3.13.6 |
+| Conformance baseline | 3.13.6 |
 | CPython | 3.12–3.14 |
 | Node | 18+; primary lane 20 |
 | Public Rust SDK | Rust 1.88+ |
@@ -186,7 +186,7 @@ cancelled. Close is idempotent.
 
 Node synchronous native work occupies the JavaScript event-loop thread, so
 `Database.close()` cannot interrupt a synchronous call out of band.
-Cancellable Node V2 work uses Promise-returning execution plus a deadline. The
+Cancellable Node work uses Promise-returning execution plus a deadline. The
 explicit shutdown behavior tracks the upstream 3.12.1 lifecycle issue in #196
 and does not patch the packaged TypeDB driver.
 

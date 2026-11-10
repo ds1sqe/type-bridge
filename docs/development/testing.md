@@ -137,7 +137,7 @@ tiers. `--no-isolated` uses an existing server; its version picks the lane.
 
 | Live step | 3.12.3 | 3.13.6 | 3.14.0 |
 | --- | --- | --- | --- |
-| Rust ORM, production V2 server, generated Rust | yes | yes | yes |
+| Rust ORM, production staged server, generated Rust | yes | yes | yes |
 | Python and Node integration, generated projections | yes | yes | yes |
 | SDK report fan-in, projected exact-live parity | yes | yes | — |
 | C runtime and generated C CRUD live | yes | yes | — |

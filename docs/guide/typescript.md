@@ -432,7 +432,7 @@ const person = session.exact(Person);
 const rows = await session.query(person).rows({ limit: 50n });
 ```
 
-Both connections use the package's privately embedded, verified Query V2
+Both connections use the package's privately embedded, verified query
 authority; no authority file or `PlanAuthority` is passed. `connectProxy`
 fetches the server advertisement over the configured TLS mode (`tls`,
 `tlsRootCa`), or takes a pinned `advertisement`; `headers` carries caller

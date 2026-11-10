@@ -100,9 +100,17 @@ direct or a proxy connection alike (see
 
 ## Raw TypeQL execution
 
-TypeQL in, the driver's output out, the same pair in every SDK, and no promise: it runs any TypeQL in any transaction kind, schema changes that break the generated models included, without TypeBridge checks, hooks or limits.
+Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+to TypeDB as written, and TypeDB's output comes back as it
+answered, in this SDK's native data types. TypeBridge adds no
+validation, rewriting, hydration, hooks, limits or extra
+queries. It runs in read, write and schema transactions and
+accepts any TypeQL, schema-breaking changes included. The caller
+owns its correctness; TypeBridge makes no promise about its
+effects. On a proxy connection it posts to the server's opt-in
+`/v3/raw` endpoint, which is off by default.
 
-The pair is spelled per SDK:
+Every SDK has the same pair, spelled:
 
 | SDK | Open a raw context | Execute TypeQL |
 | --- | --- | --- |

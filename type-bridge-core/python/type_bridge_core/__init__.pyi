@@ -1522,7 +1522,20 @@ class RawQueryError(RuntimeError):
 class RawTransaction:
     """Unchecked direct transaction or single-query proxy context."""
     def __new__(cls) -> Never: ...
-    def execute_query(self, query: str) -> dict[str, Any]: ...
+    def execute_query(self, query: str) -> dict[str, Any]:
+        """Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+        to TypeDB as written, and TypeDB's output comes back as it
+        answered, in this SDK's native data types. TypeBridge adds no
+        validation, rewriting, hydration, hooks, limits or extra
+        queries. It runs in read, write and schema transactions and
+        accepts any TypeQL, schema-breaking changes included. The caller
+        owns its correctness; TypeBridge makes no promise about its
+        effects. On a proxy connection it posts to the server's opt-in
+        `/v3/raw` endpoint, which is off by default.
+
+        On a proxy connection a raw transaction holds one query, because
+        `/v3/raw` runs each request as its own transaction.
+        """
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
     def close(self) -> None: ...

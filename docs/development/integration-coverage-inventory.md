@@ -82,7 +82,7 @@ Ordinary live lanes exercise the TypeDB 3.12–3.14 provider window on
 generated-projection conformance sets; 3.13.6 is the baseline, and 3.14.0
 shares its profile and runs the ordinary live tiers. Dedicated
 TLS lanes run generated Python, Node, and Rust applications with a verified
-custom root, alongside the retained low-level Query V2 transport probe.
+custom root, alongside the server TLS transport probes.
 
 Unsupported older providers are covered only by fail-closed version-window
 tests. They are not active compatibility lanes.

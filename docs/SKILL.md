@@ -33,7 +33,7 @@ available. Otherwise use <https://ds1sqe.github.io/type-bridge/>.
    documentation branch matches the installed version.
 3. Identify the language surface, TypeBridge version, TypeDB server version,
    and whether execution is direct or remote.
-4. Identify the canonical V2 Split-YAML workspace. Treat existing TypeQL or
+4. Identify the canonical Split-YAML workspace. Treat existing TypeQL or
    released Python/Node declarations as migration input, never as a second
    active writer for the same scope.
 5. Read only the relevant guide pages from the routing table before changing
@@ -56,7 +56,7 @@ behavior in these ownership areas:
 
 ## Preserve the contracts
 
-- Keep Rust as the only V2 semantic engine. Do not implement schema, query,
+- Keep Rust as the only semantic engine. Do not implement schema, query,
   migration, validation, or ORM rules independently in Python or TypeScript.
 - Use Split-YAML as the sole active desired-schema authority. Applications
   consume generated packages, immutable queries, and staged plans.
@@ -212,7 +212,7 @@ commit) the writes may have applied, so read the database by the operation's
 key before running the work again. Every other signed refusal applied nothing.
 Raw TypeQL and typed match reads are not staged over the proxy. Writes need a
 caller the server's interceptor vouches for (`on_write_authority`), or a
-server with `[v2] allow_unauthenticated_staged_writes`.
+server with `[staged] allow_unauthenticated_staged_writes`.
 
 ## TypeScript and Node workflow
 
@@ -231,15 +231,15 @@ const adults = Person.manager(db).filter({ age__gte: Age.create(18n) }).all();
 const session = new QuerySession(db);
 ```
 
-Import immutable model queries from the generated package and low-level V2 plan
-authoring from `@type-bridge/node/query-v2`. Consult `guide/typescript.md` for
+Import immutable model queries from the generated package and staged plan
+authoring (`Plan`) from `@type-bridge/node`. Consult `guide/typescript.md` for
 database lifecycle, integer `bigint` values, managers, and generation.
 
 Use scheme-free `host:port` addresses by default. Keep URI scheme and
 `tlsEnabled` consistent. Require `tlsEnabled: true` when supplying
 `tlsRootCa`. Close `Database` handles when finished, but do not treat
 synchronous `close()` as an out-of-band cancellation mechanism for a native
-call occupying the event-loop thread. Use V2 deadlines for cancellable work.
+call occupying the event-loop thread. Use deadlines for cancellable work.
 
 ## Canonical schema and generation workflow
 

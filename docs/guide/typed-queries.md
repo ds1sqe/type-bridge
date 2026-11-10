@@ -191,7 +191,7 @@ person = session.exact(Person)
 rows = await session.query(person).rows(limit=50)
 ```
 
-Both connections reconstruct Query V2 authority from private, verified package
+Both connections reconstruct query authority from private, verified package
 evidence; no authority file or low-level `PlanAuthority` argument is
 involved. `connect_proxy` fetches the advertisement over the configured TLS
 connection, or takes a pinned `advertisement=`; `headers=` carries caller
@@ -934,7 +934,7 @@ Python `staged_advertisement=`, TypeScript `stagedAdvertisement`).
 
 The server admits a staged write only from a caller an interceptor vouches for
 (`on_write_authority`), or from any caller when the operator sets
-`[v2] allow_unauthenticated_staged_writes`; otherwise the commit fails with the
+`[staged] allow_unauthenticated_staged_writes`; otherwise the commit fails with the
 typed `staged_write_not_authorized` failure. The [staged remote envelope](../reference/query-plan.md#staged-remote-envelope)
 defines the wire format.
 

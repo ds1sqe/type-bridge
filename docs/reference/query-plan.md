@@ -167,7 +167,7 @@ escape. Every write target must be mandatory and alive.
 A native `try` body may contain disjunctions of the existing positive patterns.
 Only bindings established in every arm become optional output bindings.
 Negation, nested `try`, reachability and function calls remain refused inside
-these arms. V1/V2 optional-pattern admission remains unchanged.
+these arms.
 
 Local functions have `name`, `bindings`, `parameters`, `body`, `returns`.
 Parameters are ordered label strings. Bindings use an independent dense scope.
@@ -465,8 +465,9 @@ Derivation and advertisement are separate. `query_plan_capability_vocabulary()`
 owns the complete advertised read vocabulary, including `query.pattern.iid`,
 `query.plan.v3`, the insert/update/delete/put write capabilities, `query.let`
 and every `query.expr.*` name. The staged advertisement at
-`GET /v3/capabilities` is the V2 advertisement's capabilities, that
-vocabulary, `query.remote.envelope-v3` and `query.remote.write`.
+`GET /v3/capabilities` is the executor's base capabilities, that
+vocabulary, `query.remote.envelope-v3`, `query.remote.write`,
+`query.stage.result_ref` and `query.remote.answer-dimensions`.
 `query.write.attach` and `query.fetch.thing` are included in that vocabulary.
 
 ## Plan builder
@@ -692,10 +693,10 @@ authenticated transport identity or explicit server policy; possessing an
 advertisement or reply-signing public key does not authorize a write. This
 section defines the codec. The standalone server executes it at
 `POST /v3/staged` and advertises the staged capabilities at
-`GET /v3/capabilities`; requests bind to that advertisement, not to the
-unchanged `/v2/capabilities` one. A write transaction opens only when an
-interceptor vouches for the caller (`Interceptor::on_write_authority`
-answers `StagedWriteAuthority::Authenticated`) or `[v2]` sets
+`GET /v3/capabilities`; requests bind to that advertisement. A write
+transaction opens only when an interceptor vouches for the caller
+(`Interceptor::on_write_authority` answers
+`StagedWriteAuthority::Authenticated`) or `[staged]` sets
 `allow_unauthenticated_staged_writes = true`; otherwise the signed reply fails
 with `staged_write_not_authorized`. Before each plan stages,
 `Interceptor::on_plan` sees its index, required capabilities, touched

@@ -50,6 +50,11 @@ backfill intent. Rollback removes only destination values equal to the source;
 unlike the deleted executor it preserves other pre-existing destination values.
 See [migration backfills](migrations.md#declarative-data-backfills).
 
+Data steps are irreversible by default. A data step without a `reverse`
+program is marked `IRREVERSIBLE` in the preview, and rollback refuses it with
+`migration_rollback_irreversible_data` before any write. Declare `reverse`
+where a safe inverse exists; see [atomic data steps](migrations.md#atomic-data-steps).
+
 ### Move the history directory and regenerate locks
 
 The default is now `migrations/` beside `typebridge.yaml`. Remove the explicit

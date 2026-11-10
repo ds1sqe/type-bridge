@@ -95,7 +95,7 @@ runtime during import. Installation verifies exact generated classes and
 fingerprints. Rust generated crates bind the equivalent `SchemaPackage` through
 the public SDK.
 
-Generated proxy connections derive Query V2 authority from those private
+Generated proxy connections derive query authority from those private
 package bytes: `connect_proxy`/`connectProxy` and `ExchangeConnection` in
 Python and TypeScript, `SCHEMA.connect(ProxyConnectionPolicy)` in Rust, and
 `type_bridge_proxy_connection_open_v1` with the package in C. Applications
@@ -125,7 +125,7 @@ from `typebridge.yaml` after a schema change.
 
 The generic server cannot import an arbitrary generated application package and
 does not compile raw Split-YAML at startup. Mount this generated artifact
-read-only and reference it with `[v2].schema_authority_file`; the server
+read-only and reference it with `[staged].schema_authority_file`; the server
 independently compares it with the schema-fenced live TypeDB state.
 
 Generated code is deterministic for the same workspace inputs and toolchain

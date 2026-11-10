@@ -6,7 +6,7 @@ on a separate semantic implementation.
 ## Run
 
 - [Server container](server-container.md) covers immutable images, non-root
-  execution, TLS, V2 authority configuration, health checks, and supply-chain
+  execution, TLS, staged authority configuration, health checks, and supply-chain
   verification.
 - [Logging](logging.md) covers the Python logger hierarchy, query visibility,
   sensitive data, and debugging.
@@ -27,7 +27,7 @@ scheduled for removal.
 ## Security boundaries
 
 Use immutable release identities, provision credentials outside committed
-configuration, authenticate remote capability advertisements, and bind V2
+configuration, authenticate remote capability advertisements, and bind staged
 execution to the intended canonical schema. Detailed limits and trust inputs
 remain in the server, typed-query, migration, and upgrade guides rather than
 being duplicated here.

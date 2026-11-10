@@ -126,7 +126,7 @@ CLI archive for Ubuntu 24.04 x86_64 is also available from the 2.2.5 release.
 
 ## Server container
 
-The standalone V2 query server is published separately:
+The standalone staged query server is published separately:
 
 ```bash
 docker pull ghcr.io/ds1sqe/type-bridge-server:2.2.5

@@ -321,7 +321,7 @@ async fn handle_staged(State(shared): State<Arc<StagedExecutor>>, request: Reque
     let deadline = state.query.execution_deadline(received_at);
     let admission = state.query.admission_deadline(received_at, deadline);
     // Transport policy authenticates before any attacker-controlled bytes
-    // are buffered, exactly as for `/v2/query`.
+    // are buffered.
     let ctx = match admit_transport(state, request.headers(), "staged", Some(admission)).await {
         Ok(ctx) => ctx,
         Err(response) => return *response,

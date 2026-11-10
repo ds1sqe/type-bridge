@@ -1,10 +1,10 @@
 # Schema and migration workflows
 
 TypeBridge separates desired schema, migration history, and generated
-application projections. For new V2 systems, a versioned Split-YAML workspace
+application projections. For new systems, a versioned Split-YAML workspace
 is the canonical authoring authority.
 
-## Recommended V2 flow
+## Recommended flow
 
 1. Author a [Split-YAML schema set and workspace](split-yaml-v1.md).
 2. Validate it offline with `type-bridge … schema check`.
