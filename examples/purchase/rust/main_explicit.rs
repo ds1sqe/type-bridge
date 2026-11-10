@@ -14,9 +14,9 @@ pub fn purchase() -> Result<Built> {
     let buyer_key = p.field(buyer, AccountType::account_id);
     let account = p.input::<String>("account_account_id_2");
     p.where_(buyer_key.eq(account));
-    let balance = p.field(buyer, AccountType::balance);
     let price = p.field(item, ItemType::price);
-    p.where_(balance.ge(price));
+    let balance = p.field(buyer, AccountType::balance);
+    p.where_(price.le(balance));
     let decrement = p.input::<i64>("item_stock_3");
     let next_stock = p.let_("item_stock_4", stock - decrement);
     p.update(item, ItemType::stock, next_stock);

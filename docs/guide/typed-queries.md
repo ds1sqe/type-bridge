@@ -404,8 +404,7 @@ continues to measure affected rows.
 
     with Plan():
         item = Item.match(item_id="I1").where(Item.stock > 0)  # ItemHandle
-        buyer = Account.match(account_id="A1")  # AccountHandle
-        buyer.where(buyer.balance >= item.price)
+        buyer = Account.match(account_id="A1").where(item.price <= Account.balance)  # AccountHandle
         item.set(stock=item.stock - 1)
         buyer.set(balance=buyer.balance - item.price)
         order = Purchase.insert(order_id="O1", buyer=buyer, item=item)  # Plan[list[Purchase]]
@@ -420,8 +419,7 @@ continues to measure affected rows.
     ```typescript
     const order = Plan.build(() => { // Plan<Purchase[]>
       const item = Item.match({ itemId: "I1" }).where(Item.stock.gt(0n)); // ItemHandle
-      const buyer = Account.match({ accountId: "A1" }); // AccountHandle
-      buyer.where(buyer.balance.ge(item.price));
+      const buyer = Account.match({ accountId: "A1" }).where(item.price.le(Account.balance)); // AccountHandle
       item.set({ stock: item.stock.sub(1n) });
       buyer.set({ balance: buyer.balance.sub(item.price) });
       return Purchase.insert({ orderId: "O1", buyer, item });
@@ -438,8 +436,7 @@ continues to measure affected rows.
         let item = Item::matching_by(p).item_id("I1").handle()
             .where_(ItemType::stock.gt(0_i64)); // ItemHandle
         let buyer = Account::matching_by(p).account_id("A1").handle(); // AccountHandle
-        let balance = buyer.balance(); // Value<i64>
-        let buyer = buyer.where_(balance.ge(item.price())); // AccountHandle
+        let buyer = buyer.clone().where_(item.price().le(buyer.balance()));
         item.set(p).stock(item.stock() - 1_i64);
         buyer.set(p).balance(buyer.balance() - item.price());
         Purchase::insert(p, PurchaseInsert {
@@ -467,7 +464,7 @@ continues to measure affected rows.
     CHECK(tb_writes_item_where(p, item, tb_long_gt(tb_writes_item_plan_stock(p, item), tb_long(0))));
     account_match.accountzhid = tb_string(view("A1"));
     CHECK(tb_writes_account_match_by(p, &account_match, &buyer));
-    CHECK(tb_writes_account_where(p, buyer, tb_long_ge(tb_writes_account_plan_balance(p, buyer), tb_writes_item_plan_price(p, item))));
+    CHECK(tb_writes_account_where(p, buyer, tb_long_le(tb_writes_item_plan_price(p, item), tb_writes_account_plan_balance(p, buyer))));
     stock.stock = tb_long_sub(tb_writes_item_plan_stock(p, item), tb_long(1));
     CHECK(tb_writes_item_set(p, item, &stock));
     balance.balance = tb_long_sub(tb_writes_account_plan_balance(p, buyer), tb_writes_item_plan_price(p, item));
@@ -519,11 +516,11 @@ $account isa! account;
 $account has account-id $account_account_id;
 $account_account_id isa! account-id;
 $account_account_id == $account_account_id_2;
-$account has balance $account_balance;
-$account_balance isa! balance;
 $item has price $item_price;
 $item_price isa! price;
-$account_balance >= $item_price;
+$account has balance $account_balance;
+$account_balance isa! balance;
+$item_price <= $account_balance;
 let $item_stock_4 = ($item_stock - $item_stock_3);
 let $account_balance_2 = ($account_balance - $item_price);
 update $item has stock == $item_stock_4;

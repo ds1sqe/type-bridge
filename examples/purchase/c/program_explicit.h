@@ -15,9 +15,9 @@ static type_bridge_status_t purchase_explicit(type_bridge_plan_builder_t *p, con
   CHECK(type_bridge_plan_builder_field(p, buyer, id->account_id, &account));
   CHECK(input(p, "account_account_id_2", TYPE_BRIDGE_PROJECTED_VALUE_STRING, &account_input));
   CHECK(type_bridge_plan_builder_compare(p, TYPE_BRIDGE_PLAN_OPERAND_BINDING, account, TYPE_BRIDGE_PLAN_COMPARE_EQUAL, TYPE_BRIDGE_PLAN_OPERAND_INPUT, account_input));
-  CHECK(type_bridge_plan_builder_field(p, buyer, id->balance, &balance));
   CHECK(type_bridge_plan_builder_field(p, item, id->price, &price));
-  CHECK(type_bridge_plan_builder_compare(p, TYPE_BRIDGE_PLAN_OPERAND_BINDING, balance, TYPE_BRIDGE_PLAN_COMPARE_GREATER_OR_EQUAL, TYPE_BRIDGE_PLAN_OPERAND_BINDING, price));
+  CHECK(type_bridge_plan_builder_field(p, buyer, id->balance, &balance));
+  CHECK(type_bridge_plan_builder_compare(p, TYPE_BRIDGE_PLAN_OPERAND_BINDING, price, TYPE_BRIDGE_PLAN_COMPARE_LESS_OR_EQUAL, TYPE_BRIDGE_PLAN_OPERAND_BINDING, balance));
   CHECK(input(p, "item_stock_3", TYPE_BRIDGE_PROJECTED_VALUE_LONG, &decrement));
   CHECK(type_bridge_plan_builder_expr_arith(p, TYPE_BRIDGE_PLAN_ARITH_SUB, TYPE_BRIDGE_PLAN_OPERAND_BINDING, stock, TYPE_BRIDGE_PLAN_OPERAND_INPUT, decrement, &expr));
   CHECK(type_bridge_plan_builder_let(p, view("item_stock_4"), TYPE_BRIDGE_PLAN_OPERAND_EXPR, expr, &next));

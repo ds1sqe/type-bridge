@@ -74,8 +74,7 @@ def purchase(authority: Any) -> Plan:
     """Take one item and its price, then record the order."""
     with Plan() as plan:
         item = Item.match(item_id="I1").where(Item.stock > 0)
-        buyer = Account.match(account_id="A1")
-        buyer.where(buyer.balance >= item.price)
+        buyer = Account.match(account_id="A1").where(item.price <= Account.balance)
         item.set(stock=item.stock - 1)
         buyer.set(balance=buyer.balance - item.price)
         Purchase.insert(order_id="O1", buyer=buyer, item=item)

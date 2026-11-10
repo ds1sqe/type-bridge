@@ -61,26 +61,27 @@ fn seed() -> Result<Built> {
 /// The one-query purchase: take one item and its price, record the order.
 fn purchase() -> Result<Built> {
     let mut p = Recording::new(type_bridge::QueryLimits::CANONICAL);
-    let item = Item::matching_by(&mut p)
-        .item_id("I1".to_owned())
-        .handle()
-        .where_(ItemType::stock.gt(0_i64));
-    let buyer = Account::matching_by(&mut p)
-        .account_id("A1".to_owned())
-        .handle();
-    let balance = buyer.balance();
-    let buyer = buyer.where_(balance.ge(item.price()));
-    item.set(&mut p).stock(item.stock() - 1_i64);
-    buyer.set(&mut p).balance(buyer.balance() - item.price());
-    Purchase::insert(
-        &mut p,
-        models::PurchaseInsert {
-            order_id: Argument::from("O1").into(),
-            buyer: Some(&buyer),
-            item: Some(&item),
-        },
-    );
-    drop((item, buyer));
+    // Handles share the recording, so they must drop before `build`.
+    {
+        let item = Item::matching_by(&mut p)
+            .item_id("I1".to_owned())
+            .handle()
+            .where_(ItemType::stock.gt(0_i64));
+        let buyer = Account::matching_by(&mut p)
+            .account_id("A1".to_owned())
+            .handle();
+        let buyer = buyer.clone().where_(item.price().le(buyer.balance()));
+        item.set(&mut p).stock(item.stock() - 1_i64);
+        buyer.set(&mut p).balance(buyer.balance() - item.price());
+        Purchase::insert(
+            &mut p,
+            models::PurchaseInsert {
+                order_id: Argument::from("O1").into(),
+                buyer: Some(&buyer),
+                item: Some(&item),
+            },
+        );
+    }
     p.build(&models::SCHEMA)
 }
 // --8<-- [end:purchase]

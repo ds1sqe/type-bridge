@@ -15,9 +15,9 @@ export function purchaseExplicit(authority: PlanAuthority): Plan {
   const buyerKey = p.field(buyer, Account.fields.accountId);
   const account = p.input("account_account_id_2", "string");
   p.where(buyerKey.eq(account));
-  const balance = p.field(buyer, Account.fields.balance);
   const price = p.field(item, Item.fields.price);
-  p.where(balance.ge(price));
+  const balance = p.field(buyer, Account.fields.balance);
+  p.where(price.le(balance));
   const decrement = p.input("item_stock_3", "long");
   p.update(item, Item.fields.stock, p.let("item_stock_4", stock.sub(decrement)));
   p.update(buyer, Account.fields.balance, p.let("account_balance_2", balance.sub(price)));

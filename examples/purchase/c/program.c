@@ -141,7 +141,7 @@ static type_bridge_status_t purchase(type_bridge_plan_builder_t *plan, const ide
   CHECK(tb_writes_item_where(plan, item, tb_long_gt(tb_writes_item_plan_stock(plan, item), tb_long(0))));
   account_match.accountzhid = tb_string(view("A1"));
   CHECK(tb_writes_account_match_by(plan, &account_match, &buyer));
-  CHECK(tb_writes_account_where(plan, buyer, tb_long_ge(tb_writes_account_plan_balance(plan, buyer), tb_writes_item_plan_price(plan, item))));
+  CHECK(tb_writes_account_where(plan, buyer, tb_long_le(tb_writes_item_plan_price(plan, item), tb_writes_account_plan_balance(plan, buyer))));
   stock.stock = tb_long_sub(tb_writes_item_plan_stock(plan, item), tb_long(1));
   CHECK(tb_writes_item_set(plan, item, &stock));
   balance.balance = tb_long_sub(tb_writes_account_plan_balance(plan, buyer), tb_writes_item_plan_price(plan, item));

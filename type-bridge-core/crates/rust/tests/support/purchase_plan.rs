@@ -274,12 +274,12 @@ pub fn authored_purchase(
         ValueComparator::Equal,
         input(account_input),
     );
-    let balance = p.field(buyer, attribute("balance"));
     let price = p.field(item, attribute("price"));
+    let balance = p.field(buyer, attribute("balance"));
     p.compare(
-        binding(balance),
-        ValueComparator::GreaterOrEqual,
         binding(price),
+        ValueComparator::LessOrEqual,
+        binding(balance),
     );
     let decrement = p.input("item_stock_3", ValueTypeTag::Long, false);
     let next_stock = p.let_("item_stock_4", sub(binding(stock), input(decrement)));

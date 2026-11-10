@@ -69,8 +69,7 @@ function seed(authority: PlanAuthority): Built {
 function purchase(_authority: PlanAuthority): Built {
   return Plan.build(() => {
     const item = Item.match({ itemId: "I1" }).where(Item.stock.gt(0n));
-    const buyer = Account.match({ accountId: "A1" });
-    buyer.where(buyer.balance.ge(item.price));
+    const buyer = Account.match({ accountId: "A1" }).where(item.price.le(Account.balance));
     item.set({ stock: item.stock.sub(1n) });
     buyer.set({ balance: buyer.balance.sub(item.price) });
     Purchase.insert({ orderId: "O1", buyer, item });
