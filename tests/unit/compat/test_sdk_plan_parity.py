@@ -94,7 +94,7 @@ def test_exchange_capture_keeps_plan_content_and_statement_order() -> None:
 
 
 def test_advertisement_identity_matches_the_retained_core_capture() -> None:
-    directory = ROOT / "tests/contracts/sdk_conformance/parity/v2-answers/wire/page-with-total"
+    directory = ROOT / "tests/contracts/sdk_conformance/parity/oracle-answers/wire/page-with-total"
     advertisement = (directory / "advertisement.json").read_bytes().removesuffix(b"\n")
     request = json.loads((directory / "request.json").read_bytes())
     assert parity.advertisement_digest(advertisement) == request["advertisement"]

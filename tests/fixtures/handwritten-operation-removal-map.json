@@ -34,7 +34,7 @@
   },
   "retained_contracts": {
     "python_query_ast_and_function_v1": "Python query AST/compiler and FunctionQuery behavior remain part of the unscheduled V1/raw query surface; handwritten model fixtures must become private fixtures.",
-    "query_v2_low_level": "Canonical Query V2 bytes, authority, preparation, exchange, and validation remain public low-level contracts.",
+    "canonical_query_low_level": "Canonical Query V2 bytes, authority, preparation, exchange, and validation remain public low-level contracts.",
     "rust_match_request_and_v1_query": "Rust MatchRequest and the V1 entity/relation/group-by facades remain explicitly retained.",
     "shared_dynamic_manager_engine": "Dynamic managers remain private execution machinery behind verified generated projections, not a public descriptor-authoring route."
   },
@@ -163,7 +163,7 @@
       ]
     },
     {
-      "id": "python_model_query_v2",
+      "id": "python_model_query_plan",
       "binding": "python",
       "disposition": "generated_successor",
       "sources": [
@@ -193,7 +193,7 @@
       ],
       "retained_contract_ids": [
         "python_query_ast_and_function_v1",
-        "query_v2_low_level"
+        "canonical_query_low_level"
       ]
     },
     {
@@ -228,7 +228,7 @@
       ]
     },
     {
-      "id": "node_model_query_v2",
+      "id": "node_model_query_plan",
       "binding": "node",
       "disposition": "generated_successor",
       "sources": [
@@ -242,14 +242,14 @@
       ]
     },
     {
-      "id": "node_retained_query_v2",
+      "id": "node_retained_query_plan",
       "binding": "node",
       "disposition": "retained_contract",
       "sources": [
         "type-bridge-core/crates/node/tests/integration/queries/query-v2-smoke.test.ts"
       ],
       "retained_contract_ids": [
-        "query_v2_low_level"
+        "canonical_query_low_level"
       ]
     },
     {
@@ -1364,7 +1364,7 @@
     {
       "path": "tests/integration/queries/test_remote_query_session_parity.py",
       "binding": "python",
-      "family_id": "python_model_query_v2",
+      "family_id": "python_model_query_plan",
       "source_sha256": "2b1b17f703d6a4d19c9def6dd4eab333a89cd5b22d759d51d209980e306168cc",
       "test_cases": [
         "test_public_remote_query_session_matches_direct_subtype_hydration"
@@ -1475,7 +1475,7 @@
     {
       "path": "tests/integration/queries/test_typed_query_executor.py",
       "binding": "python",
-      "family_id": "python_model_query_v2",
+      "family_id": "python_model_query_plan",
       "source_sha256": "32dd3200709087de5508903ab6c03b26d7252249ff8f33ae43c2ee381384e235",
       "test_cases": [
         "test_typed_rows_execute_exact_and_subtype_targets",
@@ -1587,7 +1587,7 @@
     {
       "path": "type-bridge-core/crates/node/tests/integration/queries/query-v2-smoke.test.ts",
       "binding": "node",
-      "family_id": "node_retained_query_v2",
+      "family_id": "node_retained_query_plan",
       "source_sha256": "4aa0eaf5feba3c77e173d7d4794b33052bfaff46644507633c61b7f9c01581b8",
       "test_cases": [
         "prepared plan executes locally and remotely"
@@ -1596,7 +1596,7 @@
     {
       "path": "type-bridge-core/crates/node/tests/integration/queries/typed-remote-query-parity.test.ts",
       "binding": "node",
-      "family_id": "node_model_query_v2",
+      "family_id": "node_model_query_plan",
       "source_sha256": "eb420bb6febac261a360f1554bbe7406fffb729b4e036264983a118095bf2ced",
       "test_cases": [
         "public remote model query matches local three-binding subtype hydration"

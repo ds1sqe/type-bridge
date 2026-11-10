@@ -216,7 +216,7 @@ def test_full_sdk_manifest_has_closed_profiles_and_real_rust_owners() -> None:
         },
         "typed_answer_capture_parity": {
             "path": "scripts/ci/sdk_plan_parity.py",
-            "symbol": "def compare_v2_answers",
+            "symbol": "def compare_oracle_answers",
         },
     }
     assert {name: manifest["owners"].get(name) for name in parity_owners} == parity_owners

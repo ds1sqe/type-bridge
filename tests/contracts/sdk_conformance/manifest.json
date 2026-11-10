@@ -292,7 +292,7 @@
     },
     "typed_answer_capture_parity": {
       "path": "scripts/ci/sdk_plan_parity.py",
-      "symbol": "def compare_v2_answers"
+      "symbol": "def compare_oracle_answers"
     }
   },
   "capabilities": [

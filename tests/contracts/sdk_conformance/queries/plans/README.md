@@ -6,7 +6,7 @@ its decoded canonical `plan_bytes` as `plan` and its invocation `rows`.
 The live runner keeps full raw requests and capability advertisements in
 separate per-binding witnesses. It compares the four witnesses with each
 other and with these committed bytes. Answer observations must still equal
-both `journey.json` and the frozen V2 answers.
+both `journey.json` and the frozen oracle answers.
 
 Each profile has its own directory. TypeDB 3.12.3 uses `typedb-3.12.1/v1`;
 TypeDB 3.13.6 and 3.14.0 both use `typedb-3.13.6/v1`. The shared server/profile

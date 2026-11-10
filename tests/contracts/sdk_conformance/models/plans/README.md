@@ -32,5 +32,5 @@ twins' rules in [queries/plans](../../queries/plans/README.md).
 `coverage.json` annotates every unchanged journey observation. Its 41
 selected native call names must match the actual witnesses for their
 specified SDKs exactly. Existing additional CRUD, validation, lifecycle and
-resource-policy probes continue to run, and the frozen V2 answer comparison
+resource-policy probes continue to run, and the frozen oracle answer comparison
 remains required.

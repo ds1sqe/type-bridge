@@ -660,13 +660,13 @@ def compare_twins(
     return {"bindings": list(BINDINGS), "calls": len(expected), "semantic_profile": profile}
 
 
-def compare_v2_answers(
+def compare_oracle_answers(
     suite: str, reports: dict[str, dict[str, Any]], *, root: Path = ROOT
 ) -> None:
-    """Keep the pre-rewire V2 observations as an independent oracle."""
+    """Keep the frozen pre-rewire observations as an independent oracle."""
     capture = _load_json(
-        root / f"tests/contracts/sdk_conformance/parity/v2-answers/{suite}.json",
-        "frozen V2 answers",
+        root / f"tests/contracts/sdk_conformance/parity/oracle-answers/{suite}.json",
+        "frozen oracle answers",
     ).value
     for binding in BINDINGS:
         order = itemgetter("case_id", "proof_kind")
@@ -674,6 +674,6 @@ def compare_v2_answers(
         expected = sorted(capture["bindings"][binding], key=order)
         if canonical_json_bytes(actual) != canonical_json_bytes(expected):
             _fail(
-                "v2_answer_drift",
-                f"{suite}/{binding} observations differ from the frozen V2 answers",
+                "oracle_answer_drift",
+                f"{suite}/{binding} observations differ from the frozen oracle answers",
             )
