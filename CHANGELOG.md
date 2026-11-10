@@ -1270,7 +1270,10 @@ add the limits argument described in the upgrade guide.
   most 64 statements (staged plans); a call that needs more is refused with
   `query_remote_plan_limit` before anything runs. A direct call is bounded by
   its effective resource limits; a caller-set `statements` limit is charged
-  with the statements the call needs, before anything runs.
+  with the statements the call needs, before anything runs. Exceeding it is
+  refused with `projected_batch_statement_limit` when the call executes,
+  where a keyless batch used to fail with `batch_statement_limit` when it was
+  built.
 - A keyless put whose pattern matches more than one existing instance fails
   with `put_ambiguous_match` (invalid input) before commit; in `put_many` the
   whole call is refused and no row is committed. The same rule applies to

@@ -28,6 +28,9 @@ use super::authority::PlanAuthority;
 use super::reference::{Reference, ReferenceIdentity, reference_binding};
 use super::{BuiltPlan, ValueTransport};
 
+#[path = "put_placement.rs"]
+mod placement;
+
 /// Build one keyless put answering the matched or inserted thing's
 /// document. Batch rows pass their `ordinal`, answered as a document scalar.
 /// The whole pattern is one statement, so a row over the plan limits is
@@ -114,32 +117,7 @@ pub(crate) fn keyless_put_many(
     rows: &[KeylessRow<'_>],
     document_roles: &[DocumentRole],
 ) -> Result<Vec<BuiltPlan>, Diagnostic> {
-    let mut plans: Vec<Vec<usize>> = Vec::new();
-    let mut placed = Vec::with_capacity(rows.len());
-    for (index, row) in rows.iter().enumerate() {
-        // ponytail: O(rows^2) pair scan, bounded by the batch row limit;
-        // index rows by constraint if large batches get slow.
-        let last = (0..index)
-            .filter(|&earlier| covers(&rows[earlier], row) || covers(row, &rows[earlier]))
-            .map(|earlier| placed[earlier])
-            .max();
-        let target = plans
-            .iter()
-            .enumerate()
-            .skip(last.unwrap_or(0))
-            .find(|(plan, members)| {
-                same_shape(&rows[members[0]], row)
-                    && (Some(*plan) != last
-                        || !members.iter().any(|&member| covers(&rows[member], row)))
-            })
-            .map(|(plan, _)| plan);
-        let plan = target.unwrap_or_else(|| {
-            plans.push(Vec::new());
-            plans.len() - 1
-        });
-        plans[plan].push(index);
-        placed.push(plan);
-    }
+    let plans = placement::place(rows);
     let mut built = Vec::with_capacity(plans.len());
     for members in plans {
         let members = members
@@ -294,33 +272,6 @@ fn ordinal_overflow() -> Diagnostic {
             .expect("static code"),
         "Batch ordinal exceeds its scalar domain",
     )
-}
-
-/// Rows share a plan only with the same fields and player routes, in order.
-fn same_shape(left: &KeylessRow<'_>, right: &KeylessRow<'_>) -> bool {
-    let route = |(role, reference): &(RoleId, Reference<'_>)| {
-        (
-            role.clone(),
-            reference.candidates.to_vec(),
-            match &reference.identity {
-                ReferenceIdentity::Iid(_) => None,
-                ReferenceIdentity::Key { attribute, value } => {
-                    Some(((*attribute).clone(), value.value_type()))
-                }
-            },
-        )
-    };
-    left.fields.len() == right.fields.len()
-        && left
-            .fields
-            .iter()
-            .zip(right.fields)
-            .all(|(left, right)| left.0 == right.0 && left.1.value_type() == right.1.value_type())
-        && left
-            .players
-            .iter()
-            .map(route)
-            .eq(right.players.iter().map(route))
 }
 
 /// Whether `row`'s put pattern may match the instance `earlier` inserts:
