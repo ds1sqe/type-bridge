@@ -1,6 +1,6 @@
 import { Iid } from "@type-bridge/node";
 import { Account, AccountHandle, Item, ItemHandle, Purchase } from "./generated_plan_idioms/src/index.js";
-import { Plan, type Expr, type Pending, type StagedTransaction, type Value } from "@type-bridge/node";
+import { Plan, type Expr, type Pending, type PlanCondition, type StagedTransaction, type Value } from "@type-bridge/node";
 import { Named } from "./generated_plan_names/src/index.js";
 
 function expectType<T>(_value: T): void {}
@@ -31,6 +31,12 @@ export function purchase(transaction: StagedTransaction): void {
     return Purchase.insert({ orderId: "O1", buyer, item });
   });
   expectType<Plan<Purchase[]>>(order);
+  Plan.build((p) => {
+    const item = Item.match("I1");
+    expectType<PlanCondition>(item.price.le(Account.balance));
+    expectType<AccountHandle>(Account.match("A1").where(item.price.le(Account.balance)));
+    return p.count();
+  });
   expectType<Pending<Purchase[]>>(transaction.stage(order));
   expectType<Purchase[]>(transaction.stage(order).result());
   expectType<Plan<Item[]>>(Plan.build(() => Item.insertMany([{ itemId: "I2", price: 3n }])));

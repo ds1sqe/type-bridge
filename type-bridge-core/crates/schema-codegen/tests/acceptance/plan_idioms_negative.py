@@ -19,6 +19,8 @@ with Plan():
     Item.insert_many([Item.Values(item_id="missing-price")])  # error
     item.set(item_id="immutable-key")  # error
     Item.by_iid("0x1234")  # error
+    Account.match("A1").where(item.item_id <= Account.balance)  # error
+    Account.match("A1").where(item.price <= Account.id)  # error
 
 
 builder = Plan.builder()

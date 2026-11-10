@@ -6,6 +6,10 @@ Plan.build(() => {
   const account = Account.match("A1");
   // @ts-expect-error scalar domain
   item.set({ stock: "wrong" });
+  // @ts-expect-error a string value cannot compare with an integer class token
+  account.where(item.itemId.le(Account.balance));
+  // @ts-expect-error an integer value cannot compare with a string class token
+  account.where(item.price.le(Account.id));
   // @ts-expect-error arithmetic domain
   item.stock.sub("wrong");
   // @ts-expect-error strings have no arithmetic operators

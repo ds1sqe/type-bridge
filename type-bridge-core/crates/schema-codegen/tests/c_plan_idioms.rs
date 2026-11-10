@@ -1,5 +1,6 @@
 //! Generated nominal plan wrappers compile as C17 and C++17.
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::projection::{BindingTarget, CSymbolPrefix, ProjectionConfig};
@@ -440,6 +441,59 @@ fn cyclic_relation_player_views_are_nonrecursive_and_compile_in_c_and_cpp() {
             output.status.success(),
             "{compiler}: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn cross_binding_comparisons_check_the_scalar_type() {
+    let generated = package(
+        include_str!("acceptance/schema-plan-idioms.yaml"),
+        ProjectionConfig::c(CSymbolPrefix::new("acme").unwrap()),
+    )
+    .unwrap();
+    let stage = Stage::new();
+    write_package(&generated, stage.path());
+    let header = "#include <acme/models.h>\n";
+    let positive = stage.path().join("price-left.c");
+    fs::write(&positive, format!("{header}tb_cond_t ok(type_bridge_plan_builder_t *p, acme_item_handle_t item, acme_account_handle_t buyer) {{ (void)acme_item_plan_itemzhid(p, item); return tb_long_le(acme_item_plan_price(p, item), acme_account_plan_balance(p, buyer)); }}\n")).unwrap();
+    let negative = stage.path().join("wrong-scalar.c");
+    fs::write(&negative, format!("{header}tb_cond_t wrong(type_bridge_plan_builder_t *p, acme_item_handle_t item, acme_account_handle_t buyer) {{ return tb_long_le(acme_item_plan_itemzhid(p, item), acme_account_plan_balance(p, buyer)); }}\n")).unwrap();
+    for (compiler, language, standard) in [("cc", "c", "c17"), ("c++", "c++", "c++17")] {
+        let check = |source: &Path| {
+            Command::new(compiler)
+                .args([
+                    "-x",
+                    language,
+                    &format!("-std={standard}"),
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-fsyntax-only",
+                    "-I",
+                ])
+                .arg(runtime_include())
+                .arg("-I")
+                .arg(stage.path().join("include"))
+                .arg(source)
+                .output()
+                .unwrap()
+        };
+        let accepted = check(&positive);
+        assert!(
+            accepted.status.success(),
+            "{compiler}: {}",
+            String::from_utf8_lossy(&accepted.stderr)
+        );
+        let refused = check(&negative);
+        assert!(
+            !refused.status.success(),
+            "{compiler} compared a string field with an integer field"
+        );
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("tb_long_le"),
+            "{compiler}: {}",
+            String::from_utf8_lossy(&refused.stderr)
         );
     }
 }

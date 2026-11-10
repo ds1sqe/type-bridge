@@ -8,6 +8,7 @@ from type_bridge.plan import (
     Matched,
     Pending,
     Plan,
+    PlanCondition,
     PlanInput,
     StagedResultRef,
     Transaction,
@@ -31,6 +32,11 @@ def purchase(transaction: Transaction, item_id: str, account_id: str, order_id: 
     bought = transaction.stage(order)
     assert_type(bought, Pending[list[Purchase]])
     assert_type(bought.result(), list[Purchase])
+    with Plan():
+        item = Item.match(item_id)
+        price_left = Account.match(account_id).where(item.price <= Account.balance)
+        assert_type(price_left, AccountHandle)
+        assert_type(item.price.le(Account.balance), PlanCondition)
     with Plan():
         removed = Item.subtypes(item_id=item_id).delete_returning()
     assert_type(removed, Plan[list[Item]])

@@ -211,6 +211,13 @@ fn main() {
         p.count()
     }).unwrap();
     assert!(!strings.canonical_bytes().unwrap().is_empty());
+    let price_left: Plan<i64> = Plan::build(|p| {
+        let item = Item::matching(p, "I1");
+        let buyer = Account::matching(p, "A1");
+        let _buyer: AccountHandle = buyer.clone().where_(item.price().le(buyer.balance()));
+        p.count()
+    }).unwrap();
+    assert!(!price_left.canonical_bytes().unwrap().is_empty());
     let count: Plan<i64> = Plan::build(|p| {
         Item::matching_by(p).item_id("I1").stock(2_i64).handle();
         p.count()
@@ -291,6 +298,10 @@ fn main() {
         (
             r#"use models::*; fn main() { let _: Plan<Vec<Purchase>> = Plan::build(|p| { let item = Item::matching(p, "I1"); Purchase::insert(p, PurchaseInsert { order_id: "O1".into(), buyer: &item, item: &item }) }).unwrap(); }"#,
             "RolePlayerBinding",
+        ),
+        (
+            r#"use models::*; fn main() { let _: Plan<i64> = Plan::build(|p| { let item = Item::matching(p, "I1"); let buyer = Account::matching(p, "A1"); let _ = buyer.clone().where_(item.item_id().le(buyer.balance())); p.count() }).unwrap(); }"#,
+            "Comparable<String>",
         ),
     ] {
         fs::write(consumer.join("src/main.rs"), source).unwrap();
