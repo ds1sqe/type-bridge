@@ -1080,6 +1080,7 @@
       "Prepare Rust queries evidence outputs": "success",
       "Prove verify does not create databases": "success",
       "Restore cargo build cache": "success",
+      "Run CLI completed legacy history then evolve lifecycle": "success",
       "Run CLI empty-workspace replay lifecycle": "success",
       "Run Rust ORM integration suite": "success",
       "Run compiled C runtime transaction live smoke": "success",
@@ -1397,7 +1398,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "0205319bba27a98d58c53d2e4320f0c7edc7a2d722adb330566f1471800aa5f4",
+  "ci_workflow_sha256": "f73b14c9fab20ab19d7232248e3eca83de9226f3abd5f9e7cbf4ba03dcc102c1",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-3.0.0.tar.gz",
   "format": "typebridge.c-release-policy/v1",

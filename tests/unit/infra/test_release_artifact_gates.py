@@ -998,6 +998,7 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     test_script = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
     tests = (
         "empty_workspace_to_replayed_history_live",
+        "completed_legacy_history_then_evolve_live",
         "documented_examples_initial_constraints_apply_and_verify_live",
         "verify_never_creates_databases_live",
     )

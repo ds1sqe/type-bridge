@@ -727,6 +727,17 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-cli --test e2e_workspace_live
 
+      - name: Run CLI completed legacy history then evolve lifecycle
+        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          completed_legacy_history_then_evolve_live
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
+
       - name: Prove verify does not create databases
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:

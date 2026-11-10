@@ -92,6 +92,7 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     gate_call = "scripts/ci/run_exact_ignored_rust_test.sh"
     positive_tests = {
         "empty_workspace_to_replayed_history_live",
+        "completed_legacy_history_then_evolve_live",
         "documented_examples_initial_constraints_apply_and_verify_live",
         "verify_never_creates_databases_live",
     }

@@ -926,6 +926,11 @@ async fn completed_legacy_history_then_evolve_live() {
     let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap();
     let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
     let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    // SAFETY: test process, set before any CLI child spawns.
+    unsafe {
+        std::env::set_var("TYPEDB_USERNAME", &username);
+        std::env::set_var("TYPEDB_PASSWORD", &password);
+    }
     let primary = support::live_database_name("tb270_06b_adopted_cli");
     let journal_name = type_bridge_schema_migration_typedb::derived_journal_database_name(&primary);
     let options = connect_options(&http_port);

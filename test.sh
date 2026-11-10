@@ -623,6 +623,7 @@ run_live_migration_steps() {
     printf "${BOLD}━━━ CLI workspace lifecycle (integration) ━━━${RESET}\n\n"
     for cli_live_test in \
         empty_workspace_to_replayed_history_live \
+        completed_legacy_history_then_evolve_live \
         documented_examples_initial_constraints_apply_and_verify_live \
         verify_never_creates_databases_live; do
         if [[ "$cli_live_test" == documented_examples_initial_constraints_apply_and_verify_live \
