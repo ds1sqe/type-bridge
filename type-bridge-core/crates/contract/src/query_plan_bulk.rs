@@ -248,20 +248,25 @@ pub(super) fn standalone_scalar_entity(spec: &PlanSpec, schema: &DeclaredSchema)
     })
 }
 
-/// Whether a write plan puts exactly one thing for at most one input row:
-/// its only write is one `Put` of one thing answered by the terminal fetch,
-/// and its `Match` (if any) binds only that thing's role players, each by
-/// IID or by a key ownership, plus value assignments. Such a plan answers
-/// at most one document unless the put pattern matched several instances.
+/// Whether a write plan puts exactly one thing per input row: its only
+/// write is one `Put` of one thing answered by the terminal fetch, and its
+/// `Match` (if any) binds only that thing's role players, each by IID or by
+/// a key ownership, plus value assignments. Such a plan answers at most one
+/// document per input row unless the put pattern matched several instances.
+/// With several input rows, the fetch answers an `ordinal` scalar assigned
+/// from an input column with a distinct value in every row, which tells the
+/// rows' documents apart.
 pub(super) fn single_row_put(spec: &PlanSpec, schema: &DeclaredSchema) -> bool {
-    if spec.given_rows.as_ref().is_some_and(|rows| rows.len() > 1) {
-        return false;
-    }
     let (patterns, put, fetch) = match spec.pipeline.as_slice() {
         [put, Stage::Fetch(fetch)] => (&[][..], put, fetch),
         [Stage::Match { patterns }, put, Stage::Fetch(fetch)] => (patterns.as_slice(), put, fetch),
         _ => return false,
     };
+    if let Some(rows) = spec.given_rows.as_ref().filter(|rows| rows.len() > 1)
+        && !distinct_row_ordinals(rows, patterns, fetch)
+    {
+        return false;
+    }
     let Stage::Put { things, .. } = put else {
         return false;
     };
@@ -295,6 +300,33 @@ pub(super) fn single_row_put(spec: &PlanSpec, schema: &DeclaredSchema) -> bool {
     identified_players(&reads, &players, &index).is_some_and(|mut identified| {
         identified.extend(by_iid);
         identified == players
+    })
+}
+
+fn distinct_row_ordinals(rows: &[InputRow], patterns: &[Pattern], fetch: &ThingDocument) -> bool {
+    let Some(binding) = fetch
+        .scalars
+        .iter()
+        .find(|scalar| scalar.key.as_str() == "ordinal")
+        .map(|scalar| scalar.binding)
+    else {
+        return false;
+    };
+    let Some(column) = patterns.iter().find_map(|pattern| match pattern {
+        Pattern::Let {
+            binding: assigned,
+            expr: Expr::Operand(QueryOperand::Input { column }),
+        } if *assigned == binding => Some(usize::from(column.get())),
+        _ => None,
+    }) else {
+        return false;
+    };
+    let mut seen = BTreeSet::new();
+    rows.iter().all(|row| {
+        row.values()
+            .get(column)
+            .and_then(Option::as_ref)
+            .is_some_and(|value| seen.insert(value))
     })
 }
 
@@ -403,8 +435,9 @@ fn put_ambiguous_match() -> Diagnostic {
 }
 
 impl QueryPlan {
-    /// Refuse a single-row put whose pattern matched several instances,
-    /// before the provider commits.
+    /// Refuse a put whose pattern matched several instances for one input
+    /// row, before the provider commits. `documents` counts the documents
+    /// answered for one row: with several rows, those with its `ordinal`.
     pub fn validate_single_row_put_answer(&self, documents: usize) -> Result<(), Diagnostic> {
         if self.single_row_put && documents > 1 {
             return Err(put_ambiguous_match());

@@ -1155,7 +1155,7 @@ struct Consumer<'a, R> {
     plan: &'a type_bridge_contract::query_plan::QueryPlan,
     reply: Reply,
     deferred: Option<SdkExecutionDiagnostic>,
-    documents: usize,
+    documents: crate::query_plan_exec::PutRowDocuments,
 }
 
 fn evidence(error: Diagnostic) -> OrmError {
@@ -1189,10 +1189,9 @@ impl<R: FnMut(&AnswerItem) + Send> Consumer<'_, R> {
                     )
                     .into());
                 };
-                self.documents += 1;
-                // A single-row put answering a second document matched several instances.
+                // A put row answering a second document matched several instances.
                 self.plan
-                    .validate_single_row_put_answer(self.documents)
+                    .validate_single_row_put_answer(self.documents.count(&document))
                     .map_err(crate::execution_diagnostic::plan_answer_error)?;
                 let fields =
                     query_plan_exec::remote_document(&document, self.plan).map_err(evidence)?;
@@ -1399,7 +1398,7 @@ fn accept_native_answer(
         plan,
         reply,
         deferred: None,
-        documents: 0,
+        documents: Default::default(),
     };
     match (reply, answer) {
         (Reply::MatchedDeletion, crate::query_plan_exec::PlanAnswer::Matched(_))
@@ -1554,7 +1553,7 @@ async fn dispatch_query<R: FnMut(&AnswerItem) + Send>(
         plan,
         reply,
         deferred: None,
-        documents: 0,
+        documents: Default::default(),
     };
     let mut observed = LocallyBoundedConsumer::new(&mut consumer, limits.answer.clone());
     let future = lease.dispatch_plan_bounded(query, limits, &mut observed);
@@ -1790,7 +1789,7 @@ mod native_input_tests {
                             plan: native.local(),
                             reply: Reply::MatchedDeletion,
                             deferred: None,
-                            documents: 0,
+                            documents: Default::default(),
                         };
                         assert_eq!(
                             consumer

@@ -1247,6 +1247,21 @@ pub(crate) fn validate_snapshot(plan: &QueryPlan, result: &QueryResult) -> Resul
     Ok(())
 }
 
+/// Documents answered per input row of a put: a grouped put answers each
+/// row's `ordinal` scalar; a single-row put answers none.
+#[derive(Default)]
+pub(crate) struct PutRowDocuments(std::collections::BTreeMap<Option<String>, usize>);
+
+impl PutRowDocuments {
+    /// Count one document and return how many its row has answered.
+    pub(crate) fn count(&mut self, document: &serde_json::Value) -> usize {
+        let row = document.get("ordinal").map(ToString::to_string);
+        let count = self.0.entry(row).or_default();
+        *count += 1;
+        *count
+    }
+}
+
 /// Validate document evidence before a transaction can commit.
 pub(crate) fn resolve_plan(
     plan: &QueryPlan,
@@ -1269,7 +1284,10 @@ pub(crate) fn resolve_plan_with_wire(
         let QueryResult::Documents(documents) = result else {
             return Err(staged_answer_shape());
         };
-        plan.validate_single_row_put_answer(documents.len())?;
+        let mut rows = PutRowDocuments::default();
+        for document in &documents {
+            plan.validate_single_row_put_answer(rows.count(document))?;
+        }
         let documents = documents
             .iter()
             .map(|document| remote_document(document, plan))
