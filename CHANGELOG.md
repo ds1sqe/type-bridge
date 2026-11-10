@@ -1260,16 +1260,17 @@ add the limits argument described in the upgrade guide.
   subtype instance is not matched. The upgrade guide's "Keyless put" section
   lists the semantics.
 - Python, Node and C keyless `put_many` and explicit batch `Put` change from
-  refused to match-or-insert, one put statement per row in one transaction;
-  identical rows return the same instance. The `put_requires_projected_key`
-  refusal is removed. Because each row is its own statement, one keyless
-  `put_many` holds at most 64 rows through the proxy (one staged plan per row;
-  more is refused with `query_remote_plan_limit` before anything runs). A
-  direct call is bounded by its effective resource limits; a caller-set
-  `statements` limit counts one statement per row and refuses when the batch
-  is built. A Rust keyless `put_many` of
-  more than 64 rows through the proxy used to succeed as one insert and is now
-  refused; split it into calls of at most 64 rows.
+  refused to match-or-insert in one transaction, with the answers of
+  sequential single-row puts in row order; identical rows return the same
+  instance. The `put_requires_projected_key` refusal is removed. Rows of one
+  shape (the same fields and player references) share one put statement, so
+  distinct rows need one statement whatever their number. A row that may
+  match an earlier row's instance (equal values, or a subset of its fields
+  and players) runs in a later statement. Through the proxy one call holds at
+  most 64 statements (staged plans); a call that needs more is refused with
+  `query_remote_plan_limit` before anything runs. A direct call is bounded by
+  its effective resource limits; a caller-set `statements` limit is charged
+  with the statements the call needs, before anything runs.
 - A keyless put whose pattern matches more than one existing instance fails
   with `put_ambiguous_match` (invalid input) before commit; in `put_many` the
   whole call is refused and no row is committed. The same rule applies to

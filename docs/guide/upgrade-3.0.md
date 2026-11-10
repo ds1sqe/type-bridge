@@ -303,16 +303,19 @@ every supplied field value and, for relations, every supplied role player.
 - If the pattern matches more than one existing instance, for example
   duplicates left by earlier inserts, the call fails with
   `put_ambiguous_match` before commit and writes nothing.
-- `put_many` runs one put statement per row, in row order, in one transaction
-  with one commit. Identical rows return the same instance. One ambiguous row
-  refuses the whole call; no row is committed.
-- One statement per row bounds a keyless `put_many`: at most 64 rows through
-  the proxy, where each row is one staged plan (more is refused with
-  `query_remote_plan_limit` before anything runs). A direct call is bounded by
-  its effective resource limits. A caller-set `statements` limit counts one
-  statement per keyless row and refuses the batch when it is built. Split larger inputs into several
-  calls; each call commits on its own. A Rust keyless `put_many` of more than
-  64 rows through the proxy previously succeeded as a single insert.
+- `put_many` answers as sequential single-row puts in row order, in one
+  transaction with one commit. Identical rows return the same instance. One
+  ambiguous row refuses the whole call; no row is committed.
+- Rows of one shape (the same fields and player references) share one put
+  statement. A row that may match an earlier row's instance (equal values, or
+  a subset of its fields and players) runs in a later statement, so it sees
+  that instance. A call of distinct rows is one statement.
+- Through the proxy one call holds at most 64 statements, one staged plan
+  each; a call that needs more, such as 65 identical rows, is refused with
+  `query_remote_plan_limit` before anything runs. A direct call is bounded by
+  its effective resource limits; a caller-set `statements` limit is charged
+  with the statements the call needs, before anything runs. Split larger
+  inputs into several calls; each call commits on its own.
 - A row too large for one plan is refused with the plan's limit diagnostic;
   a keyless put pattern is never split.
 - TypeQL `put` does not guard against concurrent writers. Two transactions can
