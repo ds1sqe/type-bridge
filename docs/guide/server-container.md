@@ -1,16 +1,5 @@
 # TypeBridge Server Container
 
-**Security update:** Upgrade to TypeBridge 2.2.5. Its prebuilt distributions
-use rustls 0.23.46, which fixes RUSTSEC-2026-0346 through RUSTSEC-2026-0349
-and the earlier
-[RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
-Its server image also installs Debian's fixed Bookworm PCRE2 and Perl
-packages.
-In 2.2.5, write queries ending in `fetch` return commit failures instead of
-documents for writes that were never stored.
-The [2.2.1 post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
-records the affected earlier release.
-
 The TypeBridge container product is the standalone staged query server:
 
 ```text
@@ -223,7 +212,7 @@ Verify the tag signature with Cosign 3:
 ```bash
 cosign verify \
   --certificate-identity \
-    'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.2.5' \
+    'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v3.0.0' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "$TYPE_BRIDGE_SERVER_IMAGE"
 ```
@@ -233,17 +222,18 @@ per-platform digests plus attestation URLs. Release acceptance also reports
 the compressed layer size, installed runtime packages, closed runtime file
 set, and the vulnerability/secret scan result.
 
-The build-provenance attestations bind the image to release source
-`51f15f5f92c4b954de94aaf7a7f67e03e877e16c` and its tagged release workflow.
-Verify the source and signing identity:
+The build-provenance attestations bind the image to its tagged release
+workflow and release source commit, which the image also carries as its
+`org.opencontainers.image.revision` label. Set `RELEASE_SOURCE_COMMIT` to that
+commit and verify the source and signing identity:
 
 ```bash
 gh attestation verify "oci://$TYPE_BRIDGE_SERVER_IMAGE" \
   --repo ds1sqe/type-bridge \
-  --cert-identity 'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.2.5' \
+  --cert-identity 'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v3.0.0' \
   --cert-oidc-issuer https://token.actions.githubusercontent.com \
-  --source-digest 51f15f5f92c4b954de94aaf7a7f67e03e877e16c \
-  --source-ref refs/tags/v2.2.5 \
+  --source-digest "$RELEASE_SOURCE_COMMIT" \
+  --source-ref refs/tags/v3.0.0 \
   --predicate-type 'https://slsa.dev/provenance/v1'
 ```
 
