@@ -3096,7 +3096,7 @@ fn document_attribute_type_to_json(label: &str, value_type: Option<&str>) -> ser
 
 fn runtime_document_member_error(message: &'static str) -> RuntimeError {
     RuntimeError::ResourceLimit {
-        code: "query_v2_document_member_limit",
+        code: "document_member_limit",
         message,
     }
 }
@@ -4494,7 +4494,7 @@ mod tests {
         assert!(matches!(
             error,
             RuntimeError::ResourceLimit {
-                code: "query_v2_document_member_limit",
+                code: "document_member_limit",
                 ..
             }
         ));

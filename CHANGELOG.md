@@ -1294,6 +1294,10 @@ add the limits argument described in the upgrade guide.
   (crate root and `session`), the `session::legacy_writer` module and the
   `TransactionOps::schema_snapshot` backend hook. The upgrade guide's "ORM
   schema sync" section lists the replacement.
+- The resource-limit error code `query_v2_document_member_limit`, raised when
+  a fetched document exceeds its member budget, is renamed to
+  `document_member_limit`, matching `processed_item_limit` and
+  `response_byte_limit`. Update code that matches the old string.
 
 <!-- --8<-- [end:breaking-3-0] -->
 
