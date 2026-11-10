@@ -1,4 +1,4 @@
-import { PlanCondition, PlanExpr, PlanInput, PlanValue } from "./plan.js";
+import { PlanCondition, PlanExpr, PlanInput, PlanValue, type FieldToken } from "./plan.js";
 /** @internal The recording supplies implicit input binding and ownership checks. */
 export interface ValueRecorder {
     bind(value: unknown, floating?: boolean): PlanInput<unknown>;
@@ -26,12 +26,12 @@ export declare class Value<T> {
     /** @internal */
     constructor(raw: PlanValue, recorder: ValueRecorder);
     private comparison;
-    eq(other: Comparable<T>): PlanCondition;
-    ne(other: Comparable<T>): PlanCondition;
-    lt(other: Comparable<T>): PlanCondition;
-    le(other: Comparable<T>): PlanCondition;
-    gt(other: Comparable<T>): PlanCondition;
-    ge(other: Comparable<T>): PlanCondition;
+    eq(other: Comparable<T> | FieldToken<T>): PlanCondition;
+    ne(other: Comparable<T> | FieldToken<T>): PlanCondition;
+    lt(other: Comparable<T> | FieldToken<T>): PlanCondition;
+    le(other: Comparable<T> | FieldToken<T>): PlanCondition;
+    gt(other: Comparable<T> | FieldToken<T>): PlanCondition;
+    ge(other: Comparable<T> | FieldToken<T>): PlanCondition;
     private stringComparison;
     contains(this: Value<string>, other: Comparable<string>): PlanCondition;
     startsWith(this: Value<string>, other: Comparable<string>): PlanCondition;

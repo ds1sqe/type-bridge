@@ -1095,6 +1095,12 @@ export class Handle<M> {
         if (!this.definition.isFieldToken(deferred.token)) throw new TypeError("field token is not issued by this package");
         const entry = Object.entries(this.definition.fields).find(([, field]) => fieldIdentity(field.token) === fieldIdentity(deferred.token));
         if (entry === undefined) throw new TypeError("the field token does not belong to this model");
+        if (deferred.tokenRight) {
+          // The left value is already bound; the token binds after it.
+          const left = (deferred.value as Value<unknown>).raw;
+          this.recording.builder.where(new PlanCondition(left, deferred.op, this.field<unknown>(entry[0]).raw));
+          continue;
+        }
         const left = this.field<unknown>(entry[0]);
         const right = deferred.value instanceof Value ? deferred.value.raw
           : deferred.value instanceof PlanInput ? deferred.value
@@ -1255,7 +1261,21 @@ export interface FieldToken<T> extends PlanFieldToken {
   like(this: FieldToken<string>, other: string | Value<string> | PlanInput<string>): PlanCondition;
 }
 
-const fieldConditions = new WeakMap<PlanCondition, { token: PlanFieldToken; op: Comparator; value: unknown }>();
+const fieldConditions = new WeakMap<PlanCondition, { token: PlanFieldToken; op: Comparator; value: unknown; tokenRight?: true }>();
+const classFieldTokens = new WeakSet<object>();
+const valueComparators = { eq: "equal", ne: "not_equal", lt: "less", le: "less_or_equal", gt: "greater", ge: "greater_or_equal" } as const;
+
+/** @internal Whether `value` is a generated class field token. */
+export function isClassFieldToken(value: unknown): value is PlanFieldToken {
+  return typeof value === "object" && value !== null && classFieldTokens.has(value);
+}
+
+/** @internal `value op token`, with the token resolved by the handle receiving where(). */
+export function valueFieldCondition(value: Value<unknown>, op: "eq" | "ne" | "lt" | "le" | "gt" | "ge", token: PlanFieldToken): PlanCondition {
+  const result = new PlanCondition(new PlanValue(), valueComparators[op], false);
+  fieldConditions.set(result, { token, op: valueComparators[op], value, tokenRight: true });
+  return result;
+}
 
 /** @internal Decorate the generated runtime's existing nominal field token. */
 export function planFieldToken<T, Token extends PlanFieldToken>(token: Token): Token & FieldToken<T> {
@@ -1264,6 +1284,7 @@ export function planFieldToken<T, Token extends PlanFieldToken>(token: Token): T
     fieldConditions.set(result, { token, op, value });
     return result;
   };
+  classFieldTokens.add(token);
   return Object.assign(token, {
     eq: (value: unknown) => condition("equal", value),
     ne: (value: unknown) => condition("not_equal", value),

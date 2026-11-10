@@ -1,4 +1,4 @@
-import { PlanCondition, PlanExpr, PlanInput, PlanValue, type PlanOperand } from "./plan.js";
+import { PlanCondition, PlanExpr, PlanInput, PlanValue, isClassFieldToken, valueFieldCondition, type FieldToken, type PlanOperand } from "./plan.js";
 
 /** @internal The recording supplies implicit input binding and ownership checks. */
 export interface ValueRecorder {
@@ -39,17 +39,18 @@ export class Value<T> {
   /** @internal */
   constructor(readonly raw: PlanValue, private readonly recorder: ValueRecorder) { Object.freeze(this); }
 
-  private comparison(op: "eq" | "ne" | "lt" | "le" | "gt" | "ge", other: Comparable<T>): PlanCondition {
-    const right = operand(this.recorder, other);
+  private comparison(op: "eq" | "ne" | "lt" | "le" | "gt" | "ge", other: Comparable<T> | FieldToken<T>): PlanCondition {
+    if (isClassFieldToken(other)) return valueFieldCondition(this as Value<unknown>, op, other);
+    const right = operand(this.recorder, other as Comparable<T>);
     if (right instanceof PlanExpr) throw new TypeError("a comparison requires a bound scalar");
     return this.raw[op](right);
   }
-  eq(other: Comparable<T>): PlanCondition { return this.comparison("eq", other); }
-  ne(other: Comparable<T>): PlanCondition { return this.comparison("ne", other); }
-  lt(other: Comparable<T>): PlanCondition { return this.comparison("lt", other); }
-  le(other: Comparable<T>): PlanCondition { return this.comparison("le", other); }
-  gt(other: Comparable<T>): PlanCondition { return this.comparison("gt", other); }
-  ge(other: Comparable<T>): PlanCondition { return this.comparison("ge", other); }
+  eq(other: Comparable<T> | FieldToken<T>): PlanCondition { return this.comparison("eq", other); }
+  ne(other: Comparable<T> | FieldToken<T>): PlanCondition { return this.comparison("ne", other); }
+  lt(other: Comparable<T> | FieldToken<T>): PlanCondition { return this.comparison("lt", other); }
+  le(other: Comparable<T> | FieldToken<T>): PlanCondition { return this.comparison("le", other); }
+  gt(other: Comparable<T> | FieldToken<T>): PlanCondition { return this.comparison("gt", other); }
+  ge(other: Comparable<T> | FieldToken<T>): PlanCondition { return this.comparison("ge", other); }
   private stringComparison(op: "contains" | "starts_with" | "ends_with" | "like", other: Comparable<T>): PlanCondition {
     const right = operand(this.recorder, other);
     if (right instanceof PlanExpr) throw new TypeError("a comparison requires a bound scalar");

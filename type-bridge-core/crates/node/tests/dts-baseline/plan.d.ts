@@ -495,6 +495,10 @@ export interface FieldToken<T> extends PlanFieldToken {
     endsWith(this: FieldToken<string>, other: string | Value<string> | PlanInput<string>): PlanCondition;
     like(this: FieldToken<string>, other: string | Value<string> | PlanInput<string>): PlanCondition;
 }
+/** @internal Whether `value` is a generated class field token. */
+export declare function isClassFieldToken(value: unknown): value is PlanFieldToken;
+/** @internal `value op token`, with the token resolved by the handle receiving where(). */
+export declare function valueFieldCondition(value: Value<unknown>, op: "eq" | "ne" | "lt" | "le" | "gt" | "ge", token: PlanFieldToken): PlanCondition;
 /** @internal Decorate the generated runtime's existing nominal field token. */
 export declare function planFieldToken<T, Token extends PlanFieldToken>(token: Token): Token & FieldToken<T>;
 export {};

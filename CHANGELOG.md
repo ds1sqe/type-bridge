@@ -1447,6 +1447,10 @@ add the limits argument described in the upgrade guide.
   as typed given inputs and retain the shared builder's canonical bytes.
   Model and mixed model/scalar selections publish only after the full Core
   fetch proof succeeds, before commit; SDKs share its row and model ordinals.
+  A bound value may compare with a class field token on the right, as in
+  `item.price.le(Account.balance)` (TypeScript) or
+  `item.price <= Account.balance` (Python); the handle receiving `where()`
+  resolves the token, and a token of another model is refused.
 - C ABI 2.0 includes typed scalar carriers, held model/scalar/tuple selections,
   frozen recording caches, and borrowed model views checked against generated
   layout digests. Result owners may outlive recordings and transactions.
