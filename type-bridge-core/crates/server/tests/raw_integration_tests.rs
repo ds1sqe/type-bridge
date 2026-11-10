@@ -637,7 +637,7 @@ async fn production_binary_serves_staged_and_removed_routes() {
     let base = format!("http://127.0.0.1:{port}");
     assert_eq!(
         wait_for_production_health(&mut server, &client, &base).await,
-        json!({"status":"ok","version":"1.5.11","typedb_connected":true})
+        json!({"status":"ok","version":env!("CARGO_PKG_VERSION"),"typedb_connected":true})
     );
     let health = client
         .get(format!("{base}/health"))
@@ -649,7 +649,11 @@ async fn production_binary_serves_staged_and_removed_routes() {
         .unwrap();
     assert_eq!(
         health.as_ref(),
-        br#"{"status":"ok","version":"1.5.11","typedb_connected":true}"#
+        format!(
+            r#"{{"status":"ok","version":"{}","typedb_connected":true}}"#,
+            env!("CARGO_PKG_VERSION")
+        )
+        .as_bytes()
     );
     for path in [
         "/query",
