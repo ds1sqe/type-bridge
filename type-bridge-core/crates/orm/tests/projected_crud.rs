@@ -3011,12 +3011,13 @@ fn native_manager_future_sizes_stay_bounded() {
     }
 }
 
-// Backtrace origin unavailable in macOS global allocator (see
-// allocations::count_from); the bulk-allocation invariant is platform
-// independent and stays covered on Linux and Windows.
-#[cfg(not(target_os = "macos"))]
 #[tokio::test]
 async fn default_manager_read_does_not_allocate_an_authored_bulk_payload() {
+    // Backtrace origin unavailable in macOS global allocator (see
+    // allocations::count_from): macOS runs the reads but skips the
+    // origin-filtered zero check, which Linux and Windows keep.
+    let origin = (!cfg!(target_os = "macos"))
+        .then_some("match_request::plan_fetch_stack::build_bulk_plan_fetch_stack");
     for target_route in [false, true] {
         let installed = installed_with_authority();
         let (backend, state) = RecordingBackend::new(
@@ -3032,7 +3033,7 @@ async fn default_manager_read_does_not_allocate_an_authored_bulk_payload() {
         let count = if target_route {
             let (result, count) = allocations::count_from(
                 bytes,
-                Some("match_request::plan_fetch_stack::build_bulk_plan_fetch_stack"),
+                origin,
                 crud.get_by_iid_on_target(
                     type_bridge_orm::QueryTarget::Database(&db),
                     &person,
@@ -3046,17 +3047,19 @@ async fn default_manager_read_does_not_allocate_an_authored_bulk_payload() {
         } else {
             let (result, count) = allocations::count_from(
                 bytes,
-                Some("match_request::plan_fetch_stack::build_bulk_plan_fetch_stack"),
+                origin,
                 crud.get_entity_by_iid(&db, &person, "0x10"),
             )
             .await;
             assert_eq!(result.unwrap().unwrap().iid(), "0x10");
             count
         };
-        assert_eq!(
-            count, 0,
-            "default manager read allocated a {bytes}-byte bulk payload"
-        );
+        if origin.is_some() {
+            assert_eq!(
+                count, 0,
+                "default manager read allocated a {bytes}-byte bulk payload"
+            );
+        }
         assert_eq!(state.lock().unwrap().opens, vec![TxType::Read]);
     }
 }

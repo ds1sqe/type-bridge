@@ -767,14 +767,37 @@ pub(crate) fn decode_wildcard_roles(
         nested.push(node);
         players.entry(role.role().clone()).or_default().push(player);
     }
-    for (role, player, node) in specialized {
-        let listed = players.entry(role).or_default();
-        if !listed.iter().any(|existing| existing.iid == player.iid) {
-            nested.push(node);
-            listed.push(player);
-        }
-    }
+    merge_specialized_evidence(&mut players, &mut nested, specialized);
     complete_roles(descriptor, players, nested)
+}
+
+/// Add parent-label evidence unless the specializing label already returned
+/// that player. Compare against a snapshot of specializing-label players only,
+/// so a player that fills a non-distinct role twice keeps both parent copies.
+fn merge_specialized_evidence(
+    players: &mut BTreeMap<RoleId, Vec<PlayerDraft>>,
+    nested: &mut Vec<NodeDraft>,
+    specialized: Vec<(RoleId, PlayerDraft, NodeDraft)>,
+) {
+    let direct: BTreeMap<RoleId, BTreeSet<String>> = players
+        .iter()
+        .map(|(role, listed)| {
+            (
+                role.clone(),
+                listed.iter().map(|player| player.iid.clone()).collect(),
+            )
+        })
+        .collect();
+    for (role, player, node) in specialized {
+        if direct
+            .get(&role)
+            .is_some_and(|iids| iids.contains(&player.iid))
+        {
+            continue;
+        }
+        nested.push(node);
+        players.entry(role).or_default().push(player);
+    }
 }
 
 pub(crate) fn decode_exact_roles(
@@ -2240,6 +2263,40 @@ mod specialized_role_tests {
             projected_role(&descriptor, "membership:member").unwrap(),
             "membership:member"
         ));
+    }
+
+    #[test]
+    fn parent_evidence_merges_against_specializing_label_players_only() {
+        let worker = RoleId::new("employment", "worker").unwrap();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let draft = |iid: &str| PlayerDraft {
+            declared: person.clone(),
+            iid: iid.into(),
+        };
+        let node = |iid: &str| NodeDraft {
+            iid: iid.into(),
+            concrete: person.clone(),
+            kind: HydrationNodeKind::Entity,
+            attributes: vec![],
+            roles: vec![],
+            full: false,
+        };
+        // 0x01 came back under the specializing label; its parent copy merges.
+        // 0x02 came back twice under the parent label only; both copies stay.
+        let mut players = BTreeMap::from([(worker.clone(), vec![draft("0x01")])]);
+        let mut nested = vec![node("0x01")];
+        merge_specialized_evidence(
+            &mut players,
+            &mut nested,
+            vec![
+                (worker.clone(), draft("0x01"), node("0x01")),
+                (worker.clone(), draft("0x02"), node("0x02")),
+                (worker.clone(), draft("0x02"), node("0x02")),
+            ],
+        );
+        let iids: Vec<_> = players[&worker].iter().map(|p| p.iid.as_str()).collect();
+        assert_eq!(iids, ["0x01", "0x02", "0x02"]);
+        assert_eq!(nested.len(), 3);
     }
 
     #[test]
