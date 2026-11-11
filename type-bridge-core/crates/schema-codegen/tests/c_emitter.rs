@@ -1901,16 +1901,25 @@ fn high_variant_role_union_keeps_constant_alias_stack() {
             continue;
         }
         invocations += 1;
-        let output = Command::new(compiler)
-            .args([
-                "-std=c17",
-                "-Wall",
-                "-Wextra",
-                "-Werror",
-                "-Wframe-larger-than=3072",
-                "-pedantic-errors",
-                "-fsyntax-only",
-            ])
+        let mut command = Command::new(compiler);
+        command.args([
+            "-std=c17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-Wframe-larger-than=3072",
+            "-pedantic-errors",
+        ]);
+        if compiler == "gcc" {
+            // Emit unused header inlines and keep scoped locals apart, as MSVC's
+            // stack analysis does; -fsyntax-only never measures a frame.
+            command
+                .args(["-fkeep-inline-functions", "-fstack-reuse=none", "-c", "-o"])
+                .arg(stage.path().join("high-variant.o"));
+        } else {
+            command.arg("-fsyntax-only");
+        }
+        let output = command
             .arg("-I")
             .arg(&runtime_include)
             .arg("-I")
@@ -1948,7 +1957,10 @@ fn high_variant_role_union_keeps_constant_alias_stack() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(output.status.success() && !diagnostics.contains("C6262"));
+        assert!(
+            output.status.success() && !diagnostics.contains("C6262"),
+            "MSVC rejected the constant-frame high-variant C:\n{diagnostics}"
+        );
     }
     assert!(
         invocations > 0,

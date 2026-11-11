@@ -179,10 +179,12 @@ fn player_call(
             status = type_bridge_plan_builder_check_handle(p, {player}.recording, {player}.binding); if (status != TYPE_BRIDGE_STATUS_OK) return status;
             status = {function}(p, h.binding, type_bridge_plan_builder_model_role(p, h.model_ordinal, {role_index}u), {player}.binding); if (status != TYPE_BRIDGE_STATUS_OK) return status; }}");
     } else {
+        // Reuse the create helper's alias inputs: a per-player array would grow the
+        // frame with every accepted player under MSVC stack analysis.
         let [add_input, preflight] = generated_alias_helper_symbols(prefix)?;
-        let _ = writeln!(output, "{{ type_bridge_generated_opaque_input_v1_t player_input[1]; size_t player_count = 0u;
-            {add_input}(player_input, &player_count, TYPE_BRIDGE_GENERATED_INPUT_PLAN_BUILDER, {player}.recording, 1u);
-            status = {preflight}(player_input, player_count, out, sizeof(*out), marker_output, marker_output_size); if (status != TYPE_BRIDGE_STATUS_OK) return status; }}");
+        let _ = writeln!(output, "{{ count = 0u;
+            {add_input}(inputs, &count, TYPE_BRIDGE_GENERATED_INPUT_PLAN_BUILDER, {player}.recording, 1u);
+            status = {preflight}(inputs, count, out, sizeof(*out), marker_output, marker_output_size); if (status != TYPE_BRIDGE_STATUS_OK) return status; }}");
     }
     Ok(())
 }
