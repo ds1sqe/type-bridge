@@ -77,7 +77,7 @@ cargo test --workspace
 Generated projection live acceptance additionally exercises a dependency-
 isolated consumer crate, preventing success through workspace-private paths.
 
-### Internal C foundation checks
+### C SDK and runtime checks
 
 ```bash
 ./scripts/check.sh c
@@ -132,7 +132,7 @@ line's semantic profile: 3.12.3 with
 `typedb-3.12.1/v1`, and 3.13.6 and 3.14.0 with `typedb-3.13.6/v1`. The offline tiers run
 once. With `--typedb all`, each line is its own compose project
 (`tb-<worktree>-typedb-<line>`), and the summary lists every lane.
-`--no-integration` runs offline Rust, Python, Node, and internal C-foundation
+`--no-integration` runs offline Rust, Python, Node, and C SDK and runtime
 tiers. `--no-isolated` uses an existing server; its version picks the lane.
 
 | Live step | 3.12.3 | 3.13.6 | 3.14.0 |

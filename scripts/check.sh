@@ -136,9 +136,9 @@ run_node() {
     popd >/dev/null
 }
 
-# ── C foundation checks (matching ci.yml rust-check C steps) ──────────────
+# ── C SDK and runtime checks (matching ci.yml rust-check C steps) ─────────
 run_c() {
-    printf "${BOLD}━━━ C foundation (internal) ━━━${RESET}\n\n"
+    printf "${BOLD}━━━ C SDK and runtime ━━━${RESET}\n\n"
 
     run_step "C distribution contract" \
         python scripts/ci/validate_c_distribution_contract.py

@@ -62,10 +62,10 @@ pub use workspace_yaml::{
     ConfigOrigin, LocatedConfigSpec, TYPEBRIDGE_WORKSPACE_V1_FORMAT, TypeBridgeConfigSpec,
 };
 
-/// The preferred server-semantic profile for newly authored V2 workspaces.
+/// The preferred server-semantic profile for newly authored workspaces.
 ///
-/// It pairs with TypeDB 3.13.6, the recommended server. Existing workspaces
-/// keep the profile they declare.
+/// It pairs with TypeDB 3.13.6 and 3.14.0; 3.14.0 is the recommended server.
+/// Existing workspaces keep the profile they declare.
 pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID: &str = "typedb-3.13.6/v1";
 /// Frozen server-semantic profiles accepted for workspace generation.
 ///

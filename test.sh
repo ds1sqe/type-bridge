@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Full source-tree test suite — Rust + Python + Node + the internal C
-# foundation, unit + integration.
+# Full source-tree test suite — Rust + Python + Node + the C SDK and
+# runtime, unit + integration.
 #
 # Reproduces the CI unit/integration tiers locally. Exact wheel and npm release
 # artifact acceptance remains workflow-only; this script does not build or
@@ -72,7 +72,7 @@ Usage: ./test.sh [--no-integration] [--proxy] [--tls] [--no-isolated]
                  [--typedb <3.12.3|3.13.6|3.14.0|all>] [-- <pytest args>]
 
   --no-integration  Run only the offline tiers (Rust, Python unit, Node unit/dts,
-                    and the internal C foundation).
+                    and the C SDK and runtime).
   --proxy           Additionally run the proxy integration suite (-m proxy).
   --tls             Additionally run dedicated TLS transport tests. In isolated
                     mode this starts a test-only TLS endpoint in front of TypeDB.
@@ -578,7 +578,7 @@ run_step "generated Rust projection acceptance on MSRV 1.88" \
     -p type-bridge-schema-codegen --test rust_acceptance \
     generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
 
-printf "${BOLD}━━━ C foundation (offline, internal) ━━━${RESET}\n\n"
+printf "${BOLD}━━━ C SDK and runtime (offline) ━━━${RESET}\n\n"
 run_step "generated C package and strict installed-compiler checks" \
     cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
     -p type-bridge-schema-codegen --test c_emitter

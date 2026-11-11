@@ -59,7 +59,7 @@ The principal layers are:
 | `schema` | Split-YAML resolution and projection facts |
 | `schema-codegen` | Deterministic Python, TypeScript, Rust and C emitters |
 | `query` | Immutable query authority, validation, and lowering |
-| `migration` / `schema-migration` | Canonical migration planning and state |
+| `schema-migration` / `schema-migration-typedb` | Canonical migration planning, state, and TypeDB execution |
 | `orm` | Generated projection CRUD, query, hydration, and transactions |
 | `typedb-runtime` | Retained TypeDB provider routing and lifecycle |
 | `python` / `node` / `rust` / `c` | Language boundaries over the shared engine |
@@ -122,9 +122,11 @@ bounded operation transaction, or a caller-owned transaction for atomic
 multi-operation work. Native database, transaction, prepared-request, and
 reply handles are one-shot/lease-aware and reject use after close or consume.
 
-Provider selection first obtains or accepts an exact server version, validates
-the 3.12–3.14 support window, and then uses band 9. Unknown and retired
-versions fail before application data work. See [TypeDB integration](typedb.md).
+Provider selection first obtains or accepts an exact server version, admits
+3.12.0 or newer, and then uses band 9. Lines newer than the measured 3.12–3.14
+window reuse the newest measured profile with one warning per connection;
+older versions fail before application data work. See
+[TypeDB integration](typedb.md).
 
 ## Migration and archive separation
 
@@ -144,7 +146,7 @@ TOML conversion requires 2.3.x before upgrading; 3.0 uses Split-YAML.
 The release graph is closed:
 
 - TypeBridge product crates share the exact product version.
-- TypeDB bands 8 and 9 are the only active providers.
+- TypeDB band 9 is the only active provider.
 - Python, npm, and Cargo archive validators inspect exact member sets and
   reject removed authoring/provider payloads.
 - Native notices are generated from the packaged Cargo graph.

@@ -10,8 +10,8 @@ That file is the canonical product and verification boundary.
 - `uv`
 - Rust 1.88 or newer
 - Node 18 or newer; Node 20 is the primary development lane
-- CMake 3.20+ plus C17 and C++17 compilers when working on the internal C
-  foundation; the native-host gate requires GCC and Clang on Linux, Clang on
+- CMake 3.20+ plus C17 and C++17 compilers when working on the C SDK and
+  runtime; the native-host gate requires GCC and Clang on Linux, Clang on
   macOS, or MSVC and clang-cl on Windows; Unix C checks also require
   `pkg-config`
 - Podman or Docker for the default isolated TypeDB suite
@@ -20,7 +20,7 @@ That file is the canonical product and verification boundary.
 accepted evidence covers that native-host gate; the configured hosted macOS and
 Windows lanes remain unverified and are not platform-support evidence.
 
-When validating on Windows, run the internal C check from a Visual Studio
+When validating on Windows, run the C check from a Visual Studio
 developer shell with both MSVC and clang-cl available, together with the MSVC
 linker and binary-inspection tools.
 
@@ -137,7 +137,7 @@ import time. When registration fails, compare the generated package version,
 declared-schema fingerprint, and runtime version before investigating data
 operations.
 
-The internal C probe verifies the same identities when it opens a generated
+The C probe verifies the same identities when it opens a generated
 schema-package descriptor through the Rust-owned ABI.
 
 ## Temporary files

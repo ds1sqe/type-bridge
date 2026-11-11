@@ -403,7 +403,7 @@ release; the unstripped CLI provides a separate baseline. Available Python, Node
 compiler versions are recorded for the wheel, npm and C measurements.
 
 The C metric is a perf-only archive of the current CMake install tree: ABI 2.0
-and release package metadata are reconciled separately in 2.3.0 release prep.
+and release package metadata are reconciled separately by release validation.
 It uses the release Cargo flags and normalized tar metadata; it is not a
 published C release candidate. Release helpers and policy are unchanged.
 

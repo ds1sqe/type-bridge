@@ -87,8 +87,7 @@ duplicated directory snapshot here.
   execute migrations through generated catalogs.
 - Split-YAML is the only active schema/model authoring authority. Python,
   TypeScript/Node, Rust, and C applications consume generated projections.
-- Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io
-  graph; the historical 2.0.0 SDK resolves from its exact release Git revision.
+- Rust releases resolve a complete, version-locked crates.io graph.
 - General TypeDB version admission requires at least 3.12.0 and has no upper
   ceiling. Measured, supported lines remain 3.12–3.14. Newer lines reuse the
   newest measured profile and protocol assumptions, with one warning per
@@ -158,9 +157,6 @@ Exact wheel, npm tarball, native-platform, multi-platform container, and
 publication acceptance remains workflow-only. Local source checks do not
 replace those gates. See [Testing](docs/development/testing.md) for suite
 selection and environment variables.
-
-Python facade builds also run a network-disabled metadata check in the exact
-digest-verified publisher image before entering cross-registry publication.
 
 The C release path uses `c-release.yml`: read-only verification
 consumes successful same-source master CI artifacts and runs all SDK suites

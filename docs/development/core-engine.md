@@ -13,7 +13,8 @@ The engine supports the exact operation set recorded in
 - concise filters and immutable multi-model direct/remote queries;
 - rows, pages, count/existence, reducers, and grouping;
 - caller-owned transactions and exact generated hydration;
-- TypeDB 3.12–3.14 provider selection and fail-closed version checks.
+- TypeDB provider selection: a 3.12.0 admission floor, measured 3.12–3.14
+  lines, and a warning for newer lines.
 
 Private dynamic managers and descriptors are execution machinery for verified
 generated projections. They are not a public target-language declaration API.

@@ -529,9 +529,8 @@ deterministic `$g0`, `$g1`, ... variables and the executor supplies one
 `given` row through the driver's bounded streaming path. Values never cross a
 Python or TypeScript raw-query boundary.
 
-Pre-3.12 provider bands compile the same validated values through Rust's inline
-literal renderer. Temporal, decimal, and duration operands also remain inline
-on band 9 because the current portable row adapter cannot preserve their full
+Temporal, decimal, and duration operands remain inline through Rust's literal
+renderer because the current portable row adapter cannot preserve their full
 canonical TypeQL spelling surface. TypeDB requires the right operand of `like`
 to be a string literal, so prefix, suffix, and regex predicates remain inline;
 Rust still owns their escaping and validation. `contains` can use `given`,
@@ -852,11 +851,12 @@ The retained boundary is narrow:
 
 - Python package-root raw-TypeQL `Query`/`QueryBuilder` imports are removed
   in 3.0; generated typed queries and `Database.execute_query` replace them;
-- generated Python managers retain concise single-type filters, ordering,
-  terminals, aggregates, updates, deletes, and hydration;
+- generated Python managers retain concise single-type filters, terminals,
+  updates, deletes, and hydration;
 - TypeScript generated queries replace the removed package-root
   `TypedQuery<T, Row>` facade;
-- native staged plans replace low-level Python and Node Query V2 authority;
+- native staged plans replace the removed low-level Python and Node query
+  authority;
 - the former Node handwritten `/typed` registration surface and root model,
   field, role, attribute, flag, registry, and descriptor declarations are not
   active application paths.
