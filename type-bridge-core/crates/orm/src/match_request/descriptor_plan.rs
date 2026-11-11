@@ -360,18 +360,20 @@ pub(crate) fn hydration_roles(
                 "registered role-player declarations do not cover resolved accepted players",
             ));
         }
-        roles.push(HydrationRole::new(
-            RoleId::new(
-                concrete.label().as_str().to_owned(),
-                effective_id.label().as_str().to_owned(),
-            )?,
-            role_reference_ids(schema, resolved, effective_id),
-            players,
-            effective.cardinality(),
-            registered_role.ordered,
-            registered_role.distinct,
-        )
-        .with_specialized_roles(effective.replaced_roles().iter().cloned().collect()));
+        roles.push(
+            HydrationRole::new(
+                RoleId::new(
+                    concrete.label().as_str().to_owned(),
+                    effective_id.label().as_str().to_owned(),
+                )?,
+                role_reference_ids(schema, resolved, effective_id),
+                players,
+                effective.cardinality(),
+                registered_role.ordered,
+                registered_role.distinct,
+            )
+            .with_specialized_roles(effective.replaced_roles().iter().cloned().collect()),
+        );
     }
     roles.sort_by(|left, right| left.role().cmp(right.role()));
     Ok(roles)

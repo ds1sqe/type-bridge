@@ -2250,7 +2250,11 @@ mod specialized_role_tests {
             else {
                 panic!("{label} must be refused");
             };
-            assert_eq!(error.code().as_str(), "query_model_hydration_roles", "{label}");
+            assert_eq!(
+                error.code().as_str(),
+                "query_model_hydration_roles",
+                "{label}"
+            );
         }
     }
 }
