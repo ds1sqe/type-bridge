@@ -53,7 +53,7 @@ come from `app_models`, the generated package. Connection primitives come from
 - `schema check` reports reserved labels, invalid cardinality, ownership, and
   role-player errors before generation.
 
-Change Split-YAML, review and apply a V2 migration, then regenerate. Do not edit
+Change Split-YAML, review and apply a migration, then regenerate. Do not edit
 the generated packages or recreate their descriptors in application code.
 
 ## One staged program in four languages

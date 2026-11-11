@@ -25,7 +25,7 @@ share one Rust-owned schema, query, migration, validation, and ORM engine.
 | Rust | Schema-bound create/model types, async CRUD and immutable queries | [`type-bridge`](https://crates.io/crates/type-bridge) |
 | C | Generated nominal models, transactions, direct/remote queries | [Ubuntu 24.04 x86_64 shared runtime](https://ds1sqe.github.io/type-bridge/guide/c/) |
 | CLI | Split-YAML checks, migrations, and all four projections | Python package or standalone Linux archive |
-| Server | Remote V2 query execution over the same generated contract | `ghcr.io/ds1sqe/type-bridge-server` |
+| Server | Remote staged query execution over the same generated contract | `ghcr.io/ds1sqe/type-bridge-server` |
 
 TypeBridge preserves TypeDB concepts directly: independent attributes,
 entities, relations, roles, inheritance, cardinality, ordering, keys, and
@@ -126,7 +126,7 @@ Rust 1.88+ and the crates.io `type-bridge` runtime:
 
 ```toml
 [dependencies]
-type-bridge = "2"
+type-bridge = "3"
 ```
 
 Follow the [Rust client guide](https://ds1sqe.github.io/type-bridge/guide/rust/)
@@ -134,7 +134,7 @@ for generation, direct execution, transactions, and remote queries.
 
 ## C
 
-TypeBridge 2.3 ships a C ABI 1.7 shared runtime and standalone CLI for
+TypeBridge 3.0 ships a C ABI 2.0 shared runtime and standalone CLI for
 Ubuntu 24.04 on x86_64 GNU/Linux. Generate an application schema package from
 Split-YAML, then link C17 or C++17 consumers with CMake or pkg-config.
 
@@ -149,7 +149,7 @@ archives, installation, generation, and the exact supported matrix.
 - [Manage schemas and migrations](https://ds1sqe.github.io/type-bridge/guide/schema-workflows/)
 - [Run the query server](https://ds1sqe.github.io/type-bridge/guide/server-container/)
 - [Browse the Cargo package index](https://ds1sqe.github.io/type-bridge/guide/cargo-packages/)
-- [Compatibility and removals](https://ds1sqe.github.io/type-bridge/guide/migrations/)
+- [Upgrade to 3.0: compatibility and removals](https://ds1sqe.github.io/type-bridge/guide/upgrade-3.0/)
 
 ## Development
 
