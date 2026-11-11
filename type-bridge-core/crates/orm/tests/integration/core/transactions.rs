@@ -359,13 +359,15 @@ fn adversarial_limits() -> Vec<(
             "provider_cancelled",
         ),
         (
-            "zero-deadline",
+            // A zero timeout means no deadline; an elapsed token is explicit.
+            "expired-deadline",
             MatchExecutionLimits::tightened(
                 100,
                 64 * 1024,
-                Duration::ZERO,
+                Duration::from_secs(5),
                 AnswerCancellation::default(),
-            ),
+            )
+            .with_absolute_deadline(QueryExecutionDeadline::expired()),
             MatchErrorCategory::ResourceLimit,
             "transaction_deadline_exceeded",
         ),
@@ -388,6 +390,26 @@ fn assert_bounded_execution_error(
     expected_category: MatchErrorCategory,
     expected_code: &str,
 ) {
+    // Deadline and cancellation refusals carry the invocation timeline as a
+    // phase-decorated execution diagnostic; other limits stay match errors.
+    if let OrmError::ExecutionDiagnostic(diagnostic) = &error {
+        use type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory;
+        let category = match expected_category {
+            MatchErrorCategory::Cancelled => SdkDiagnosticCategory::Cancelled,
+            MatchErrorCategory::ResourceLimit => SdkDiagnosticCategory::ResourceLimit,
+            other => panic!("{other:?} refusals are not phase-decorated"),
+        };
+        assert_eq!(diagnostic.category(), category);
+        assert_eq!(diagnostic.code().as_str(), expected_code);
+        assert!(
+            diagnostic
+                .details()
+                .keys()
+                .any(|key| key.as_str() == "execution_phase"),
+            "a decorated refusal names its execution phase"
+        );
+        return;
+    }
     let OrmError::Match(error) = error else {
         panic!("expected canonical match error, got {error}")
     };
