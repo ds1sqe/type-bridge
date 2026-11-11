@@ -316,7 +316,7 @@ fn wide_model_handles_have_the_same_pinned_layout() {
     fs::write(&consumer, "#include <wide/models.h>\n").unwrap();
     let header = std::str::from_utf8(generated.get("include/wide/models.h").unwrap()).unwrap();
     assert!(header.contains("uint32_t model_ordinal; } wide_item_handle_t;"));
-    for (compiler, standard) in [("cc", "c17"), ("c++", "c++17")] {
+    for (compiler, language, standard) in [("cc", "c", "c17"), ("c++", "c++", "c++17")] {
         let output = Command::new(compiler)
             .args([
                 &format!("-std={standard}"),
@@ -329,6 +329,7 @@ fn wide_model_handles_have_the_same_pinned_layout() {
             .arg(runtime_include())
             .arg("-I")
             .arg(stage.path().join("include"))
+            .args(["-x", language])
             .arg(&consumer)
             .output()
             .unwrap();
